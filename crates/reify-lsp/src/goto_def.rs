@@ -17,8 +17,33 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let module_name = module_name_from_uri(uri);
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
-    // Search for a param or let declaration with matching name
-    // (recursing into guarded groups via find_named_member_span)
+    let offset_u32 = offset as u32;
+
+    // Try to find the enclosing declaration by checking if the cursor offset
+    // falls within a declaration's span. If found, search only that declaration
+    // first for scoped resolution.
+    for decl in &parsed.declarations {
+        let (members, decl_span) = match decl {
+            reify_syntax::Declaration::Structure(s) => (&s.members, s.span),
+            reify_syntax::Declaration::Occurrence(o) => (&o.members, o.span),
+            _ => continue,
+        };
+        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+            // Cursor is inside this declaration — search its members only
+            if let Some((span, _doc)) = find_named_member_span(members, word) {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: span_to_range(source, span),
+                });
+            }
+            // Member not found in enclosing declaration; fall through to
+            // the all-declarations search below.
+            break;
+        }
+    }
+
+    // Fallback: search all declarations (cursor outside any declaration,
+    // or enclosing declaration didn't contain the member).
     for decl in &parsed.declarations {
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
@@ -152,6 +177,83 @@ mod tests {
         // Should point to the let declaration on line 5:
         // "        let fallback = 10"
         assert_eq!(loc.range.start.line, 5);
+    }
+
+    // --- enclosing-declaration scoping tests ---
+
+    #[test]
+    fn goto_def_cursor_in_second_decl_scopes_to_enclosing() {
+        // Two structures with identically-named param x.
+        // Cursor on 'x' in B's `let y = x` should jump to B's param x, not A's.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
+        // Line 5: "    let y = x"
+        //                      ^ col 12 = 'x' reference
+        let position = Position::new(5, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in B should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to B's param x on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected B's param x (line 4), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_cursor_in_occurrence_scopes_to_enclosing() {
+        // Structure A and occurrence B both have param diameter.
+        // Cursor on 'diameter' in B's constraint should jump to B's param, not A's.
+        let source = "structure A {\n    param diameter: Scalar = 10mm\n}\noccurrence def B {\n    param diameter: Scalar = 20mm\n    constraint diameter > 5mm\n}";
+        // Line 5: "    constraint diameter > 5mm"
+        //                        ^ col 15 = 'diameter' reference
+        let position = Position::new(5, 15);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for diameter in B should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to B's param diameter on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected B's param diameter (line 4), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_existing_single_decl_unchanged() {
+        // Verify that all existing single-declaration goto_def behavior still
+        // works after the enclosing-declaration scoping refactoring.
+        let source = reify_test_support::bracket_source();
+        // Test 1: thickness ref in constraint → param declaration
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(9, 15))
+            .expect("thickness ref should resolve");
+        assert_eq!(loc.range.start.line, 3);
+        // Test 2: width ref in constraint expr → param declaration
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(10, 30))
+            .expect("width ref should resolve");
+        assert_eq!(loc.range.start.line, 1);
+        // Test 3: volume let → itself
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(7, 8))
+            .expect("volume should resolve");
+        assert_eq!(loc.range.start.line, 7);
+    }
+
+    #[test]
+    fn goto_def_cursor_in_first_decl_still_finds_own_member() {
+        // When cursor is inside the first declaration, scoped search should
+        // still find members (not accidentally skip them).
+        let source = "structure A {\n    param x: Scalar = 5mm\n    let y = x\n}\nstructure B {\n    param x: Bool = true\n}";
+        // Line 2: "    let y = x"
+        //                      ^ col 12 = 'x' reference inside A
+        let position = Position::new(2, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in A should return location");
+        // Should point to A's param x on line 1
+        assert_eq!(
+            loc.range.start.line, 1,
+            "expected A's param x (line 1), got line {}",
+            loc.range.start.line
+        );
     }
 
     #[test]

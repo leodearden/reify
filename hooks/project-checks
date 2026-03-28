@@ -32,8 +32,15 @@ if ! cargo test --workspace --quiet 2>&1; then
     exit 1
 fi
 
-# ── GUI: TypeScript typecheck ─────────────────────────────────────────
+# ── GUI: install deps + regenerate lockfile ──────────────────────────
+# package-lock.json is gitignored to avoid merge conflicts — regenerate from package.json
 if [ -d "$ROOT/gui" ]; then
+    echo "  install: gui"
+    if ! (cd "$ROOT/gui" && npm install --prefer-offline); then
+        echo "pre-commit: npm install failed in gui/. Check package.json."
+        exit 1
+    fi
+
     echo "  typecheck: gui"
     if ! (cd "$ROOT/gui" && npx tsc --noEmit); then
         echo "pre-commit: tsc --noEmit failed in gui/. Fix type errors before committing to main."

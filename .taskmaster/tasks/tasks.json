@@ -8414,11 +8414,11 @@
         "description": "Add a #[cfg(test)] module to gui/src-tauri/src/types.rs with unit tests for format_value covering: basic Range display, Range with None lower + inclusive=true, Range with None upper + inclusive=true. No Tauri dependency needed. (Review followup from task 364)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:13:52.745Z",
+        "updatedAt": "2026-03-28T00:28:24.401Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8490,11 +8490,11 @@
         "description": "In crates/reify-test-support: (1) Mark assert_value_approx_impl with #[doc(hidden)]. (2) Rename vec3_unit to vec3_dimensionless and update all call sites. (3) Add test for unconfigured handle query error. (Review followup from task 351)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.531Z",
+        "updatedAt": "2026-03-28T00:25:09.229Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8677,7 +8677,7 @@
         "description": "Add missing test coverage for type alias parsing in crates/reify-syntax/tests/type_alias_tests.rs: (1) malformed inputs — missing name, missing =, empty RHS — assert ParseError is emitted, (2) type params combined with dimensional RHS (e.g. `type Velocity<T> = T / Time`), (3) nested parameterized types on RHS (e.g. `type Registry = Map<String, List<Int>>`), (4) mixed operator precedence confirming left-associativity (e.g. `type X = Mass / Time * Scalar` → outer is `*`). Memory hints: search \"type alias parser tests\" and get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "144"
         ],
@@ -8691,7 +8691,8 @@
           "modules": [
             "crates/reify-syntax/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T00:26:44.203Z"
       },
       {
         "id": "440",
@@ -10810,11 +10811,11 @@
         "description": "gui/package-lock.json causes merge conflicts when multiple tasks modify GUI dependencies. Instead of committing lockfile changes on task branches:\n\n1. Add gui/package-lock.json to .gitignore (or unstage in pre-commit hook) for task branches\n2. Add a post-merge step in the orchestrator merge worktree: cd gui && npm install (regenerates lockfile from package.json)\n3. Ensure CI regenerates the lockfile rather than relying on committed version\n\nSame pattern as the tree-sitter generated files task.\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:42:15.616Z",
+        "updatedAt": "2026-03-28T00:10:16.343Z",
         "metadata": {
           "modules": [
             ".gitignore",
@@ -11338,7 +11339,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11349,9 +11350,15 @@
           ],
           "modules": [
             "crates/reify-runtime/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Consolidate redundant poison_evaluate tests and strengthen assertions"
+            ]
+          }
         },
-        "updatedAt": "2026-03-28T00:00:24.441Z"
+        "updatedAt": "2026-03-28T00:10:19.454Z"
       },
       {
         "id": "562",
@@ -11479,9 +11486,11 @@
             "crates/reify-runtime/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-runtime/src"
+            "crates/reify-eval",
+            "crates/reify-runtime"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T00:16:05.321Z"
       },
       {
         "id": "568",
@@ -11743,7 +11752,7 @@
         "description": "In `crates/reify-runtime/src/concurrent.rs` (lines 368-375), when returning Err on panic or cancel paths, remaining JoinHandles in `handles` are dropped. In tokio, dropping a JoinHandle detaches (does not abort) the task — those evaluations continue running in the background holding `Arc<E>` and `Arc<Mutex<CommitmentTracker>>`. The evaluator's side effects continue after the caller believes execution has stopped.\n\n**Fix:** Replace `Vec<JoinHandle>` with `tokio::task::JoinSet`. In error branches, call `join_set.abort_all()` before returning Err. This ensures cooperative cancellation of in-flight tasks and is consistent with the existing cancel semantics.\n\n**File:** `crates/reify-runtime/src/concurrent.rs`",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "477"
         ],
@@ -11757,7 +11766,8 @@
           "modules": [
             "crates/reify-runtime/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T00:17:07.725Z"
       },
       {
         "id": "581",
@@ -11765,7 +11775,7 @@
         "description": "The file .task/plan.json was leaked onto main by commit 14ae324a (from task-517). It is deleted from the working tree but still tracked in git. The pre-commit hook TS type error blocker that previously prevented this cleanup was fixed in commit 784e3921. Run `git rm --cached .task/plan.json` (and .task/iterations.jsonl if present) and commit to main. Also verify .task/ is in .gitignore to prevent future leaks.\n\nMemory hints: search \".task plan.json tracked on main leaked commit\", entities: .task/plan.json, pre-commit hook",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11778,7 +11788,8 @@
           "modules": [
             "."
           ]
-        }
+        },
+        "updatedAt": "2026-03-28T00:25:02.356Z"
       },
       {
         "id": "582",
@@ -11837,11 +11848,11 @@
         "description": "find_member_decl and compute_goto_definition search ALL declarations for a member name match, returning the first hit regardless of which declaration the cursor is in. In a file with multiple declarations sharing member names (e.g. two occurrences both with `param diameter`), span info can come from one declaration while type info comes from another (find_member_decl), and goto-def always jumps to the first declaration's member (compute_goto_definition).\n\nFix both:\n1. analysis.rs find_member_decl: have find_parsed_member_span_and_doc also return the owning declaration name, then match both template name AND member name in the compiled-module lookup.\n2. goto_def.rs compute_goto_definition: check whether the cursor offset falls within the declaration's span and only search members of the enclosing declaration (or fall back to first-found if no enclosing declaration).\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:31:53.777Z",
+        "updatedAt": "2026-03-28T00:10:29.133Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -11942,13 +11953,13 @@
         "description": "Three related improvements to the warm-start fallback path in solver.rs:\n\n1. **Defer fallback HashMap** (perf): `initial_fallback_values` HashMap is built eagerly on every warm-start solve but only consumed on the error path. Since `initial: Vec<f64>` stays in scope, defer construction into the `if final_max_residual > FEASIBILITY_THRESHOLD` block. Zero cost on success path.\n\n2. **Extract params_to_value_map helper** (DRY): The fallback block (lines 513-532) duplicates the zip-and-collect from `build_trial_values` (lines 51-67). Extract `fn params_to_value_map(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value>` and call from both.\n\n3. **Validate objective on fallback** (correctness): The fallback path (line 602-603) bypasses post-solve objective validation at lines 619-625. If the initial point produces undefined objective (div-by-zero, missing value), fallback silently promotes to Solved. Add the same objective check before returning fallback.\n\nMemory hints: search \"solver fallback warm-start\", entity DimensionalSolver, entity build_trial_values",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "531"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:46:44.991Z",
+        "updatedAt": "2026-03-28T00:15:44.296Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11956,7 +11967,13 @@
           ],
           "modules": [
             "crates/reify-constraints/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Solver fallback path: defer allocation, extract helper, validate objective"
+            ]
+          }
         }
       },
       {
@@ -12095,11 +12112,11 @@
         "description": "Two related bugs where guarded-group members are excluded from LSP features:\n1. member_names() in analysis.rs:138-145 only iterates template.value_cells but the compiler stores guarded members in template.guarded_groups.members/else_members. This means completions (completion.rs:43) miss all params/lets inside where-blocks.\n2. structure_names() in analysis.rs:150-177 flat-counts members without recursing into GuardedGroup variants, undercounting params/lets.\nBoth need to iterate guarded_groups in addition to value_cells/top-level members.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T23:31:53.064Z",
+        "updatedAt": "2026-03-28T00:10:38.367Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -12232,7 +12249,7 @@
         "description": "Several test builders in crates/reify-test-support/src/builders/ compute content_hash values that ignore semantically significant fields, which could cause false cache hits in tests exercising the incremental evaluation engine.\n\nAffected builders:\n1. **CompiledFieldBuilder::build()** (field.rs:63) — hash uses only `name` + constant `[99]`, ignoring `domain_type`, `codomain_type`, and `source`. Two fields with the same name but different types/sources produce identical hashes.\n2. **TraitDefBuilder::build()** (trait_def.rs:68) — requirement hashing uses `std::mem::discriminant(&r.kind)` but ignores the inner type values. Two `Param(Type::Real)` vs `Param(Type::Int)` requirements with the same name produce identical hash contributions.\n3. **CompiledTraitBuilder::build()** (trait_def.rs:162-168) — hashes only member names, ignoring requirement kinds entirely.\n\nFix each build() to incorporate all semantically significant fields into the content_hash, and add tests asserting hash distinctness (e.g., same name + different source → different hash; same requirement variant + different inner type → different hash).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"CompiledFieldBuilder\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12246,7 +12263,7 @@
             "crates/reify-test-support/src/builders"
           ]
         },
-        "updatedAt": "2026-03-27T23:58:35.059Z"
+        "updatedAt": "2026-03-28T00:22:01.612Z"
       },
       {
         "id": "603",
@@ -12297,7 +12314,7 @@
         "description": "In gui/sidecar/src/session.ts, the `handleSendMessage` method has an inline type annotation for the `context` parameter that duplicates — and diverges from — the `SendMessage.context` type in types.ts. The inline type only includes `selected_entity`, `diagnostics`, `constraints`, missing the `current_file` and `attached_contexts` fields added in task 525. There is also no prompt-building logic for the new fields, so they are silently dropped even though the full stack (bridge.ts → Rust → sidecar types.ts) now transmits them.\n\nFix:\n1. Replace the inline type annotation on handleSendMessage's `context` parameter with `SendMessage['context']` imported from `./types.js`.\n2. Add `contextParts.push(...)` branches for `current_file` and `attached_contexts` in the prompt-building section.\n3. Add tests verifying the new fields appear in the constructed prompt.\n\nSource: Review suggestions 3+7 from task 525 triage.\n\nmemory_hints: search \"handleSendMessage context prompt building\", entities: session.ts, SendMessage, types.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12312,7 +12329,7 @@
             "gui/sidecar/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-27T23:46:09.630Z"
+        "updatedAt": "2026-03-28T00:10:35.591Z"
       },
       {
         "id": "606",
@@ -12340,7 +12357,7 @@
         "description": "scripts/tree-sitter-generate.sh unconditionally runs `tree-sitter generate` with no staleness check and no timeout. build.rs has both (content-hash stamp + 60s timeout), but the shell script — called by orchestrator.yaml verification commands up to 60+ times per run — does neither. Add: (1) hash-based staleness guard matching build.rs contract, (2) `timeout 60 tree-sitter generate` to prevent hung builds.",
         "details": "Files: scripts/tree-sitter-generate.sh. The script is called from orchestrator.yaml pre-test/lint/typecheck commands. Memory hint: search for \"task 563 content hash staleness\" for the build.rs implementation pattern.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12355,7 +12372,7 @@
             "scripts/tree-sitter-generate.sh"
           ]
         },
-        "updatedAt": "2026-03-27T23:58:34.073Z"
+        "updatedAt": "2026-03-28T00:26:25.947Z"
       },
       {
         "id": "608",
@@ -12486,10 +12503,16 @@
         "description": "Three related test quality issues in reify-constraints:\n1. `warm_start_budget_exhaustion_stays_feasible` (solver_integration.rs:914) does not actually exhaust the iteration budget — reduce the budget or increase problem complexity to trigger MaxItersReached.\n2. `termination_reason_extracted_without_panic` (solver.rs:1983) accepts Infeasible for a trivially solvable problem — assert Solved and verify solution satisfies 5mm < x < 50mm.\n3. Use `mm()` helper for `current_values` in `warm_start_feasible_no_objective_early_exit` (solver_integration.rs:1019-1021) instead of inline `Value::Scalar`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:17:29.333Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "614",
@@ -12508,10 +12531,16 @@
         "description": "Three observability gaps/issues in solver.rs:\n1. executor.run() error path (line 571-574) returns NoProgress with no tracing — add warn! with the error.\n2. get_best_param()==None path (line 601-604) returns NoProgress with no tracing — add warn!.\n3. Two consecutive debug! logs (lines 582-596) for MaxItersReached have overlapping fields — merge into a single structured log event or differentiate their content.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:20:08.817Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "616",
@@ -12534,13 +12563,174 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "618",
+        "title": "Standardize gui/ package manager and commit canonical lockfile",
+        "description": "All JS lockfiles (package-lock.json, pnpm-lock.yaml) are currently gitignored per task 536, meaning no reproducible dependency snapshot exists in version control. Standardize on one package manager and commit its lockfile.\n\nSteps:\n1. Decide between npm and pnpm for gui/ and gui/sidecar/ (check which is actually in use, what CI uses)\n2. Add `\"packageManager\": \"pnpm@<version>\"` (or npm equivalent) to gui/package.json to enforce via Corepack\n3. Update gui/package.json scripts: change `npm run` references to match chosen PM (e.g. `pnpm run`)\n4. Commit the chosen lockfile (e.g. pnpm-lock.yaml) and remove it from .gitignore\n5. Keep the OTHER lockfile format gitignored (e.g. keep ignoring package-lock.json if using pnpm)\n6. Handle gui/sidecar/ the same way — commit its lockfile for the chosen PM\n7. Update orchestrator.yaml merge commands to use the chosen PM (`pnpm install` vs `npm install`)\n8. Simplify .gitignore: use `**/package-lock.json` glob instead of per-directory entries for the ignored format\n9. Update tree-sitter-reify/ lockfile handling to match\n\nmemory_hints: search \"package-lock merge conflicts\", search \"gui dependencies\", search \"package manager standardization\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:26:43.857Z",
+        "metadata": {
+          "modules": [
+            ".gitignore",
+            "gui/package-lock.json",
+            "gui/package.json",
+            "gui/pnpm-lock.yaml",
+            "gui/sidecar",
+            "hooks/project-checks",
+            "orchestrator.yaml",
+            "tree-sitter-reify/package-lock.json"
+          ]
+        }
+      },
+      {
+        "id": "619",
+        "title": "LSP: Scope hover value lookup to owning declaration",
+        "description": "In hover.rs:29, `compute_hover` calls `ctx.compiled.templates.first()` for value lookup regardless of which declaration `find_member_decl` matched. In multi-declaration files where the first template is not the one owning the hovered member, the hover panel shows an incorrect evaluated value (or none).\n\nFix: expose `decl_name` from `find_member_decl` (e.g. via `MemberInfo`) and pass it to `get_value` instead of using `templates.first()`.\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:20:44.839Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "620",
+        "title": "LSP: Extract decl_named_members helper to DRY up Declaration matching",
+        "description": "The pattern of extracting (members, name, span) from a Declaration enum via `match decl { Structure(s) => ..., Occurrence(o) => ..., _ => continue }` now appears in 3 places: find_parsed_member_span_and_doc (analysis.rs), the enclosing-declaration loop (goto_def.rs:26-30), and the fallback loop (goto_def.rs:48-51).\n\nExtract a helper — either `decl_named_members(decl) -> Option<(&[MemberDecl], &str, SourceSpan)>` in analysis.rs or an inherent method on Declaration in reify-syntax — to consolidate this. Adding a third declaration kind would then be a single-site change. As part of this, the two loops in goto_def.rs can be combined into a single pass using the helper.\n\nMemory hints: search \"LSP Declaration match pattern extraction\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "621",
+        "title": "Use double-newline separator for attached_contexts in sidecar prompt builder",
+        "description": "In gui/sidecar/src/session.ts line 95, `context.attached_contexts.join('\\n')` uses a single newline to join items that are themselves multi-line (e.g. `file: lib.ri\\nfn add(a, b) = a + b`). This makes item boundaries indistinguishable from internal newlines, producing an ambiguous blob for the LLM.\n\nFix: Change `context.attached_contexts.join('\\n')` to `context.attached_contexts.join('\\n\\n')` to match the outer `contextParts.join('\\n\\n')` pattern and give each attached context block a clear visual boundary.\n\nUpdate the `attached_contexts` test in session.test.ts to assert the exact joined multi-entry string (pinning the separator) rather than just checking each item independently via `toContain`.\n\nSource: Review suggestions #2, #4, #9, #12 from task 605 triage.\n\nmemory_hints: search \"attached_contexts separator prompt building\", entities: session.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "622",
+        "title": "LSP: Add multi-declaration test coverage for goto_def and find_member_decl",
+        "description": "Two test gaps exist after the scoping fix in task 584:\n\n1. No test for find_member_decl when the member exists only in a non-first declaration (e.g. structure A { param x } / structure B { param y }, calling find_member_decl(\"y\")). The decl_name propagation path is untested.\n\n2. The goto_def fallback loop (all-declarations search after break from enclosing) is never exercised. Two scenarios: (a) cursor inside enclosing decl but referenced word not in its members, (b) cursor between declarations (no enclosing). The plan named `goto_def_cursor_outside_declarations_falls_back_to_first` as a required test but it's absent.\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"goto_def fallback test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:24:36.218Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "623",
+        "title": "Improve sidecar session context prompt-building test quality",
+        "description": "The three new context-field tests in gui/sidecar/src/__tests__/session.test.ts (lines 281-369) have several quality gaps:\n\n1. **Code duplication**: The 3-line prompt-extraction snippet (`vi.mocked(spawn).mock.calls[0]?.[1]` → indexOf('--') → prompt) is copy-pasted in all three tests. Extract a `getBuiltPrompt()` helper.\n\n2. **Setup duplication**: All three tests repeat identical mock-and-reset blocks. Extract a shared `beforeEach` in a nested `describe('context prompt building', ...)` block.\n\n3. **Missing text assertion**: None of the tests assert that the original `text` value is still present in the constructed prompt. A regression that dropped `text` would go unnoticed. Add `expect(prompt).toContain('Explain this')` etc.\n\n4. **Incomplete ordering assertion**: The all-fields test only checks `current_file < selected_entity`. Assert the full chain: `cfIdx < seIdx < diagIdx < constraintsIdx < acIdx`.\n\n5. **Missing edge cases**:\n   - `context: {}` (empty context) — should produce no `[Context]` block\n   - `context: { current_file: '' }` — empty string should be silently skipped (falsy check)\n\nSource: Review suggestions #5, #6, #7, #8, #10, #11 from task 605 triage.\n\nmemory_hints: search \"session test context prompt building\", entities: session.test.ts",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "624",
+        "title": "Revert build_trial_values to direct-insert loop (hot path allocation regression)",
+        "description": "build_trial_values (solver.rs:75) is called inside ConstraintCostFunction::cost() on every Nelder-Mead iteration. The task-589 refactor made it call params_to_value_map, which allocates an intermediate HashMap that is immediately iterated and dropped. Revert build_trial_values to the original direct-insert loop (no intermediate HashMap). Keep params_to_value_map for the three cold-path call sites only (early-exit, fallback, solution construction). This also resolves the naming confusion since build_trial_values no longer calls params_to_value_map.\n\nMemory hints: search \"params_to_value_map build_trial_values\", entity DimensionalSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [
+          "589"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:20:45.295Z"
+      },
+      {
+        "id": "625",
+        "title": "Add test coverage for fallback-path objective validation and strengthen assertions",
+        "description": "The fallback objective validation added in task 589 (solver.rs lines ~614-621) has zero test execution — the existing test hits the normal post-solve check instead. Either: (a) add a test that deterministically triggers the fallback branch (construct a problem where optimizer drifts infeasible but initial point was feasible), or (b) update the test docstring to accurately state it only validates the post-solve path. Also strengthen the existing test assertion to check the reason string (e.g. assert reason contains \"solution point\") so it's clear which code path is exercised.\n\nMemory hints: search \"undefined_objective_at_feasible_initial\", search \"fallback objective validation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "589"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "626",
+        "title": "Add debug_assert for params/x length mismatch in params_to_value_map",
+        "description": "params_to_value_map (solver.rs:55) uses Iterator::zip which silently truncates to the shorter slice if params.len() != x.len(). Add debug_assert_eq!(params.len(), x.len()) as the first line to catch caller bugs in tests at zero release cost. Also add a test for the empty-params case (params=[], x=[]) asserting result.is_empty().\n\nMemory hints: search \"params_to_value_map\", entity DimensionalSolver",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "589"
+        ],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "627",
+        "title": "Extract shared trait content_hash computation from test builders",
+        "description": "TraitDefBuilder::build() and CompiledTraitBuilder::build() in crates/reify-test-support/src/builders/trait_def.rs contain ~30 lines of identical hash computation logic (req_hashes, ref_hashes, type_param_hashes, default_hashes, combine_all chain). This is a DRY violation that creates a maintenance trap: any hash change must be applied in two places.\n\nExtract a module-private helper function:\n```rust\nfn compute_trait_content_hash(\n    name: &str,\n    required_members: &[TraitRequirement],\n    refinements: &[String],\n    type_params: &[TypeParam],\n    defaults: &[TraitDefault],\n) -> ContentHash\n```\n\nAlso extract small helpers for the match arms:\n- `fn requirement_kind_str(kind: &RequirementKind) -> String`\n- `fn default_kind_tag(kind: &DefaultKind) -> &'static str`\n\nBoth builders call the shared function. This ensures consistency and makes the subsequent hash-completeness fix (see dependent task) apply in one place.\n\nmemory_hints: search \"content_hash builder test support trait_def\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-28T00:26:43.173Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-test-support"
+          ]
+        }
+      },
+      {
+        "id": "628",
+        "title": "Fix remaining shallow hash fields in test builder content_hash",
+        "description": "Task 602 fixed the major content_hash gaps but several semantically significant fields are still ignored in the test builders (same class of bug):\n\n1. **DefaultKind::Param ignores cell_type** (trait_def.rs): `DefaultKind::Param { .. } => \"Param\"` should be `DefaultKind::Param { cell_type, .. } => format!(\"Param:{}\", cell_type)`. Two defaults with same name but different cell_type (Real vs Int) produce identical hashes.\n\n2. **DefaultKind::Let/Constraint ignore inner expression** (trait_def.rs): Only the kind tag is hashed, not the inner expression's content_hash. Two Let defaults with same name but different expressions hash identically. Fix: `DefaultKind::Let(decl) => format!(\"Let:{}\", decl.content_hash)`, `DefaultKind::Constraint(decl) => format!(\"Constraint:{}\", decl.content_hash)`.\n\n3. **TypeParam bounds/default ignored** (trait_def.rs): `type_param_hashes` maps only `p.name`, ignoring `p.bounds` and `p.default`. Fix: include bound trait_ref names and default type in the hash string.\n\n4. **Missing Sampled variant cross-test** (field.rs): No test asserts Sampled hashes differently from Analytical/Imported with same name+types.\n\nAdd tests for each fix asserting hash distinctness (same pattern as existing tests).\n\nmemory_hints: search \"content_hash builder test support\", get_entity \"DefaultKind\", get_entity \"TypeParam\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "627"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-28T00:00:24.450Z",
-      "taskCount": 617,
-      "completedCount": 281,
+      "lastModified": "2026-03-28T00:28:24.401Z",
+      "taskCount": 628,
+      "completedCount": 287,
       "tags": [
         "master"
       ]
