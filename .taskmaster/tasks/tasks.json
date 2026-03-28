@@ -15429,7 +15429,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "611"
+        ],
         "priority": "medium",
         "subtasks": []
       }
