@@ -535,7 +535,12 @@ describe('PropertyEditor validation - valid number', () => {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
   };
 
-  it("'42.5' on Enter calls onSetParameter and input does NOT have data-invalid", () => {
+  it.each([
+    ['42.5', 'decimal'],
+    ['-3', 'negative integer'],
+    ['.5', 'leading-dot decimal'],
+    ['-0.5', 'negative decimal'],
+  ])("'%s' (%s) on Enter calls onSetParameter and input does NOT have data-invalid", (validNumber) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -543,9 +548,9 @@ describe('PropertyEditor validation - valid number', () => {
     const row = screen.getByTestId('prop-row-c1');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '42.5' } });
+    fireEvent.input(input, { target: { value: validNumber } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', '42.5');
+    expect(onSetParam).toHaveBeenCalledWith('c1', validNumber);
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
@@ -834,6 +839,9 @@ describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', 
     ['0B10', 'binary uppercase'],
     ['+5', 'leading plus'],
     ['+0', 'leading plus zero'],
+    ['+5.5', 'leading plus decimal'],
+    ['+.5', 'leading plus leading-dot'],
+    ['+1e3', 'leading plus scientific'],
   ])("'%s' (%s) on Enter does NOT call onSetParameter and sets data-invalid", (invalidLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
@@ -888,6 +896,36 @@ describe('PropertyEditor accessibility', () => {
     ));
     const input = screen.getByPlaceholderText('Filter properties...');
     expect(input.getAttribute('aria-label')).toBe('Filter properties');
+  });
+});
+
+describe('PropertyEditor blur-path rejection for invalid literals', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+  ])("'%s' (%s) on blur does NOT call onSetParameter, reverts to original value, and does NOT set data-invalid", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.blur(input);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
 
