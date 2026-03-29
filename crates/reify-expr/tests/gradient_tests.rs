@@ -1,8 +1,7 @@
-//! Gradient edge-case tests.
+//! Gradient tests.
 //!
-//! These tests encode expected edge-case behavior for gradient operations.
-//! Currently gradient is a stub (always returns Undef), but these tests serve
-//! as guardrails that must continue passing when gradient is fully implemented.
+//! Tests for numerical gradient via central differences on analytical fields.
+//! Includes edge-case guardrails and positive tests for gradient computation.
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
@@ -257,4 +256,74 @@ fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
             point_val, expected_val, result
         );
     }
+}
+
+/// Gradient of a 1D linear field f(x)=3*x should produce a field that,
+/// when sampled at x=1.0, returns approximately 3.0.
+#[test]
+fn gradient_1d_linear_field() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 3 * x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // gradient should return a Field, not Undef
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 1D linear field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Now sample the gradient field at x=1.0
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // The derivative of 3*x is 3.0 everywhere
+    let result_f64 = sample_result
+        .as_f64()
+        .expect("gradient sample should return a numeric value");
+    assert!(
+        (result_f64 - 3.0).abs() < 1e-4,
+        "gradient of 3*x at x=1.0 should be ~3.0, got {}",
+        result_f64
+    );
 }
