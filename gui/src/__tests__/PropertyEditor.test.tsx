@@ -535,7 +535,12 @@ describe('PropertyEditor validation - valid number', () => {
     c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
   };
 
-  it("'42.5' on Enter calls onSetParameter and input does NOT have data-invalid", () => {
+  it.each([
+    ['42.5', 'decimal'],
+    ['-3', 'negative integer'],
+    ['.5', 'leading-dot decimal'],
+    ['-0.5', 'negative decimal'],
+  ])("'%s' (%s) on Enter calls onSetParameter and input does NOT have data-invalid", (validNumber) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -543,9 +548,9 @@ describe('PropertyEditor validation - valid number', () => {
     const row = screen.getByTestId('prop-row-c1');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '42.5' } });
+    fireEvent.input(input, { target: { value: validNumber } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', '42.5');
+    expect(onSetParam).toHaveBeenCalledWith('c1', validNumber);
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
