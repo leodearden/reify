@@ -683,13 +683,26 @@ fn compute_numerical_gradient_at_point(
             None => return Value::Undef,
         };
 
-        gradient_components.push((fp - fm) / (2.0 * h));
+        let deriv = (fp - fm) / (2.0 * h);
+
+        // Preserve dimension from the lambda output.
+        // If the lambda returns a dimensioned Scalar, the gradient component
+        // carries the same dimension (h is dimensionless in the SI coordinate space).
+        let result_dim = f_plus.dimension();
+        if result_dim != DimensionVector::DIMENSIONLESS {
+            gradient_components.push(Value::Scalar {
+                si_value: deriv,
+                dimension: result_dim,
+            });
+        } else {
+            gradient_components.push(Value::Real(deriv));
+        }
     }
 
     if n == 1 {
-        Value::Real(gradient_components[0])
+        gradient_components.into_iter().next().unwrap()
     } else {
-        Value::Vector(gradient_components.into_iter().map(Value::Real).collect())
+        Value::Vector(gradient_components)
     }
 }
 
