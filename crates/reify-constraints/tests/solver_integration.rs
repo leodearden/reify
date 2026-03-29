@@ -620,9 +620,10 @@ fn maximize_with_feasible_initial_point() {
 ///
 /// Setup: tight constraints (x > 5mm AND x < 6mm), current = 5.5mm (feasible),
 /// minimize(x) objective, but param bounds [0, 100mm] let the optimizer explore
-/// well below the constraint floor. With only 500 warm-start iterations, the
-/// penalty-based optimizer may converge to a point below 5mm.
-/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with initial values.
+/// well below the constraint floor. With 1000 warm-start iterations
+/// (budget = 500 * (1+1) = 1000 for 1 param), the penalty-based optimizer
+/// may converge to a point below 5mm.
+/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with exact initial values.
 #[test]
 fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     let solver = DimensionalSolver;
@@ -658,11 +659,14 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     match result {
         SolveResult::Solved { values } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
-            // The result must satisfy constraints: 5mm < x < 6mm
+            // Fallback must return the EXACT initial value (5.5mm = 0.0055m),
+            // not a partially-optimized point. The initial is preserved through
+            // as_f64() → Vec<f64> → build_solved_values() round-trip.
             assert!(
-                si > 0.005 && si < 0.006,
-                "result should satisfy constraints (5mm < x < 6mm), got {} m",
-                si
+                (si - 0.0055).abs() < 1e-10,
+                "fallback should return exact initial value 5.5mm (0.0055 m), got {} m (delta = {:.2e})",
+                si,
+                (si - 0.0055).abs()
             );
         }
         other => panic!(
