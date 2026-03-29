@@ -435,6 +435,65 @@ describe('subscribeToClaudeEvents', () => {
     expect(received).not.toHaveProperty('_timestamp');
   });
 
+  it('extra unknown fields in text_delta payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-text-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'x', content: 'hi', _timestamp: 999, _meta: {} } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'text_delta', id: 'x', content: 'hi' });
+  });
+
+  it('extra unknown fields in thinking_delta payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-thinking-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 't1', content: 'thinking...', _debug: true, _trace: 'abc' } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'thinking_delta', id: 't1', content: 'thinking...' });
+  });
+
+  it('extra unknown fields in tool_result payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-tool-result');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({
+      payload: { id: 'tr1', tool_name: 'read_file', result: { data: 'contents' }, _internal: true, _debug_ts: 12345 },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_result',
+      id: 'tr1',
+      tool_name: 'read_file',
+      result: { data: 'contents' },
+    });
+  });
+
+  it('extra unknown fields in error payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-error');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'e1', message: 'rate limit', _stack: 'trace...', _code: 429 } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'error', id: 'e1', message: 'rate limit' });
+  });
+
+  it('payload type field does not override mapped event type for thinking_delta', async () => {
+    const { setup } = captureListener('claude-thinking-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'x', content: 'think', type: 'WRONG' } });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'thinking_delta' }),
+    );
+  });
+
   it('payload type field does not override mapped event type', async () => {
     const { setup } = captureListener('claude-text-delta');
     const handler = vi.fn();
