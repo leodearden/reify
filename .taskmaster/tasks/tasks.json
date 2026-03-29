@@ -13478,7 +13478,7 @@
         "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, the new rAF flush test only exercises `text_delta` → `textBuffer` → `responseText`. The `thinking_delta` case uses the same `scheduleFlush()` path but flushes into `thinkingText` via a different buffer. A regression in the `thinkingBuffer` branch would be undetected.\n\n**Fix**: Add a parallel test that fires `claude-thinking-delta` events, calls `flushRaf()`, and asserts `thinkingText` is populated while `responseText` remains empty.\n\nMemory hints:\n- Search: \"claudeIntegration thinking_delta thinkingBuffer flushBuffers rAF\"\n- Entities: claudeIntegration.test.ts, claudeStore, flushBuffers",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13496,7 +13496,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-29T08:53:06.442Z"
+        "updatedAt": "2026-03-29T08:59:24.676Z"
       },
       {
         "id": "650",
@@ -15612,7 +15612,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:59:24.226Z",
+      "lastModified": "2026-03-29T08:59:24.676Z",
       "taskCount": 751,
       "completedCount": 409,
       "tags": [
