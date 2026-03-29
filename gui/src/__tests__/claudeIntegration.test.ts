@@ -215,6 +215,53 @@ describe('claude bridge integration', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('done event cancelAndFlush prevents stale rAF callback from double-flushing', async () => {
+    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(async (eventName, handler) => {
+      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+
+    const store = createClaudeStore({
+      onSend: () => {},
+      onAbort: () => {},
+    });
+
+    await subscribeToClaudeEvents(store.handleOutboundMessage);
+
+    // Send a message so there's a current message ID
+    store.sendMessage('hello', {});
+    const msgId = store.state.currentMessageId!;
+    expect(msgId).toBeTruthy();
+
+    // Simulate text_delta (schedules rAF internally)
+    capturedHandlers['claude-text-delta']({
+      payload: { id: msgId, content: 'Some text' },
+    });
+
+    // Simulate done event — calls cancelAndFlush internally (cancels rAF + flushes buffers)
+    capturedHandlers['claude-done']({
+      payload: { id: msgId },
+    });
+
+    // The canceled callback should have been removed from the polyfill Map
+    expect(rafCallbacks.size).toBe(0);
+
+    // Capture the text after done's flush
+    const afterDone = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    const textAfterDone = afterDone!.responseText;
+
+    // A second flushRaf() should be a no-op — the stale callback was canceled
+    flushRaf();
+
+    const afterSecondFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(afterSecondFlush!.responseText).toBe(textAfterDone);
+  });
+
   it('claude-error event adds system message and marks assistant message as error', async () => {
     const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
     mockListen.mockImplementation(async (eventName, handler) => {
