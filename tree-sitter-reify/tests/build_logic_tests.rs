@@ -230,6 +230,39 @@ fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
     Some(&source[start..end])
 }
 
+/// Find the Err(e) arm in source code using brace-depth tracking.
+/// Returns the slice from `Err(e) =>` through the arm's closing `}`.
+/// Tracks brace depth so nested braces (including those inside string literals)
+/// don't prematurely end the extraction.
+fn find_err_arm_braced(source: &str) -> Option<&str> {
+    let err_start = source.find("Err(e) =>")?;
+    let after_arrow = &source[err_start..];
+
+    // Find the opening brace of the arm body.
+    let brace_offset = after_arrow.find('{')?;
+    let body_start = err_start + brace_offset;
+
+    let bytes = source.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = body_start;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&source[err_start..=i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    None // unbalanced braces
+}
+
 /// Duplicates run_with_timeout logic from build.rs for testability.
 /// Returns Ok(()) on success, Err(message) on failure or timeout.
 fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
