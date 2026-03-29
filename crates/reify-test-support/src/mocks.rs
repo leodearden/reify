@@ -1734,28 +1734,20 @@ mod tests {
     fn sequenced_solver_concurrent_no_deadlock() {
         use std::sync::Mutex as StdMutex;
 
-        let mut values: Vec<HashMap<ValueCellId, Value>> = Vec::new();
-        for i in 0..4 {
-            let mut v = HashMap::new();
-            v.insert(
-                ValueCellId::new("S", "x"),
-                Value::length(0.001 * (i as f64 + 1.0)),
-            );
-            values.push(v);
-        }
+        // Only 1 pre-loaded result with 4 threads: thread 1 takes the result
+        // from `results` and writes `self.last`; threads 2-4 find `results`
+        // empty, take the `None` branch, and contend on `self.last`. This
+        // exercises the exact two-lock contention pattern the task 430 fix
+        // addresses (separate lock acquisition for `results` and `last`).
+        let mut expected_values = HashMap::new();
+        expected_values.insert(
+            ValueCellId::new("S", "x"),
+            Value::length(0.001),
+        );
 
         let solver = SequencedMockConstraintSolver::new(vec![
             SolveResult::Solved {
-                values: values[0].clone(),
-            },
-            SolveResult::Solved {
-                values: values[1].clone(),
-            },
-            SolveResult::Solved {
-                values: values[2].clone(),
-            },
-            SolveResult::Solved {
-                values: values[3].clone(),
+                values: expected_values.clone(),
             },
         ]);
 
@@ -1769,8 +1761,8 @@ mod tests {
 
         let collected = StdMutex::new(Vec::new());
 
-        // 4 threads each calling solve() once — validates the task 430 fix:
-        // separate lock acquisition for `results` and `last` prevents deadlock.
+        // 4 threads each calling solve() once — with only 1 result,
+        // threads 2-4 must go through the `None` branch and read `self.last`.
         std::thread::scope(|s| {
             for _ in 0..4 {
                 s.spawn(|| {
@@ -1783,11 +1775,18 @@ mod tests {
         let results = collected.into_inner().unwrap();
         assert_eq!(results.len(), 4, "all 4 threads should complete");
         for result in &results {
-            assert!(
-                matches!(result, SolveResult::Solved { .. }),
-                "expected Solved variant, got {:?}",
-                result
-            );
+            match result {
+                SolveResult::Solved { values } => {
+                    assert_eq!(
+                        *values, expected_values,
+                        "all threads should return the same values"
+                    );
+                }
+                other => panic!(
+                    "expected Solved variant, got {:?}",
+                    other
+                ),
+            }
         }
     }
 
