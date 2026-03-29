@@ -909,4 +909,19 @@ describe('PropertyEditor whitespace-only input rejection', () => {
     expect(onSetParam).not.toHaveBeenCalled();
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
+
+  it("whitespace-only '   ' on blur does NOT call onSetParameter and reverts to original prop value", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '   ' } });
+    fireEvent.blur(input);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
 });
