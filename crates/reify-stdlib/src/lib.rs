@@ -1123,11 +1123,14 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 
 /// Compute the absolute value (modulus) of a complex number.
 ///
-/// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
-/// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
-/// results are converted to `Undef` by [`sanitize_value`].
+/// Uses [`f64::hypot`] for overflow-resistant magnitude computation,
+/// avoiding premature overflow when components are large but the true
+/// magnitude is still representable. Returns `Value::Real(mag)` when
+/// `dimension` is dimensionless, or `Value::Scalar { si_value: mag,
+/// dimension }` otherwise. Non-finite results are converted to `Undef`
+/// by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
-    let mag = (re * re + im * im).sqrt();
+    let mag = re.hypot(im);
     if dimension == DimensionVector::DIMENSIONLESS {
         sanitize_value(Value::Real(mag))
     } else {
@@ -4827,6 +4830,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_large_representable_complex_no_overflow() {
+        // magnitude(Complex{1e200, 0, DIMLESS}) must return Real(1e200), not Undef.
+        // Covers the generic 'magnitude' builtin path to complex_abs.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 1e200);
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
@@ -5512,7 +5527,7 @@ mod tests {
 
     #[test]
     fn complex_magnitude_nan_component_returns_undef() {
-        // A NaN component propagates through hypot and sanitize_value catches it.
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
         let z = Value::Complex {
             re: f64::NAN,
             im: 1.0,
@@ -5522,6 +5537,57 @@ mod tests {
             eval_builtin("complex_magnitude", &[z]).is_undef(),
             "complex_magnitude with NaN component must return Undef"
         );
+    }
+
+    #[test]
+    fn complex_magnitude_large_representable_no_overflow() {
+        // 1e200 is representable as f64, so |1e200 + 0i| = 1e200 must NOT overflow.
+        // The naive (re*re + im*im).sqrt() formula fails because 1e200² = Inf.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 1e200);
+    }
+
+    #[test]
+    fn complex_magnitude_large_dimensioned_no_overflow() {
+        // |1e200 + 0i| with LENGTH dimension must return Scalar{1e200, LENGTH}, not Undef.
+        // Covers the dimensioned (Scalar) branch of complex_abs with large values.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            1e200,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn complex_magnitude_large_both_components() {
+        // |1e200 + 1e200i| = 1e200 * sqrt(2) ≈ 1.4142e200, fully representable.
+        // The naive formula fails because 1e200² + 1e200² overflows.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 1e200,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let result = eval_builtin("complex_magnitude", &[z]);
+        let expected = 1e200 * std::f64::consts::SQRT_2;
+        match result {
+            Value::Real(v) => {
+                let rel_err = ((v - expected) / expected).abs();
+                assert!(
+                    rel_err < 1e-14,
+                    "expected Real({expected}) got Real({v}), relative error {rel_err}"
+                );
+            }
+            other => panic!("expected Real({expected}), got {other:?}"),
+        }
     }
 
     // --- non-numeric args → Undef ---
