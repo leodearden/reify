@@ -834,6 +834,9 @@ describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', 
     ['0B10', 'binary uppercase'],
     ['+5', 'leading plus'],
     ['+0', 'leading plus zero'],
+    ['+5.5', 'leading plus decimal'],
+    ['+.5', 'leading plus leading-dot'],
+    ['+1e3', 'leading plus scientific'],
   ])("'%s' (%s) on Enter does NOT call onSetParameter and sets data-invalid", (invalidLiteral) => {
     const onSetParam = vi.fn();
     render(() => (
