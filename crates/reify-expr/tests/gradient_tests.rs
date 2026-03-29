@@ -327,3 +327,128 @@ fn gradient_1d_linear_field() {
         result_f64
     );
 }
+
+/// Gradient of a 3D scalar field f(x,y,z) = x^2 + 2*y + 3*z at point (1,2,3)
+/// should return Vector3 approximately (2.0, 2.0, 3.0).
+///
+/// Partial derivatives: df/dx = 2x, df/dy = 2, df/dz = 3.
+/// At (1,2,3): (2*1, 2, 3) = (2.0, 2.0, 3.0).
+#[test]
+fn gradient_3d_scalar_field() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + 2*y + 3*z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x*x
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            // 2*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(Value::Real(2.0), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // 3*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 3D field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at Point3(1.0, 2.0, 3.0)
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3(2.0, 2.0, 3.0)
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            let expected = [2.0, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-4,
+                    "gradient component {} should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, got {:?}",
+            sample_result
+        ),
+    }
+}
