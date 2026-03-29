@@ -12654,7 +12654,7 @@
         "description": "The stamp file is written to OUT_DIR which is unique per cargo profile (test/build/clippy). Switching profiles triggers redundant regeneration even when grammar.js hasn't changed. Store the stamp alongside the generated files in tree-sitter-reify/src/ (already gitignored) or at a fixed path in target/, so all cargo invocations share one stamp.",
         "details": "File: tree-sitter-reify/build.rs:138-139. This multiplies unnecessary tree-sitter generate calls in the orchestrator's multi-command verification pipeline. Memory hint: search for \"task 563 stamp file\" for context.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12673,7 +12673,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-29T08:53:06.332Z"
+        "updatedAt": "2026-03-29T09:10:33.799Z"
       },
       {
         "id": "610",
@@ -15637,7 +15637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T09:10:33.706Z",
+      "lastModified": "2026-03-29T09:10:33.799Z",
       "taskCount": 753,
       "completedCount": 413,
       "tags": [
