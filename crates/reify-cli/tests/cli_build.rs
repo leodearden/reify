@@ -14,7 +14,7 @@ fn build_parse_error_exits_failure() {
             "build",
             &fixture_path("bracket_parse_error.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -32,6 +32,10 @@ fn build_parse_error_exits_failure() {
         stderr.contains("Parse error"),
         "stderr should contain 'Parse error', got: {stderr}"
     );
+    assert!(
+        !output_path.exists(),
+        "no output file should be written on parse error"
+    );
 }
 
 #[test]
@@ -43,7 +47,7 @@ fn build_violating_bracket_exits_failure() {
             "build",
             &fixture_path("bracket_violating.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -82,7 +86,7 @@ fn build_valid_bracket_exits_success() {
             "build",
             &fixture_path("bracket.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -120,7 +124,7 @@ fn build_compile_error_exits_failure() {
             "build",
             &fixture_path("bracket_compile_error.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -138,6 +142,10 @@ fn build_compile_error_exits_failure() {
         stderr.contains("error:"),
         "stderr should contain 'error:', got: {stderr}"
     );
+    assert!(
+        !output_path.exists(),
+        "no output file should be written on compile error"
+    );
 }
 
 #[test]
@@ -149,7 +157,7 @@ fn build_indeterminate_constraint_exits_success() {
             "build",
             &fixture_path("bracket_indeterminate.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -207,7 +215,7 @@ fn build_violated_with_indeterminate_exits_failure() {
             "build",
             &fixture_path("bracket_violated_with_indeterminate.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -250,7 +258,7 @@ fn build_all_indeterminate_exits_success() {
             "build",
             &fixture_path("bracket_all_indeterminate.ri"),
             "-o",
-            output_path.to_str().unwrap(),
+            output_path.to_str().expect("temp path is not valid UTF-8"),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
