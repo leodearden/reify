@@ -606,6 +606,27 @@ mod tests {
     }
 
     #[test]
+    fn hover_value_for_member_reference_in_second_structure() {
+        // Two structures with same-named param 'x', where B also has a let
+        // that references 'x'. Hover on 'x' in the let expression within B
+        // should show B's value (0.02 m), not A's value (0.005 m).
+        // This tests that value scoping works for member references in expressions.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n    let doubled = x * 2\n}";
+        // 'x' in 'let doubled = x * 2' is on line 5, col 18
+        let position = Position::new(5, 18);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for x reference in B");
+        assert!(
+            md.contains("0.02 m"),
+            "should show B's value (0.02 m), got: {md}"
+        );
+        assert!(
+            !md.contains("0.005 m"),
+            "should NOT show A's value (0.005 m), got: {md}"
+        );
+    }
+
+    #[test]
     fn hover_on_shared_member_in_second_structure() {
         // Two structures with identically-named member 'width' but different types.
         // Hover on 'width' inside B should show Bool, not Scalar.
