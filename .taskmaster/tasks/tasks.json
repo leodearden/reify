@@ -15451,7 +15451,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/build.rs",
+            "scripts/tree-sitter-generate.sh"
+          ],
+          "modules": [
+            "tree-sitter-reify",
+            "scripts"
+          ]
+        }
       },
       {
         "id": 745,
@@ -15462,7 +15472,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tests/infra/test_tree_sitter_pipeline.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 746,
@@ -15473,7 +15491,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/helpers.rs",
+            "crates/reify-expr/tests/gradient_tests.rs",
+            "crates/reify-expr/tests/lambda_eval_tests.rs",
+            "crates/reify-expr/tests/collection_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 747,
