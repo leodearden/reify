@@ -69,8 +69,20 @@ async fn make_ready_spawn_fn(
     let reader = BufReader::new(data_reader);
     let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
     let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-    let _ = writer_tx.send(data_writer);
+    writer_tx.send(data_writer).expect("writer_tx receiver dropped");
     Ok(handle)
+}
+
+// --- make_ready_spawn_fn error-handling tests ---
+
+/// Verify that `make_ready_spawn_fn` panics when the oneshot receiver is dropped
+/// before the send.  This guards against silent error suppression in the helper.
+#[tokio::test]
+#[should_panic(expected = "writer_tx receiver dropped")]
+async fn make_ready_spawn_fn_panics_when_receiver_dropped() {
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel::<tokio::io::DuplexStream>();
+    drop(writer_rx);
+    let _ = make_ready_spawn_fn(writer_tx).await;
 }
 
 // --- IPC message type tests (step-1) ---
@@ -2197,7 +2209,7 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
     }
 }
 
-// --- deterministic re-check path test (task-452/step-1) ---
+// --- deterministic re-check path test ---
 
 /// Deterministic test for the post-spawn re-check path (line 661) in
 /// `ensure_sidecar_ready`.
@@ -2229,12 +2241,10 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
     let ready_before_return = Arc::new(AtomicBool::new(false));
     let ready_flag_clone = Arc::clone(&ready_before_return);
 
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel::<tokio::io::DuplexStream>();
 
     let spawn_fn = move || {
         let flag = Arc::clone(&ready_flag_clone);
-        let held = Arc::clone(&held_clone);
         async move {
             let state = Arc::new(Mutex::new(SidecarState::Starting));
             let (mut data_writer, data_reader) = tokio::io::duplex(1024);
@@ -2250,6 +2260,8 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             // On current_thread, spawned tasks run only when we yield.
             // Chain: reader task reads line → spawns state-setter task →
             // state-setter sets Ready + calls notify_waiters().
+            // 2-task chain (reader → state-setter); 100 iterations is
+            // generous headroom — typically converges in 2-4 yields.
             for _ in 0..100 {
                 tokio::task::yield_now().await;
                 if matches!(*state.lock().await, SidecarState::Ready) {
@@ -2267,13 +2279,14 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             flag.store(true, Ordering::SeqCst);
 
             // Keep data_writer alive so the reader doesn't see EOF.
-            *held.lock().await = Some(data_writer);
+            let _ = writer_tx.send(data_writer);
             Ok(handle)
         }
     };
 
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         ready_before_return.load(Ordering::SeqCst),
@@ -2284,4 +2297,10 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
         "ensure_sidecar_ready must succeed via re-check path (line 661): {:?}",
         result
     );
+
+    // Kill the handle stored in the sidecar slot to abort the reader task
+    // immediately, preventing task accumulation across iterations.
+    if let Some(mut h) = sidecar.lock().await.take() {
+        h.kill().await;
+    }
 }
