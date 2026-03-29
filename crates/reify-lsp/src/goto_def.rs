@@ -410,6 +410,46 @@ mod tests {
     }
 
     #[test]
+    fn goto_def_enclosing_decl_member_not_found_falls_back() {
+        // Cursor on 'y' in A's `let z = y`. Phase 1 finds enclosing A, but 'y'
+        // is not a member of A → break. Phase 2 fallback searches all declarations
+        // and finds 'y' as a param in B.
+        let source = "structure A {\n    param x: Scalar = 5mm\n    let z = y\n}\nstructure B {\n    param y: Scalar = 20mm\n}";
+        // Line 2: "    let z = y"
+        //                      ^ col 12 = 'y' reference inside A's span
+        let position = Position::new(2, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for y inside A should fall back and find y in B");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to B's param y on line 5, proving the Phase 2 fallback was reached
+        assert_eq!(
+            loc.range.start.line, 5,
+            "expected B's param y (line 5), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_cursor_outside_declarations_falls_back_to_first() {
+        // Standalone 'x' between two declarations, outside both spans.
+        // Phase 1 loop finds no enclosing declaration.
+        // Phase 2 fallback searches all declarations and finds 'x' in A.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nx\nstructure B {\n    param y: Scalar = 20mm\n}";
+        // Line 3: "x" — standalone word between declarations
+        //          ^ col 0
+        let position = Position::new(3, 0);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x outside declarations should fall back and find x in A");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to A's param x on line 1
+        assert_eq!(
+            loc.range.start.line, 1,
+            "expected A's param x (line 1), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
     fn goto_def_unknown_word_returns_none() {
         let source = "structure Foo {\n  param x: Scalar = 5mm\n}";
         // Position past end of meaningful content
