@@ -13878,7 +13878,7 @@
         "description": "App.test.tsx has two repeated inline patterns that should be extracted into shared test helpers:\n\n1. **`flushMicrotasks()`** — `await new Promise((r) => setTimeout(r, 0))` appears 6+ times (lines ~366, 375, 418, 455, 464, etc.). Extract: `const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));`\n\n2. **`deferred<T>()`** — The deferred-promise boilerplate (`let resolve!: ...; new Promise<T>((r) => { resolve = r; })`) appears 3+ times (lines ~350-353, 391-394, 447-449). Extract: `function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }`\n\nReplace all inline occurrences with the helpers. Run tests to verify no regressions.\n\nMemory hints:\n- Search: \"App.test.tsx deferred promise flushMicrotasks helper\"\n- Entities: App.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13890,7 +13890,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-29T01:31:03.932Z"
+        "updatedAt": "2026-03-29T08:53:06.637Z"
       },
       {
         "id": "669",
@@ -13921,7 +13921,7 @@
         "description": "Review finding from task 547: Several error paths using errorMessage() lack integration test coverage.\n\n1. Editor.tsx save error test (line ~330 in Editor.test.tsx) asserts only 'Failed to save file' but doesn't verify the actual error message content ('disk full') is propagated. Tighten to assert `stringContaining('disk full')`.\n2. Add test for `new Error('')` (empty message) to errorClassifier.test.ts to document the edge case behavior.\n3. Add at least one representative App.tsx error-path test — e.g., mock bridgeSetParameter to reject with `new Error('param error')` and assert toast contains 'param error'. This covers 5 untested error paths (claudeSendMessage, claudeAbort, bridgeSetParameter, pickSavePath, bridgeExportGeometry).\n\nMemory hints: search \"errorMessage utility App.tsx Editor.tsx error path test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "547"
         ],
@@ -13937,7 +13937,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-29T01:35:07.487Z"
+        "updatedAt": "2026-03-29T08:53:06.675Z"
       },
       {
         "id": "671",
@@ -15613,7 +15613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:53:06.600Z",
+      "lastModified": "2026-03-29T08:53:06.675Z",
       "taskCount": 751,
       "completedCount": 408,
       "tags": [
