@@ -3528,14 +3528,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_port_body(constraint_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in catch-all, got none"
+            lowering.errors.len() >= 2,
+            "expected at least 2 diagnostics (identifier and constraint_def_predicate \
+             are unexpected in port body; param_declaration is handled), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering.errors.iter().any(|e| e.message.contains("unexpected")),
