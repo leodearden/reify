@@ -1440,3 +1440,91 @@ fn warm_start_budget_requires_objective_invariant() {
         ),
     }
 }
+
+/// Multi-param fallback: 3 params with tight constraints (each 10-11mm window),
+/// all start feasible at 10.5mm. Minimize(p0+p1+p2) pushes the optimizer below
+/// the constraint floor (10mm). With wide bounds [0, 100mm], the optimizer
+/// explores infeasible territory and the solver falls back to initial values.
+///
+/// Asserts: EACH returned value exactly matches its initial value (10.5mm),
+/// verifying the fallback preserves all params without partial optimization
+/// or corruption across the multi-param vector.
+#[test]
+fn warm_start_fallback_returns_exact_initial_values() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p2_id = vcid("Part", "p2");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+    let p2_ref = value_ref("Part", "p2");
+
+    // Tight constraints: each param in (10mm, 11mm) — only 1mm feasible window
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(11.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(11.0)))),
+        (cnid("Part", 4), gt(p2_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 5), lt(p2_ref.clone(), literal(mm(11.0)))),
+    ];
+
+    // Minimize(p0 + p1 + p2) — pushes all params below constraint floor
+    let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
+    let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
+    let objective = OptimizationObjective::Minimize(sum_012);
+
+    // All params start at 10.5mm — centered in the feasible window
+    let mut current = ValueMap::new();
+    for pid in [&p0_id, &p1_id, &p2_id] {
+        current.insert(pid.clone(), mm(10.5));
+    }
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)),
+            },
+            AutoParam {
+                id: p2_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)),
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Each param must be returned at EXACTLY the initial value (10.5mm = 0.0105m).
+            // The fallback path reconstructs values via build_solved_values(&problem.auto_params, &initial),
+            // which should preserve exact f64 values through the round-trip.
+            for (pid, label) in [(&p0_id, "p0"), (&p1_id, "p1"), (&p2_id, "p2")] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.0105).abs() < 1e-10,
+                    "{} should be exact initial 10.5mm (0.0105 m), got {} m (delta = {:.2e})",
+                    label,
+                    si,
+                    (si - 0.0105).abs()
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved (fallback to feasible initial values), got {:?}",
+            other
+        ),
+    }
+}
