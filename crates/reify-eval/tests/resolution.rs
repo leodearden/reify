@@ -1455,3 +1455,148 @@ fn edit_param_matches_eval_for_multi_template_module() {
         eval_bolt_diameter, edit_bolt_diameter
     );
 }
+
+#[test]
+fn scope_name_deterministic_for_multi_template() {
+    // Regression test: scope_name (and thus objective lookup) must be determined
+    // by entity grouping, not HashMap iteration order. Edit two different params
+    // (one per template) and verify each edit_param call gets the correct objective.
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_limit = ValueCellId::new("Bracket", "limit");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+    let bolt_clearance = ValueCellId::new("Bolt", "clearance");
+
+    let mut bracket_solved = HashMap::new();
+    bracket_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_solved = HashMap::new();
+    bolt_solved.insert(bolt_diameter.clone(), mm(10.0));
+
+    // eval() results + 2 edit_param re-resolutions
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        // eval() call 1: Bracket
+        SolveResult::Solved {
+            values: bracket_solved.clone(),
+        },
+        // eval() call 2: Bolt
+        SolveResult::Solved {
+            values: bolt_solved.clone(),
+        },
+        // edit_param() re-resolution after editing Bracket.limit
+        SolveResult::Solved {
+            values: bracket_solved.clone(),
+        },
+        // edit_param() re-resolution after editing Bolt.clearance
+        SolveResult::Solved {
+            values: bolt_solved.clone(),
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    // Bracket: auto thickness, param limit, constraint thickness > limit, Minimize
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param("Bracket", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "limit"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    // Bolt: auto diameter, param clearance, constraint diameter > clearance, Maximize
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .param("Bolt", "clearance", Type::length(), Some(literal(mm(5.0))))
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(
+                value_ref("Bolt", "diameter"),
+                value_ref("Bolt", "clearance"),
+            ),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    engine.eval(&module);
+
+    // Edit 1: Bracket.limit → triggers Bracket re-resolution
+    engine.edit_param(bracket_limit.clone(), mm(3.0)).unwrap();
+
+    // Edit 2: Bolt.clearance → triggers Bolt re-resolution
+    engine.edit_param(bolt_clearance.clone(), mm(6.0)).unwrap();
+
+    let problems = captured.lock().unwrap();
+
+    // Should have 4 total calls: 2 from eval + 1 from each edit_param
+    assert_eq!(
+        problems.len(),
+        4,
+        "expected 4 solver calls (2 eval + 2 edit), got {}",
+        problems.len()
+    );
+
+    // Call index 2: Bracket edit → must have Minimize objective
+    let bracket_edit = &problems[2];
+    let bracket_entities: Vec<&str> = bracket_edit
+        .auto_params
+        .iter()
+        .map(|p| p.id.entity.as_str())
+        .collect();
+    assert_eq!(
+        bracket_entities,
+        vec!["Bracket"],
+        "first edit_param should resolve Bracket, got {:?}",
+        bracket_entities
+    );
+    assert!(
+        matches!(
+            &bracket_edit.objective,
+            Some(OptimizationObjective::Minimize(_))
+        ),
+        "Bracket edit should have Minimize objective, got {:?}",
+        bracket_edit.objective
+    );
+
+    // Call index 3: Bolt edit → must have Maximize objective
+    let bolt_edit = &problems[3];
+    let bolt_entities: Vec<&str> = bolt_edit
+        .auto_params
+        .iter()
+        .map(|p| p.id.entity.as_str())
+        .collect();
+    assert_eq!(
+        bolt_entities,
+        vec!["Bolt"],
+        "second edit_param should resolve Bolt, got {:?}",
+        bolt_entities
+    );
+    assert!(
+        matches!(
+            &bolt_edit.objective,
+            Some(OptimizationObjective::Maximize(_))
+        ),
+        "Bolt edit should have Maximize objective, got {:?}",
+        bolt_edit.objective
+    );
+}
