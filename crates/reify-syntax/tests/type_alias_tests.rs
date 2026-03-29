@@ -11,25 +11,32 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     (module.declarations, module.errors)
 }
 
+/// Helper: assert no errors, exactly one declaration, and extract &TypeAliasDecl.
+fn unwrap_single_type_alias<'a>(
+    decls: &'a [Declaration],
+    errors: &[ParseError],
+) -> &'a TypeAliasDecl {
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+    assert_eq!(decls.len(), 1, "expected 1 declaration, got {:?}", decls);
+    match &decls[0] {
+        Declaration::TypeAlias(ta) => ta,
+        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
+    }
+}
+
 // ── Simple type alias ─────────────────────────────────────────────
 
 #[test]
 fn parse_simple_type_alias() {
     let source = "type Pressure = Force";
     let (decls, errors) = parse_decls(source);
-    assert!(errors.is_empty(), "parse errors: {:?}", errors);
-    assert_eq!(decls.len(), 1, "expected 1 declaration, got {:?}", decls);
+    let ta = unwrap_single_type_alias(&decls, &errors);
 
-    match &decls[0] {
-        Declaration::TypeAlias(ta) => {
-            assert_eq!(ta.name, "Pressure");
-            assert!(!ta.is_pub);
-            assert!(ta.type_params.is_empty());
-            assert_eq!(ta.type_expr.name, "Force");
-            assert!(ta.type_expr.type_args.is_empty());
-        }
-        other => panic!("expected Declaration::TypeAlias, got {:?}", other),
-    }
+    assert_eq!(ta.name, "Pressure");
+    assert!(!ta.is_pub);
+    assert!(ta.type_params.is_empty());
+    assert_eq!(ta.type_expr.name, "Force");
+    assert!(ta.type_expr.type_args.is_empty());
 }
 
 // ── Pub type alias ────────────────────────────────────────────────
