@@ -883,6 +883,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn find_member_decl_non_first_decl_propagates_decl_name() {
+        // "y" exists only in B (the second declaration).
+        // find_member_decl("y", None) must iterate past A and find y in B,
+        // returning decl_name="B" (not "A") and a span within B's byte range.
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("y", None)
+            .expect("y should exist in B");
+        assert_eq!(info.name, "y");
+        assert_eq!(info.kind, ValueCellKind::Param);
+        assert_eq!(
+            info.decl_name, "B",
+            "decl_name should be B, not A"
+        );
+        // Span should be within B's byte range
+        let b_start = source.find("structure B").unwrap() as u32;
+        assert!(
+            info.span.start >= b_start,
+            "span should be within B's range, span.start={} but B starts at {}",
+            info.span.start,
+            b_start
+        );
+    }
+
     // --- member_names_for_structure tests ---
 
     #[test]
