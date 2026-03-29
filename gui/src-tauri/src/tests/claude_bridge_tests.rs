@@ -69,7 +69,7 @@ async fn make_ready_spawn_fn(
     let reader = BufReader::new(data_reader);
     let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
     let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-    let _ = writer_tx.send(data_writer);
+    writer_tx.send(data_writer).expect("writer_tx receiver dropped");
     Ok(handle)
 }
 
