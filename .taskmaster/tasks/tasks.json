@@ -13944,7 +13944,7 @@
         "description": "Review finding from task 547: `String(err)` produces unhelpful '[object Object]' for plain objects thrown as errors (e.g., `throw { code: 404, message: 'Not found' }`). Tauri IPC/bridge calls may produce structured payloads with a `message` field.\n\nAdd a defensive check in errorMessage() for `typeof (err as any).message === 'string'` before falling back to String():\n\n```ts\nexport function errorMessage(err: unknown): string {\n  if (err instanceof Error) return err.message;\n  if (err !== null && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {\n    return (err as Record<string, unknown>).message as string;\n  }\n  return String(err);\n}\n```\n\nAdd tests for plain objects with and without .message.\n\nMemory hints: search \"errorMessage utility object error Tauri IPC bridge\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "547"
         ],
@@ -13959,7 +13959,8 @@
             "gui/src",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T01:36:57.838Z"
       },
       {
         "id": "672",
@@ -15503,7 +15504,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:36:53.183Z",
+      "lastModified": "2026-03-29T01:36:57.838Z",
       "taskCount": 749,
       "completedCount": 401,
       "tags": [
