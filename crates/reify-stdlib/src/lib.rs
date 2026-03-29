@@ -4374,6 +4374,21 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_nan_axis_returns_undef() {
+        // NaN in axis must be rejected — vec3_norm(NaN, 0, 0) = sqrt(NaN) = NaN, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN axis component should be rejected"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
