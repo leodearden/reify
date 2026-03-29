@@ -453,6 +453,118 @@ fn gradient_3d_scalar_field() {
     }
 }
 
+/// Gradient of a Field with Undef lambda returns Undef.
+///
+/// A field might have Undef lambda (e.g., imported but not yet resolved).
+/// Gradient cannot evaluate such a field, so it must return Undef.
+#[test]
+fn gradient_field_with_undef_lambda_returns_undef() {
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(Value::Undef),
+    };
+
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type),
+            },
+        )],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of field with Undef lambda must return Undef"
+    );
+}
+
+/// Gradient of a Sampled field returns Undef.
+///
+/// Sampled fields don't have a callable lambda — they are data-driven.
+/// Gradient requires perturbation at arbitrary points, which is only
+/// possible with Analytical or Composed sources.
+#[test]
+fn gradient_sampled_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Sampled,
+        lambda: Box::new(lambda),
+    };
+
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type),
+            },
+        )],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of Sampled field must return Undef"
+    );
+}
+
+/// Gradient called with wrong number of arguments returns Undef.
+///
+/// gradient() expects exactly 1 argument. With 0 or 2 args, it falls
+/// through to stdlib dispatch, which returns Undef for unknown functions.
+#[test]
+fn gradient_wrong_arg_count_returns_undef() {
+    // 0 args
+    let expr_0 = make_function_call("gradient", vec![], Type::Real);
+    let values = ValueMap::new();
+    let result_0 = eval_expr(&expr_0, &EvalContext::simple(&values));
+    assert_eq!(
+        result_0,
+        Value::Undef,
+        "gradient with 0 args must return Undef"
+    );
+
+    // 2 args (pass two Reals)
+    let expr_2 = make_function_call(
+        "gradient",
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let result_2 = eval_expr(&expr_2, &EvalContext::simple(&values));
+    assert_eq!(
+        result_2,
+        Value::Undef,
+        "gradient with 2 args must return Undef"
+    );
+}
+
 /// Gradient of a dimensioned 3D field with domain Point3<Scalar[m]> and codomain Scalar[kg].
 ///
 /// f(x,y,z) = 2*x + 3*y + 4*z (all in kg, with x,y,z in metres).
