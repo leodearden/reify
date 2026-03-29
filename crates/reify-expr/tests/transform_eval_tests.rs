@@ -437,6 +437,297 @@ fn compose_dimension_mismatch_undef() {
     );
 }
 
+// ── Mixed-dimension vector components tests ─────────────────────────────────
+
+/// Transform * Vector with mixed-dimension components (length, angle, length)
+/// should return Undef. Currently vec3_components only checks items[0].dimension(),
+/// so it silently adopts the first component's dimension.
+#[test]
+fn transform_mul_mixed_dimension_vector_returns_undef() {
+    let mixed_vec = Value::Vector(vec![
+        Value::length(1.0),
+        Value::angle(2.0),
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        mixed_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension vector should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Point with mixed-dimension point components should return Undef.
+#[test]
+fn transform_mul_mixed_dimension_point_returns_undef() {
+    let mixed_point = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::angle(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        mixed_point,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension point should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Transform with mixed-dimension translation should return Undef.
+#[test]
+fn transform_compose_mixed_dimension_translation_returns_undef() {
+    let t1 = Value::Transform {
+        rotation: Box::new(identity_orientation()),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(1.0),
+            Value::angle(2.0), // dimension mismatch within same vector
+            Value::length(3.0),
+        ])),
+    };
+    let t2 = identity_transform();
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "mixed-dimension translation should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Unnormalized quaternion tests ────────────────────────────────────────────
+
+/// Transform*Vector with unnormalized quaternion (w=2,x=0,y=0,z=0 — norm=2)
+/// rotating vector (1,0,0). Should produce (1,0,0) since the rotation is identity,
+/// but without normalization quat_rotate scales by norm²=4 giving (4,0,0).
+#[test]
+fn unnormalized_quat_transform_mul_vector() {
+    let unnorm_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        unnorm_transform,
+        Type::Transform(3),
+        v,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    match result {
+        Value::Vector(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!(
+                (x - 1.0).abs() < 1e-10,
+                "x = {x}, expected 1.0 (not 4.0 from norm² scaling)"
+            );
+            assert!(y.abs() < 1e-10, "y = {y}, expected 0");
+            assert!(z.abs() < 1e-10, "z = {z}, expected 0");
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
+/// Transform*Point with unnormalized quaternion should normalize before rotation.
+#[test]
+fn unnormalized_quat_transform_mul_point() {
+    let unnorm_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let p = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        unnorm_transform,
+        Type::Transform(3),
+        p,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    // rotate(1,0,0) + (10,0,0) = (1,0,0) + (10,0,0) = (11,0,0)
+    // Without normalization: (4,0,0) + (10,0,0) = (14,0,0)
+    match result {
+        Value::Point(ref items) if items.len() == 3 => {
+            let x = items[0].as_f64().unwrap();
+            let y = items[1].as_f64().unwrap();
+            let z = items[2].as_f64().unwrap();
+            assert!(
+                (x - 11.0).abs() < 1e-10,
+                "x = {x}, expected 11.0 (not 14.0 from norm² scaling)"
+            );
+            assert!(y.abs() < 1e-10, "y = {y}, expected 0");
+            assert!(z.abs() < 1e-10, "z = {z}, expected 0");
+        }
+        other => panic!("expected Point, got {:?}", other),
+    }
+}
+
+// ── NaN/Infinity in vector component tests ──────────────────────────────────
+
+/// Transform * Vector with NaN in a component should return Undef.
+#[test]
+fn transform_mul_vector_nan_component_returns_undef() {
+    let nan_vec = Value::Vector(vec![
+        Value::length(1.0),
+        Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "NaN vector component should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Vector with Infinity in a component should return Undef.
+#[test]
+fn transform_mul_vector_infinity_component_returns_undef() {
+    let inf_vec = Value::Vector(vec![
+        Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::length(2.0),
+        Value::length(3.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        inf_vec,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "Infinity vector component should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * Point with NaN in a component should return Undef.
+#[test]
+fn transform_mul_point_nan_component_returns_undef() {
+    let nan_point = Value::Point(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_point,
+        Type::point3(Type::length()),
+        Type::point3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "NaN point component should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Unnormalized quaternion in Transform*Transform tests ─────────────────────
+
+/// Transform*Transform with unnormalized q1 (w1=2) composing with transform
+/// that has translation t2=(1,0,0). The translation rotation quat_rotate(q1, t2)
+/// should use normalized q1, producing (1,0,0) not (4,0,0).
+/// Compose: (R1=2*identity,t1=(10,0,0)) * (R2=identity,t2=(1,0,0))
+///   rotation = R1*R2 = 2*identity (normalized to identity)
+///   translation = R1*t2 + t1 = normalized_rotate(1,0,0) + (10,0,0) = (11,0,0)
+/// Without q1 normalization: translation = 4*(1,0,0) + (10,0,0) = (14,0,0)
+#[test]
+fn unnormalized_q1_transform_compose_translation() {
+    let t1 = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 2.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(10.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let t2 = make_transform(identity_orientation(), 1.0, 0.0, 0.0);
+    let result = eval_mul_expr(
+        t1,
+        Type::Transform(3),
+        t2,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    match result {
+        Value::Transform {
+            rotation,
+            translation,
+        } => {
+            // Composed rotation should be normalized identity
+            assert_orientation_approx(&rotation, 1.0, 0.0, 0.0, 0.0, "unnorm q1 rotation");
+            // Translation should be (11,0,0), not (14,0,0)
+            assert_vector_approx(&translation, 11.0, 0.0, 0.0, "unnorm q1 translation");
+        }
+        other => panic!("expected Transform, got {:?}", other),
+    }
+}
+
 // ── step-11: Transform * Transform NaN quaternion tests ──────────────────────
 
 /// Transform with NaN in one rotation component * identity should return Undef,
@@ -496,6 +787,75 @@ fn compose_all_nan_rotation_returns_undef() {
     assert!(
         result.is_undef(),
         "all-NaN rotation should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Near-zero quaternion tests ───────────────────────────────────────────────
+
+/// Transform*Transform with near-zero quaternion (w=1e-17, rest=0 — norm=1e-17
+/// < f64::EPSILON≈2.22e-16) should return Undef. The quaternion is too small
+/// to normalize meaningfully.
+#[test]
+fn near_zero_quat_transform_compose_returns_undef() {
+    let near_zero_t = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1e-17,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        near_zero_t,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "near-zero quaternion should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform*Vector with near-zero quaternion should return Undef.
+#[test]
+fn near_zero_quat_transform_mul_vector_returns_undef() {
+    let near_zero_t = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1e-17,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let v = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+    let result = eval_mul_expr(
+        near_zero_t,
+        Type::Transform(3),
+        v,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "near-zero quaternion * vector should return Undef, got {:?}",
         result
     );
 }

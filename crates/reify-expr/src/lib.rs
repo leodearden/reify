@@ -1295,7 +1295,15 @@ fn vec3_components(items: &[Value]) -> Option<(f64, f64, f64, DimensionVector)> 
     let x = items[0].as_f64()?;
     let y = items[1].as_f64()?;
     let z = items[2].as_f64()?;
+    // Reject NaN and Infinity
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
     let dim = items[0].dimension();
+    // All three components must share the same dimension
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
     Some((x, y, z, dim))
 }
 
@@ -1467,8 +1475,13 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((vx, vy, vz, dim)) = vec3_components(components) {
-                    let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
+                    let (rx, ry, rz) = quat_rotate(q, vx, vy, vz);
                     Value::Vector(make_components_3(rx, ry, rz, dim))
                 } else {
                     Value::Undef
@@ -1489,6 +1502,11 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((px, py, pz, p_dim)) = vec3_components(components) {
                     if let Value::Vector(t_items) = translation.as_ref() {
                         if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
@@ -1496,7 +1514,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                             if p_dim != t_dim {
                                 return Value::Undef;
                             }
-                            let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), px, py, pz);
+                            let (rx, ry, rz) = quat_rotate(q, px, py, pz);
                             Value::Point(make_components_3(rx + tx, ry + ty, rz + tz, p_dim))
                         } else {
                             Value::Undef
@@ -1547,21 +1565,30 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                         if t1_dim != t2_dim {
                             return Value::Undef;
                         }
+                        // Validate and normalize q1 for translation rotation
+                        if !w1.is_finite() || !x1.is_finite() || !y1.is_finite() || !z1.is_finite()
+                        {
+                            return Value::Undef;
+                        }
+                        let q1_norm = (w1 * w1 + x1 * x1 + y1 * y1 + z1 * z1).sqrt();
+                        if q1_norm < f64::EPSILON {
+                            return Value::Undef;
+                        }
+                        let q1_n = (w1 / q1_norm, x1 / q1_norm, y1 / q1_norm, z1 / q1_norm);
                         // Compose rotations: R = R1 * R2
-                        let q1 = (*w1, *x1, *y1, *z1);
-                        let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
+                        let (rw, rx, ry, rz) = quat_mul_t(q1_n, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
                         if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
                         {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
-                        if norm == 0.0 {
+                        if norm < f64::EPSILON {
                             return Value::Undef;
                         }
                         let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
                         // Compose translations: t = R1 * t2 + t1
-                        let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
+                        let (rt2x, rt2y, rt2z) = quat_rotate(q1_n, t2x, t2y, t2z);
                         Value::Transform {
                             rotation: Box::new(Value::Orientation {
                                 w: rw,

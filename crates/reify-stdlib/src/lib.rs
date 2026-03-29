@@ -679,11 +679,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Value::Undef,
             };
-            // Extract origin points as f64 triples
+            // Extract origin points as f64 triples with finiteness and dimension validation
             let (fx, fy, fz, f_dim) = match origin_from {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
@@ -692,7 +701,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let (tx, ty, tz, t_dim) = match origin_to {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
@@ -1137,7 +1155,7 @@ fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
         return None;
     }
     let norm = (w * w + x * x + y * y + z * z).sqrt();
-    if norm == 0.0 {
+    if norm < f64::EPSILON {
         return None;
     }
     Some(Value::Orientation {
@@ -7135,6 +7153,66 @@ mod tests {
         assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
     }
 
+    /// frame_to_frame with NaN in origin_from x-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_from_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_from should return Undef"
+        );
+    }
+
+    /// frame_to_frame with NaN in origin_to y-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_to_returns_undef() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_to should return Undef"
+        );
+    }
+
+    /// frame_to_frame with mixed-dimension origin (length, angle, length) should return Undef.
+    #[test]
+    fn frame_to_frame_mixed_dimension_origin_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::angle(0.0),  // dimension mismatch within same origin
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "mixed-dimension origin should return Undef"
+        );
+    }
+
     /// frame_to_frame with mismatched origin dimensions (LENGTH vs ANGLE) returns Undef.
     #[test]
     fn frame_to_frame_mismatched_origin_dimensions_undef() {
@@ -7157,5 +7235,26 @@ mod tests {
             basis: Box::new(make_identity_orientation()),
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
+    }
+
+    // ── normalize_quaternion near-zero tests ────────────────────────────────
+
+    /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
+    /// Currently passes because norm != 0.0 is true for 1e-17.
+    #[test]
+    fn normalize_quaternion_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-17, 0.0, 0.0, 0.0).is_none(),
+            "near-zero quaternion (norm=1e-17) should return None"
+        );
+    }
+
+    /// normalize_quaternion with all near-zero components should return None.
+    #[test]
+    fn normalize_quaternion_all_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-18, 1e-18, 1e-18, 1e-18).is_none(),
+            "all near-zero components should return None"
+        );
     }
 }
