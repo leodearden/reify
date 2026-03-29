@@ -1195,3 +1195,127 @@ fn edit_param_resolves_per_template_not_cross_template() {
         t_val
     );
 }
+
+#[test]
+fn concurrent_edit_resolves_per_template_not_cross_template() {
+    // Same two-template module. After eval(), prepare_concurrent_edit on
+    // Bracket.limit, then resolve_concurrent_edit. The solver call should
+    // contain only Bracket's auto params.
+    use std::collections::HashSet;
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_limit = ValueCellId::new("Bracket", "limit");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+
+    let mut bracket_solved = HashMap::new();
+    bracket_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_solved = HashMap::new();
+    bolt_solved.insert(bolt_diameter.clone(), mm(10.0));
+    let mut bracket_resolved_again = HashMap::new();
+    bracket_resolved_again.insert(bracket_thickness.clone(), mm(6.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: bracket_solved,
+        },
+        SolveResult::Solved {
+            values: bolt_solved,
+        },
+        SolveResult::Solved {
+            values: bracket_resolved_again,
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param("Bracket", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "limit"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    engine.eval(&module);
+
+    // prepare_concurrent_edit + resolve_concurrent_edit
+    let setup = engine
+        .prepare_concurrent_edit(bracket_limit.clone(), mm(3.0))
+        .unwrap();
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: Vec::new(),
+        actual_eval_set: Vec::new(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    // (1) 3 total calls: 2 from eval + 1 from resolve_concurrent_edit
+    let problems = captured.lock().unwrap();
+    assert_eq!(
+        problems.len(),
+        3,
+        "expected 3 solver calls, got {}",
+        problems.len()
+    );
+
+    // (2) The resolve_concurrent_edit call (index 2) should only have Bracket's params
+    let edit_call = &problems[2];
+    let edit_entities: Vec<&str> = edit_call
+        .auto_params
+        .iter()
+        .map(|p| p.id.entity.as_str())
+        .collect();
+    assert_eq!(
+        edit_entities,
+        vec!["Bracket"],
+        "resolve_concurrent_edit should only contain Bracket's auto params, got {:?}",
+        edit_entities
+    );
+
+    // (3) Correct objective
+    assert!(
+        matches!(
+            &edit_call.objective,
+            Some(OptimizationObjective::Minimize(_))
+        ),
+        "resolve_concurrent_edit should forward Bracket's Minimize objective, got {:?}",
+        edit_call.objective
+    );
+}
