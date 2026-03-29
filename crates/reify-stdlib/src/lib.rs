@@ -4389,6 +4389,21 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_inf_axis_returns_undef() {
+        // Inf in axis must be rejected — vec3_norm(Inf, 0, 0) = sqrt(Inf) = Inf, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf axis component should be rejected"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
