@@ -24,6 +24,12 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
   return groups;
 }
 
+// No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
+// The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
+// intentionally enforces the stricter grammar rule.
+const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
   const [collapsedGroups, setCollapsedGroups] = createSignal<Set<string>>(new Set());
@@ -89,12 +95,6 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     const input = e.target as HTMLInputElement;
     setEditValue(input.value);
   }
-
-  // No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
-  // The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
-  // intentionally enforces the stricter grammar rule.
-  const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
-  const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
   function isValidValue(value: string): boolean {
     const trimmed = value.trim();
