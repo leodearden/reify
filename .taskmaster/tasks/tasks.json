@@ -14880,7 +14880,7 @@
         "description": "The error-case tests in type_alias_tests.rs (strengthened by task 641) still have assertion gaps around Tree-sitter recovery output:\n\n1. **Dimensional tests** (missing_right_operand, missing_left_operand, missing_both_operands, lines 278-317): Only assert `!errors.is_empty()` but never inspect the recovered TypeAlias when one is produced. A regression that emits a plausible-looking but wrong TypeAlias would pass. Fix: if a TypeAlias is produced, assert `ta.name == \"Foo\"` and validate that `ta.type_expr` is garbled (e.g., empty name or unexpected structure).\n\n2. **Empty RHS test** (parse_type_alias_empty_rhs_no_panic, lines 363-393): The inner assertion `ta.type_expr.name.is_empty() || !errors.is_empty()` is a disjunction that passes whenever errors are present, even if `type_expr.name` is non-empty. The documented invariant (\"zero-width recovery node produces empty name\") is not actually enforced. Additionally, the branch where `type_expr.name.is_empty() && errors.is_empty()` is permitted — meaning the parser could silently accept `type Foo =` without any error signal. Fix: assert `ta.type_expr.name.is_empty()` unconditionally inside the `if let Some(ta)` branch, and add an unconditional `!errors.is_empty()` assertion at the top level (matching the other error-case tests).\n\nMemory hints: search \"task 641 type alias test assertions\", get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "641"
         ],
@@ -14894,7 +14894,7 @@
             "crates/reify-syntax/tests"
           ]
         },
-        "updatedAt": "2026-03-29T01:37:31.217Z"
+        "updatedAt": "2026-03-29T08:53:07.007Z"
       },
       {
         "id": "717",
@@ -15390,11 +15390,11 @@
         "description": "In tree-sitter-reify/build.rs: (1) Replace eprintln with cargo:warning= on stamp write failure so it surfaces in normal cargo output. (2) Use atomic write (write to temp file + rename) to prevent concurrent cargo profiles from reading a partial stamp. (3) Fall back to OUT_DIR stamp if src/ is not writable, preserving correctness in Nix/read-only-CI environments.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:43:46.801Z",
+        "updatedAt": "2026-03-29T08:53:07.051Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/build.rs",
@@ -15613,7 +15613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:53:06.927Z",
+      "lastModified": "2026-03-29T08:53:07.052Z",
       "taskCount": 751,
       "completedCount": 408,
       "tags": [
