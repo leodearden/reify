@@ -73,6 +73,18 @@ async fn make_ready_spawn_fn(
     Ok(handle)
 }
 
+// --- make_ready_spawn_fn error-handling tests ---
+
+/// Verify that `make_ready_spawn_fn` panics when the oneshot receiver is dropped
+/// before the send.  This guards against silent error suppression in the helper.
+#[tokio::test]
+#[should_panic(expected = "writer_tx receiver dropped")]
+async fn make_ready_spawn_fn_panics_when_receiver_dropped() {
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel::<tokio::io::DuplexStream>();
+    drop(writer_rx);
+    let _ = make_ready_spawn_fn(writer_tx).await;
+}
+
 // --- IPC message type tests (step-1) ---
 
 #[test]
