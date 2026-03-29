@@ -12680,7 +12680,7 @@
         "description": "claudeSendMessage treats `{}` as truthy, emitting `{ selected_entity: undefined, diagnostics: undefined, constraints: undefined }` to the Rust sidecar instead of `undefined`. This may cause different behavior if the sidecar distinguishes between missing context and all-undefined-fields context.\n\n1. Add a test: `claudeSendMessage('hello', {})` — verify the current behavior\n2. Decide whether `{}` should be treated as no-context (check `Object.values(context).some(v => v !== undefined)`) or left as-is with a documenting test\n3. Update bridge.ts implementation if normalizing empty context to undefined\n\nMemory hints: search \"claudeSendMessage bridge.ts empty context\", entities: ClaudeMessageContext, bridge.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12695,7 +12695,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T20:46:38.888Z"
+        "updatedAt": "2026-03-29T08:53:06.366Z"
       },
       {
         "id": "611",
@@ -13116,7 +13116,7 @@
         "description": "Extract a shared helper for computing gradient dimensions (domain_quantity_dim, codomain_dim, gradient_dim) used by both compute_gradient_field and sample_gradient_field in crates/reify-expr/src/lib.rs. Also refactor compute_gradient_field to avoid deep-cloning the entire source Value::Field — take ownership or use Arc for inner field storage.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13128,7 +13128,7 @@
             "crates/reify-expr/src"
           ]
         },
-        "updatedAt": "2026-03-28T19:27:09.682Z"
+        "updatedAt": "2026-03-29T08:53:06.408Z"
       },
       {
         "id": "631",
@@ -15613,7 +15613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:53:06.332Z",
+      "lastModified": "2026-03-29T08:53:06.408Z",
       "taskCount": 751,
       "completedCount": 408,
       "tags": [
