@@ -24,6 +24,29 @@ import {
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
 
+/** Helper: capture the internal listener for a given event name */
+function captureListener(eventName: string) {
+  let captured: ((event: { payload: unknown }) => void) | undefined;
+  mockListen.mockImplementation(async (name, handler) => {
+    if (name === eventName) {
+      captured = handler as (event: { payload: unknown }) => void;
+    }
+    return vi.fn();
+  });
+  return {
+    async setup(handler: ReturnType<typeof vi.fn>) {
+      await subscribeToClaudeEvents(handler);
+      if (!captured) {
+        throw new Error(
+          `captureListener: no handler was registered for event "${eventName}". ` +
+          `Check that subscribeToClaudeEvents registers this event.`,
+        );
+      }
+      return captured;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -246,18 +269,11 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('maps claude-text-delta event to OutboundMessage { type: "text_delta" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-text-delta') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-text-delta');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({ payload: { id: 'msg-1', content: 'Hello' } });
+    listener({ payload: { id: 'msg-1', content: 'Hello' } });
 
     expect(handler).toHaveBeenCalledWith({
       type: 'text_delta',
@@ -267,18 +283,11 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('maps claude-tool-call event to OutboundMessage { type: "tool_call" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-tool-call') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-tool-call');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({
+    listener({
       payload: { id: 'msg-2', tool_name: 'edit_file', tool_input: { path: 'main.ri' } },
     });
 
@@ -291,52 +300,31 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('maps claude-ready event to OutboundMessage { type: "ready" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-ready') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-ready');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({ payload: {} });
+    listener({ payload: {} });
 
     expect(handler).toHaveBeenCalledWith({ type: 'ready' });
   });
 
   it('maps claude-done event to OutboundMessage { type: "done" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-done') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-done');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({ payload: { id: 'msg-3' } });
+    listener({ payload: { id: 'msg-3' } });
 
     expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'msg-3' });
   });
 
   it('maps claude-error event to OutboundMessage { type: "error" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-error') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-error');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({ payload: { id: 'msg-4', message: 'rate limit exceeded' } });
+    listener({ payload: { id: 'msg-4', message: 'rate limit exceeded' } });
 
     expect(handler).toHaveBeenCalledWith({
       type: 'error',
@@ -346,18 +334,11 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('maps claude-thinking-delta event to OutboundMessage { type: "thinking_delta" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-thinking-delta') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-thinking-delta');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({ payload: { id: 'msg-t1', content: 'Let me think...' } });
+    listener({ payload: { id: 'msg-t1', content: 'Let me think...' } });
 
     expect(handler).toHaveBeenCalledWith({
       type: 'thinking_delta',
@@ -367,18 +348,11 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('maps claude-tool-result event to OutboundMessage { type: "tool_result" }', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-tool-result') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-tool-result');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
-    capturedHandler!({
+    listener({
       payload: { id: 'msg-tr1', tool_name: 'read_file', result: 'file contents here' },
     });
 
@@ -391,37 +365,23 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('extra unknown fields in payload are not forwarded to handler', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-done') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-done');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
     // Simulate payload with extra unknown fields that should NOT be forwarded
-    capturedHandler!({ payload: { id: 'x', _internal: true, debug_ts: 12345 } });
+    listener({ payload: { id: 'x', _internal: true, debug_ts: 12345 } });
 
     expect(handler).toHaveBeenCalledWith({ type: 'done', id: 'x' });
   });
 
   it('extra unknown fields in tool_call payload are not forwarded to handler', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-tool-call') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-tool-call');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
     // Simulate tool_call payload with extra _debug field that should NOT be forwarded
-    capturedHandler!({
+    listener({
       payload: {
         id: 'tc1',
         tool_name: 'read',
@@ -439,16 +399,9 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('extra unknown fields in tool_call with complex tool_input are not forwarded', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-tool-call') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-tool-call');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
     const complexInput = {
       path: '/main.ri',
@@ -457,7 +410,7 @@ describe('subscribeToClaudeEvents', () => {
     };
 
     // Simulate tool_call with deeply nested tool_input AND extra top-level fields
-    capturedHandler!({
+    listener({
       payload: {
         id: 'tc-complex',
         tool_name: 'edit_file',
@@ -482,20 +435,72 @@ describe('subscribeToClaudeEvents', () => {
     expect(received).not.toHaveProperty('_timestamp');
   });
 
-  it('payload type field does not override mapped event type', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-text-delta') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
+  it('extra unknown fields in text_delta payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-text-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'x', content: 'hi', _timestamp: 999, _meta: {} } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'text_delta', id: 'x', content: 'hi' });
+  });
+
+  it('extra unknown fields in thinking_delta payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-thinking-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 't1', content: 'thinking...', _debug: true, _trace: 'abc' } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'thinking_delta', id: 't1', content: 'thinking...' });
+  });
+
+  it('extra unknown fields in tool_result payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-tool-result');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({
+      payload: { id: 'tr1', tool_name: 'read_file', result: { data: 'contents' }, _internal: true, _debug_ts: 12345 },
     });
 
+    expect(handler).toHaveBeenCalledWith({
+      type: 'tool_result',
+      id: 'tr1',
+      tool_name: 'read_file',
+      result: { data: 'contents' },
+    });
+  });
+
+  it('extra unknown fields in error payload are not forwarded to handler', async () => {
+    const { setup } = captureListener('claude-error');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'e1', message: 'rate limit', _stack: 'trace...', _code: 429 } });
+
+    expect(handler).toHaveBeenCalledWith({ type: 'error', id: 'e1', message: 'rate limit' });
+  });
+
+  it('payload type field does not override mapped event type for thinking_delta', async () => {
+    const { setup } = captureListener('claude-thinking-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
+
+    listener({ payload: { id: 'x', content: 'think', type: 'WRONG' } });
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'thinking_delta' }),
+    );
+  });
+
+  it('payload type field does not override mapped event type', async () => {
+    const { setup } = captureListener('claude-text-delta');
+    const handler = vi.fn();
+    const listener = await setup(handler);
 
     // Simulate payload with a rogue `type` field that should NOT override the mapped type
-    capturedHandler!({ payload: { id: 'x', content: 'hi', type: 'WRONG' } });
+    listener({ payload: { id: 'x', content: 'hi', type: 'WRONG' } });
 
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'text_delta' }),
@@ -503,19 +508,12 @@ describe('subscribeToClaudeEvents', () => {
   });
 
   it('payload type field does not override mapped event type for claude-error', async () => {
-    let capturedHandler: ((event: { payload: unknown }) => void) | undefined;
-    mockListen.mockImplementation(async (eventName, handler) => {
-      if (eventName === 'claude-error') {
-        capturedHandler = handler as (event: { payload: unknown }) => void;
-      }
-      return vi.fn();
-    });
-
+    const { setup } = captureListener('claude-error');
     const handler = vi.fn();
-    await subscribeToClaudeEvents(handler);
+    const listener = await setup(handler);
 
     // Simulate payload with a rogue `type` field that should NOT override the mapped type
-    capturedHandler!({ payload: { id: 'x', message: 'oops', type: 'WRONG' } });
+    listener({ payload: { id: 'x', message: 'oops', type: 'WRONG' } });
 
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', id: 'x', message: 'oops' }),
@@ -583,29 +581,6 @@ describe('subscribeToClaudeEvents', () => {
     afterEach(() => {
       warnSpy.mockRestore();
     });
-
-    /** Helper: capture the internal listener for a given event name */
-    function captureListener(eventName: string) {
-      let captured: ((event: { payload: unknown }) => void) | undefined;
-      mockListen.mockImplementation(async (name, handler) => {
-        if (name === eventName) {
-          captured = handler as (event: { payload: unknown }) => void;
-        }
-        return vi.fn();
-      });
-      return {
-        async setup(handler: ReturnType<typeof vi.fn>) {
-          await subscribeToClaudeEvents(handler);
-          if (!captured) {
-            throw new Error(
-              `captureListener: no handler was registered for event "${eventName}". ` +
-              `Check that subscribeToClaudeEvents registers this event.`,
-            );
-          }
-          return captured;
-        },
-      };
-    }
 
     const PAYLOAD_EVENTS = [
       'claude-text-delta',
