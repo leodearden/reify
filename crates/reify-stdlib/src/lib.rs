@@ -4827,6 +4827,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn magnitude_large_representable_complex_no_overflow() {
+        // magnitude(Complex{1e200, 0, DIMLESS}) must return Real(1e200), not Undef.
+        // Covers the generic 'magnitude' builtin path to complex_abs.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 1e200);
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
