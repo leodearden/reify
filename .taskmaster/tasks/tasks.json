@@ -11510,7 +11510,7 @@
         "description": "Multiple test quality issues: redundant tests, incomplete assertions, unreachable code path tested.",
         "details": "1. Merge evaluate_recovers_poisoned_values_read and _write into single test (same RwLock poisoned).\n2. Add data-verification assertions to evaluate_recovers_poisoned_snapshot_values (check snapshot_values written) and evaluate_recovers_poisoned_results (check take_results() has entry).\n3. Add node_results.is_empty() assertions to build_result_shared and into_result poison recovery tests.\n4. Fix test design flaw in evaluate_recovers_poisoned_values_write where post-evaluate values() call tests trivially-unpoisoned lock.\n\nFiles: crates/reify-runtime/tests/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11529,7 +11529,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-29T00:18:15.890Z"
+        "updatedAt": "2026-03-29T07:41:11.370Z"
       },
       {
         "id": "562",
@@ -15507,9 +15507,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T07:23:58.105Z",
+      "lastModified": "2026-03-29T07:41:11.370Z",
       "taskCount": 749,
-      "completedCount": 403,
+      "completedCount": 404,
       "tags": [
         "master"
       ]
