@@ -765,10 +765,13 @@ fn warm_start_optimizes_when_possible() {
     match result {
         SolveResult::Solved { values } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
-            // Optimizer should push x below 25mm (initial), toward ~5mm (param lower bound)
+            // Optimizer should push x toward ~5mm (param lower bound).
+            // With wide constraints (2-50mm) and bounds [5mm, 100mm],
+            // convergence near the 5mm floor is expected. Threshold 8mm
+            // guards against regressions where the solver barely optimizes.
             assert!(
-                si < 0.015,
-                "optimized x should be well below initial 25mm, got {} m (fallback not triggered)",
+                si < 0.008,
+                "optimized x should converge near 5mm lower bound, got {} m (threshold 8mm)",
                 si
             );
             // Must still be feasible
