@@ -137,6 +137,12 @@ fn check_indeterminate_constraint_exits_success() {
         "stdout should NOT contain 'VIOLATED', got: {stdout}"
     );
     assert!(
+        !stderr.contains("error:"),
+        "stderr should not contain 'error:' for a successful check, got: {stderr}"
+    );
+    // INDETERMINATE is non-violating by design (auto params not yet resolved),
+    // so the summary still reads "No constraints violated".
+    assert!(
         stdout.contains("No constraints violated"),
         "stdout should contain 'No constraints violated', got: {stdout}"
     );
