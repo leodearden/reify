@@ -1067,3 +1067,131 @@ fn eval_resolves_per_template_independently() {
         }
     }
 }
+
+#[test]
+fn edit_param_resolves_per_template_not_cross_template() {
+    // After eval(), edit a param that affects Bracket's constraint.
+    // The re-resolution should only involve Bracket's auto params, not Bolt's.
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_limit = ValueCellId::new("Bracket", "limit");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+
+    // eval() results: Bracket gets thickness=5mm, Bolt gets diameter=10mm
+    let mut bracket_solved = HashMap::new();
+    bracket_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_solved = HashMap::new();
+    bolt_solved.insert(bolt_diameter.clone(), mm(10.0));
+
+    // edit_param() re-resolution: only Bracket should be re-solved
+    let mut bracket_resolved_again = HashMap::new();
+    bracket_resolved_again.insert(bracket_thickness.clone(), mm(6.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        // eval() call 1: Bracket
+        SolveResult::Solved {
+            values: bracket_solved,
+        },
+        // eval() call 2: Bolt
+        SolveResult::Solved {
+            values: bolt_solved,
+        },
+        // edit_param() re-resolution: Bracket only
+        SolveResult::Solved {
+            values: bracket_resolved_again,
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    // Bracket: auto thickness, param limit (default 2mm), constraint thickness > limit, Minimize
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param("Bracket", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "limit"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    // Bolt: auto diameter, constraint diameter > 5mm, Maximize
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    // Cold eval: two solver calls (one per template)
+    engine.eval(&module);
+
+    // Edit Bracket.limit to 3mm — triggers re-resolution of Bracket's constraints
+    let edit_result = engine.edit_param(bracket_limit.clone(), mm(3.0)).unwrap();
+
+    // (1) There should now be 3 total solver calls: 2 from eval + 1 from edit_param
+    let problems = captured.lock().unwrap();
+    assert_eq!(
+        problems.len(),
+        3,
+        "expected 3 solver calls (2 from eval + 1 from edit_param), got {}",
+        problems.len()
+    );
+
+    // (2) The edit_param call (index 2) should contain only Bracket's auto params
+    let edit_call = &problems[2];
+    let edit_entities: Vec<&str> = edit_call
+        .auto_params
+        .iter()
+        .map(|p| p.id.entity.as_str())
+        .collect();
+    assert_eq!(
+        edit_entities,
+        vec!["Bracket"],
+        "edit_param re-resolution should only contain Bracket's auto params, got {:?}",
+        edit_entities
+    );
+
+    // (3) The edit_param call should have Bracket's Minimize objective
+    assert!(
+        matches!(
+            &edit_call.objective,
+            Some(OptimizationObjective::Minimize(_))
+        ),
+        "edit_param should forward Bracket's Minimize objective, got {:?}",
+        edit_call.objective
+    );
+
+    // (4) Bracket.thickness should be updated to the new resolved value (6mm)
+    let t_val = edit_result
+        .values
+        .get(&bracket_thickness)
+        .expect("thickness");
+    assert!(
+        matches!(t_val, Value::Scalar { si_value, .. } if (*si_value - 0.006).abs() < 1e-10),
+        "expected thickness = mm(6.0) after re-resolution, got {:?}",
+        t_val
+    );
+}
