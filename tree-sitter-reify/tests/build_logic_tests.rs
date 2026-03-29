@@ -232,8 +232,8 @@ fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
 
 /// Find the Err(e) arm in source code using brace-depth tracking.
 /// Returns the slice from `Err(e) =>` through the arm's closing `}`.
-/// Tracks brace depth so nested braces (including those inside string literals)
-/// don't prematurely end the extraction.
+/// Tracks brace depth, skipping braces inside double-quoted string literals
+/// so that format strings like `format!("hint: '}}'")` don't fool the counter.
 fn find_err_arm_braced(source: &str) -> Option<&str> {
     let err_start = source.find("Err(e) =>")?;
     let after_arrow = &source[err_start..];
@@ -248,6 +248,20 @@ fn find_err_arm_braced(source: &str) -> Option<&str> {
 
     while i < bytes.len() {
         match bytes[i] {
+            b'"' => {
+                // Skip string literal contents — braces inside strings don't count.
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2; // skip escaped character (e.g. \")
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break; // closing quote
+                    }
+                    i += 1;
+                }
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;
