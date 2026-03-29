@@ -1155,7 +1155,7 @@ fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
         return None;
     }
     let norm = (w * w + x * x + y * y + z * z).sqrt();
-    if norm == 0.0 {
+    if norm < f64::EPSILON {
         return None;
     }
     Some(Value::Orientation {
