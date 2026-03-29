@@ -259,13 +259,7 @@ fn parse_dimensional_type_missing_left_operand_no_panic() {
     // Should NOT panic. Should produce parse error(s).
     let source = "type Foo = / Area";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
-    assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
-        decls,
-        errors,
-    );
+    assert_malformed_recovers(&decls, &errors);
 }
 
 #[test]
@@ -274,13 +268,7 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
     // Should NOT panic. Should produce parse error(s).
     let source = "type Foo = /";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
-    assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
-        decls,
-        errors,
-    );
+    assert_malformed_recovers(&decls, &errors);
 }
 
 // ── Error case: missing name ─────────────────────────────────────
@@ -291,13 +279,7 @@ fn parse_type_alias_missing_name_no_panic() {
     // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
     let source = "type = Force";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
-    assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
-        decls,
-        errors,
-    );
+    assert_malformed_recovers(&decls, &errors);
 }
 
 // ── Error case: missing '=' ──────────────────────────────────────
@@ -308,13 +290,7 @@ fn parse_type_alias_missing_equals_no_panic() {
     // Should NOT panic. Should produce parse error(s), no valid TypeAlias emitted.
     let source = "type Foo Force";
     let (decls, errors) = parse_decls(source);
-    let has_type_alias = decls.iter().any(|d| matches!(d, Declaration::TypeAlias(_)));
-    assert!(
-        !has_type_alias || !errors.is_empty(),
-        "expected either no TypeAlias or at least one error for malformed input, got decls={:?}, errors={:?}",
-        decls,
-        errors,
-    );
+    assert_malformed_recovers(&decls, &errors);
 }
 
 // ── Error case: empty RHS ────────────────────────────────────────
