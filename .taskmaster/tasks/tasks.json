@@ -6395,7 +6395,7 @@
           "326",
           "317"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
@@ -6410,7 +6410,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:41:16.407Z"
+        "updatedAt": "2026-03-29T01:30:24.730Z"
       },
       {
         "id": "330",
@@ -13734,7 +13734,13 @@
           ],
           "modules": [
             "gui/src/panels"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: PropertyEditor: hoist regex constants to module scope and document isFinite guard"
+            ]
+          }
         },
         "updatedAt": "2026-03-29T01:28:08.889Z"
       },
@@ -15488,9 +15494,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:28:08.890Z",
+      "lastModified": "2026-03-29T01:30:24.730Z",
       "taskCount": 749,
-      "completedCount": 396,
+      "completedCount": 397,
       "tags": [
         "master"
       ]
