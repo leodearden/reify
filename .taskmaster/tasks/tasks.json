@@ -13839,7 +13839,7 @@
         "description": "The `make_ready_handle()` test helper (claude_bridge_tests.rs lines 31-41) has a latent race condition and misleading documentation:\n\n1. **Latent EOF→Crashed race**: Creates a handle with state=Ready and an empty reader (`b\"\"`). The empty reader immediately hits EOF, triggering the on_exit handler which spawns a task to set state to Crashed (the guard at line 298 skips only for NotStarted, not Ready). Currently safe only on current_thread runtime because uncontested tokio::sync::Mutex::lock() doesn't yield. Any use in a multi_thread test or future code adding a yield before Phase 1's state check would produce intermittent Crashed-instead-of-Ready failures.\n\n   Fix options: (a) Change initial state to `SidecarState::NotStarted` so the on_exit guard prevents the Crashed transition, or (b) Use a live duplex with a ready message like make_starting_handle, or (c) Add a doc warning that this helper is only safe on current_thread runtimes.\n\n2. **Misleading doc comment**: Line 29 says \"Suitable for tests that only verify stdin writes or state checks\" but `_writer_end` is immediately dropped at line 39, closing the read end — any stdin write will fail with broken pipe. Fix: change doc to \"Suitable for tests that verify state without interacting with stdin or the reader task.\"\n\n3. **Stale line-number references in re-check comment** (claude_bridge.rs lines 656-666): References concrete line numbers (`line 625`, `line 626`, `line 349-350`) that will silently become wrong on refactoring. Replace with descriptive anchors: 'BEFORE the `notified()` call that immediately precedes `enable()`', 'mirrors the pin+enable pattern in `wait_ready`'.\n\nmemory_hints: search \"make_ready_handle EOF Crashed\", get_entity \"SidecarHandle::from_parts\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13852,7 +13852,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T01:37:30.624Z"
       },
       {
         "id": "667",
@@ -15505,7 +15506,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:37:30.231Z",
+      "lastModified": "2026-03-29T01:37:30.624Z",
       "taskCount": 749,
       "completedCount": 403,
       "tags": [
