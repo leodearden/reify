@@ -2,19 +2,23 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 // Polyfill rAF for test environment (claudeStore uses it for delta batching)
-let rafCallbacks: Array<() => void> = [];
+let rafCallbacks = new Map<number, () => void>();
+let nextRafId = 1;
 const origRAF = globalThis.requestAnimationFrame;
 const origCancelRAF = globalThis.cancelAnimationFrame;
 globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-  const id = rafCallbacks.length + 1;
-  rafCallbacks.push(() => cb(performance.now()));
+  const id = nextRafId++;
+  rafCallbacks.set(id, () => cb(performance.now()));
   return id;
 };
-globalThis.cancelAnimationFrame = () => {};
+globalThis.cancelAnimationFrame = (id: number) => {
+  rafCallbacks.delete(id);
+};
 
 /** Drain and invoke all pending rAF callbacks (exercises the batching path). */
 function flushRaf() {
-  const batch = rafCallbacks.splice(0);
+  const batch = [...rafCallbacks.values()];
+  rafCallbacks.clear();
   batch.forEach((cb) => cb());
 }
 
@@ -41,11 +45,12 @@ const mockListen = vi.mocked(listen);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  rafCallbacks = [];
+  rafCallbacks.clear();
+  nextRafId = 1;
 });
 
 afterEach(() => {
-  rafCallbacks = [];
+  rafCallbacks.clear();
 });
 
 afterAll(() => {
