@@ -15513,7 +15513,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 748,
@@ -15548,7 +15556,16 @@
             "queries": [
               "resolution for: Add compile-time exhaustiveness guard for ChatPanel buildMessageContext and fix toStrictEqual"
             ]
-          }
+          },
+          "files": [
+            "gui/src/panels/ChatPanel.tsx",
+            "gui/src/__tests__/types.typecheck.ts",
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src/panels",
+            "gui/src/__tests__"
+          ]
         }
       },
       {
@@ -15560,7 +15577,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/guard_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 751,
