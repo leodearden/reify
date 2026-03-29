@@ -584,6 +584,28 @@ mod tests {
     // --- cross-structure scoping tests ---
 
     #[test]
+    fn hover_value_scoped_to_owning_declaration() {
+        // Two structures with same-named param 'width' but different defaults.
+        // Hover on 'width' inside B should show B's evaluated value (0.02 m),
+        // NOT A's value (0.005 m). This tests the bug scenario where
+        // compute_hover used templates.first() for value lookup.
+        let source =
+            "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Scalar = 20mm\n}";
+        // 'width' inside B is on line 4, col 10
+        let position = Position::new(4, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for width in B");
+        assert!(
+            md.contains("0.02 m"),
+            "should show B's value (0.02 m), got: {md}"
+        );
+        assert!(
+            !md.contains("0.005 m"),
+            "should NOT show A's value (0.005 m), got: {md}"
+        );
+    }
+
+    #[test]
     fn hover_on_shared_member_in_second_structure() {
         // Two structures with identically-named member 'width' but different types.
         // Hover on 'width' inside B should show Bool, not Scalar.
