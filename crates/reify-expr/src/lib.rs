@@ -1620,7 +1620,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
 fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
-        && denom == 0.0
+        && (denom == 0.0 || denom.is_nan())
     {
         return Value::Undef;
     }
