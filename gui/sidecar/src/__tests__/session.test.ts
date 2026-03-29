@@ -13,6 +13,17 @@ import { SidecarSession } from '../session.js';
 import { main } from '../index.js';
 
 /**
+ * Extract the constructed prompt from the most recent spawn() call.
+ * Finds the argument after '--' in the spawn args, which is the prompt text
+ * passed to the Claude CLI.
+ */
+function getBuiltPrompt(callIndex = 0): string {
+  const callArgs = vi.mocked(spawn).mock.calls[callIndex]?.[1] as string[];
+  const dashIdx = callArgs.indexOf('--');
+  return callArgs[dashIdx + 1];
+}
+
+/**
  * Create a mock child process that emits streaming JSON events on stdout,
  * then closes with the given exit code.
  */
@@ -294,10 +305,7 @@ describe('SidecarSession', () => {
       context: { current_file: 'src/main.ri' },
     });
 
-    // Extract the prompt (last arg after '--') from the spawn call
-    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
-    const dashIdx = callArgs.indexOf('--');
-    const prompt = callArgs[dashIdx + 1];
+    const prompt = getBuiltPrompt();
 
     expect(prompt).toContain('Current file: src/main.ri');
     expect(prompt).toContain('[Context]');
@@ -319,9 +327,7 @@ describe('SidecarSession', () => {
       context: { attached_contexts: ['file: lib.ri\nfn add(a, b) = a + b', 'file: util.ri\nfn clamp(v) = max(0, v)'] },
     });
 
-    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
-    const dashIdx = callArgs.indexOf('--');
-    const prompt = callArgs[dashIdx + 1];
+    const prompt = getBuiltPrompt();
 
     expect(prompt).toContain('[Context]');
     expect(prompt).toContain('Attached contexts:\nfile: lib.ri\nfn add(a, b) = a + b\n\nfile: util.ri\nfn clamp(v) = max(0, v)');
@@ -349,9 +355,7 @@ describe('SidecarSession', () => {
       },
     });
 
-    const callArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[];
-    const dashIdx = callArgs.indexOf('--');
-    const prompt = callArgs[dashIdx + 1];
+    const prompt = getBuiltPrompt();
 
     expect(prompt).toContain('[Context]');
     expect(prompt).toContain('Current file: src/engine.ri');
