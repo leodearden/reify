@@ -222,14 +222,6 @@ fn test_no_redundant_rerun_if_changed() {
     );
 }
 
-/// Find the Err(e) arm in source code and return a window of characters from that point.
-/// This avoids fragile brace-counting that can be fooled by braces inside string literals.
-fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
-    let start = source.find("Err(e) =>")?;
-    let end = (start + window).min(source.len());
-    Some(&source[start..end])
-}
-
 /// Find the Err(e) arm in source code using brace-depth tracking.
 /// Returns the slice from `Err(e) =>` through the arm's closing `}`.
 /// Tracks brace depth, skipping braces inside double-quoted string literals
@@ -350,7 +342,8 @@ fn test_try_wait_error_path_kills_child() {
 #[test]
 fn test_err_arm_extraction_not_fooled_by_format_braces() {
     // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
-    // This demonstrates the fragility of the naive .find('}') approach.
+    // This demonstrates the fragility of the naive .find('}') approach and validates
+    // that find_err_arm_braced handles it correctly.
     let source = r#"
         match child.try_wait() {
             Ok(Some(status)) => { return Ok(()); }
@@ -377,17 +370,17 @@ fn test_err_arm_extraction_not_fooled_by_format_braces() {
         "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
     );
 
-    // The window approach captures the full arm.
-    let window = find_err_arm_window(source, 300).expect("should find Err(e) arm");
+    // The brace-depth tracker with string-literal awareness captures the full arm.
+    let braced = find_err_arm_braced(source).expect("should find Err(e) arm");
     assert!(
-        window.contains("child.kill()"),
-        "window approach should capture child.kill(). Window: {}",
-        window
+        braced.contains("child.kill()"),
+        "find_err_arm_braced should capture child.kill(). Got: {}",
+        braced
     );
     assert!(
-        window.contains("child.wait()"),
-        "window approach should capture child.wait(). Window: {}",
-        window
+        braced.contains("child.wait()"),
+        "find_err_arm_braced should capture child.wait(). Got: {}",
+        braced
     );
 }
 
