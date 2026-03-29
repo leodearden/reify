@@ -2,19 +2,23 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vites
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 // Polyfill rAF for test environment (claudeStore uses it for delta batching)
-let rafCallbacks: Array<() => void> = [];
+let rafCallbacks = new Map<number, () => void>();
+let nextRafId = 1;
 const origRAF = globalThis.requestAnimationFrame;
 const origCancelRAF = globalThis.cancelAnimationFrame;
 globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-  const id = rafCallbacks.length + 1;
-  rafCallbacks.push(() => cb(performance.now()));
+  const id = nextRafId++;
+  rafCallbacks.set(id, () => cb(performance.now()));
   return id;
 };
-globalThis.cancelAnimationFrame = () => {};
+globalThis.cancelAnimationFrame = (id: number) => {
+  rafCallbacks.delete(id);
+};
 
 /** Drain and invoke all pending rAF callbacks (exercises the batching path). */
 function flushRaf() {
-  const batch = rafCallbacks.splice(0);
+  const batch = [...rafCallbacks.values()];
+  rafCallbacks.clear();
   batch.forEach((cb) => cb());
 }
 
@@ -41,11 +45,12 @@ const mockListen = vi.mocked(listen);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  rafCallbacks = [];
+  rafCallbacks.clear();
+  nextRafId = 1;
 });
 
 afterEach(() => {
-  rafCallbacks = [];
+  rafCallbacks.clear();
 });
 
 afterAll(() => {
@@ -200,6 +205,61 @@ describe('claude bridge integration', () => {
     // Message should NOT be marked complete (no done event was sent)
     expect(afterFlush!.complete).toBe(false);
     expect(store.state.sessionStatus).toBe('responding');
+  });
+
+  it('cancelAnimationFrame polyfill removes pending callback by id', () => {
+    const spy = vi.fn();
+    const id = requestAnimationFrame(spy);
+    cancelAnimationFrame(id);
+    flushRaf();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('done event cancelAndFlush prevents stale rAF callback from double-flushing', async () => {
+    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(async (eventName, handler) => {
+      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+
+    const store = createClaudeStore({
+      onSend: () => {},
+      onAbort: () => {},
+    });
+
+    await subscribeToClaudeEvents(store.handleOutboundMessage);
+
+    // Send a message so there's a current message ID
+    store.sendMessage('hello', {});
+    const msgId = store.state.currentMessageId!;
+    expect(msgId).toBeTruthy();
+
+    // Simulate text_delta (schedules rAF internally)
+    capturedHandlers['claude-text-delta']({
+      payload: { id: msgId, content: 'Some text' },
+    });
+
+    // Simulate done event — calls cancelAndFlush internally (cancels rAF + flushes buffers)
+    capturedHandlers['claude-done']({
+      payload: { id: msgId },
+    });
+
+    // The canceled callback should have been removed from the polyfill Map
+    expect(rafCallbacks.size).toBe(0);
+
+    // Capture the text after done's flush
+    const afterDone = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    const textAfterDone = afterDone!.responseText;
+
+    // A second flushRaf() should be a no-op — the stale callback was canceled
+    flushRaf();
+
+    const afterSecondFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(afterSecondFlush!.responseText).toBe(textAfterDone);
   });
 
   it('claude-error event adds system message and marks assistant message as error', async () => {
