@@ -12877,11 +12877,11 @@
         "description": "In hover.rs:29, `compute_hover` calls `ctx.compiled.templates.first()` for value lookup regardless of which declaration `find_member_decl` matched. In multi-declaration files where the first template is not the one owning the hovered member, the hover panel shows an incorrect evaluated value (or none).\n\nFix: expose `decl_name` from `find_member_decl` (e.g. via `MemberInfo`) and pass it to `get_value` instead of using `templates.first()`.\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"find_member_decl ambiguity\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:20:44.839Z",
+        "updatedAt": "2026-03-29T00:36:15.516Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -15474,7 +15474,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T00:36:12.746Z",
+      "lastModified": "2026-03-29T00:36:15.516Z",
       "taskCount": 749,
       "completedCount": 391,
       "tags": [
