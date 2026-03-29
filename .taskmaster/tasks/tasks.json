@@ -11290,11 +11290,11 @@
         "description": "Three related issues in `crates/reify-eval/src/lib.rs`:\n\n1. **BFS gate on found_any (line ~3693)**: In `elaborate_child_lets_only`, the BFS only enqueues children when `found_any == true` (value_cells projected successfully). Templates with zero value_cells (purely structural intermediaries) always leave `found_any = false`, silently stopping BFS traversal even if deeper entities have needed values. Fix: always enqueue sub-children regardless of found_any, or gate on template having recursive sub declarations.\n\n2. **Warning → Error for missing template (line ~3450)**: In `unfold_recursive_sub` Phase 2, when `templates.iter().find(...)` returns None, Diagnostic::warning is emitted but this indicates a post-compilation inconsistency (entire sub-entity subtree silently dropped). Elevate to Diagnostic::error. Mirror in BFS seed/expansion sites at lines ~3656-3671 and ~3703-3707.\n\n3. **Cycle diagnostic UX (compiler)**: Include both template name and entity path in cyclic let-binding diagnostics: `'circular let-binding dependency in template S (entity S.child.child): [a, b]'` matching termination-check diagnostic style.\n\nmemory_hints: search \"elaborate_child_lets_only BFS found_any\", search \"unfold_recursive_sub missing template warning\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-29T00:14:25.382Z",
+        "updatedAt": "2026-03-29T08:53:06.126Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -11731,7 +11731,7 @@
         "description": "Two test improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. Remove redundant second assertion in 'payload type field does not override mapped event type' test (line 317) — the objectContaining check already verifies the type field\n2. Add extra-field exclusion test for claude-tool-call event — it has a structurally complex payload (tool_input: Record<string, unknown>) not covered by the existing representative tests on text_delta and done\n\nSource: test analyst reviewer (S5, S6) from task 517 review.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11744,7 +11744,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-28T15:59:11.096Z"
+        "updatedAt": "2026-03-29T08:53:06.166Z"
       },
       {
         "id": "571",
@@ -15613,7 +15613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:53:06.089Z",
+      "lastModified": "2026-03-29T08:53:06.167Z",
       "taskCount": 751,
       "completedCount": 408,
       "tags": [
