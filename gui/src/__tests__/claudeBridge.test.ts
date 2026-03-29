@@ -586,7 +586,7 @@ describe('subscribeToClaudeEvents', () => {
     });
 
     afterEach(() => {
-      warnSpy.mockRestore();
+      vi.restoreAllMocks();
     });
 
     const PAYLOAD_EVENTS = [
