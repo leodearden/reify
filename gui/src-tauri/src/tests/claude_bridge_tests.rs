@@ -2260,6 +2260,8 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             // On current_thread, spawned tasks run only when we yield.
             // Chain: reader task reads line → spawns state-setter task →
             // state-setter sets Ready + calls notify_waiters().
+            // 2-task chain (reader → state-setter); 100 iterations is
+            // generous headroom — typically converges in 2-4 yields.
             for _ in 0..100 {
                 tokio::task::yield_now().await;
                 if matches!(*state.lock().await, SidecarState::Ready) {
@@ -2295,4 +2297,10 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
         "ensure_sidecar_ready must succeed via re-check path (line 661): {:?}",
         result
     );
+
+    // Kill the handle stored in the sidecar slot to abort the reader task
+    // immediately, preventing task accumulation across iterations.
+    if let Some(mut h) = sidecar.lock().await.take() {
+        h.kill().await;
+    }
 }
