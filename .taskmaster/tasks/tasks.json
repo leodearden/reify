@@ -12942,11 +12942,11 @@
         "description": "Two test gaps exist after the scoping fix in task 584:\n\n1. No test for find_member_decl when the member exists only in a non-first declaration (e.g. structure A { param x } / structure B { param y }, calling find_member_decl(\"y\")). The decl_name propagation path is untested.\n\n2. The goto_def fallback loop (all-declarations search after break from enclosing) is never exercised. Two scenarios: (a) cursor inside enclosing decl but referenced word not in its members, (b) cursor between declarations (no enclosing). The plan named `goto_def_cursor_outside_declarations_falls_back_to_first` as a required test but it's absent.\n\nMemory hints: search \"LSP cross-declaration member lookup scoping\" and \"goto_def fallback test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:24:36.218Z",
+        "updatedAt": "2026-03-29T08:53:08.655Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -15613,7 +15613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T08:53:08.422Z",
+      "lastModified": "2026-03-29T08:53:08.656Z",
       "taskCount": 751,
       "completedCount": 408,
       "tags": [
