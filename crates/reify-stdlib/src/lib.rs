@@ -5536,6 +5536,29 @@ mod tests {
         assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 1e200);
     }
 
+    #[test]
+    fn complex_magnitude_large_both_components() {
+        // |1e200 + 1e200i| = 1e200 * sqrt(2) ≈ 1.4142e200, fully representable.
+        // The naive formula fails because 1e200² + 1e200² overflows.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 1e200,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let result = eval_builtin("complex_magnitude", &[z]);
+        let expected = 1e200 * std::f64::consts::SQRT_2;
+        match result {
+            Value::Real(v) => {
+                let rel_err = ((v - expected) / expected).abs();
+                assert!(
+                    rel_err < 1e-14,
+                    "expected Real({expected}) got Real({v}), relative error {rel_err}"
+                );
+            }
+            other => panic!("expected Real({expected}), got {other:?}"),
+        }
+    }
+
     // --- non-numeric args → Undef ---
 
     #[test]
