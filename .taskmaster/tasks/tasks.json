@@ -13481,7 +13481,13 @@
           ],
           "modules": [
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add thinking_delta rAF flush test in claudeIntegration"
+            ]
+          }
         },
         "updatedAt": "2026-03-29T00:16:01.271Z"
       },
@@ -13542,7 +13548,7 @@
         "description": "The six `event.payload as Omit<Interface, 'type'>` casts in `subscribeToClaudeEvents` (gui/src/bridge.ts:170-193) are unchecked at runtime. The underlying `event.payload` arrives from the Tauri IPC layer as `Record<string, unknown>`, so if the sidecar sends a malformed payload (null, missing `id`, wrong type for `tool_input`, etc.), the cast silently succeeds and the first property access throws an unhandled runtime TypeError.\n\n**Fix**: Add lightweight runtime type guard predicates for each event payload type (e.g. `isTextDeltaPayload(p: unknown): p is Omit<TextDelta, 'type'>`), or use a thin Zod/valibot schema per event type. Log and drop malformed payloads instead of letting property accesses throw into unhandled territory.\n\nMemory hints:\n- Search: \"OutboundMessage bridge.ts subscribeToClaudeEvents payload cast\"\n- Entities: bridge.ts, OutboundMessage, subscribeToClaudeEvents, TextDelta, ToolCall",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13556,7 +13562,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-29T00:13:54.947Z"
+        "updatedAt": "2026-03-29T00:16:58.818Z"
       },
       {
         "id": "654",
@@ -15458,7 +15464,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T00:16:01.271Z",
+      "lastModified": "2026-03-29T00:16:58.822Z",
       "taskCount": 749,
       "completedCount": 386,
       "tags": [
