@@ -13877,7 +13877,7 @@
         "description": "Two inline copies of `err instanceof Error ? err.message : String(err)` remain in gui/sidecar/src/index.ts (lines ~51, 57). Since gui/sidecar is a separate npm package that cannot import from gui/src/, add a local errorMessage helper within the sidecar package (e.g., gui/sidecar/src/utils.ts or inline at top of index.ts) and use it for both occurrences.\n\nMemory hints: search \"errorMessage utility extraction sidecar\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "547"
         ],
@@ -13891,7 +13891,8 @@
           "modules": [
             "gui/sidecar/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T01:08:47.833Z"
       },
       {
         "id": "670",
@@ -15479,7 +15480,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:08:44.960Z",
+      "lastModified": "2026-03-29T01:08:47.834Z",
       "taskCount": 749,
       "completedCount": 395,
       "tags": [
