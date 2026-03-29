@@ -1702,6 +1702,21 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "no results configured")]
+    fn sequenced_solver_panics_on_empty_vec() {
+        let solver = SequencedMockConstraintSolver::new(vec![]);
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+        // Should panic with "no results configured"
+        solver.solve(&problem);
+    }
+
+    #[test]
     fn normalize_distance_pair_canonical_order() {
         let lo = GeometryHandleId(1);
         let hi = GeometryHandleId(5);
