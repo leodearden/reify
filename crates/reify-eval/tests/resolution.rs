@@ -1319,3 +1319,139 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
         edit_call.objective
     );
 }
+
+#[test]
+fn edit_param_matches_eval_for_multi_template_module() {
+    // Prove cold/hot path equivalence: the resolved params from edit_param
+    // should match what eval() produces for a multi-template module.
+    use reify_test_support::SequencedMockConstraintSolver;
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_limit = ValueCellId::new("Bracket", "limit");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+
+    // Deterministic per-template results
+    let mut bracket_solved = HashMap::new();
+    bracket_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_solved = HashMap::new();
+    bolt_solved.insert(bolt_diameter.clone(), mm(10.0));
+
+    // ── Run 1: eval() to get baseline resolved params ──
+    let solver1 = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: bracket_solved.clone(),
+        },
+        SolveResult::Solved {
+            values: bolt_solved.clone(),
+        },
+    ]);
+
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param("Bracket", "limit", Type::length(), Some(literal(mm(2.0))))
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "limit"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(value_ref("Bolt", "diameter"), literal(mm(5.0))),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket.clone())
+        .template(bolt.clone())
+        .build();
+
+    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver1));
+    let eval_result = engine1.eval(&module);
+
+    // Record baseline resolved params from eval
+    let eval_bracket_thickness = eval_result
+        .values
+        .get(&bracket_thickness)
+        .cloned()
+        .expect("Bracket.thickness should be resolved");
+    let eval_bolt_diameter = eval_result
+        .values
+        .get(&bolt_diameter)
+        .cloned()
+        .expect("Bolt.diameter should be resolved");
+
+    // ── Run 2: eval() then edit_param to trigger Bracket re-resolution ──
+    // Same solver results for eval, then for re-resolution Bracket gets same result
+    let solver2 = SequencedMockConstraintSolver::new(vec![
+        // eval() call 1: Bracket
+        SolveResult::Solved {
+            values: bracket_solved.clone(),
+        },
+        // eval() call 2: Bolt
+        SolveResult::Solved {
+            values: bolt_solved.clone(),
+        },
+        // edit_param() re-resolution: Bracket returns same result
+        SolveResult::Solved {
+            values: bracket_solved.clone(),
+        },
+    ]);
+
+    let module2 = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver2));
+    engine2.eval(&module2);
+
+    // Edit Bracket.limit to trigger Bracket's constraint re-resolution
+    let edit_result = engine2.edit_param(bracket_limit.clone(), mm(3.0)).unwrap();
+
+    // Cold/hot path equivalence: edit_param should produce the same resolved values
+    let edit_bracket_thickness = edit_result
+        .values
+        .get(&bracket_thickness)
+        .cloned()
+        .expect("Bracket.thickness should be in edit_param result");
+
+    assert_eq!(
+        eval_bracket_thickness, edit_bracket_thickness,
+        "Bracket.thickness should match between eval() and edit_param(): eval={:?}, edit={:?}",
+        eval_bracket_thickness, edit_bracket_thickness
+    );
+
+    // Bolt should NOT have been re-solved (only Bracket was dirty), so its value
+    // should still be the eval() value
+    let edit_bolt_diameter = edit_result
+        .values
+        .get(&bolt_diameter)
+        .cloned()
+        .expect("Bolt.diameter should be in edit_param result");
+
+    assert_eq!(
+        eval_bolt_diameter, edit_bolt_diameter,
+        "Bolt.diameter should be unchanged after editing Bracket.limit: eval={:?}, edit={:?}",
+        eval_bolt_diameter, edit_bolt_diameter
+    );
+}
