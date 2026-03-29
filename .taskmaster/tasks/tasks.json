@@ -13432,7 +13432,7 @@
         "description": "Add missing test cases for orient functions (identified in task 359 review):\n\n1. orient_axis_angle_nan_axis_returns_undef — pass Tensor with NaN axis component [NaN, 0, 0], assert is_undef(). Exercises the vec3_norm → !axis_norm.is_finite() guard.\n2. orient_axis_angle_inf_axis_returns_undef — pass Tensor with Inf axis component [Inf, 0, 0], assert is_undef().\n3. orient_basis_non_unit_vector_returns_undef — pass x=[2,0,0], y=[0,1,0], z=[0,0,1] (orthogonal but non-unit), assert is_undef(). Isolates the magnitude check from the orthogonality check (existing test orient_basis_non_orthogonal_returns_undef fails both simultaneously).\n4. orient_axis_angle_integer_angle_accepted — pass Value::Int angle, verify correct quaternion output. Regression guard for the unchanged Int arm in trig_input after the is_finite() refactor.\n\nMemory hints: search \"orient_basis orient_axis_angle trig_input NaN validation\", entities: eval_builtin, vec3_norm, trig_input",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13443,7 +13443,8 @@
           "modules": [
             "crates/reify-stdlib/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T00:18:12.703Z"
       },
       {
         "id": "648",
@@ -13471,7 +13472,7 @@
         "description": "In `gui/src/__tests__/claudeIntegration.test.ts`, the new rAF flush test only exercises `text_delta` → `textBuffer` → `responseText`. The `thinking_delta` case uses the same `scheduleFlush()` path but flushes into `thinkingText` via a different buffer. A regression in the `thinkingBuffer` branch would be undetected.\n\n**Fix**: Add a parallel test that fires `claude-thinking-delta` events, calls `flushRaf()`, and asserts `thinkingText` is populated while `responseText` remains empty.\n\nMemory hints:\n- Search: \"claudeIntegration thinking_delta thinkingBuffer flushBuffers rAF\"\n- Entities: claudeIntegration.test.ts, claudeStore, flushBuffers",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13489,7 +13490,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-29T00:16:01.271Z"
+        "updatedAt": "2026-03-29T00:18:12.082Z"
       },
       {
         "id": "650",
@@ -15470,7 +15471,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T00:18:09.010Z",
+      "lastModified": "2026-03-29T00:18:12.704Z",
       "taskCount": 749,
       "completedCount": 386,
       "tags": [
