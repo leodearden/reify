@@ -5549,6 +5549,22 @@ mod tests {
     }
 
     #[test]
+    fn complex_magnitude_large_dimensioned_no_overflow() {
+        // |1e200 + 0i| with LENGTH dimension must return Scalar{1e200, LENGTH}, not Undef.
+        // Covers the dimensioned (Scalar) branch of complex_abs with large values.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            1e200,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
     fn complex_magnitude_large_both_components() {
         // |1e200 + 1e200i| = 1e200 * sqrt(2) ≈ 1.4142e200, fully representable.
         // The naive formula fails because 1e200² + 1e200² overflows.
