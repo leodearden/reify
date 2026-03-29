@@ -630,6 +630,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_value_multi_declaration_scoped_correctly() {
+        // Two structures with same-named param 'x' but different default values.
+        // get_value must return the correct value scoped to each declaration.
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+
+        // A's x should be 0.005 m (5mm in SI)
+        let val_a = ctx
+            .get_value("A", "x")
+            .expect("A.x should have a value");
+        match val_a {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (*si_value - 0.005).abs() < 1e-10,
+                    "expected A.x = 0.005m (5mm), got {si_value}"
+                );
+                assert_eq!(*dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar for A.x, got {other:?}"),
+        }
+
+        // B's x should be 0.02 m (20mm in SI)
+        let val_b = ctx
+            .get_value("B", "x")
+            .expect("B.x should have a value");
+        match val_b {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (*si_value - 0.02).abs() < 1e-10,
+                    "expected B.x = 0.02m (20mm), got {si_value}"
+                );
+                assert_eq!(*dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar for B.x, got {other:?}"),
+        }
+    }
+
     // --- doc retrieval tests ---
 
     #[test]
