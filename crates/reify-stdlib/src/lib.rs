@@ -1127,7 +1127,7 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 /// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
 /// results are converted to `Undef` by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
-    let mag = (re * re + im * im).sqrt();
+    let mag = re.hypot(im);
     if dimension == DimensionVector::DIMENSIONLESS {
         sanitize_value(Value::Real(mag))
     } else {
