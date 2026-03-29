@@ -4404,6 +4404,19 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_non_unit_vector_returns_undef() {
+        // Orthogonal but non-unit x=[2,0,0] must be rejected — isolates the magnitude
+        // check (|x|=2.0, |2.0-1.0|=1.0 > 1e-6) from the orthogonality check.
+        let x = Value::Tensor(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit basis vector should be rejected"
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
