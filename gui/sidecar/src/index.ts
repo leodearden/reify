@@ -2,6 +2,7 @@ import type { Readable, Writable } from 'node:stream';
 import { createLineReader, parseInboundMessage, sendMessage } from './ipc.js';
 import { SidecarSession } from './session.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import { errorMessage } from './utils.js';
 
 /**
  * Sidecar entrypoint. Wires IPC streams to a SidecarSession.
@@ -48,13 +49,13 @@ export async function main(
       try {
         const msg = parseInboundMessage(line);
         session.handleMessage(msg).catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
+          const message = errorMessage(err);
           sendMessage(output, { type: 'error', id: '', message }).catch((e: unknown) => {
             console.error('Failed to send error message:', e);
           });
         });
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         await sendMessage(output, { type: 'error', id: '', message });
       }
     }
