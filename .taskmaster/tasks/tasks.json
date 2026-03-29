@@ -15598,7 +15598,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/tree-sitter-generate.sh",
+            "scripts/test_tree_sitter_generate.sh",
+            "scripts/lib.sh"
+          ],
+          "modules": [
+            "scripts"
+          ]
+        }
       }
     ],
     "metadata": {
