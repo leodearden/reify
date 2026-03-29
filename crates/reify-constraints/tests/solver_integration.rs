@@ -245,14 +245,8 @@ fn false_negative_mixed_scale() {
     let x_ref = value_ref("Part", "x");
     let y_ref = value_ref("Part", "y");
 
-    // x > 0.002 (constraint in SI meters, x bounded to max 0.001999999)
-    let c1 = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 0.002,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    // x > 2mm (constraint in SI meters, x bounded to max ~2mm)
+    let c1 = gt(x_ref, literal(mm(2.0)));
 
     // y > 100 (dimensionless, y bounded to max 99.9999999)
     let c2 = gt(
@@ -264,13 +258,7 @@ fn false_negative_mixed_scale() {
     );
 
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.001999999,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(1.999999));
     current.insert(
         y_id.clone(),
         Value::Scalar {
@@ -314,14 +302,8 @@ fn bounds_dont_hide_infeasibility() {
     let x_id = vcid("Part", "x");
     let x_ref = value_ref("Part", "x");
 
-    // constraint: x > 0.015 (15mm)
-    let constraint = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 0.015,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    // constraint: x > 15mm
+    let constraint = gt(x_ref, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
