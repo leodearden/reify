@@ -1734,21 +1734,26 @@ mod tests {
     fn sequenced_solver_concurrent_no_deadlock() {
         use std::sync::Mutex as StdMutex;
 
-        // Only 1 pre-loaded result with 4 threads: thread 1 takes the result
-        // from `results` and writes `self.last`; threads 2-4 find `results`
-        // empty, take the `None` branch, and contend on `self.last`. This
-        // exercises the exact two-lock contention pattern the task 430 fix
-        // addresses (separate lock acquisition for `results` and `last`).
+        // Pre-load 4 identical results (one per thread) so every thread pops
+        // its own entry from `results` and writes to `self.last`.  This
+        // exercises concurrent acquisition of both locks without any ordering
+        // assumption between threads, verifying the task-430 fix (separate
+        // lock acquisition for `results` and `last`) doesn't deadlock.
         let mut expected_values = HashMap::new();
         expected_values.insert(
             ValueCellId::new("S", "x"),
             Value::length(0.001),
         );
 
+        let result_entry = SolveResult::Solved {
+            values: expected_values.clone(),
+        };
+
         let solver = SequencedMockConstraintSolver::new(vec![
-            SolveResult::Solved {
-                values: expected_values.clone(),
-            },
+            result_entry.clone(),
+            result_entry.clone(),
+            result_entry.clone(),
+            result_entry.clone(),
         ]);
 
         let problem = ResolutionProblem {
@@ -1761,8 +1766,7 @@ mod tests {
 
         let collected = StdMutex::new(Vec::new());
 
-        // 4 threads each calling solve() once — with only 1 result,
-        // threads 2-4 must go through the `None` branch and read `self.last`.
+        // 4 threads each calling solve() once — each pops its own result.
         std::thread::scope(|s| {
             for _ in 0..4 {
                 s.spawn(|| {
@@ -1784,6 +1788,79 @@ mod tests {
                 }
                 other => panic!(
                     "expected Solved variant, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn sequenced_solver_concurrent_last_fallback() {
+        use std::sync::{Barrier, Mutex as StdMutex};
+
+        // Deterministic test for the `self.last` fallback path under
+        // concurrency.  Phase 1: a single thread consumes the only queued
+        // result and writes `self.last`.  A Barrier ensures phase-1 completes
+        // before phase-2 threads start, so they are guaranteed to see
+        // `self.last == Some(...)` rather than racing with the writer.
+        let mut expected_values = HashMap::new();
+        expected_values.insert(
+            ValueCellId::new("S", "x"),
+            Value::length(0.001),
+        );
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: expected_values.clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Phase 1: consume the queued result, populating `self.last`.
+        let phase1_result = solver.solve(&problem);
+        match &phase1_result {
+            SolveResult::Solved { values } => {
+                assert_eq!(*values, expected_values);
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+
+        // Phase 2: 3 threads concurrently hit the `last` fallback path.
+        let barrier = Barrier::new(3);
+        let collected = StdMutex::new(Vec::new());
+
+        std::thread::scope(|s| {
+            for _ in 0..3 {
+                s.spawn(|| {
+                    // Synchronize so all 3 threads contend on `self.last`
+                    // simultaneously, maximizing the chance of exposing any
+                    // deadlock in the two-lock pattern.
+                    barrier.wait();
+                    let result = solver.solve(&problem);
+                    collected.lock().unwrap().push(result);
+                });
+            }
+        });
+
+        let results = collected.into_inner().unwrap();
+        assert_eq!(results.len(), 3, "all 3 fallback threads should complete");
+        for result in &results {
+            match result {
+                SolveResult::Solved { values } => {
+                    assert_eq!(
+                        *values, expected_values,
+                        "fallback threads should return the last result"
+                    );
+                }
+                other => panic!(
+                    "expected Solved variant from fallback, got {:?}",
                     other
                 ),
             }
