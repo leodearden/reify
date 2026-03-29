@@ -202,6 +202,14 @@ describe('claude bridge integration', () => {
     expect(store.state.sessionStatus).toBe('responding');
   });
 
+  it('cancelAnimationFrame polyfill removes pending callback by id', () => {
+    const spy = vi.fn();
+    const id = requestAnimationFrame(spy);
+    cancelAnimationFrame(id);
+    flushRaf();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('claude-error event adds system message and marks assistant message as error', async () => {
     const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
     mockListen.mockImplementation(async (eventName, handler) => {
