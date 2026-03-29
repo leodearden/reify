@@ -1688,11 +1688,19 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            values.insert(mid.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                mid.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
+                            // Skip Auto params — their lifecycle is managed by the
+                            // solver, not guard activation/deactivation.
+                            let is_auto = graph
+                                .value_cells
+                                .get(mid)
+                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                            if !is_auto {
+                                values.insert(mid.clone(), Value::Undef);
+                                new_snapshot.values.insert(
+                                    mid.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
                         }
                     }
                     for mid in &group.else_members {
@@ -1711,11 +1719,19 @@ impl Engine {
                                     .insert(mid.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            values.insert(mid.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                mid.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
+                            // Skip Auto params — their lifecycle is managed by the
+                            // solver, not guard activation/deactivation.
+                            let is_auto = graph
+                                .value_cells
+                                .get(mid)
+                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                            if !is_auto {
+                                values.insert(mid.clone(), Value::Undef);
+                                new_snapshot.values.insert(
+                                    mid.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
                         }
                     }
                 }
@@ -1935,12 +1951,20 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef
-                            values.insert(member_id.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                member_id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
+                            // Deactivate: set to Undef — but skip Auto params whose
+                            // lifecycle is managed by the solver, not guard activation.
+                            let is_auto = new_snapshot
+                                .graph
+                                .value_cells
+                                .get(member_id)
+                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                            if !is_auto {
+                                values.insert(member_id.clone(), Value::Undef);
+                                new_snapshot.values.insert(
+                                    member_id.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
                         }
                     }
 
@@ -1962,12 +1986,20 @@ impl Engine {
                                     .insert(member_id.clone(), (val, DeterminacyState::Determined));
                             }
                         } else {
-                            // Deactivate: set to Undef
-                            values.insert(member_id.clone(), Value::Undef);
-                            new_snapshot.values.insert(
-                                member_id.clone(),
-                                (Value::Undef, DeterminacyState::Undetermined),
-                            );
+                            // Deactivate: set to Undef — but skip Auto params whose
+                            // lifecycle is managed by the solver, not guard activation.
+                            let is_auto = new_snapshot
+                                .graph
+                                .value_cells
+                                .get(member_id)
+                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                            if !is_auto {
+                                values.insert(member_id.clone(), Value::Undef);
+                                new_snapshot.values.insert(
+                                    member_id.clone(),
+                                    (Value::Undef, DeterminacyState::Undetermined),
+                                );
+                            }
                         }
                     }
                 }
