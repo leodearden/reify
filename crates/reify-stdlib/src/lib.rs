@@ -4374,6 +4374,65 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_nan_axis_returns_undef() {
+        // NaN in axis must be rejected — vec3_norm(NaN, 0, 0) = sqrt(NaN) = NaN, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN axis component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_inf_axis_returns_undef() {
+        // Inf in axis must be rejected — vec3_norm(Inf, 0, 0) = sqrt(Inf) = Inf, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf axis component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_unit_vector_returns_undef() {
+        // Orthogonal but non-unit x=[2,0,0] must be rejected — isolates the magnitude
+        // check (|x|=2.0, |2.0-1.0|=1.0 > 1e-6) from the orthogonality check.
+        let x = Value::Tensor(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit basis vector should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_integer_angle_accepted() {
+        // Value::Int(1) = 1 radian, exercises the Value::Int(i) => Some(*i as f64) arm
+        // in trig_input. Expected: half=0.5, q=(cos(0.5), 0, 0, sin(0.5)).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(1);
+        let half = 0.5_f64;
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            half.cos(),
+            0.0,
+            0.0,
+            half.sin()
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
