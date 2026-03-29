@@ -14880,7 +14880,7 @@
         "description": "The error-case tests in type_alias_tests.rs (strengthened by task 641) still have assertion gaps around Tree-sitter recovery output:\n\n1. **Dimensional tests** (missing_right_operand, missing_left_operand, missing_both_operands, lines 278-317): Only assert `!errors.is_empty()` but never inspect the recovered TypeAlias when one is produced. A regression that emits a plausible-looking but wrong TypeAlias would pass. Fix: if a TypeAlias is produced, assert `ta.name == \"Foo\"` and validate that `ta.type_expr` is garbled (e.g., empty name or unexpected structure).\n\n2. **Empty RHS test** (parse_type_alias_empty_rhs_no_panic, lines 363-393): The inner assertion `ta.type_expr.name.is_empty() || !errors.is_empty()` is a disjunction that passes whenever errors are present, even if `type_expr.name` is non-empty. The documented invariant (\"zero-width recovery node produces empty name\") is not actually enforced. Additionally, the branch where `type_expr.name.is_empty() && errors.is_empty()` is permitted — meaning the parser could silently accept `type Foo =` without any error signal. Fix: assert `ta.type_expr.name.is_empty()` unconditionally inside the `if let Some(ta)` branch, and add an unconditional `!errors.is_empty()` assertion at the top level (matching the other error-case tests).\n\nMemory hints: search \"task 641 type alias test assertions\", get_entity \"TypeAliasDecl\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "641"
         ],
@@ -14893,7 +14893,8 @@
           "modules": [
             "crates/reify-syntax/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T01:37:31.217Z"
       },
       {
         "id": "717",
@@ -15506,7 +15507,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:37:30.874Z",
+      "lastModified": "2026-03-29T01:37:31.217Z",
       "taskCount": 749,
       "completedCount": 403,
       "tags": [
