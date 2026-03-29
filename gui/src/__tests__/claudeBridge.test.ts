@@ -24,6 +24,29 @@ import {
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
 
+/** Helper: capture the internal listener for a given event name */
+function captureListener(eventName: string) {
+  let captured: ((event: { payload: unknown }) => void) | undefined;
+  mockListen.mockImplementation(async (name, handler) => {
+    if (name === eventName) {
+      captured = handler as (event: { payload: unknown }) => void;
+    }
+    return vi.fn();
+  });
+  return {
+    async setup(handler: ReturnType<typeof vi.fn>) {
+      await subscribeToClaudeEvents(handler);
+      if (!captured) {
+        throw new Error(
+          `captureListener: no handler was registered for event "${eventName}". ` +
+          `Check that subscribeToClaudeEvents registers this event.`,
+        );
+      }
+      return captured;
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -583,29 +606,6 @@ describe('subscribeToClaudeEvents', () => {
     afterEach(() => {
       warnSpy.mockRestore();
     });
-
-    /** Helper: capture the internal listener for a given event name */
-    function captureListener(eventName: string) {
-      let captured: ((event: { payload: unknown }) => void) | undefined;
-      mockListen.mockImplementation(async (name, handler) => {
-        if (name === eventName) {
-          captured = handler as (event: { payload: unknown }) => void;
-        }
-        return vi.fn();
-      });
-      return {
-        async setup(handler: ReturnType<typeof vi.fn>) {
-          await subscribeToClaudeEvents(handler);
-          if (!captured) {
-            throw new Error(
-              `captureListener: no handler was registered for event "${eventName}". ` +
-              `Check that subscribeToClaudeEvents registers this event.`,
-            );
-          }
-          return captured;
-        },
-      };
-    }
 
     const PAYLOAD_EVENTS = [
       'claude-text-delta',
