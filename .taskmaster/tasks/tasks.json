@@ -13819,7 +13819,7 @@
         "description": "The deterministic recheck test `ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn` (added in task 452 step-1) has several quality issues flagged by 5 reviewers:\n\n1. **Oneshot pattern inconsistency**: Uses `Arc<Mutex<Option<DuplexStream>>>` for `held_writer` (lines 2151-2152) — the exact pattern that task 452 steps 5-6 replaced with `tokio::sync::oneshot::channel` in all other tests. Replace with `let (writer_tx, writer_rx) = oneshot::channel::<DuplexStream>()` and `let _ = writer_tx.send(data_writer)` inside spawn_fn, `let _held = writer_rx.await.ok()` outside.\n\n2. **Missing handle cleanup**: After assertions, add `if let Some(mut h) = sidecar.lock().await.take() { h.kill().await; }` consistent with every other test.\n\n3. **Magic yield ceiling**: The `for _ in 0..100` yield loop (line 2172) has no documentation of why 100 was chosen. The internal chain is exactly 2 tasks deep (reader→state-setter). Either document the ceiling (`// 2-task chain; 10 yields is conservative headroom`) or replace with a short `tokio::time::timeout` spin-yield with explicit deadline.\n\n4. **Task reference in section header**: Remove `(task-452/step-1)` from the section comment — task tracker IDs are transient and meaningless to future readers. Use `// --- deterministic re-check path test ---`.\n\n5. **Silent error discard in make_ready_spawn_fn**: Line 72 uses `let _ = writer_tx.send(data_writer)` — change to `.expect(\"writer_tx receiver dropped\")` since silent discard in test helpers makes failures harder to diagnose.\n\nmemory_hints: search \"oneshot channel DuplexStream test pattern\", get_entity \"make_ready_spawn_fn\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13831,7 +13831,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-03-29T01:08:27.668Z"
+        "updatedAt": "2026-03-29T01:37:27.040Z"
       },
       {
         "id": "666",
@@ -15504,9 +15504,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:37:26.677Z",
+      "lastModified": "2026-03-29T01:37:27.041Z",
       "taskCount": 749,
-      "completedCount": 402,
+      "completedCount": 403,
       "tags": [
         "master"
       ]
