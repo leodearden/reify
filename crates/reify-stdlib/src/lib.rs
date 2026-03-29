@@ -5527,7 +5527,7 @@ mod tests {
 
     #[test]
     fn complex_magnitude_nan_component_returns_undef() {
-        // A NaN component propagates through hypot and sanitize_value catches it.
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
         let z = Value::Complex {
             re: f64::NAN,
             im: 1.0,
