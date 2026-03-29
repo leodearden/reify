@@ -99,7 +99,13 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function isValidValue(value: string): boolean {
     if (value === '') return false;
     if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
-    return QUANTITY_RE.test(value);
+    if (QUANTITY_RE.test(value)) {
+      // Strip the unit suffix and check the numeric part for overflow.
+      // Unit alternation must stay in sync with QUANTITY_RE (longest-match-first: mm before m).
+      const numPart = value.replace(/(mm|cm|deg|rad|m)$/, '');
+      return Number.isFinite(Number(numPart));
+    }
+    return false;
   }
 
   /** Trim, validate, submit. Returns true on success. */

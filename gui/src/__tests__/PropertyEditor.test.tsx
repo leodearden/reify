@@ -799,6 +799,59 @@ describe('PropertyEditor validation - Infinity rejection', () => {
     expect(onSetParam).not.toHaveBeenCalled();
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
+
+  it("'1e999mm' (quantity overflow) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999mm' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'-1e999deg' (negative quantity overflow) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '-1e999deg' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor validation - valid sci-notation quantities still accepted', () => {
+  const values: Record<string, ValueData> = {
+    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+  };
+
+  it.each([
+    ['1e2mm', 'scientific notation + mm'],
+    ['-3.14rad', 'negative decimal + rad'],
+    ['0.5cm', 'decimal fraction + cm'],
+    ['100deg', 'integer + deg'],
+  ])("'%s' (%s) on Enter DOES call onSetParameter", (quantity) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: quantity } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', quantity);
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
 });
 
 describe('PropertyEditor escape clears data-invalid', () => {
