@@ -3591,14 +3591,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let struct_node = find_node_by_kind(root, "structure_definition")
-            .expect("no structure_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(struct_node) = find_node_by_kind(root, "structure_definition") else {
+            panic!("no structure_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_constraint_def(struct_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in constraint def catch-all, got none"
+            lowering.errors.len() >= 2,
+            "expected at least 2 diagnostics (port_declaration, sub_declaration \
+             at minimum), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering.errors.iter().any(|e| e.message.contains("unexpected")),
