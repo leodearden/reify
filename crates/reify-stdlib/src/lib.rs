@@ -4417,6 +4417,22 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_integer_angle_accepted() {
+        // Value::Int(1) = 1 radian, exercises the Value::Int(i) => Some(*i as f64) arm
+        // in trig_input. Expected: half=0.5, q=(cos(0.5), 0, 0, sin(0.5)).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(1);
+        let half = 0.5_f64;
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            half.cos(),
+            0.0,
+            0.0,
+            half.sin()
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
