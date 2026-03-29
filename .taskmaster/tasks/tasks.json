@@ -14126,7 +14126,7 @@
         "description": "Replace `(re * re + im * im).sqrt()` with `re.hypot(im)` in `complex_abs` (crates/reify-stdlib/src/lib.rs). The naive formula suffers premature overflow: any component with absolute value above ~1.34e154 causes Inf even when the true magnitude is representable. For example, `re=1e200, im=0.0` has magnitude 1e200, but the current code returns Undef.\n\n`f64::hypot` internally rescales to avoid intermediate overflow and handles NaN/Inf correctly, so `sanitize_value` still catches genuinely non-finite results.\n\nAlso fix the misleading test comment in `complex_magnitude_nan_component_returns_undef` which references \"hypot\" even though the current implementation doesn't use it. After this change, the comment becomes accurate.\n\nExisting overflow tests (f64::MAX components) will still pass since hypot(f64::MAX, f64::MAX) = f64::MAX * sqrt(2) > f64::MAX = Inf.\n\nMemory hints: search \"complex_abs sanitize_value overflow\", entities: complex_abs, eval_builtin",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14137,7 +14137,8 @@
           "modules": [
             "crates/reify-stdlib/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T01:14:18.559Z"
       },
       {
         "id": "682",
@@ -15480,7 +15481,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T01:14:04.594Z",
+      "lastModified": "2026-03-29T01:14:18.560Z",
       "taskCount": 749,
       "completedCount": 396,
       "tags": [
