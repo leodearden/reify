@@ -17,6 +17,7 @@ import {
   claudeClearSession,
   subscribeToClaudeEvents,
   MESSAGE_CONTEXT_FIELD_MAP,
+  BUILD_CONTEXT_HANDLED_FIELDS,
   mapContextToWire,
   type WireMessageContext,
 } from '../bridge';
@@ -172,6 +173,12 @@ describe('claude invoke wrappers', () => {
     expect(mapKeys).toEqual(expectedKeys);
   });
 
+  it('BUILD_CONTEXT_HANDLED_FIELDS matches MESSAGE_CONTEXT_FIELD_MAP keys', () => {
+    expect([...BUILD_CONTEXT_HANDLED_FIELDS].sort()).toEqual(
+      Object.keys(MESSAGE_CONTEXT_FIELD_MAP).sort(),
+    );
+  });
+
   it('MESSAGE_CONTEXT_FIELD_MAP values match the expected snake_case wire names', () => {
     const expectedWireNames = [
       'attached_contexts',
@@ -216,7 +223,7 @@ describe('claude invoke wrappers', () => {
 
     const wire = mapContextToWire(input);
 
-    expect(wire).toEqual({
+    expect(wire).toStrictEqual({
       selected_entity: 'Bracket.w',
       diagnostics: undefined,
       constraints: undefined,

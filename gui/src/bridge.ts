@@ -144,6 +144,20 @@ export const MESSAGE_CONTEXT_FIELD_MAP = {
 } as const satisfies Record<keyof Required<MessageContext>, string>;
 
 /**
+ * Every MessageContext key that buildMessageContext() in ChatPanel.tsx is
+ * expected to handle.  The `satisfies` clause ensures each element is a valid
+ * MessageContext key; an Equals<> assertion in types.typecheck.ts ensures
+ * completeness against the full MessageContext interface.
+ */
+export const BUILD_CONTEXT_HANDLED_FIELDS = [
+  'selectedEntity',
+  'diagnostics',
+  'constraints',
+  'currentFile',
+  'attachedContexts',
+] as const satisfies readonly (keyof Required<MessageContext>)[];
+
+/**
  * Snake_case wire representation of MessageContext, derived from
  * MESSAGE_CONTEXT_FIELD_MAP via key remapping. Adding a field to MessageContext
  * and the map automatically extends this type.

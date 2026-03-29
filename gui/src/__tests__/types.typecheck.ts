@@ -132,8 +132,21 @@ type _NoSessionStatus = import('../types').SessionStatus;
 // This import ensures the map is reachable from the type-check file.
 // See: claudeBridge.test.ts for compile-time Equals assertions and
 // runtime Object.keys/values tests.
-import { MESSAGE_CONTEXT_FIELD_MAP } from '../bridge';
+import { MESSAGE_CONTEXT_FIELD_MAP, BUILD_CONTEXT_HANDLED_FIELDS } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
 void MESSAGE_CONTEXT_FIELD_MAP;
+void BUILD_CONTEXT_HANDLED_FIELDS;
+
+// --- BUILD_CONTEXT_HANDLED_FIELDS exhaustiveness guard ---
+// Compile-time assertion: the tuple must cover every key of MessageContext.
+// If a field is added to MessageContext without updating BUILD_CONTEXT_HANDLED_FIELDS,
+// tsc will fail here.
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type AssertTrue<T extends true> = T;
+type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
+  Equals<(typeof BUILD_CONTEXT_HANDLED_FIELDS)[number], keyof Required<MessageContext>>
+>;
 
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;

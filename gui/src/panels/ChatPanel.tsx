@@ -68,6 +68,7 @@ export const ChatPanel: Component<ChatPanelProps> = (props) => {
   // SYNC: This function must populate every field of MessageContext.
   // When adding a field to MessageContext, also update:
   // - bridge.ts MESSAGE_CONTEXT_FIELD_MAP (compile-time enforced)
+  // - bridge.ts BUILD_CONTEXT_HANDLED_FIELDS (compile-time enforced via types.typecheck.ts)
   // - this function (manual)
   // See: gui/src/__tests__/types.typecheck.ts for compile-time guards.
   function buildMessageContext(): MessageContext {
