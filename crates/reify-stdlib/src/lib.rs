@@ -5524,6 +5524,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complex_magnitude_large_representable_no_overflow() {
+        // 1e200 is representable as f64, so |1e200 + 0i| = 1e200 must NOT overflow.
+        // The naive (re*re + im*im).sqrt() formula fails because 1e200² = Inf.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 1e200);
+    }
+
     // --- non-numeric args → Undef ---
 
     #[test]
