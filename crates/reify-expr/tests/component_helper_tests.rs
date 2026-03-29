@@ -107,8 +107,8 @@ fn negate_int() {
 /// Negate a Real value.
 #[test]
 fn negate_real() {
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Real(3.14), Type::Real), Type::Real);
-    assert_eq!(eval(&expr), Value::Real(-3.14));
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Real(3.5), Type::Real), Type::Real);
+    assert_eq!(eval(&expr), Value::Real(-3.5));
 }
 
 /// Negate a Scalar with dimension (Length).
