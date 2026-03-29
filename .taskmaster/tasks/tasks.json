@@ -13498,7 +13498,7 @@
         "description": "Task 456 improved connect_body test quality but left port_body and constraint_def tests with weaker patterns. Apply the same improvements symmetrically:\n\n1. **Strengthen assertion in `lower_port_body_extras_not_flagged`** (ts_parser.rs ~line 3555): Change `!errors.iter().any(|e| e.message.contains(\"unexpected\"))` to `assert!(errors.is_empty(), ...)` — source is syntactically valid, matching the connect_body variant.\n\n2. **Strengthen assertion in `lower_constraint_def_extras_not_flagged`** (ts_parser.rs ~line 3609): Same weak→strong assertion change.\n\n3. **Add has_error guard + count assertion + let-else in `lower_port_body_catch_all_emits_for_unexpected_named_children`** (ts_parser.rs ~line 3519): Add `assert!(!root.has_error(), ...)` before node lookup, use let-else for find_node_by_kind, change `!lowering.errors.is_empty()` to `lowering.errors.len() >= 3`.\n\n4. **Add has_error guard + count assertion + let-else in `lower_constraint_def_catch_all_emits_for_unexpected_named_children`** (ts_parser.rs ~line 3571): Same improvements. Count should be `>= 2` (port_declaration, sub_declaration at minimum).\n\nAll changes are test-only in crates/reify-syntax/src/ts_parser.rs.\n\nmemory_hints: search for \"task 456 test quality connect body\" for original context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13509,7 +13509,8 @@
           "modules": [
             "crates/reify-syntax/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-29T00:21:38.373Z"
       },
       {
         "id": "651",
@@ -15471,7 +15472,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-29T00:21:37.890Z",
+      "lastModified": "2026-03-29T00:21:38.374Z",
       "taskCount": 749,
       "completedCount": 387,
       "tags": [
