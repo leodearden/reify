@@ -1123,9 +1123,12 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 
 /// Compute the absolute value (modulus) of a complex number.
 ///
-/// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
-/// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
-/// results are converted to `Undef` by [`sanitize_value`].
+/// Uses [`f64::hypot`] for overflow-resistant magnitude computation,
+/// avoiding premature overflow when components are large but the true
+/// magnitude is still representable. Returns `Value::Real(mag)` when
+/// `dimension` is dimensionless, or `Value::Scalar { si_value: mag,
+/// dimension }` otherwise. Non-finite results are converted to `Undef`
+/// by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
     if dimension == DimensionVector::DIMENSIONLESS {
