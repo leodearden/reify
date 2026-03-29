@@ -1702,6 +1702,35 @@ mod tests {
     }
 
     #[test]
+    fn distance_query_unregistered_pair_returns_error() {
+        // Configure distance for pair (1, 2)
+        let kernel = MockGeometryKernel::new().with_distance_result(
+            GeometryHandleId(1),
+            GeometryHandleId(2),
+            meters(5.0),
+        );
+
+        // Query an unregistered pair (1, 3) — should return Err(QueryFailed)
+        let result = kernel.query(&GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(3),
+        });
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains(&format!("{:?}", GeometryHandleId(1))),
+                    "error message should contain handle id, got: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Err(QueryFailed) for unregistered distance pair, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "no results configured")]
     fn sequenced_solver_panics_on_empty_vec() {
         let solver = SequencedMockConstraintSolver::new(vec![]);
