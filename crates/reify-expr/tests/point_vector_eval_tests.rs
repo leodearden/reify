@@ -611,6 +611,55 @@ fn vector3_div_scalar_divides_components() {
     );
 }
 
+// --- NaN denominator propagation (task 459) ---
+
+/// Real(1.0) / Real(NaN) → Undef (NaN denominator must not propagate).
+#[test]
+fn real_div_nan_returns_undef() {
+    let left = CompiledExpr::literal(Value::Real(1.0), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Vector3<Length> / Real(NaN) → Undef (NaN must not silently infect components).
+#[test]
+fn vector_div_nan_real_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Point3<Length> / Real(NaN) → Undef (NaN must not silently infect components).
+#[test]
+fn point_div_nan_real_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
 // --- Dimension checking and Undef propagation ---
 
 /// Vector3<Length> + Vector3<Angle> returns Undef — dimension mismatch per component.
