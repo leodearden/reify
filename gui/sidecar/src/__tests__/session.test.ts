@@ -365,6 +365,34 @@ describe('SidecarSession', () => {
       expect(diagIdx).toBeLessThan(constraintsIdx);
       expect(constraintsIdx).toBeLessThan(acIdx);
     });
+
+    it('empty context object produces no [Context] block', async () => {
+      await session.handleMessage({
+        type: 'send_message',
+        id: 'msg-empty',
+        text: 'Some text',
+        context: {},
+      });
+
+      const prompt = getBuiltPrompt();
+
+      expect(prompt).not.toContain('[Context]');
+      expect(prompt).toBe('Some text');
+    });
+
+    it('empty string field is silently skipped with no [Context] block', async () => {
+      await session.handleMessage({
+        type: 'send_message',
+        id: 'msg-falsy',
+        text: 'Some text',
+        context: { current_file: '' },
+      });
+
+      const prompt = getBuiltPrompt();
+
+      expect(prompt).not.toContain('[Context]');
+      expect(prompt).not.toContain('Current file:');
+    });
   });
 
   it('multiple sequential messages use session_id for resume', async () => {
