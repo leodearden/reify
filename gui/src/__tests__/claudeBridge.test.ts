@@ -625,6 +625,21 @@ describe('subscribeToClaudeEvents', () => {
       }
     }
 
+    it('rejects primitive number payload with "not a plain object" warning', async () => {
+      const { setup } = captureListener('claude-text-delta');
+      const handler = vi.fn();
+      const listener = await setup(handler);
+
+      listener({ payload: 42 });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('not a plain object'),
+        42,
+      );
+    });
+
     describe('required string field validation', () => {
       it('drops text_delta when id is a number', async () => {
         const { setup } = captureListener('claude-text-delta');
@@ -729,6 +744,16 @@ describe('subscribeToClaudeEvents', () => {
         listener({ payload: { id: 'tc4', tool_name: 'run', tool_input: 'bad' } });
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
+        });
+      });
+
+      it('normalizes tool_input absent (key not present) to empty object', async () => {
+        const { setup } = captureListener('claude-tool-call');
+        const handler = vi.fn();
+        const listener = await setup(handler);
+        listener({ payload: { id: 'tc-absent', tool_name: 'exec' } });
+        expect(handler).toHaveBeenCalledWith({
+          type: 'tool_call', id: 'tc-absent', tool_name: 'exec', tool_input: {},
         });
       });
 
