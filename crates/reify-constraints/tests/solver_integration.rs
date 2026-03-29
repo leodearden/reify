@@ -353,6 +353,37 @@ fn bounds_dont_hide_infeasibility() {
     }
 }
 
+/// Characterization: mm() helper produces identical values to raw Value::Scalar
+/// literals used in false_negative_mixed_scale and bounds_dont_hide_infeasibility.
+/// This validates the mm() refactoring in those tests is semantically safe.
+#[test]
+fn mm_helper_matches_raw_scalar_literals() {
+    // false_negative_mixed_scale: constraint literal
+    assert_eq!(
+        mm(2.0),
+        Value::Scalar {
+            si_value: 0.002,
+            dimension: DimensionVector::LENGTH,
+        }
+    );
+    // false_negative_mixed_scale: current_values insert
+    assert_eq!(
+        mm(1.999999),
+        Value::Scalar {
+            si_value: 0.001999999,
+            dimension: DimensionVector::LENGTH,
+        }
+    );
+    // bounds_dont_hide_infeasibility: constraint literal
+    assert_eq!(
+        mm(15.0),
+        Value::Scalar {
+            si_value: 0.015,
+            dimension: DimensionVector::LENGTH,
+        }
+    );
+}
+
 #[test]
 fn compound_and_constraint() {
     let solver = DimensionalSolver;
