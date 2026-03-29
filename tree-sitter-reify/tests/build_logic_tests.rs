@@ -408,6 +408,40 @@ fn test_find_err_arm_braced_simple() {
 }
 
 #[test]
+fn test_find_err_arm_braced_skips_format_braces() {
+    // Err(e) arm contains format!() with '}}' (Rust escaped brace) BEFORE child.kill()/child.wait().
+    // The '}}' in source text is two literal '}' characters — the naive brace counter
+    // decrements depth to 0 at the first '}', stopping before child.kill()/child.wait().
+    // A string-literal-aware tracker must skip braces inside "..." to extract the full arm.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                let msg = format!("err={}, hint: '}}' escapes", e);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(msg);
+            }
+        }
+    "#;
+
+    let arm = find_err_arm_braced(source)
+        .expect("should find Err(e) arm with format strings");
+
+    assert!(
+        arm.contains("child.kill()"),
+        "brace-depth tracker must not stop at format string braces. Got: {}",
+        arm
+    );
+    assert!(
+        arm.contains("child.wait()"),
+        "brace-depth tracker must capture full arm past format strings. Got: {}",
+        arm
+    );
+}
+
+#[test]
 fn test_out_dir_no_silent_fallback() {
     // Source-level regression guard: build.rs must NOT silently fall back to "." when
     // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
