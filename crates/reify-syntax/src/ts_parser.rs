@@ -3528,14 +3528,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_port_body(constraint_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in catch-all, got none"
+            lowering.errors.len() >= 2,
+            "expected at least 2 diagnostics (identifier and constraint_def_predicate \
+             are unexpected in port body; param_declaration is handled), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering.errors.iter().any(|e| e.message.contains("unexpected")),
@@ -3547,14 +3556,14 @@ mod tests {
     #[test]
     fn lower_port_body_extras_not_flagged() {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a port body containing a block comment
-        // produces no errors mentioning "unexpected".
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_port_body_directly(
             "structure S { port a : in T { /* comment */ param x: Scalar = 1 } }",
         );
         assert!(
-            !errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors.is_empty(),
+            "expected no errors for syntactically valid port body with comment, got: {:?}",
             errors
         );
     }
@@ -3582,14 +3591,23 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let struct_node = find_node_by_kind(root, "structure_definition")
-            .expect("no structure_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(struct_node) = find_node_by_kind(root, "structure_definition") else {
+            panic!("no structure_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_constraint_def(struct_node);
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in constraint def catch-all, got none"
+            lowering.errors.len() >= 2,
+            "expected at least 2 diagnostics (port_declaration, sub_declaration \
+             at minimum), got {}: {:?}",
+            lowering.errors.len(),
+            lowering.errors
         );
         assert!(
             lowering.errors.iter().any(|e| e.message.contains("unexpected")),
@@ -3601,14 +3619,14 @@ mod tests {
     #[test]
     fn lower_constraint_def_extras_not_flagged() {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a constraint def containing a block comment
-        // produces no errors mentioning "unexpected".
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_constraint_def_directly(
             "constraint def Eq { /* comment */ param x: Scalar  x > 0 }",
         );
         assert!(
-            !errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors.is_empty(),
+            "expected no errors for syntactically valid constraint def with comment, got: {:?}",
             errors
         );
     }
