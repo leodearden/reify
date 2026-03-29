@@ -328,9 +328,9 @@ fn test_try_wait_error_path_kills_child() {
     let build_rs = std::fs::read_to_string("build.rs")
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // Extract a 300-char window after `Err(e) =>` — this captures the full ~220-char arm
-    // without fragile brace-counting that can be fooled by braces inside format strings.
-    let err_arm = find_err_arm_window(&build_rs, 300)
+    // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
+    // This precisely captures the arm body without the fragility of a fixed-size window.
+    let err_arm = find_err_arm_braced(&build_rs)
         .expect("build.rs should contain an Err(e) arm in try_wait match");
 
     assert!(
