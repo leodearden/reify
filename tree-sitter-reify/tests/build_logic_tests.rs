@@ -222,12 +222,51 @@ fn test_no_redundant_rerun_if_changed() {
     );
 }
 
-/// Find the Err(e) arm in source code and return a window of characters from that point.
-/// This avoids fragile brace-counting that can be fooled by braces inside string literals.
-fn find_err_arm_window(source: &str, window: usize) -> Option<&str> {
-    let start = source.find("Err(e) =>")?;
-    let end = (start + window).min(source.len());
-    Some(&source[start..end])
+/// Find the Err(e) arm in source code using brace-depth tracking.
+/// Returns the slice from `Err(e) =>` through the arm's closing `}`.
+/// Tracks brace depth, skipping braces inside double-quoted string literals
+/// so that format strings like `format!("hint: '}}'")` don't fool the counter.
+fn find_err_arm_braced(source: &str) -> Option<&str> {
+    let err_start = source.find("Err(e) =>")?;
+    let after_arrow = &source[err_start..];
+
+    // Find the opening brace of the arm body.
+    let brace_offset = after_arrow.find('{')?;
+    let body_start = err_start + brace_offset;
+
+    let bytes = source.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = body_start;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                // Skip string literal contents — braces inside strings don't count.
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2; // skip escaped character (e.g. \")
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break; // closing quote
+                    }
+                    i += 1;
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&source[err_start..=i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    None // unbalanced braces
 }
 
 /// Duplicates run_with_timeout logic from build.rs for testability.
@@ -281,9 +320,9 @@ fn test_try_wait_error_path_kills_child() {
     let build_rs = std::fs::read_to_string("build.rs")
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
-    // Extract a 300-char window after `Err(e) =>` — this captures the full ~220-char arm
-    // without fragile brace-counting that can be fooled by braces inside format strings.
-    let err_arm = find_err_arm_window(&build_rs, 300)
+    // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
+    // This precisely captures the arm body without the fragility of a fixed-size window.
+    let err_arm = find_err_arm_braced(&build_rs)
         .expect("build.rs should contain an Err(e) arm in try_wait match");
 
     assert!(
@@ -303,7 +342,8 @@ fn test_try_wait_error_path_kills_child() {
 #[test]
 fn test_err_arm_extraction_not_fooled_by_format_braces() {
     // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
-    // This demonstrates the fragility of the naive .find('}') approach.
+    // This demonstrates the fragility of the naive .find('}') approach and validates
+    // that find_err_arm_braced handles it correctly.
     let source = r#"
         match child.try_wait() {
             Ok(Some(status)) => { return Ok(()); }
@@ -330,17 +370,81 @@ fn test_err_arm_extraction_not_fooled_by_format_braces() {
         "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
     );
 
-    // The window approach captures the full arm.
-    let window = find_err_arm_window(source, 300).expect("should find Err(e) arm");
+    // The brace-depth tracker with string-literal awareness captures the full arm.
+    let braced = find_err_arm_braced(source).expect("should find Err(e) arm");
     assert!(
-        window.contains("child.kill()"),
-        "window approach should capture child.kill(). Window: {}",
-        window
+        braced.contains("child.kill()"),
+        "find_err_arm_braced should capture child.kill(). Got: {}",
+        braced
     );
     assert!(
-        window.contains("child.wait()"),
-        "window approach should capture child.wait(). Window: {}",
-        window
+        braced.contains("child.wait()"),
+        "find_err_arm_braced should capture child.wait(). Got: {}",
+        braced
+    );
+}
+
+#[test]
+fn test_find_err_arm_braced_simple() {
+    // Simple match block with Err(e) arm — no format strings or nested braces.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("error: {}", e));
+            }
+        }
+    "#;
+
+    let arm = find_err_arm_braced(source)
+        .expect("should find Err(e) arm in simple match block");
+
+    assert!(
+        arm.contains("child.kill()"),
+        "extracted arm should contain child.kill(). Got: {}",
+        arm
+    );
+    assert!(
+        arm.contains("child.wait()"),
+        "extracted arm should contain child.wait(). Got: {}",
+        arm
+    );
+}
+
+#[test]
+fn test_find_err_arm_braced_skips_format_braces() {
+    // Err(e) arm contains format!() with '}}' (Rust escaped brace) BEFORE child.kill()/child.wait().
+    // The '}}' in source text is two literal '}' characters — the naive brace counter
+    // decrements depth to 0 at the first '}', stopping before child.kill()/child.wait().
+    // A string-literal-aware tracker must skip braces inside "..." to extract the full arm.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                let msg = format!("err={}, hint: '}}' escapes", e);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(msg);
+            }
+        }
+    "#;
+
+    let arm = find_err_arm_braced(source)
+        .expect("should find Err(e) arm with format strings");
+
+    assert!(
+        arm.contains("child.kill()"),
+        "brace-depth tracker must not stop at format string braces. Got: {}",
+        arm
+    );
+    assert!(
+        arm.contains("child.wait()"),
+        "brace-depth tracker must capture full arm past format strings. Got: {}",
+        arm
     );
 }
 
