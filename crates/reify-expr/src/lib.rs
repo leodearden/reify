@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use reify_types::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
-    DeterminacyState, DimensionVector, PersistentMap, QuantifierKind, Type, UnOp, Value,
-    ValueCellId, ValueMap,
+    DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Maximum recursion depth for user-defined function calls.
@@ -119,11 +119,31 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // so they're handled here rather than in stdlib.
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
-                    if let Value::Field { lambda, .. } = &evaluated_args[0] {
-                        match lambda.as_ref() {
-                            Value::Lambda { .. } => {
+                    if let Value::Field {
+                        lambda,
+                        source,
+                        domain_type,
+                        ..
+                    } = &evaluated_args[0]
+                    {
+                        match (lambda.as_ref(), source) {
+                            (Value::Lambda { .. }, _) => {
                                 apply_lambda(lambda, &evaluated_args[1..], ctx)
                             }
+                            // Gradient-produced field: lambda slot contains the
+                            // original field (with its own lambda inside).
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Composed,
+                            ) => compute_numerical_gradient_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
                             _ => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -142,7 +162,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                "gradient" if evaluated_args.len() == 1 => {
+                    compute_gradient(&evaluated_args[0])
+                }
+                "divergence" | "curl" if evaluated_args.len() == 1 => {
                     if !matches!(&evaluated_args[0], Value::Field { .. }) {
                         #[cfg(debug_assertions)]
                         eprintln!(
@@ -151,7 +174,6 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         );
                     }
                     // Stub: these field operations are not yet implemented.
-                    // They require numeric differentiation infrastructure.
                     Value::Undef
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
@@ -508,6 +530,166 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
             eval_expr(body, &ctx.with_scope(&eval_map))
         }
         _ => Value::Undef,
+    }
+}
+
+/// Compute the gradient of a field value.
+///
+/// Returns a new Field with `FieldSourceKind::Composed` whose lambda slot stores the
+/// original field. The sample handler detects this pattern and dispatches to
+/// `compute_numerical_gradient_at_point` for central-difference evaluation.
+///
+/// Validation:
+/// - Argument must be a Field with Analytical or Composed source
+/// - Lambda must be a Lambda (not Undef)
+/// - Domain must have scalar quantity components (Real, Int, Scalar, or Point{n, scalar})
+fn compute_gradient(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] gradient: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    // Only Analytical and Composed fields support gradient
+    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
+        return Value::Undef;
+    }
+
+    // Lambda must be a callable Lambda
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Determine dimensionality and validate scalar domain quantity
+    let n = match domain_type {
+        Type::Real | Type::Int | Type::Scalar { .. } => 1,
+        Type::Point { n, quantity } => {
+            if !matches!(quantity.as_ref(), Type::Real | Type::Int | Type::Scalar { .. }) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => return Value::Undef,
+    };
+
+    // Construct result codomain type:
+    // 1D → same as codomain (scalar derivative)
+    // nD → Vector{n, codomain_quantity}
+    let result_codomain = if n == 1 {
+        codomain_type.clone()
+    } else {
+        Type::Vector {
+            n,
+            quantity: Box::new(codomain_type.clone()),
+        }
+    };
+
+    // Return a gradient field: source=Composed, lambda slot stores the original field.
+    // The sample handler detects lambda=Field + source=Composed and dispatches to
+    // compute_numerical_gradient_at_point.
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::Composed,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the numerical gradient of a field at a given point via central differences.
+///
+/// For each axis i, perturbs coordinate i by ±h where h = 1e-6 * max(|coord_i|, 1e-3),
+/// evaluates the original lambda, and computes df/dx_i ≈ (f(x+h) - f(x-h)) / (2h).
+///
+/// Returns:
+/// - Scalar (Real) for 1D fields
+/// - Vector for nD fields
+/// - Undef if any perturbation evaluation fails
+fn compute_numerical_gradient_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Decompose point into f64 coordinates
+    let coords: Vec<f64> = match point {
+        Value::Real(r) => vec![*r],
+        Value::Int(i) => vec![*i as f64],
+        Value::Scalar { si_value, .. } => vec![*si_value],
+        Value::Point(items) | Value::Tensor(items) | Value::Vector(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) => v.push(f),
+                    None => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    // Determine if domain is dimensioned (for constructing perturbed args)
+    let _domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let mut gradient_components = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let coord_i = coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        // Build perturbed coordinate vectors
+        let mut plus_coords = coords.clone();
+        plus_coords[i] += h;
+        let mut minus_coords = coords.clone();
+        minus_coords[i] -= h;
+
+        // Construct args for apply_lambda (individual Real values)
+        let plus_args: Vec<Value> = plus_coords.into_iter().map(Value::Real).collect();
+        let minus_args: Vec<Value> = minus_coords.into_iter().map(Value::Real).collect();
+
+        let f_plus = apply_lambda(lambda, &plus_args, ctx);
+        let f_minus = apply_lambda(lambda, &minus_args, ctx);
+
+        // Extract numeric values, propagate Undef
+        let fp = match f_plus.as_f64() {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+        let fm = match f_minus.as_f64() {
+            Some(v) => v,
+            None => return Value::Undef,
+        };
+
+        gradient_components.push((fp - fm) / (2.0 * h));
+    }
+
+    if n == 1 {
+        Value::Real(gradient_components[0])
+    } else {
+        Value::Vector(gradient_components.into_iter().map(Value::Real).collect())
     }
 }
 
