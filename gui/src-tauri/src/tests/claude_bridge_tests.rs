@@ -2209,7 +2209,7 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
     }
 }
 
-// --- deterministic re-check path test (task-452/step-1) ---
+// --- deterministic re-check path test ---
 
 /// Deterministic test for the post-spawn re-check path (line 661) in
 /// `ensure_sidecar_ready`.
@@ -2241,12 +2241,10 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
     let ready_before_return = Arc::new(AtomicBool::new(false));
     let ready_flag_clone = Arc::clone(&ready_before_return);
 
-    let held_writer: Arc<Mutex<Option<tokio::io::DuplexStream>>> = Arc::new(Mutex::new(None));
-    let held_clone = Arc::clone(&held_writer);
+    let (writer_tx, writer_rx) = tokio::sync::oneshot::channel::<tokio::io::DuplexStream>();
 
     let spawn_fn = move || {
         let flag = Arc::clone(&ready_flag_clone);
-        let held = Arc::clone(&held_clone);
         async move {
             let state = Arc::new(Mutex::new(SidecarState::Starting));
             let (mut data_writer, data_reader) = tokio::io::duplex(1024);
@@ -2279,13 +2277,14 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             flag.store(true, Ordering::SeqCst);
 
             // Keep data_writer alive so the reader doesn't see EOF.
-            *held.lock().await = Some(data_writer);
+            let _ = writer_tx.send(data_writer);
             Ok(handle)
         }
     };
 
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
     let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+    let _held = writer_rx.await.ok();
 
     assert!(
         ready_before_return.load(Ordering::SeqCst),
