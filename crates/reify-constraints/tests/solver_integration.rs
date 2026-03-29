@@ -850,6 +850,17 @@ fn warm_start_scales_iterations_with_dimension() {
                     si
                 );
             }
+            // Verify p0 (the minimized param) was not worsened beyond its
+            // initial value (15mm). In 8 dimensions with tight 10-20mm windows,
+            // the optimizer may drift infeasible and fallback to initial values,
+            // so we verify the solver at least preserved or improved p0.
+            let si_p0 = values.get(&param_ids[0]).unwrap().as_f64().unwrap();
+            assert!(
+                si_p0 <= 0.015 + 1e-10,
+                "p0 should be at or below initial 15mm (got {} m), \
+                 verifying solver did not worsen the minimized param",
+                si_p0
+            );
         }
         other => panic!("expected Solved for 8-param warm-start, got {:?}", other),
     }
