@@ -310,6 +310,7 @@ describe('SidecarSession', () => {
 
       const prompt = getBuiltPrompt();
 
+      expect(prompt).toContain('Explain this');
       expect(prompt).toContain('Current file: src/main.ri');
       expect(prompt).toContain('[Context]');
     });
@@ -324,6 +325,7 @@ describe('SidecarSession', () => {
 
       const prompt = getBuiltPrompt();
 
+      expect(prompt).toContain('Help me');
       expect(prompt).toContain('[Context]');
       expect(prompt).toContain('Attached contexts:\nfile: lib.ri\nfn add(a, b) = a + b\n\nfile: util.ri\nfn clamp(v) = max(0, v)');
     });
@@ -344,6 +346,7 @@ describe('SidecarSession', () => {
 
       const prompt = getBuiltPrompt();
 
+      expect(prompt).toContain('Full context');
       expect(prompt).toContain('[Context]');
       expect(prompt).toContain('Current file: src/engine.ri');
       expect(prompt).toContain('Selected entity: Cylinder');
@@ -351,10 +354,16 @@ describe('SidecarSession', () => {
       expect(prompt).toContain('Constraints:\nradius > 0');
       expect(prompt).toContain('Attached contexts:\nfile: helper.ri\nfn helper() = 42');
 
-      // Verify ordering: current_file appears before selected_entity
+      // Verify full ordering chain across all five context fields
       const cfIdx = prompt.indexOf('Current file:');
       const seIdx = prompt.indexOf('Selected entity:');
+      const diagIdx = prompt.indexOf('Diagnostics:');
+      const constraintsIdx = prompt.indexOf('Constraints:');
+      const acIdx = prompt.indexOf('Attached contexts:');
       expect(cfIdx).toBeLessThan(seIdx);
+      expect(seIdx).toBeLessThan(diagIdx);
+      expect(diagIdx).toBeLessThan(constraintsIdx);
+      expect(constraintsIdx).toBeLessThan(acIdx);
     });
   });
 
