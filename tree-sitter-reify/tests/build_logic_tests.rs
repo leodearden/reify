@@ -345,6 +345,36 @@ fn test_err_arm_extraction_not_fooled_by_format_braces() {
 }
 
 #[test]
+fn test_find_err_arm_braced_simple() {
+    // Simple match block with Err(e) arm — no format strings or nested braces.
+    let source = r#"
+        match child.try_wait() {
+            Ok(Some(status)) => { return Ok(()); }
+            Ok(None) => { /* polling */ }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("error: {}", e));
+            }
+        }
+    "#;
+
+    let arm = find_err_arm_braced(source)
+        .expect("should find Err(e) arm in simple match block");
+
+    assert!(
+        arm.contains("child.kill()"),
+        "extracted arm should contain child.kill(). Got: {}",
+        arm
+    );
+    assert!(
+        arm.contains("child.wait()"),
+        "extracted arm should contain child.wait(). Got: {}",
+        arm
+    );
+}
+
+#[test]
 fn test_out_dir_no_silent_fallback() {
     // Source-level regression guard: build.rs must NOT silently fall back to "." when
     // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
