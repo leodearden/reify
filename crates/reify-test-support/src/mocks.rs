@@ -1731,6 +1731,67 @@ mod tests {
     }
 
     #[test]
+    fn sequenced_solver_concurrent_no_deadlock() {
+        use std::sync::Mutex as StdMutex;
+
+        let mut values: Vec<HashMap<ValueCellId, Value>> = Vec::new();
+        for i in 0..4 {
+            let mut v = HashMap::new();
+            v.insert(
+                ValueCellId::new("S", "x"),
+                Value::length(0.001 * (i as f64 + 1.0)),
+            );
+            values.push(v);
+        }
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values[0].clone(),
+            },
+            SolveResult::Solved {
+                values: values[1].clone(),
+            },
+            SolveResult::Solved {
+                values: values[2].clone(),
+            },
+            SolveResult::Solved {
+                values: values[3].clone(),
+            },
+        ]);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        let collected = StdMutex::new(Vec::new());
+
+        // 4 threads each calling solve() once — validates the task 430 fix:
+        // separate lock acquisition for `results` and `last` prevents deadlock.
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    let result = solver.solve(&problem);
+                    collected.lock().unwrap().push(result);
+                });
+            }
+        });
+
+        let results = collected.into_inner().unwrap();
+        assert_eq!(results.len(), 4, "all 4 threads should complete");
+        for result in &results {
+            assert!(
+                matches!(result, SolveResult::Solved { .. }),
+                "expected Solved variant, got {:?}",
+                result
+            );
+        }
+    }
+
+    #[test]
     #[should_panic(expected = "no results configured")]
     fn sequenced_solver_panics_on_empty_vec() {
         let solver = SequencedMockConstraintSolver::new(vec![]);
