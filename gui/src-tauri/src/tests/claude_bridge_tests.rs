@@ -24,20 +24,25 @@ fn make_starting_handle() -> (SidecarHandle, tokio::io::DuplexStream) {
     (handle, data_writer)
 }
 
-/// Create a `SidecarHandle` in `Ready` state with an empty data reader.
+/// Create a `SidecarHandle` in `Ready` state with a live duplex data stream.
 ///
-/// Suitable for tests that only verify stdin writes or state checks, where the
-/// reader task exits immediately (no data to read).
-fn make_ready_handle() -> SidecarHandle {
+/// Returns `(handle, data_writer)`.  Caller must hold the returned `DuplexStream`
+/// alive — dropping it causes EOF on the reader task which transitions state to
+/// `Crashed`.
+///
+/// Suitable for tests that verify state without interacting with stdin or the
+/// reader task.
+fn make_ready_handle() -> (SidecarHandle, tokio::io::DuplexStream) {
     use std::sync::Arc;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
     let state = Arc::new(Mutex::new(SidecarState::Ready));
-    let data: &[u8] = b"";
-    let empty_reader = BufReader::new(data);
-    let (writer, _writer_end) = tokio::io::duplex(1024);
-    SidecarHandle::from_parts(writer, empty_reader, state)
+    let (data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+    let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+    (handle, data_writer)
 }
 
 /// Async body for a standard ready-signaling `spawn_fn`.
@@ -1515,7 +1520,8 @@ async fn ensure_sidecar_ready_skips_spawn_when_already_some() {
     use tokio::sync::Mutex;
 
     // Pre-populate the sidecar slot with a Ready handle.
-    let handle = make_ready_handle();
+    // _data_writer must stay alive to prevent EOF → Crashed race.
+    let (handle, _data_writer) = make_ready_handle();
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(handle));
 
     // Track whether spawn_fn was invoked at all.
@@ -2291,4 +2297,27 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
     if let Some(mut h) = sidecar.lock().await.take() {
         h.kill().await;
     }
+}
+
+/// Regression test: make_ready_handle's empty b"" reader causes immediate EOF,
+/// which triggers the on_exit callback setting state to Crashed.  On a
+/// multi_thread runtime the spawned on_exit task can run between yield points,
+/// causing intermittent Ready→Crashed transitions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn make_ready_handle_stays_ready_on_multi_thread() {
+    let (handle, _data_writer) = make_ready_handle();
+    let state = std::sync::Arc::clone(handle.state());
+
+    // Yield to allow the spawned on_exit task (if any) to execute.
+    tokio::task::yield_now().await;
+    // Brief sleep gives the on_exit task time to acquire the state lock.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let current = state.lock().await.clone();
+    assert!(
+        matches!(current, SidecarState::Ready),
+        "Expected SidecarState::Ready after yield, got {:?} — \
+         the empty-reader EOF race caused a Crashed transition",
+        current,
+    );
 }

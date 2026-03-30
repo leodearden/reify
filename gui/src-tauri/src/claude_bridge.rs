@@ -680,16 +680,16 @@ where
     }
 
     // Re-check: handles the *pre-creation* race window — Ready set during
-    // spawn_fn's internal await points, BEFORE `notified()` is created on
-    // line 625.  In that window no `Notified` future exists, so the
-    // `notify_waiters()` call is irretrievably lost.
+    // spawn_fn's internal await points, BEFORE `notified()` is created at
+    // the `spawn_fn().await` call in Phase 2.  In that window no `Notified`
+    // future exists, so the `notify_waiters()` call is irretrievably lost.
     //
     // This is distinct from the *post-creation* window (notified() created
-    // but waiter not yet registered), which is handled by `enable()` on
-    // line 626 eagerly registering the waiter.
+    // but waiter not yet registered), which is handled by the `pin! +
+    // enable()` call below Phase 2 eagerly registering the waiter.
     //
     // Together, enable() + re-check provide defense-in-depth against both
-    // windows.  This mirrors the same pattern in wait_ready (line 349-350).
+    // windows.  This mirrors the `pin! + enable()` sequence in `wait_ready`.
     if matches!(*spawned_state.lock().await, SidecarState::Ready) {
         return Ok(());
     }
