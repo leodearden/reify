@@ -1081,6 +1081,37 @@ mod tests {
     }
 
     #[test]
+    fn structure_names_counts_port_with_guarded_group() {
+        // Verifies that count_members_recursive correctly handles both Port
+        // and GuardedGroup recursion in the same structure. The tree-sitter
+        // grammar does not support where-blocks inside port bodies, so we
+        // test them at the same level instead.
+        let source = r#"structure S {
+    param cond : Bool = true
+    port x : MechPort { param d : Length = 10mm  constraint d > 0mm }
+    where cond {
+        param guarded_p : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: cond + d (inside port) + guarded_p (inside where) = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (cond, d inside port, guarded_p inside where), got {param_count}"
+        );
+        assert_eq!(let_count, 0, "expected 0 lets, got {let_count}");
+        // Should count: d > 0mm (inside port) = 1 constraint
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+        );
+    }
+
+    #[test]
     fn structure_names_counts_port_internal_members() {
         let source = r#"structure S {
     param a : Scalar = 1mm
