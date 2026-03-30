@@ -126,24 +126,12 @@ fn false_negative_small_violation() {
     let x_id = vcid("Part", "x");
     let x_ref = value_ref("Part", "x");
 
-    // constraint: x > 2.0
-    let constraint = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 2.0,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    // constraint: x > 2.0m
+    let constraint = gt(x_ref, literal(meters(2.0)));
 
     // Current value already at the max bound
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 1.9999999,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), meters(1.9999999));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -176,36 +164,12 @@ fn false_negative_multiple_small_violations() {
     let x_ref = value_ref("Part", "x");
     let y_ref = value_ref("Part", "y");
 
-    let c1 = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 2.0,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
-    let c2 = gt(
-        y_ref,
-        literal(Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    let c1 = gt(x_ref, literal(meters(2.0)));
+    let c2 = gt(y_ref, literal(meters(1.0)));
 
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 1.9999999,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
-    current.insert(
-        y_id.clone(),
-        Value::Scalar {
-            si_value: 0.9999999,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), meters(1.9999999));
+    current.insert(y_id.clone(), meters(0.9999999));
 
     let problem = ResolutionProblem {
         auto_params: vec![
@@ -245,14 +209,8 @@ fn false_negative_mixed_scale() {
     let x_ref = value_ref("Part", "x");
     let y_ref = value_ref("Part", "y");
 
-    // x > 0.002 (constraint in SI meters, x bounded to max 0.001999999)
-    let c1 = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 0.002,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    // x > 2mm (constraint in SI meters = 0.002, x bounded to max 0.001999999)
+    let c1 = gt(x_ref, literal(mm(2.0)));
 
     // y > 100 (dimensionless, y bounded to max 99.9999999)
     let c2 = gt(
@@ -264,13 +222,7 @@ fn false_negative_mixed_scale() {
     );
 
     let mut current = ValueMap::new();
-    current.insert(
-        x_id.clone(),
-        Value::Scalar {
-            si_value: 0.001999999,
-            dimension: DimensionVector::LENGTH,
-        },
-    );
+    current.insert(x_id.clone(), mm(1.999999));
     current.insert(
         y_id.clone(),
         Value::Scalar {
@@ -314,14 +266,8 @@ fn bounds_dont_hide_infeasibility() {
     let x_id = vcid("Part", "x");
     let x_ref = value_ref("Part", "x");
 
-    // constraint: x > 0.015 (15mm)
-    let constraint = gt(
-        x_ref,
-        literal(Value::Scalar {
-            si_value: 0.015,
-            dimension: DimensionVector::LENGTH,
-        }),
-    );
+    // constraint: x > 15mm
+    let constraint = gt(x_ref, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
         auto_params: vec![AutoParam {
@@ -620,9 +566,10 @@ fn maximize_with_feasible_initial_point() {
 ///
 /// Setup: tight constraints (x > 5mm AND x < 6mm), current = 5.5mm (feasible),
 /// minimize(x) objective, but param bounds [0, 100mm] let the optimizer explore
-/// well below the constraint floor. With only 500 warm-start iterations, the
-/// penalty-based optimizer may converge to a point below 5mm.
-/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with initial values.
+/// well below the constraint floor. With 1000 warm-start iterations
+/// (budget = 500 * (1+1) = 1000 for 1 param), the penalty-based optimizer
+/// may converge to a point below 5mm.
+/// Pre-fix: solver returns Infeasible (bug). Post-fix: Solved with exact initial values.
 #[test]
 fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     let solver = DimensionalSolver;
@@ -658,11 +605,14 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     match result {
         SolveResult::Solved { values } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
-            // The result must satisfy constraints: 5mm < x < 6mm
+            // Fallback must return the EXACT initial value (5.5mm = 0.0055m),
+            // not a partially-optimized point. The initial is preserved through
+            // as_f64() → Vec<f64> → build_solved_values() round-trip.
             assert!(
-                si > 0.005 && si < 0.006,
-                "result should satisfy constraints (5mm < x < 6mm), got {} m",
-                si
+                (si - 0.0055).abs() < 1e-10,
+                "fallback should return exact initial value 5.5mm (0.0055 m), got {} m (delta = {:.2e})",
+                si,
+                (si - 0.0055).abs()
             );
         }
         other => panic!(
@@ -761,10 +711,13 @@ fn warm_start_optimizes_when_possible() {
     match result {
         SolveResult::Solved { values } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
-            // Optimizer should push x below 25mm (initial), toward ~5mm (param lower bound)
+            // Optimizer should push x toward ~5mm (param lower bound).
+            // With wide constraints (2-50mm) and bounds [5mm, 100mm],
+            // convergence near the 5mm floor is expected. Threshold 8mm
+            // guards against regressions where the solver barely optimizes.
             assert!(
-                si < 0.015,
-                "optimized x should be well below initial 25mm, got {} m (fallback not triggered)",
+                si < 0.008,
+                "optimized x should converge near 5mm lower bound, got {} m (threshold 8mm)",
                 si
             );
             // Must still be feasible
@@ -843,6 +796,17 @@ fn warm_start_scales_iterations_with_dimension() {
                     si
                 );
             }
+            // Verify p0 (the minimized param) was not worsened beyond its
+            // initial value (15mm). In 8 dimensions with tight 10-20mm windows,
+            // the optimizer may drift infeasible and fallback to initial values,
+            // so we verify the solver at least preserved or improved p0.
+            let si_p0 = values.get(&param_ids[0]).unwrap().as_f64().unwrap();
+            assert!(
+                si_p0 <= 0.015 + 1e-10,
+                "p0 should be at or below initial 15mm (got {} m), \
+                 verifying solver did not worsen the minimized param",
+                si_p0
+            );
         }
         other => panic!("expected Solved for 8-param warm-start, got {:?}", other),
     }
@@ -1418,6 +1382,94 @@ fn warm_start_budget_requires_objective_invariant() {
         }
         other => panic!(
             "expected Solved for feasible+no-objective (early-return path), got {:?}",
+            other
+        ),
+    }
+}
+
+/// Multi-param fallback: 3 params with tight constraints (each 10-11mm window),
+/// all start feasible at 10.5mm. Minimize(p0+p1+p2) pushes the optimizer below
+/// the constraint floor (10mm). With wide bounds [0, 100mm], the optimizer
+/// explores infeasible territory and the solver falls back to initial values.
+///
+/// Asserts: EACH returned value exactly matches its initial value (10.5mm),
+/// verifying the fallback preserves all params without partial optimization
+/// or corruption across the multi-param vector.
+#[test]
+fn warm_start_fallback_returns_exact_initial_values() {
+    let solver = DimensionalSolver;
+
+    let p0_id = vcid("Part", "p0");
+    let p1_id = vcid("Part", "p1");
+    let p2_id = vcid("Part", "p2");
+    let p0_ref = value_ref("Part", "p0");
+    let p1_ref = value_ref("Part", "p1");
+    let p2_ref = value_ref("Part", "p2");
+
+    // Tight constraints: each param in (10mm, 11mm) — only 1mm feasible window
+    let constraints = vec![
+        (cnid("Part", 0), gt(p0_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 1), lt(p0_ref.clone(), literal(mm(11.0)))),
+        (cnid("Part", 2), gt(p1_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 3), lt(p1_ref.clone(), literal(mm(11.0)))),
+        (cnid("Part", 4), gt(p2_ref.clone(), literal(mm(10.0)))),
+        (cnid("Part", 5), lt(p2_ref.clone(), literal(mm(11.0)))),
+    ];
+
+    // Minimize(p0 + p1 + p2) — pushes all params below constraint floor
+    let sum_01 = binop(BinOp::Add, p0_ref, p1_ref);
+    let sum_012 = binop(BinOp::Add, sum_01, p2_ref);
+    let objective = OptimizationObjective::Minimize(sum_012);
+
+    // All params start at 10.5mm — centered in the feasible window
+    let mut current = ValueMap::new();
+    for pid in [&p0_id, &p1_id, &p2_id] {
+        current.insert(pid.clone(), mm(10.5));
+    }
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: p0_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+            },
+            AutoParam {
+                id: p1_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)),
+            },
+            AutoParam {
+                id: p2_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)),
+            },
+        ],
+        constraints,
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values } => {
+            // Each param must be returned at EXACTLY the initial value (10.5mm = 0.0105m).
+            // The fallback path reconstructs values via build_solved_values(&problem.auto_params, &initial),
+            // which should preserve exact f64 values through the round-trip.
+            for (pid, label) in [(&p0_id, "p0"), (&p1_id, "p1"), (&p2_id, "p2")] {
+                let si = values.get(pid).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.0105).abs() < 1e-10,
+                    "{} should be exact initial 10.5mm (0.0105 m), got {} m (delta = {:.2e})",
+                    label,
+                    si,
+                    (si - 0.0105).abs()
+                );
+            }
+        }
+        other => panic!(
+            "expected Solved (fallback to feasible initial values), got {:?}",
             other
         ),
     }
