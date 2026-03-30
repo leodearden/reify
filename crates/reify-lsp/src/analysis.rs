@@ -1,7 +1,7 @@
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
-use reify_syntax::ParsedModule;
+use reify_syntax::{Declaration, ParsedModule};
 use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
@@ -235,6 +235,27 @@ impl AnalysisContext {
         }
         None
     }
+}
+
+/// Return the declaration (Structure or Occurrence) whose span contains `offset`,
+/// or `None` if the offset is outside all such declarations.
+///
+/// This is a free function that operates on `&[Declaration]` directly, so it can
+/// be used by callers that only have a `ParsedModule` (e.g., goto-def) without
+/// needing a full `AnalysisContext`.
+pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<&Declaration> {
+    let offset_u32 = offset as u32;
+    for decl in declarations {
+        let decl_span = match decl {
+            Declaration::Structure(s) => s.span,
+            Declaration::Occurrence(o) => o.span,
+            _ => continue,
+        };
+        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+            return Some(decl);
+        }
+    }
+    None
 }
 
 /// Recursively search a member list for a named param or let declaration.
