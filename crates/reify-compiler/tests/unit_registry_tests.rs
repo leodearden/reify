@@ -949,3 +949,23 @@ structure def Bracket {
         panic!("width has no default_expr");
     }
 }
+
+/// compile_with_prelude resolves prelude units in unit conversion expressions.
+/// User defines 'unit mylen : Length = 0.0254mm' with NO local mm declaration.
+#[test]
+fn prelude_unit_resolves_in_unit_conversion_expr() {
+    let source = "unit mylen : Length = 0.0254mm";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "prelude mm should resolve in unit conversion, got errors: {:?}",
+        errors
+    );
+    let mylen = module.units.iter().find(|u| u.name == "mylen").expect("mylen not found");
+    assert!(
+        (mylen.factor - 0.0000254).abs() < 1e-12,
+        "mylen factor should be 0.0254 * 0.001 = 0.0000254, got {}",
+        mylen.factor
+    );
+}
