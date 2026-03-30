@@ -4,7 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_trait_conformance.ri as the source file.
 
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_constraints::SimpleConstraintChecker;
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -69,9 +69,17 @@ fn trait_conformance_compiles_and_evals() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     // Check constraints — all should be Satisfied
     let result = engine.check(&compiled);
@@ -97,7 +105,7 @@ fn basic_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -147,7 +155,7 @@ fn default_injection_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -199,7 +207,7 @@ fn multi_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -237,6 +245,23 @@ fn multi_trait_values() {
         other => panic!("expected Scalar for Part.mass, got {:?}", other),
     }
 
+    // Check Part.half_size = 50mm = 0.05 SI (inherited let from Measurable: half_size = size / 2)
+    let half_size_id = ValueCellId::new("Part", "half_size");
+    let half_size_val = result
+        .values
+        .get(&half_size_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
+    match half_size_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected 0.05 SI for Part.half_size (inherited let from Measurable), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for Part.half_size, got {:?}", other),
+    }
+
     // All constraints from both traits + structure should be satisfied
     let check_result = engine.check(&compiled);
     let part_constraints: Vec<_> = check_result
@@ -270,7 +295,7 @@ fn refinement_chain_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -368,7 +393,7 @@ fn diamond_merging_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -396,9 +421,11 @@ fn diamond_merging_values() {
         .iter()
         .filter(|e| e.id.entity == "Merged")
         .collect();
-    assert!(
-        !merged_constraints.is_empty(),
-        "expected at least one constraint for Merged"
+    assert_eq!(
+        merged_constraints.len(),
+        2,
+        "expected exactly 2 constraints for Merged (x>0mm from Base once, x<500mm from structure), got {}",
+        merged_constraints.len()
     );
     for entry in &merged_constraints {
         assert_eq!(
@@ -421,9 +448,17 @@ fn total_constraint_count() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     let check_result = engine.check(&compiled);
     assert!(
@@ -453,9 +488,17 @@ fn qualified_access_disambiguation() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     let check_result = engine.check(&compiled);
 
