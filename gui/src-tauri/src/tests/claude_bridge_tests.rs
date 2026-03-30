@@ -1520,7 +1520,8 @@ async fn ensure_sidecar_ready_skips_spawn_when_already_some() {
     use tokio::sync::Mutex;
 
     // Pre-populate the sidecar slot with a Ready handle.
-    let handle = make_ready_handle();
+    // _data_writer must stay alive to prevent EOF → Crashed race.
+    let (handle, _data_writer) = make_ready_handle();
     let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(handle));
 
     // Track whether spawn_fn was invoked at all.
@@ -2304,7 +2305,7 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
 /// causing intermittent Ready→Crashed transitions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn make_ready_handle_stays_ready_on_multi_thread() {
-    let handle = make_ready_handle();
+    let (handle, _data_writer) = make_ready_handle();
     let state = std::sync::Arc::clone(handle.state());
 
     // Yield to allow the spawned on_exit task (if any) to execute.
