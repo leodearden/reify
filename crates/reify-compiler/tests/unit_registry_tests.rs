@@ -3,7 +3,7 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-use reify_compiler::{compile, CompiledModule, UnitEntry, UnitRegistry};
+use reify_compiler::{compile, compile_with_prelude, stdlib_loader, CompiledModule, UnitEntry, UnitRegistry};
 use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -906,5 +906,46 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
         }
     } else {
         panic!("x has no default_expr");
+    }
+}
+
+// ─── task-208: prelude unit seeding in compile_with_prelude ─────────────────
+
+fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("user_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
+}
+
+/// compile_with_prelude resolves a prelude unit (mm) in a structure param.
+/// The user source declares NO units — mm comes entirely from prelude.
+#[test]
+fn prelude_unit_resolves_in_structure_param() {
+    let source = r#"
+structure def Bracket {
+    param width : Length = 10mm
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should resolve prelude mm without errors, got: {:?}",
+        errors
+    );
+    let template = module.templates.iter().find(|t| t.name == "Bracket").expect("Bracket not found");
+    let width = template.value_cells.iter().find(|c| c.id.member == "width").expect("width not found");
+    if let Some(expr) = &width.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "10mm should be 0.01m via prelude, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("width has no default_expr");
     }
 }
