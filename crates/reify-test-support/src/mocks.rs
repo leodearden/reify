@@ -438,6 +438,44 @@ impl ConstraintSolver for SpyConstraintSolver {
     }
 }
 
+/// Spy constraint solver that captures ALL `ResolutionProblem`s passed to it.
+///
+/// Unlike `SpyConstraintSolver` which only captures the last call, this records
+/// every call in order. Uses a `SequencedMockConstraintSolver` internally to
+/// return per-call results.
+pub struct MultiCallSpyConstraintSolver {
+    captured: Arc<Mutex<Vec<ResolutionProblem>>>,
+    inner: SequencedMockConstraintSolver,
+}
+
+impl MultiCallSpyConstraintSolver {
+    /// Create a multi-call spy with sequenced results.
+    /// Each `solve()` call returns the next result from the sequence (last is repeated).
+    pub fn new(results: Vec<SolveResult>) -> Self {
+        Self {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            inner: SequencedMockConstraintSolver::new(results),
+        }
+    }
+
+    /// Return a shared reference to all captured problems (in call order).
+    pub fn captured_problems(&self) -> Arc<Mutex<Vec<ResolutionProblem>>> {
+        self.captured.clone()
+    }
+
+    /// Return the number of times `solve()` has been called.
+    pub fn call_count(&self) -> usize {
+        self.captured.lock().unwrap().len()
+    }
+}
+
+impl ConstraintSolver for MultiCallSpyConstraintSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.captured.lock().unwrap().push(problem.clone());
+        self.inner.solve(problem)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1893,5 +1931,64 @@ mod tests {
         assert_eq!(normalize_distance_pair(lo, hi), (lo, hi));
         // equal IDs → (id, id)
         assert_eq!(normalize_distance_pair(lo, lo), (lo, lo));
+    }
+
+    #[test]
+    fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
+        use reify_types::{AutoParam, CompiledExpr, Type, ValueMap};
+
+        let mut values_a = HashMap::new();
+        values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));
+        let mut values_b = HashMap::new();
+        values_b.insert(ValueCellId::new("B", "y"), Value::length(0.010));
+
+        let spy = MultiCallSpyConstraintSolver::new(vec![
+            SolveResult::Solved { values: values_a },
+            SolveResult::Solved { values: values_b },
+        ]);
+        let captured = spy.captured_problems();
+
+        // First call
+        let problem1 = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: ValueCellId::new("A", "x"),
+                param_type: Type::length(),
+                bounds: None,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+        let result1 = spy.solve(&problem1);
+        assert!(
+            matches!(&result1, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("A", "x"))),
+            "first call should return values_a"
+        );
+
+        // Second call
+        let problem2 = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: ValueCellId::new("B", "y"),
+                param_type: Type::length(),
+                bounds: None,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+        let result2 = spy.solve(&problem2);
+        assert!(
+            matches!(&result2, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("B", "y"))),
+            "second call should return values_b"
+        );
+
+        // Verify call count and captured problems
+        assert_eq!(spy.call_count(), 2);
+        let problems = captured.lock().unwrap();
+        assert_eq!(problems.len(), 2);
+        assert_eq!(problems[0].auto_params[0].id, ValueCellId::new("A", "x"));
+        assert_eq!(problems[1].auto_params[0].id, ValueCellId::new("B", "y"));
     }
 }
