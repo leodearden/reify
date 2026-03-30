@@ -167,3 +167,66 @@ fn gradient_of_gradient_returns_undef() {
          operators are not supported"
     );
 }
+
+/// Field with Undef lambda simulates inner_field=None scenario.
+///
+/// Construct a Value::Field with lambda=Box::new(Value::Undef) and
+/// source=FieldSourceKind::Analytical. This simulates a gradient field
+/// where inner_field is None (a separate task #630 adds FieldSourceKind::Gradient
+/// with inner_field). Assert that:
+/// - sample(field, point) returns Undef (lambda is not a Lambda variant)
+/// - gradient(field) returns Undef (stub)
+#[test]
+fn gradient_field_with_undef_lambda() {
+    let domain_type = Type::point3(Type::length());
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(Value::Undef),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, point) → Undef because lambda is not a Lambda variant
+    let point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field.clone(), field_type.clone()),
+            CompiledExpr::literal(point, Type::point3(Type::length())),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "sample of field with Undef lambda must return Undef"
+    );
+
+    // gradient(field) → Undef (stub)
+    let gradient_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let gradient_result = eval_expr(&gradient_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        gradient_result,
+        Value::Undef,
+        "gradient of field with Undef lambda must return Undef"
+    );
+}
