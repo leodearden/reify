@@ -1046,4 +1046,34 @@ mod tests {
         };
         assert_eq!(format_value(&v), "3 + 4i m");
     }
+
+    // --- port internal member counting tests ---
+
+    #[test]
+    fn structure_names_counts_port_internal_members() {
+        let source = r#"structure S {
+    param a : Scalar = 1mm
+    port x : MechPort { param d : Length = 10mm  let ratio = 2  constraint d > 0mm }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: a + d = 2 params (d is inside port body)
+        assert_eq!(
+            param_count, 2,
+            "expected 2 params (a, d inside port), got {param_count}"
+        );
+        // Should count: ratio = 1 let (inside port body)
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (ratio inside port), got {let_count}"
+        );
+        // Should count: d > 0mm = 1 constraint (inside port body)
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+        );
+    }
 }
