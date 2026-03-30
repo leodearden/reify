@@ -14398,7 +14398,7 @@
         "description": "1) Rename `structure` parameter in `find_member_decl` to `enclosing_decl` and rename `enclosing_structure_name_at` to `enclosing_decl_name_at` across analysis.rs, hover.rs, and all call sites. Update doc comments. 2) Extract the enclosing-declaration offset-check pattern into a free function `enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<&Declaration>` in analysis.rs. Refactor goto_def.rs to use this function instead of its inline copy. Have AnalysisContext::enclosing_decl_name_at delegate to the same function.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14411,7 +14411,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-30T18:09:26.529Z"
       },
       {
         "id": "694",
@@ -15755,7 +15756,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T18:09:26.428Z",
+      "lastModified": "2026-03-30T18:09:26.529Z",
       "taskCount": 761,
       "completedCount": 419,
       "tags": [
