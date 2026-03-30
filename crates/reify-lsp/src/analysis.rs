@@ -427,6 +427,13 @@ mod tests {
         assert!(ctx.find_member_decl("nonexistent", None).is_none());
     }
 
+    #[test]
+    fn find_member_decl_nonexistent_decl_returns_none() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(ctx.find_member_decl("width", Some("NonExistent")).is_none());
+    }
+
     // --- member_names tests ---
 
     #[test]
@@ -842,6 +849,18 @@ mod tests {
             ctx.enclosing_decl_name_at(between_offset),
             None,
             "offset between structures should return None"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("diameter").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Joint"),
+            "offset inside occurrence should return Some(\"Joint\")"
         );
     }
 

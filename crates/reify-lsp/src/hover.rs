@@ -644,5 +644,13 @@ mod tests {
             !md.contains("Scalar"),
             "should NOT show Scalar type from structure A, got: {md}"
         );
+        assert!(
+            md.contains("= true"),
+            "should show B's Bool value (= true), got: {md}"
+        );
+        assert!(
+            !md.contains("= 5mm"),
+            "should NOT show A's Scalar value (= 5mm), got: {md}"
+        );
     }
 }
