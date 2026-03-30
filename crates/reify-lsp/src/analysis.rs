@@ -221,19 +221,12 @@ impl AnalysisContext {
 
     /// Return the name of the structure/occurrence whose span contains `offset`,
     /// or `None` if the offset is outside all declarations.
-    pub fn enclosing_structure_name_at(&self, offset: usize) -> Option<&str> {
-        let offset_u32 = offset as u32;
-        for decl in &self.parsed.declarations {
-            let (decl_name, decl_span) = match decl {
-                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), s.span),
-                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-                _ => continue,
-            };
-            if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-                return Some(decl_name);
-            }
-        }
-        None
+    pub fn enclosing_decl_name_at(&self, offset: usize) -> Option<&str> {
+        enclosing_decl_at(&self.parsed.declarations, offset).map(|decl| match decl {
+            Declaration::Structure(s) => s.name.as_str(),
+            Declaration::Occurrence(o) => o.name.as_str(),
+            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+        })
     }
 }
 
@@ -822,31 +815,31 @@ mod tests {
         assert_eq!(info.decl_name, "Foo");
     }
 
-    // --- enclosing_structure_name_at tests ---
+    // --- enclosing_decl_name_at tests ---
 
     #[test]
-    fn enclosing_structure_name_at_inside_second() {
+    fn enclosing_decl_name_at_inside_second() {
         let source =
             "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B: 'y' in "param y: Bool = true"
         let b_y_offset = source.find("param y").unwrap() + 6;
         assert_eq!(
-            ctx.enclosing_structure_name_at(b_y_offset),
+            ctx.enclosing_decl_name_at(b_y_offset),
             Some("B"),
             "offset inside B should return Some(\"B\")"
         );
         // Offset inside A: 'x' in "param x: Scalar = 5mm"
         let a_x_offset = source.find("param x").unwrap() + 6;
         assert_eq!(
-            ctx.enclosing_structure_name_at(a_x_offset),
+            ctx.enclosing_decl_name_at(a_x_offset),
             Some("A"),
             "offset inside A should return Some(\"A\")"
         );
         // Offset outside any structure (between A and B)
         let between_offset = source.find("\nstructure B").unwrap();
         assert_eq!(
-            ctx.enclosing_structure_name_at(between_offset),
+            ctx.enclosing_decl_name_at(between_offset),
             None,
             "offset between structures should return None"
         );
