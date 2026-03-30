@@ -24,20 +24,25 @@ fn make_starting_handle() -> (SidecarHandle, tokio::io::DuplexStream) {
     (handle, data_writer)
 }
 
-/// Create a `SidecarHandle` in `Ready` state with an empty data reader.
+/// Create a `SidecarHandle` in `Ready` state with a live duplex data stream.
 ///
-/// Suitable for tests that only verify stdin writes or state checks, where the
-/// reader task exits immediately (no data to read).
-fn make_ready_handle() -> SidecarHandle {
+/// Returns `(handle, data_writer)`.  Caller must hold the returned `DuplexStream`
+/// alive — dropping it causes EOF on the reader task which transitions state to
+/// `Crashed`.
+///
+/// Suitable for tests that verify state without interacting with stdin or the
+/// reader task.
+fn make_ready_handle() -> (SidecarHandle, tokio::io::DuplexStream) {
     use std::sync::Arc;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
     let state = Arc::new(Mutex::new(SidecarState::Ready));
-    let data: &[u8] = b"";
-    let empty_reader = BufReader::new(data);
-    let (writer, _writer_end) = tokio::io::duplex(1024);
-    SidecarHandle::from_parts(writer, empty_reader, state)
+    let (data_writer, data_reader) = tokio::io::duplex(1024);
+    let reader = BufReader::new(data_reader);
+    let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
+    let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
+    (handle, data_writer)
 }
 
 /// Async body for a standard ready-signaling `spawn_fn`.
