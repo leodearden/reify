@@ -61,13 +61,13 @@ impl AnalysisContext {
     /// Find a member declaration by name, returning combined info from
     /// parsed (span) and compiled (kind, type) modules.
     ///
-    /// When `structure` is `Some`, only the named declaration is searched.
+    /// When `enclosing_decl` is `Some`, only the named declaration is searched.
     /// When `None`, returns the first match across all declarations.
     ///
     /// Returns `None` if no value cell with that name exists.
-    pub fn find_member_decl(&self, name: &str, structure: Option<&str>) -> Option<MemberInfo<'_>> {
+    pub fn find_member_decl(&self, name: &str, enclosing_decl: Option<&str>) -> Option<MemberInfo<'_>> {
         // Get the span, doc, and owning declaration name from the parsed module
-        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, structure)?;
+        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, enclosing_decl)?;
 
         // Find type info from the compiled module, scoped to the same declaration
         for template in &self.compiled.templates {
@@ -109,12 +109,12 @@ impl AnalysisContext {
     /// Find the source span, doc comment, and owning declaration name for a
     /// named member in the parsed module.
     ///
-    /// When `structure` is `Some`, only the declaration with that name is
+    /// When `enclosing_decl` is `Some`, only the declaration with that name is
     /// searched; otherwise all declarations are searched in order.
     fn find_parsed_member_span_and_doc(
         &self,
         name: &str,
-        structure: Option<&str>,
+        enclosing_decl: Option<&str>,
     ) -> Option<(SourceSpan, Option<&str>, &str)> {
         for decl in &self.parsed.declarations {
             let (members, decl_name) = match decl {
@@ -122,7 +122,7 @@ impl AnalysisContext {
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
                 _ => continue,
             };
-            if let Some(target) = structure
+            if let Some(target) = enclosing_decl
                 && decl_name != target
             {
                 continue;
