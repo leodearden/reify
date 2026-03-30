@@ -2248,9 +2248,9 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             // On current_thread, spawned tasks run only when we yield.
             // Chain: reader task reads line → spawns state-setter task →
             // state-setter sets Ready + calls notify_waiters().
-            // 2-task chain (reader → state-setter); 100 iterations is
-            // generous headroom — typically converges in 2-4 yields.
-            for _ in 0..100 {
+            // 2-task chain (reader → state-setter); 10 yields is
+            // conservative headroom — typically converges in 2-4 yields.
+            for _ in 0..10 {
                 tokio::task::yield_now().await;
                 if matches!(*state.lock().await, SidecarState::Ready) {
                     break;
@@ -2267,7 +2267,7 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             flag.store(true, Ordering::SeqCst);
 
             // Keep data_writer alive so the reader doesn't see EOF.
-            let _ = writer_tx.send(data_writer);
+            writer_tx.send(data_writer).expect("writer_tx receiver dropped");
             Ok(handle)
         }
     };
