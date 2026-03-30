@@ -87,6 +87,57 @@ fn unit_registry_duplicate_returns_err() {
     assert!(result.is_err(), "duplicate register should return Err");
 }
 
+// ─── seed_prelude_unit tests ─────────────────────────────────────────────────
+
+#[test]
+fn seed_prelude_unit_inserts_and_lookups() {
+    let mut reg = UnitRegistry::new();
+    let entry = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.001,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: reify_types::ContentHash::of_str("mm"),
+    };
+    reg.seed_prelude_unit(entry);
+    let found = reg.lookup("mm").expect("seed_prelude_unit should make mm visible");
+    assert_eq!(found.name, "mm");
+    assert!((found.factor - 0.001).abs() < 1e-12);
+}
+
+#[test]
+fn seed_prelude_unit_overwrites_on_duplicate() {
+    let mut reg = UnitRegistry::new();
+    let entry1 = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.001,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: reify_types::ContentHash::of_str("mm-v1"),
+    };
+    let entry2 = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.002,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(10, 5),
+        content_hash: reify_types::ContentHash::of_str("mm-v2"),
+    };
+    reg.seed_prelude_unit(entry1);
+    reg.seed_prelude_unit(entry2);
+    let found = reg.lookup("mm").unwrap();
+    assert!(
+        (found.factor - 0.002).abs() < 1e-12,
+        "seed_prelude_unit should overwrite: expected 0.002, got {}",
+        found.factor
+    );
+}
+
 // ─── step-3: resolve_dimension_type ───────────────────────────────────────────
 
 #[test]
