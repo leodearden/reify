@@ -1390,3 +1390,220 @@ fn cyclic_let_bindings_emit_diagnostic() {
         result.diagnostics
     );
 }
+
+// ─── BFS traversal gate tests ───────────────────────────────────────────────
+
+/// Regression test: BFS in `elaborate_child_lets_only` should traverse through
+/// structural intermediary templates that have zero value_cells.
+///
+/// Setup:
+///   Template S: param n: Int = 2, let inner_n = S.w.back.n,
+///               sub child = S(n: n-1) where n > 0,
+///               sub w = W() where n > 0
+///   Template W (wrapper): zero value_cells,
+///               sub back = S(n: 0) where true
+///
+/// Entity tree from S(n=2):
+///   S (n=2)
+///   ├── S.child = S(n=1)
+///   │   ├── S.child.child = S(n=0)  [guard false, leaf]
+///   │   └── S.child.w = W()
+///   │       └── S.child.w.back = S(n=0)  [leaf]
+///   └── S.w = W()
+///       └── S.w.back = S(n=0)  [leaf]
+///
+/// BUG: When elaborate_child_lets_only runs BFS for entity "S.child", the BFS
+/// seeds include "S.child.w" → W. But W has zero value_cells, so found_any stays
+/// false and "S.child.w.back" (an S with n=0) is never enqueued. The let-binding
+/// `inner_n = S.w.back.n` at "S.child" cannot see the projected value through W.
+#[test]
+fn bfs_traverses_through_wrapper_with_zero_value_cells() {
+    // Template S: param n, let inner_n = S.w.back.n, sub child=S(n-1), sub w=W()
+    let guard_child = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let guard_w = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let inner_n_expr = value_ref_typed("S.w.back", "n", Type::Int);
+
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .let_binding("S", "inner_n", Type::Int, inner_n_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard_child)
+        .sub_component_with_guard("w", "W", vec![], guard_w)
+        .build();
+
+    // Template W (wrapper): zero value_cells, sub back = S(n: 0) where true
+    let template_w = TopologyTemplateBuilder::new("W")
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "back",
+            "S",
+            vec![("n".to_string(), literal(Value::Int(0)))],
+            literal(Value::Bool(true)),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .template(template_w)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Sanity: child entity exists with n=1
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.child", "n")),
+        Some(&Value::Int(1)),
+        "S.child.n should be 1"
+    );
+
+    // Sanity: deeper entity through wrapper exists
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.child.w.back", "n")),
+        Some(&Value::Int(0)),
+        "S.child.w.back.n should be 0 (leaf S through wrapper)"
+    );
+
+    // KEY ASSERTION: S.child's let inner_n should see S.child.w.back.n projected
+    // through the wrapper W. Without the BFS fix, W has zero value_cells →
+    // found_any=false → BFS stops at W → inner_n evaluates to Undef.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.child", "inner_n")),
+        Some(&Value::Int(0)),
+        "S.child.inner_n should be 0 (projected through wrapper W with zero value_cells). \
+         If Undef, the BFS gate on found_any prevented traversal through the wrapper."
+    );
+}
+
+// ─── Missing template reference diagnostic tests ────────────────────────────
+
+/// A recursive sub referencing a non-existent template should produce an
+/// Error-severity diagnostic, not just a warning. This indicates a
+/// post-compilation inconsistency (compiler should have validated template refs).
+///
+/// Setup:
+///   Template S: param n: Int = 1,
+///               sub child = "Nonexistent"(n: n-1) where n > 0
+///               is_recursive = true
+///
+/// "Nonexistent" does not exist in the module → the unfold path should emit
+/// Diagnostic::error mentioning "unknown structure".
+#[test]
+fn missing_template_ref_emits_error_diagnostic() {
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "child",
+            "Nonexistent",
+            vec![("n".to_string(), n_minus_1)],
+            guard,
+        )
+        .build();
+
+    let result = eval_single_template(template);
+
+    // Should have an Error-severity diagnostic about the unknown structure.
+    let has_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("unknown structure")
+    });
+    assert!(
+        has_error,
+        "Expected Error-severity diagnostic about unknown structure 'Nonexistent', \
+         got: {:?}",
+        result.diagnostics
+    );
+
+    // Should NOT have only warnings about it — the severity must be Error.
+    let has_only_warning = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning && d.message.contains("unknown structure")
+    });
+    assert!(
+        !has_only_warning,
+        "Unknown structure reference should be Error, not Warning: {:?}",
+        result.diagnostics
+    );
+}
+
+// ─── Cycle diagnostic UX: template name in message ──────────────────────────
+
+/// The cyclic let-binding diagnostic should include the template name, not just
+/// the entity path. Format: 'in template S (entity S.child): [a, b]' to match
+/// the termination-check diagnostic style.
+///
+/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which only
+/// checks for 'circular', 'a', and 'b'. This test specifically verifies the
+/// template name appears in the message.
+#[test]
+fn cyclic_let_binding_diagnostic_includes_template_name() {
+    // let a = b + 1 (depends on S.b)
+    let a_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Int),
+        literal(Value::Int(1)),
+    );
+    // let b = a + 1 (depends on S.a)
+    let b_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .let_binding("S", "a", Type::Int, a_expr)
+        .let_binding("S", "b", Type::Int, b_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // The cycle diagnostic should include the template name "S" in the format
+    // 'in template S (entity ...)' — not just the entity path.
+    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message.contains("circular")
+            && d.message.contains("template S")
+    });
+    assert!(
+        has_template_in_diagnostic,
+        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
+        result.diagnostics
+    );
+}

@@ -1179,7 +1179,7 @@ impl Engine {
                 {
                     Some(t) => t,
                     None => {
-                        diagnostics.push(Diagnostic::warning(format!(
+                        diagnostics.push(Diagnostic::error(format!(
                             "sub-component \"{}\" references unknown structure \"{}\"",
                             sub.name, sub.structure_name
                         )));
@@ -3656,7 +3656,7 @@ fn unfold_recursive_sub<'t>(
         {
             Some(t) => t,
             None => {
-                diagnostics.push(Diagnostic::warning(format!(
+                diagnostics.push(Diagnostic::error(format!(
                     "recursive sub \"{}\" in \"{}\" at depth {} references unknown structure \"{}\"; skipping branch",
                     next_sub.name, next_entity, depth + 1, next_sub.structure_name
                 )));
@@ -3891,7 +3891,7 @@ fn elaborate_child_lets_only<'t>(
                 // Look up the sub declaration to find its target template.
                 let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
                 let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name).or_else(|| {
-                    diagnostics.push(Diagnostic::warning(format!(
+                    diagnostics.push(Diagnostic::error(format!(
                         "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
                         name, scoped_entity, sub_decl.structure_name
                     )));
@@ -3918,9 +3918,13 @@ fn elaborate_child_lets_only<'t>(
                     found_any = true;
                 }
             }
-            if found_any {
-                // Enqueue children using entity_template's sub declarations to determine
-                // child sub names and their target templates (not the static recursive_sub_names).
+            if found_any || entity_template.value_cells.is_empty() {
+                // Enqueue children if:
+                // 1. found_any: values were projected from this entity (entity exists), OR
+                // 2. value_cells is empty: structural intermediary template with zero
+                //    value_cells — found_any is meaningless, but children may have values.
+                // For templates WITH value_cells, found_any==false means the entity was
+                // never unfolded (e.g., guard was false), so BFS terminates naturally.
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
                         if let Some(target_tmpl) =
@@ -3931,7 +3935,7 @@ fn elaborate_child_lets_only<'t>(
                                 target_tmpl,
                             ));
                         } else {
-                            diagnostics.push(Diagnostic::warning(format!(
+                            diagnostics.push(Diagnostic::error(format!(
                                 "BFS expand: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping subtree",
                                 sub_decl.name, depth_entity, sub_decl.structure_name
                             )));
@@ -3977,7 +3981,8 @@ fn elaborate_child_lets_only<'t>(
             .collect();
         cyclic_members.sort();
         diagnostics.push(Diagnostic::error(format!(
-            "circular let-binding dependency in '{}': [{}]",
+            "circular let-binding dependency in template {} (entity {}): [{}]",
+            child_template.name,
             scoped_entity,
             cyclic_members.join(", "),
         )));
