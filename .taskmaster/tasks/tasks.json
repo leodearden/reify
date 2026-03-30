@@ -15657,10 +15657,11 @@
         "description": "The per-entity-group solve loop in resolve_concurrent_edit (lib.rs:700-844) and edit_param (lib.rs:1755-1898) is structurally identical (~130 lines). This task consolidates 12 related review findings from task 491:\n\n**DRY + naming (critical):**\n- Extract a private `solve_entity_groups()` helper method that both resolve_concurrent_edit and edit_param call, eliminating the duplicated group-build → filter-constraints → dirty-check → solve → accumulate pattern\n- Define a private `struct EntityGroup { params: Vec<AutoParam>, ids: HashSet<ValueCellId> }` to replace the opaque `(Vec<AutoParam>, HashSet<ValueCellId>)` tuple used as HashMap values\n\n**Determinism + correctness (high):**\n- Use `BTreeMap<String, EntityGroup>` instead of `HashMap` for `entity_groups` so group solve order is deterministic (affects diagnostic ordering and cross-group value visibility)\n- Snapshot `current_values` once before the per-group loop and pass the immutable snapshot to each group's ResolutionProblem, preventing cross-group contamination via iteration-order-dependent resolved values\n- Guard `self.eval_state.as_ref().unwrap()` at lib.rs:1864 with proper error handling (early return or propagate error) instead of panicking when eval_state is None\n\n**Performance (medium):**\n- Pre-classify constraints by entity in a single O(M × expr_size) pass before the per-group loop, instead of calling extract_dependency_trace per constraint per group (current: O(N × M × expr_size))\n- Clone `current_values` and `functions` once before the loop instead of per-group; consider Arc-wrapping functions\n\n**Dead code cleanup (low):**\n- Remove `ConcurrentEditSetup.objective` field (line 227) — it is set in prepare_concurrent_edit (line 577) but never read anywhere. With per-entity resolution, a single-entity objective misrepresents the API contract. Remove the field and assignment.\n\n**Memory hints:** search for \"solve_entity_groups\", \"EntityGroup struct\", \"BTreeMap deterministic\"; entity names: resolve_concurrent_edit, edit_param, ResolutionProblem, ConcurrentEditSetup",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-30T18:02:41.214Z"
       },
       {
         "id": "755",
@@ -15687,7 +15688,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T18:02:41.115Z",
+      "lastModified": "2026-03-30T18:02:41.214Z",
       "taskCount": 756,
       "completedCount": 417,
       "tags": [
