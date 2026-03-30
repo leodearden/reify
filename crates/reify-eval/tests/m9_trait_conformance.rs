@@ -245,6 +245,23 @@ fn multi_trait_values() {
         other => panic!("expected Scalar for Part.mass, got {:?}", other),
     }
 
+    // Check Part.half_size = 50mm = 0.05 SI (inherited let from Measurable: half_size = size / 2)
+    let half_size_id = ValueCellId::new("Part", "half_size");
+    let half_size_val = result
+        .values
+        .get(&half_size_id)
+        .unwrap_or_else(|| panic!("value for {:?} not found in result", half_size_id));
+    match half_size_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.05).abs() < 1e-12,
+                "expected 0.05 SI for Part.half_size (inherited let from Measurable), got {}",
+                si_value
+            );
+        }
+        other => panic!("expected Scalar for Part.half_size, got {:?}", other),
+    }
+
     // All constraints from both traits + structure should be satisfied
     let check_result = engine.check(&compiled);
     let part_constraints: Vec<_> = check_result
