@@ -852,6 +852,34 @@ mod tests {
         );
     }
 
+    // --- enclosing_decl_name_at (renamed method) tests ---
+
+    #[test]
+    fn enclosing_decl_name_at_delegates_to_free_function() {
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Offset inside B
+        let b_y_offset = source.find("param y").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_decl_name_at(b_y_offset),
+            Some("B"),
+            "renamed method should return same result as old method"
+        );
+        // Offset inside A
+        let a_x_offset = source.find("param x").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_decl_name_at(a_x_offset),
+            Some("A"),
+        );
+        // Offset outside
+        let between_offset = source.find("\nstructure B").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(between_offset),
+            None,
+        );
+    }
+
     #[test]
     fn find_member_decl_scoped_to_second_structure() {
         let source =
