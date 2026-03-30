@@ -12276,7 +12276,7 @@
         "description": "## Problem\n\nSelectionInfo has two Option<String> fields that both default to None, but there is no #[derive(Default)]. This causes `SelectionInfo { selected_entity: None, hovered_entity: None }` to be written out verbatim ~19 times across 11 files.\n\n## What \"done\" looks like\n\n1. SelectionInfo derives Default: `#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]`\n2. All verbose `SelectionInfo { selected_entity: None, hovered_entity: None }` replaced with `SelectionInfo::default()`\n3. All existing tests pass\n\n## Files to modify\n- crates/reify-mcp/src/types.rs — add Default derive\n- gui/src-tauri/src/mcp_context.rs — replace literals with ::default()\n- gui/src-tauri/src/main.rs — replace literals\n- gui/src-tauri/src/commands.rs — replace literals\n- gui/src-tauri/src/tests/*.rs — replace literals\n\n### memory_hints\n- entity: \"SelectionInfo\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12297,7 +12297,7 @@
             "gui/src-tauri"
           ]
         },
-        "updatedAt": "2026-03-30T17:49:30.497Z"
+        "updatedAt": "2026-03-30T18:01:49.248Z"
       },
       {
         "id": "594",
@@ -15687,9 +15687,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T17:59:33.262Z",
+      "lastModified": "2026-03-30T18:01:49.252Z",
       "taskCount": 756,
-      "completedCount": 416,
+      "completedCount": 417,
       "tags": [
         "master"
       ]
