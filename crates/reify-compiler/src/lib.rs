@@ -2641,6 +2641,14 @@ pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
 
+/// Compile a parsed module with the full standard library prelude.
+///
+/// This is the recommended entry point for compiling user modules with full
+/// stdlib support. Equivalent to `compile_with_prelude(parsed, stdlib_loader::load_stdlib())`.
+pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
+    compile_with_prelude(parsed, stdlib_loader::load_stdlib())
+}
+
 /// Compile a parsed module with prelude definitions available for resolution.
 ///
 /// Prelude modules provide trait definitions, enum definitions, and functions

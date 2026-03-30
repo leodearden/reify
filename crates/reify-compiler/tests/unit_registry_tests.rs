@@ -3,7 +3,7 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-use reify_compiler::{compile, compile_with_prelude, stdlib_loader, CompiledModule, UnitEntry, UnitRegistry};
+use reify_compiler::{compile, compile_with_prelude, compile_with_stdlib, stdlib_loader, CompiledModule, UnitEntry, UnitRegistry};
 use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -986,4 +986,43 @@ fn local_unit_duplicate_of_prelude_emits_error() {
         "expected a 'duplicate' error mentioning 'mm' when module-local unit shadows prelude, got: {:?}",
         errors
     );
+}
+
+// ─── step-13 (task-208): compile_with_stdlib convenience function ────────────
+
+/// compile_with_stdlib() compiles user source with full stdlib prelude and
+/// resolves '10mm' correctly.
+#[test]
+fn compile_with_stdlib_resolves_quantity_literals() {
+    let source = r#"
+structure def Plate {
+    param thickness : Length = 10mm
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let module = compile_with_stdlib(&parsed);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "compile_with_stdlib should produce no errors, got: {:?}",
+        errors
+    );
+
+    let template = module.templates.iter().find(|t| t.name == "Plate").expect("Plate not found");
+    let thickness = template.value_cells.iter().find(|c| c.id.member == "thickness").expect("thickness not found");
+    if let Some(expr) = &thickness.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "10mm should be 0.01m via compile_with_stdlib, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal for thickness, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("thickness has no default_expr");
+    }
 }
