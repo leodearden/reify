@@ -294,10 +294,7 @@ impl ReifyToolContext for CliToolContext {
     }
 
     fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
-        Ok(SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })
+        Ok(SelectionInfo::default())
     }
 
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
