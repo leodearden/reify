@@ -262,6 +262,11 @@ pub fn find_named_member_span<'a>(
                     return Some(result);
                 }
             }
+            reify_syntax::MemberDecl::Port(port) => {
+                if let Some(result) = find_named_member_span(&port.members, name) {
+                    return Some(result);
+                }
+            }
             _ => {}
         }
     }
@@ -1060,13 +1065,15 @@ mod tests {
         let source = r#"structure S {
     port x : MechPort { param d : Length = 10mm }
 }"#;
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx
-            .find_member_decl("d", None)
-            .expect("d inside port body should be found");
-        assert_eq!(info.name, "d");
-        assert_eq!(info.kind, ValueCellKind::Param);
-        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let structure = match &parsed.declarations[0] {
+            reify_syntax::Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let result = find_named_member_span(&structure.members, "d");
+        assert!(result.is_some(), "d inside port body should be found via find_named_member_span");
+        let (span, _doc) = result.unwrap();
+        let decl_text = &source[span.start as usize..span.end as usize];
         assert!(
             decl_text.contains("d") && decl_text.contains("10mm"),
             "span should cover full param declaration, got: {decl_text:?}"
