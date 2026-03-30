@@ -2788,6 +2788,25 @@ pub fn compile_with_prelude(
     // Compile unit declarations in source order (so later units can reference earlier ones).
     // Unit hashes are included in the module content hash.
     let mut unit_registry = UnitRegistry::new();
+
+    // Seed prelude units into the registry so module-local code can reference them.
+    // Only pub units are seeded (private units are module-internal).
+    for prelude_module in prelude {
+        for cu in &prelude_module.units {
+            if cu.is_pub {
+                unit_registry.seed_prelude_unit(UnitEntry {
+                    name: cu.name.clone(),
+                    dimension: cu.dimension,
+                    factor: cu.factor,
+                    offset: cu.offset,
+                    is_pub: cu.is_pub,
+                    span: SourceSpan::empty(0),
+                    content_hash: cu.content_hash,
+                });
+            }
+        }
+    }
+
     let mut compiled_units: Vec<CompiledUnit> = Vec::new();
     for unit_decl in &unit_refs {
         if let Some(entry) = compile_unit(unit_decl, &unit_registry, &mut diagnostics) {
