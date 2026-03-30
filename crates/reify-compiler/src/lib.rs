@@ -542,6 +542,15 @@ impl UnitRegistry {
         }
     }
 
+    /// Seed a prelude unit entry into the registry (overwrite semantics).
+    ///
+    /// Used to pre-populate the registry with units from prelude modules
+    /// before processing module-local declarations. Duplicate prelude entries
+    /// resolve by load order (last wins).
+    pub fn seed_prelude_unit(&mut self, entry: UnitEntry) {
+        self.entries.insert(entry.name.clone(), entry);
+    }
+
     /// Look up a unit by name.
     pub fn lookup(&self, name: &str) -> Option<&UnitEntry> {
         self.entries.get(name)
@@ -2632,6 +2641,14 @@ pub fn compile(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
     compile_with_prelude(parsed, &[])
 }
 
+/// Compile a parsed module with the full standard library prelude.
+///
+/// This is the recommended entry point for compiling user modules with full
+/// stdlib support. Equivalent to `compile_with_prelude(parsed, stdlib_loader::load_stdlib())`.
+pub fn compile_with_stdlib(parsed: &reify_syntax::ParsedModule) -> CompiledModule {
+    compile_with_prelude(parsed, stdlib_loader::load_stdlib())
+}
+
 /// Compile a parsed module with prelude definitions available for resolution.
 ///
 /// Prelude modules provide trait definitions, enum definitions, and functions
@@ -2779,6 +2796,25 @@ pub fn compile_with_prelude(
     // Compile unit declarations in source order (so later units can reference earlier ones).
     // Unit hashes are included in the module content hash.
     let mut unit_registry = UnitRegistry::new();
+
+    // Seed prelude units into the registry so module-local code can reference them.
+    // Only pub units are seeded (private units are module-internal).
+    for prelude_module in prelude {
+        for cu in &prelude_module.units {
+            if cu.is_pub {
+                unit_registry.seed_prelude_unit(UnitEntry {
+                    name: cu.name.clone(),
+                    dimension: cu.dimension,
+                    factor: cu.factor,
+                    offset: cu.offset,
+                    is_pub: cu.is_pub,
+                    span: SourceSpan::empty(0),
+                    content_hash: cu.content_hash,
+                });
+            }
+        }
+    }
+
     let mut compiled_units: Vec<CompiledUnit> = Vec::new();
     for unit_decl in &unit_refs {
         if let Some(entry) = compile_unit(unit_decl, &unit_registry, &mut diagnostics) {

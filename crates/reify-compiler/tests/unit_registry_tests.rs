@@ -3,7 +3,7 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-use reify_compiler::{compile, CompiledModule, UnitEntry, UnitRegistry};
+use reify_compiler::{compile, compile_with_prelude, compile_with_stdlib, stdlib_loader, CompiledModule, UnitEntry, UnitRegistry};
 use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -85,6 +85,57 @@ fn unit_registry_duplicate_returns_err() {
     reg.register(make_entry()).expect("first register ok");
     let result = reg.register(make_entry());
     assert!(result.is_err(), "duplicate register should return Err");
+}
+
+// ─── seed_prelude_unit tests ─────────────────────────────────────────────────
+
+#[test]
+fn seed_prelude_unit_inserts_and_lookups() {
+    let mut reg = UnitRegistry::new();
+    let entry = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.001,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: reify_types::ContentHash::of_str("mm"),
+    };
+    reg.seed_prelude_unit(entry);
+    let found = reg.lookup("mm").expect("seed_prelude_unit should make mm visible");
+    assert_eq!(found.name, "mm");
+    assert!((found.factor - 0.001).abs() < 1e-12);
+}
+
+#[test]
+fn seed_prelude_unit_overwrites_on_duplicate() {
+    let mut reg = UnitRegistry::new();
+    let entry1 = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.001,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: reify_types::ContentHash::of_str("mm-v1"),
+    };
+    let entry2 = UnitEntry {
+        name: "mm".to_string(),
+        dimension: DimensionVector::LENGTH,
+        factor: 0.002,
+        offset: None,
+        is_pub: true,
+        span: SourceSpan::new(10, 15),
+        content_hash: reify_types::ContentHash::of_str("mm-v2"),
+    };
+    reg.seed_prelude_unit(entry1);
+    reg.seed_prelude_unit(entry2);
+    let found = reg.lookup("mm").unwrap();
+    assert!(
+        (found.factor - 0.002).abs() < 1e-12,
+        "seed_prelude_unit should overwrite: expected 0.002, got {}",
+        found.factor
+    );
 }
 
 // ─── step-3: resolve_dimension_type ───────────────────────────────────────────
@@ -855,5 +906,197 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
         }
     } else {
         panic!("x has no default_expr");
+    }
+}
+
+// ─── task-208: prelude unit seeding in compile_with_prelude ─────────────────
+
+fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("user_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
+}
+
+/// compile_with_prelude resolves a prelude unit (mm) in a structure param.
+/// The user source declares NO units — mm comes entirely from prelude.
+#[test]
+fn prelude_unit_resolves_in_structure_param() {
+    let source = r#"
+structure def Bracket {
+    param width : Length = 10mm
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should resolve prelude mm without errors, got: {:?}",
+        errors
+    );
+    let template = module.templates.iter().find(|t| t.name == "Bracket").expect("Bracket not found");
+    let width = template.value_cells.iter().find(|c| c.id.member == "width").expect("width not found");
+    if let Some(expr) = &width.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "10mm should be 0.01m via prelude, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("width has no default_expr");
+    }
+}
+
+/// compile_with_prelude resolves prelude units in unit conversion expressions.
+/// User defines 'unit mylen : Length = 0.0254mm' with NO local mm declaration.
+#[test]
+fn prelude_unit_resolves_in_unit_conversion_expr() {
+    let source = "unit mylen : Length = 0.0254mm";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "prelude mm should resolve in unit conversion, got errors: {:?}",
+        errors
+    );
+    let mylen = module.units.iter().find(|u| u.name == "mylen").expect("mylen not found");
+    assert!(
+        (mylen.factor - 0.0000254).abs() < 1e-12,
+        "mylen factor should be 0.0254 * 0.001 = 0.0000254, got {}",
+        mylen.factor
+    );
+}
+
+// ─── step-11 (task-208): module-local duplicate of prelude unit ──────────────
+
+/// Module-local unit declaration with the same name as a prelude unit produces
+/// a "duplicate" error diagnostic.
+#[test]
+fn local_unit_duplicate_of_prelude_emits_error() {
+    let source = "unit mm : Length = 0.002";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("duplicate") && d.message.contains("mm")
+        }),
+        "expected a 'duplicate' error mentioning 'mm' when module-local unit shadows prelude, got: {:?}",
+        errors
+    );
+}
+
+// ─── step-13 (task-208): compile_with_stdlib convenience function ────────────
+
+/// compile_with_stdlib() compiles user source with full stdlib prelude and
+/// resolves '10mm' correctly.
+#[test]
+fn compile_with_stdlib_resolves_quantity_literals() {
+    let source = r#"
+structure def Plate {
+    param thickness : Length = 10mm
+}
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let module = compile_with_stdlib(&parsed);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "compile_with_stdlib should produce no errors, got: {:?}",
+        errors
+    );
+
+    let template = module.templates.iter().find(|t| t.name == "Plate").expect("Plate not found");
+    let thickness = template.value_cells.iter().find(|c| c.id.member == "thickness").expect("thickness not found");
+    if let Some(expr) = &thickness.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            assert!(
+                (si_value - 0.01).abs() < 1e-9,
+                "10mm should be 0.01m via compile_with_stdlib, got {}",
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal for thickness, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("thickness has no default_expr");
+    }
+}
+
+// ─── step-15 (task-208): regression — all 9 hardcoded units via compile_with_stdlib ─
+
+/// All 9 original hardcoded units resolve correctly via compile_with_stdlib().
+/// Each unit's si_value must match the hardcoded conversion factor.
+#[test]
+fn all_nine_hardcoded_units_resolve_via_stdlib() {
+    // (unit_suffix, expected_factor_for_1_unit)
+    let cases: &[(&str, f64)] = &[
+        ("mm", 0.001),
+        ("cm", 0.01),
+        ("m", 1.0),
+        ("in", 0.0254),
+        ("deg", std::f64::consts::PI / 180.0),
+        ("rad", 1.0),
+        ("kg", 1.0),
+        ("g", 0.001),
+        ("s", 1.0),
+    ];
+
+    for (unit, expected_factor) in cases {
+        // Each unit is tested with value 1.0, so si_value == factor
+        let source = format!(
+            "structure def T_{u} {{ param v : Real = 1{u} }}",
+            u = unit
+        );
+        let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors for unit '{}': {:?}",
+            unit,
+            parsed.errors
+        );
+
+        let module = compile_with_stdlib(&parsed);
+        let errors = errors_only(&module);
+        assert!(
+            errors.is_empty(),
+            "compile_with_stdlib errors for unit '{}': {:?}",
+            unit,
+            errors
+        );
+
+        let template = module
+            .templates
+            .first()
+            .unwrap_or_else(|| panic!("no template for unit '{}'", unit));
+        let cell = template
+            .value_cells
+            .first()
+            .unwrap_or_else(|| panic!("no value cell for unit '{}'", unit));
+        let expr = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("no default_expr for unit '{}'", unit));
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - expected_factor).abs() < 1e-15,
+                "1{} should have si_value ≈ {}, got {}",
+                unit,
+                expected_factor,
+                si_value
+            );
+        } else {
+            panic!(
+                "expected scalar literal for 1{}, got {:?}",
+                unit, expr.kind
+            );
+        }
     }
 }

@@ -533,12 +533,15 @@ fn all_stdlib_modules_have_zero_error_diagnostics() {
             module.path, errors
         );
 
-        // Also verify each module has at least one trait def (not empty/broken)
-        assert!(
-            !module.trait_defs.is_empty(),
-            "stdlib module '{}' has zero trait definitions — may be silently broken",
-            module.path
-        );
+        // Verify each non-units module has at least one trait def (not empty/broken).
+        // std/units only contains unit declarations, no traits.
+        if !module.path.to_string().contains("units") {
+            assert!(
+                !module.trait_defs.is_empty(),
+                "stdlib module '{}' has zero trait definitions — may be silently broken",
+                module.path
+            );
+        }
     }
 }
 
