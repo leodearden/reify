@@ -332,10 +332,7 @@ fn get_selection_returns_both_selected_and_hovered() {
 fn get_selection_reflects_live_arc_updates() {
     let session = make_loaded_session();
     let engine = Arc::new(Mutex::new(session));
-    let selection = Arc::new(RwLock::new(SelectionInfo {
-        selected_entity: None,
-        hovered_entity: None,
-    }));
+    let selection = Arc::new(RwLock::new(SelectionInfo::default()));
     let ctx = TauriToolContext::builder(engine).with_selection(selection.clone()).build();
 
     // Initially empty
@@ -462,10 +459,7 @@ fn mcp_config_struct_stores_fields() {
 
     let session = make_loaded_session();
     let engine = Arc::new(Mutex::new(session));
-    let selection = Arc::new(RwLock::new(SelectionInfo {
-        selected_entity: None,
-        hovered_entity: None,
-    }));
+    let selection = Arc::new(RwLock::new(SelectionInfo::default()));
     let sink_called = Arc::new(Mutex::new(false));
     let sink_clone = sink_called.clone();
 

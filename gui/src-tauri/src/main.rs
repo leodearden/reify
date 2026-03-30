@@ -399,10 +399,7 @@ fn main() {
         last_state: std::sync::Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
-        selection: Arc::new(RwLock::new(reify_mcp::SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })),
+        selection: Arc::new(RwLock::new(reify_mcp::SelectionInfo::default())),
     };
 
     tauri::Builder::default()

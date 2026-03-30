@@ -492,10 +492,7 @@ async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
     // from_parts_with_mcp wires up both event sink and MCP tool interception
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
-        selected_entity: None,
-        hovered_entity: None,
-    }));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let _handle = SidecarHandle::from_parts_with_mcp(
         stdin_writer,
         reader,
@@ -653,10 +650,7 @@ fn app_state_has_sidecar_field() {
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
-        selection: Arc::new(RwLock::new(SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })),
+        selection: Arc::new(RwLock::new(SelectionInfo::default())),
     };
 }
 
@@ -1224,10 +1218,7 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
     let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
     let engine = Arc::new(std::sync::Mutex::new(session));
 
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
-        selected_entity: None,
-        hovered_entity: None,
-    }));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
         engine,
@@ -1259,10 +1250,7 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
     let engine = Arc::new(std::sync::Mutex::new(session));
 
     // /bin/cat keeps stdin open and produces no unexpected stdout — ideal minimal live process
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
-        selected_entity: None,
-        hovered_entity: None,
-    }));
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
         engine,

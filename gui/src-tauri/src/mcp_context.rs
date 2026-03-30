@@ -66,10 +66,7 @@ impl TauriToolContextBuilder {
     /// with empty fields (not connected to the frontend).
     pub fn build(self) -> TauriToolContext {
         let selection = self.selection.unwrap_or_else(|| {
-            Arc::new(RwLock::new(SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            }))
+            Arc::new(RwLock::new(SelectionInfo::default()))
         });
         TauriToolContext {
             engine: self.engine,

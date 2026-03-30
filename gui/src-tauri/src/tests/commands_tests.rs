@@ -25,10 +25,7 @@ fn app_state_constructible() {
         last_state: Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
-        selection: Arc::new(RwLock::new(SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })),
+        selection: Arc::new(RwLock::new(SelectionInfo::default())),
     };
 }
 
