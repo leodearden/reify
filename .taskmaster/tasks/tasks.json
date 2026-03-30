@@ -14443,7 +14443,7 @@
         "description": "In hover.rs, the scoped member lookup via `find_member_decl(word, enclosing)` does not fall back to `find_member_decl(word, None)` when scoped lookup returns None, unlike goto_def.rs which does. Either: (a) add a comment explaining this is intentional because hover should only show info for members of the enclosing declaration, or (b) implement the same two-pass pattern as goto_def.rs. Investigate whether cross-structure member references are possible in the language to determine which approach is correct.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14454,7 +14454,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-30T22:29:18.361Z"
       },
       {
         "id": "696",
@@ -15869,7 +15870,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T22:29:16.304Z",
+      "lastModified": "2026-03-30T22:29:18.361Z",
       "taskCount": 770,
       "completedCount": 429,
       "tags": [
