@@ -4,7 +4,7 @@
 //! parse → compile → eval/check → verify.
 //! Uses examples/m9_trait_conformance.ri as the source file.
 
-use reify_test_support::mocks::MockConstraintChecker;
+use reify_constraints::SimpleConstraintChecker;
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
@@ -69,7 +69,7 @@ fn trait_conformance_compiles_and_evals() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let _result = engine.eval(&compiled);
 
@@ -97,7 +97,7 @@ fn basic_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -147,7 +147,7 @@ fn default_injection_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -199,7 +199,7 @@ fn multi_trait_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -270,7 +270,7 @@ fn refinement_chain_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -368,7 +368,7 @@ fn diamond_merging_values() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.eval(&compiled);
 
@@ -421,7 +421,7 @@ fn total_constraint_count() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let _result = engine.eval(&compiled);
 
@@ -453,7 +453,7 @@ fn qualified_access_disambiguation() {
 
     let compiled = parse_and_compile(&source);
 
-    let checker = MockConstraintChecker::new();
+    let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let _result = engine.eval(&compiled);
 
