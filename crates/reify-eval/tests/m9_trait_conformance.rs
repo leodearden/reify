@@ -71,7 +71,15 @@ fn trait_conformance_compiles_and_evals() {
     // Eval
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     // Check constraints — all should be Satisfied
     let result = engine.check(&compiled);
@@ -423,7 +431,15 @@ fn total_constraint_count() {
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     let check_result = engine.check(&compiled);
     assert!(
@@ -455,7 +471,15 @@ fn qualified_access_disambiguation() {
 
     let checker = SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let _result = engine.eval(&compiled);
+    let result = engine.eval(&compiled);
+
+    // No eval-level errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     let check_result = engine.check(&compiled);
 
