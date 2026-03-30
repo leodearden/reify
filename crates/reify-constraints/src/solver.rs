@@ -2054,19 +2054,16 @@ mod tests {
     #[test]
     fn feasibility_check_runs_with_objective() {
         use crate::DimensionalSolver;
-        use reify_test_support::mm;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, OptimizationObjective, Type,
-            ValueCellId,
-        };
+        use reify_test_support::{cnid, gt, literal, mm, value_ref, vcid};
+        use reify_types::{AutoParam, OptimizationObjective, Type};
 
         let solver = DimensionalSolver;
-        let x_id = ValueCellId::new("Part", "x");
+        let x_id = vcid("Part", "x");
 
         // x > 1mm — trivially satisfied when x starts at 10mm
-        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
-        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
-        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one_mm, Type::Bool);
+        let x_ref = value_ref("Part", "x");
+        let one_mm = literal(mm(1.0));
+        let gt_expr = gt(x_ref.clone(), one_mm);
 
         // Minimize x — with auto param bounds [5mm, 100mm], the minimum
         // is at 5mm which is still above the 1mm constraint.
@@ -2081,7 +2078,7 @@ mod tests {
                 param_type: Type::length(),
                 bounds: Some((0.005, 0.100)), // 5mm–100mm
             }],
-            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            constraints: vec![(cnid("Part", 0), gt_expr)],
             current_values: current,
             objective: Some(objective),
             functions: vec![],
@@ -2121,32 +2118,18 @@ mod tests {
     #[test]
     fn termination_reason_extracted_without_panic() {
         use crate::DimensionalSolver;
-        use reify_types::{
-            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value,
-            ValueCellId,
-        };
+        use reify_test_support::{cnid, gt, literal, lt, mm, value_ref, vcid};
+        use reify_types::{AutoParam, Type, Value};
 
         let solver = DimensionalSolver;
-        let x_id = ValueCellId::new("Part", "x");
+        let x_id = vcid("Part", "x");
 
         // Simple feasibility: x > 5mm AND x < 50mm
-        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
-        let five_mm = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 0.005,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::length(),
-        );
-        let fifty_mm = CompiledExpr::literal(
-            Value::Scalar {
-                si_value: 0.050,
-                dimension: DimensionVector::LENGTH,
-            },
-            Type::length(),
-        );
-        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
-        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
+        let x_ref = value_ref("Part", "x");
+        let five_mm = literal(mm(5.0));
+        let fifty_mm = literal(mm(50.0));
+        let gt_expr = gt(x_ref.clone(), five_mm);
+        let lt_expr = lt(x_ref, fifty_mm);
 
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
@@ -2155,8 +2138,8 @@ mod tests {
                 bounds: Some((0.001, 0.1)),
             }],
             constraints: vec![
-                (ConstraintNodeId::new("Part", 0), gt_expr),
-                (ConstraintNodeId::new("Part", 1), lt_expr),
+                (cnid("Part", 0), gt_expr),
+                (cnid("Part", 1), lt_expr),
             ],
             current_values: ValueMap::new(),
             objective: None,
