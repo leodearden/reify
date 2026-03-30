@@ -404,9 +404,11 @@ fn diamond_merging_values() {
         .iter()
         .filter(|e| e.id.entity == "Merged")
         .collect();
-    assert!(
-        !merged_constraints.is_empty(),
-        "expected at least one constraint for Merged"
+    assert_eq!(
+        merged_constraints.len(),
+        2,
+        "expected exactly 2 constraints for Merged (x>0mm from Base once, x<500mm from structure), got {}",
+        merged_constraints.len()
     );
     for entry in &merged_constraints {
         assert_eq!(
