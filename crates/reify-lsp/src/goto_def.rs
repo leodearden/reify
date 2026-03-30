@@ -2,7 +2,7 @@ use reify_syntax::ImportKind;
 use reify_types::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{find_named_member_span, module_name_from_uri};
+use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
 use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -18,29 +18,23 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let module_name = module_name_from_uri(uri);
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
-    let offset_u32 = offset as u32;
-
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
     // first for scoped resolution.
-    for decl in &parsed.declarations {
-        let (members, decl_span) = match decl {
-            reify_syntax::Declaration::Structure(s) => (&s.members, s.span),
-            reify_syntax::Declaration::Occurrence(o) => (&o.members, o.span),
-            _ => continue,
+    if let Some(enclosing) = enclosing_decl_at(&parsed.declarations, offset) {
+        let members = match enclosing {
+            reify_syntax::Declaration::Structure(s) => &s.members,
+            reify_syntax::Declaration::Occurrence(o) => &o.members,
+            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
         };
-        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-            // Cursor is inside this declaration — search its members only
-            if let Some((span, _doc)) = find_named_member_span(members, word) {
-                return Some(Location {
-                    uri: uri.clone(),
-                    range: span_to_range(source, span),
-                });
-            }
-            // Member not found in enclosing declaration; fall through to
-            // the all-declarations search below.
-            break;
+        if let Some((span, _doc)) = find_named_member_span(members, word) {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            });
         }
+        // Member not found in enclosing declaration; fall through to
+        // the all-declarations search below.
     }
 
     // Fallback: search all declarations (cursor outside any declaration,
