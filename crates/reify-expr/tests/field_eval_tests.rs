@@ -99,3 +99,71 @@ fn sample_gradient_of_constant_field_near_zero() {
          sampled gradient components should be within 1e-9 of zero)"
     );
 }
+
+/// Gradient of gradient returns Undef (nested differential operators not supported).
+///
+/// Build an analytical field, construct gradient(field) which returns Undef (stub),
+/// then construct gradient(gradient(field)). The outer gradient receives Undef as
+/// its argument due to strict Undef propagation at FunctionCall arg evaluation,
+/// short-circuiting before even reaching the gradient stub logic.
+#[test]
+fn gradient_of_gradient_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x * x  (simple scalar field)
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Inner gradient: gradient(field) → Undef (stub)
+    let inner_gradient = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let inner_result = eval_expr(&inner_gradient, &EvalContext::simple(&values));
+    assert_eq!(
+        inner_result,
+        Value::Undef,
+        "inner gradient(field) must return Undef (stub)"
+    );
+
+    // Outer gradient: gradient(gradient(field)) → Undef
+    // The inner gradient evaluates to Undef, which triggers strict Undef
+    // propagation at the outer FunctionCall's arg evaluation, short-circuiting
+    // before even reaching the gradient handler.
+    let outer_gradient = make_function_call(
+        "gradient",
+        vec![inner_gradient],
+        Type::Real,
+    );
+
+    let outer_result = eval_expr(&outer_gradient, &EvalContext::simple(&values));
+    assert_eq!(
+        outer_result,
+        Value::Undef,
+        "gradient(gradient(field)) must return Undef: nested differential \
+         operators are not supported"
+    );
+}
