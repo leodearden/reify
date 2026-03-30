@@ -1112,6 +1112,26 @@ mod tests {
     }
 
     #[test]
+    fn find_named_member_span_finds_port_internal_let() {
+        let source = r#"structure S {
+    port x : MechPort { let ratio = 2 }
+}"#;
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let structure = match &parsed.declarations[0] {
+            reify_syntax::Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let result = find_named_member_span(&structure.members, "ratio");
+        assert!(result.is_some(), "ratio inside port body should be found via find_named_member_span");
+        let (span, _doc) = result.unwrap();
+        let decl_text = &source[span.start as usize..span.end as usize];
+        assert!(
+            decl_text.contains("ratio"),
+            "span should cover the let declaration, got: {decl_text:?}"
+        );
+    }
+
+    #[test]
     fn structure_names_counts_port_internal_members() {
         let source = r#"structure S {
     param a : Scalar = 1mm
