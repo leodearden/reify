@@ -2292,3 +2292,26 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
         h.kill().await;
     }
 }
+
+/// Regression test: make_ready_handle's empty b"" reader causes immediate EOF,
+/// which triggers the on_exit callback setting state to Crashed.  On a
+/// multi_thread runtime the spawned on_exit task can run between yield points,
+/// causing intermittent Ready→Crashed transitions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn make_ready_handle_stays_ready_on_multi_thread() {
+    let handle = make_ready_handle();
+    let state = std::sync::Arc::clone(handle.state());
+
+    // Yield to allow the spawned on_exit task (if any) to execute.
+    tokio::task::yield_now().await;
+    // Brief sleep gives the on_exit task time to acquire the state lock.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let current = state.lock().await.clone();
+    assert!(
+        matches!(current, SidecarState::Ready),
+        "Expected SidecarState::Ready after yield, got {:?} — \
+         the empty-reader EOF race caused a Crashed transition",
+        current,
+    );
+}
