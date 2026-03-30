@@ -3981,7 +3981,8 @@ fn elaborate_child_lets_only<'t>(
             .collect();
         cyclic_members.sort();
         diagnostics.push(Diagnostic::error(format!(
-            "circular let-binding dependency in '{}': [{}]",
+            "circular let-binding dependency in template {} (entity {}): [{}]",
+            child_template.name,
             scoped_entity,
             cyclic_members.join(", "),
         )));
