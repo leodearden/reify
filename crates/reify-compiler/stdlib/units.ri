@@ -1,0 +1,45 @@
+// Stdlib: Unit Declarations
+// Provides standard engineering unit definitions for the Reify language.
+// All units marked pub so they are visible to downstream modules.
+
+// ── Length (SI base: meter) ─────────────────────────────────────────────────
+
+pub unit m   : Length
+pub unit mm  : Length = 0.001
+pub unit cm  : Length = 0.01
+pub unit km  : Length = 1000
+pub unit um  : Length = 0.000001
+pub unit in  : Length = 0.0254
+pub unit ft  : Length = 0.3048
+pub unit thou : Length = 0.0254mm
+
+// ── Angle (SI base: radian) ─────────────────────────────────────────────────
+
+pub unit rad : Angle
+pub unit deg : Angle = 3.141592653589793 / 180
+
+// ── Mass (SI base: kilogram) ────────────────────────────────────────────────
+
+pub unit kg  : Mass
+pub unit g   : Mass = 0.001
+pub unit mg  : Mass = 0.000001
+pub unit lb  : Mass = 0.45359237
+pub unit oz  : Mass = 0.028349523125
+
+// ── Time (SI base: second) ──────────────────────────────────────────────────
+
+pub unit s   : Time
+pub unit ms  : Time = 0.001
+pub unit min : Time = 60
+pub unit h   : Time = 3600
+
+// ── Temperature (SI base: kelvin) ───────────────────────────────────────────
+
+pub unit K    : Temperature
+pub unit degC : Temperature = 1 offset 273.15
+pub unit degF : Temperature = 5 / 9 offset 255.3722222222222
+
+// ── Force (SI base: newton, kg*m/s^2) ───────────────────────────────────────
+
+pub unit N  : Force
+pub unit kN : Force = 1000
