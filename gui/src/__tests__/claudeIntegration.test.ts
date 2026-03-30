@@ -202,6 +202,56 @@ describe('claude bridge integration', () => {
     expect(store.state.sessionStatus).toBe('responding');
   });
 
+  it('thinking-delta events update thinkingText via rAF flush without done event', async () => {
+    const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
+    mockListen.mockImplementation(async (eventName, handler) => {
+      capturedHandlers[eventName as string] = handler as (event: { payload: unknown }) => void;
+      return vi.fn();
+    });
+
+    const store = createClaudeStore({
+      onSend: () => {},
+      onAbort: () => {},
+    });
+
+    await subscribeToClaudeEvents(store.handleOutboundMessage);
+
+    store.sendMessage('hello', {});
+    const msgId = store.state.currentMessageId!;
+    expect(msgId).toBeTruthy();
+
+    // Send multiple thinking deltas (exercises the rAF batching path for thinkingBuffer)
+    capturedHandlers['claude-thinking-delta']({
+      payload: { id: msgId, content: 'Let me ' },
+    });
+    capturedHandlers['claude-thinking-delta']({
+      payload: { id: msgId, content: 'think...' },
+    });
+
+    // Before flushing rAF, thinkingText should still be buffered (not yet applied)
+    const beforeFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(beforeFlush!.thinkingText).toBe('');
+
+    // Flush rAF — this exercises the thinkingBuffer batching path
+    flushRaf();
+
+    // Now thinkingText should reflect the batched deltas
+    const afterFlush = store.state.messages.find(
+      (m): m is AssistantMessage => m.role === 'assistant' && m.id === msgId,
+    );
+    expect(afterFlush!.thinkingText).toBe('Let me think...');
+    // responseText should remain empty (buffer isolation)
+    expect(afterFlush!.responseText).toBe('');
+    // Message should NOT be marked complete (no done event was sent)
+    expect(afterFlush!.complete).toBe(false);
+    // thinkingComplete should still be false
+    expect(afterFlush!.thinkingComplete).toBe(false);
+    // Status should be 'thinking' (not 'responding')
+    expect(store.state.sessionStatus).toBe('thinking');
+  });
+
   it('claude-error event adds system message and marks assistant message as error', async () => {
     const capturedHandlers: Record<string, (event: { payload: unknown }) => void> = {};
     mockListen.mockImplementation(async (eventName, handler) => {
