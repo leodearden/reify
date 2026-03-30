@@ -12681,7 +12681,7 @@
         "description": "claudeSendMessage treats `{}` as truthy, emitting `{ selected_entity: undefined, diagnostics: undefined, constraints: undefined }` to the Rust sidecar instead of `undefined`. This may cause different behavior if the sidecar distinguishes between missing context and all-undefined-fields context.\n\n1. Add a test: `claudeSendMessage('hello', {})` — verify the current behavior\n2. Decide whether `{}` should be treated as no-context (check `Object.values(context).some(v => v !== undefined)`) or left as-is with a documenting test\n3. Update bridge.ts implementation if normalizing empty context to undefined\n\nMemory hints: search \"claudeSendMessage bridge.ts empty context\", entities: ClaudeMessageContext, bridge.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12696,7 +12696,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-30T17:49:28.543Z"
+        "updatedAt": "2026-03-30T17:49:30.607Z"
       },
       {
         "id": "611",
@@ -15654,7 +15654,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T17:49:30.498Z",
+      "lastModified": "2026-03-30T17:49:30.607Z",
       "taskCount": 753,
       "completedCount": 413,
       "tags": [
