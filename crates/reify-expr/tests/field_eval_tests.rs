@@ -230,3 +230,83 @@ fn gradient_field_with_undef_lambda() {
         "gradient of field with Undef lambda must return Undef"
     );
 }
+
+/// Temperature-over-length field: sample works, gradient returns Undef (stub).
+///
+/// Build a 1D field with domain=Scalar<Length>, codomain=Scalar<Temperature>,
+/// lambda: |x| -> Scalar(2.0 * x.si_value, Temperature). Verify that:
+/// - sample(field, Scalar(3.0, Length)) returns Scalar(6.0, Temperature)
+/// - gradient(field) returns Undef (stub)
+///
+/// When gradient is implemented, gradient of this field should produce a field
+/// with codomain dimension Temperature/Length.
+#[test]
+fn gradient_dimension_temperature_over_length() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
+    // Since x is passed as a Real (sample decomposes scalars), the result is Real.
+    // We wrap the result with a Scalar type at the field level.
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // sample(field, 3.0) → 6.0 (2.0 * 3.0)
+    // sample passes the point as-is to apply_lambda for scalar domains
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field.clone(), field_type.clone()),
+            CompiledExpr::literal(Value::Real(3.0), domain_type),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Real(6.0),
+        "sample(temperature_field, 3.0) should return 6.0 (2.0 * 3.0)"
+    );
+
+    // gradient(field) → Undef (stub)
+    // TODO: When gradient is implemented, the gradient of a Temperature(Length)
+    // field should produce a field with codomain dimension Temperature/Length.
+    let gradient_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let gradient_result = eval_expr(&gradient_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        gradient_result,
+        Value::Undef,
+        "gradient of temperature/length field must return Undef (stub; when \
+         implemented, gradient dimension should be Temperature/Length)"
+    );
+}
