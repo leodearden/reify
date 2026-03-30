@@ -291,6 +291,12 @@ pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, 
                 lets += l;
                 constraints += c;
             }
+            reify_syntax::MemberDecl::Port(port) => {
+                let (p, l, c) = count_members_recursive(&port.members);
+                params += p;
+                lets += l;
+                constraints += c;
+            }
             _ => {}
         }
     }
