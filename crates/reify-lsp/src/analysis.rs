@@ -1158,4 +1158,71 @@ mod tests {
             "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
         );
     }
+
+    // --- enclosing_decl_at free function tests ---
+
+    #[test]
+    fn enclosing_decl_at_returns_structure_for_offset_inside() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset inside A: 'x' in "param x: Scalar = 5mm"
+        let a_x_offset = source.find("param x").unwrap() + 6;
+        let decl = enclosing_decl_at(&parsed.declarations, a_x_offset);
+        assert!(decl.is_some(), "offset inside A should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "A"),
+            other => panic!("expected Structure A, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_correct_structure_for_second_decl() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset inside B: 'y' in "param y: Bool = true"
+        let b_y_offset = source.find("param y").unwrap() + 6;
+        let decl = enclosing_decl_at(&parsed.declarations, b_y_offset);
+        assert!(decl.is_some(), "offset inside B should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "B"),
+            other => panic!("expected Structure B, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let offset = source.find("diameter").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, offset);
+        assert!(decl.is_some(), "offset inside occurrence should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
+            other => panic!("expected Occurrence Joint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_none_between_declarations() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset between A and B (the newline between them)
+        let between_offset = source.find("\nstructure B").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, between_offset);
+        assert!(decl.is_none(), "offset between declarations should return None");
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_none_for_offset_past_end() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let decl = enclosing_decl_at(&parsed.declarations, source.len() + 100);
+        assert!(decl.is_none(), "offset past end should return None");
+    }
+
+    #[test]
+    fn enclosing_decl_at_empty_declarations() {
+        let decl = enclosing_decl_at(&[], 0);
+        assert!(decl.is_none(), "empty declarations should return None");
+    }
 }
