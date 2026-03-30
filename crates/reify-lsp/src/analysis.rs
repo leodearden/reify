@@ -427,6 +427,13 @@ mod tests {
         assert!(ctx.find_member_decl("nonexistent", None).is_none());
     }
 
+    #[test]
+    fn find_member_decl_nonexistent_decl_returns_none() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(ctx.find_member_decl("width", Some("NonExistent")).is_none());
+    }
+
     // --- member_names tests ---
 
     #[test]
