@@ -2275,14 +2275,14 @@ mod poison_evaluate {
         adapter.poison_values();
 
         let (subscriber, warn_count) = warn_counting_subscriber();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let _outcome = evaluate_with_recovery(&adapter, node);
-        drop(_guard);
+        let _outcome = tracing::subscriber::with_default(subscriber, || {
+            evaluate_with_recovery(&adapter, node)
+        });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
-            count > 0,
-            "evaluate() should emit tracing::warn! on poison recovery, got {count} WARN events"
+            count >= 2,
+            "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
     }
 }
