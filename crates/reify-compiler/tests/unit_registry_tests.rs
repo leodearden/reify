@@ -1026,3 +1026,77 @@ structure def Plate {
         panic!("thickness has no default_expr");
     }
 }
+
+// ─── step-15 (task-208): regression — all 9 hardcoded units via compile_with_stdlib ─
+
+/// All 9 original hardcoded units resolve correctly via compile_with_stdlib().
+/// Each unit's si_value must match the hardcoded conversion factor.
+#[test]
+fn all_nine_hardcoded_units_resolve_via_stdlib() {
+    // (unit_suffix, expected_factor_for_1_unit)
+    let cases: &[(&str, f64)] = &[
+        ("mm", 0.001),
+        ("cm", 0.01),
+        ("m", 1.0),
+        ("in", 0.0254),
+        ("deg", std::f64::consts::PI / 180.0),
+        ("rad", 1.0),
+        ("kg", 1.0),
+        ("g", 0.001),
+        ("s", 1.0),
+    ];
+
+    for (unit, expected_factor) in cases {
+        // Each unit is tested with value 1.0, so si_value == factor
+        let source = format!(
+            "structure def T_{u} {{ param v : Real = 1{u} }}",
+            u = unit
+        );
+        let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors for unit '{}': {:?}",
+            unit,
+            parsed.errors
+        );
+
+        let module = compile_with_stdlib(&parsed);
+        let errors = errors_only(&module);
+        assert!(
+            errors.is_empty(),
+            "compile_with_stdlib errors for unit '{}': {:?}",
+            unit,
+            errors
+        );
+
+        let template = module
+            .templates
+            .first()
+            .unwrap_or_else(|| panic!("no template for unit '{}'", unit));
+        let cell = template
+            .value_cells
+            .first()
+            .unwrap_or_else(|| panic!("no value cell for unit '{}'", unit));
+        let expr = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("no default_expr for unit '{}'", unit));
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            assert!(
+                (si_value - expected_factor).abs() < 1e-15,
+                "1{} should have si_value ≈ {}, got {}",
+                unit,
+                expected_factor,
+                si_value
+            );
+        } else {
+            panic!(
+                "expected scalar literal for 1{}, got {:?}",
+                unit, expr.kind
+            );
+        }
+    }
+}
