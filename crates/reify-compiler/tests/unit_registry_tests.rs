@@ -125,7 +125,7 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
         factor: 0.002,
         offset: None,
         is_pub: true,
-        span: SourceSpan::new(10, 5),
+        span: SourceSpan::new(10, 15),
         content_hash: reify_types::ContentHash::of_str("mm-v2"),
     };
     reg.seed_prelude_unit(entry1);

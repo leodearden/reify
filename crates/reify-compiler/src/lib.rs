@@ -542,6 +542,15 @@ impl UnitRegistry {
         }
     }
 
+    /// Seed a prelude unit entry into the registry (overwrite semantics).
+    ///
+    /// Used to pre-populate the registry with units from prelude modules
+    /// before processing module-local declarations. Duplicate prelude entries
+    /// resolve by load order (last wins).
+    pub fn seed_prelude_unit(&mut self, entry: UnitEntry) {
+        self.entries.insert(entry.name.clone(), entry);
+    }
+
     /// Look up a unit by name.
     pub fn lookup(&self, name: &str) -> Option<&UnitEntry> {
         self.entries.get(name)
