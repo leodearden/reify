@@ -845,6 +845,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enclosing_decl_name_at_inside_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("diameter").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Joint"),
+            "offset inside occurrence should return Some(\"Joint\")"
+        );
+    }
+
     // --- enclosing_decl_name_at (renamed method) tests ---
 
     #[test]
