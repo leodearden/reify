@@ -15710,6 +15710,17 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 759,
+        "title": "Replace wildcard arms with explicit leaf variants in LSP member recursion functions",
+        "description": "In `find_named_member_span` and `count_members_recursive` (crates/reify-lsp/src/analysis.rs), the `_ => {}` wildcard arms silently skip any MemberDecl variant that isn't explicitly handled. This is the exact pattern that caused the Port-member bug fixed in task 636 — when a new container variant is added, the wildcard swallows it.\n\nReplace the wildcards with explicit arms for all non-container leaf variants (Sub, Minimize, Maximize, AssociatedType, Connect, Chain, MetaBlock). The compiler's exhaustiveness check will then flag any new container variant at compile time.\n\nAlso update the doc comments on both functions to mention Port.members alongside GuardedGroup.members/else_members.\n\nMemory hints: search \"MemberDecl variants\" in reify-syntax/src/lib.rs, search \"find_named_member_span count_members_recursive\" in analysis.rs",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15722,7 +15733,7 @@
       ],
       "created": "2026-03-30T18:07:47.386Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-30T18:07:56.059Z"
+      "updated": "2026-03-30T18:08:06.524Z"
     }
   }
 }
