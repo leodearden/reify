@@ -15807,6 +15807,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 766,
+        "title": "Deprecate bare compile() or add doc warning about missing stdlib",
+        "description": "The public API now has three entry points: compile() (no prelude), compile_with_prelude() (caller-supplied), and compile_with_stdlib() (full stdlib). The bare compile() silently fails to resolve any standard units — including the nine that were previously hard-coded — making it a trap for callers.\n\nFix: Either mark compile() with #[deprecated] pointing to compile_with_stdlib, or add a prominent doc warning that compile() is intended only for prelude-module bootstrapping and will not resolve standard units.\n\nLocation: crates/reify-compiler/src/lib.rs:2636-2641.\n\nmemory_hints: search \"compile entry point API\" for context on the three-function API.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15819,7 +15830,7 @@
       ],
       "created": "2026-03-30T22:16:55.990Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-30T22:17:03.733Z"
+      "updated": "2026-03-30T22:17:08.904Z"
     }
   }
 }
