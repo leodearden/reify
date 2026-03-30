@@ -9,6 +9,9 @@ use reify_types::{ModulePath, Severity};
 
 use crate::CompiledModule;
 
+/// Embedded source for stdlib/units.ri.
+const UNITS_SRC: &str = include_str!("../stdlib/units.ri");
+
 /// Embedded source for stdlib/materials_mechanical.ri.
 const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechanical.ri");
 
@@ -31,6 +34,7 @@ static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 pub fn load_stdlib() -> &'static [CompiledModule] {
     STDLIB_CACHE.get_or_init(|| {
         let sources: &[(&str, &str)] = &[
+            ("std.units", UNITS_SRC),
             ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
             ("std.structural.physical", STRUCTURAL_PHYSICAL_SRC),
         ];
