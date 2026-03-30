@@ -310,3 +310,55 @@ fn gradient_dimension_temperature_over_length() {
          implemented, gradient dimension should be Temperature/Length)"
     );
 }
+
+/// Gradient of a field whose lambda returns a non-numeric value returns Undef.
+///
+/// Build a field whose lambda returns Value::String("not_a_number"). Call
+/// gradient(field) → Undef (stub). When gradient is implemented with numerical
+/// differentiation, non-numeric lambda output must propagate as Undef because
+/// arithmetic perturbation (f(x+h) - f(x-h)) / 2h requires numeric values.
+#[test]
+fn gradient_of_field_with_non_numeric_lambda() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| "not_a_number"  (non-numeric return value)
+    let body = CompiledExpr::literal(
+        Value::String("not_a_number".to_string()),
+        Type::String,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::String;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    // gradient(field) → Undef (stub)
+    // When gradient is implemented, numerical differentiation will attempt
+    // (f(x+h) - f(x-h)) / 2h, which requires numeric f values. A String
+    // return from the lambda cannot participate in subtraction/division,
+    // so gradient must propagate Undef.
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of field with non-numeric lambda must return Undef"
+    );
+}
