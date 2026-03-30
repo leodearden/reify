@@ -5452,7 +5452,7 @@
         "dependencies": [
           "287"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-stdlib",
@@ -5462,7 +5462,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-30T17:49:29.206Z"
+        "updatedAt": "2026-03-30T17:59:11.460Z"
       },
       {
         "id": "289",
@@ -15672,13 +15672,24 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "756",
+        "title": "Add solver path diagnostics to verify fallback vs optimization in tests",
+        "description": "Multiple review suggestions identified that warm-start solver integration tests assume the fallback path is triggered without verifying it. If NLopt convergence behavior changes (version update, iteration budget formula change, platform differences), tests could silently switch from testing the fallback path to testing the optimization path and still pass — or vice versa, fail spuriously.\n\nAffected tests:\n- `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` (exact-value assertion only valid on fallback path)\n- `warm_start_fallback_returns_exact_initial_values` (same issue, 3-param variant)\n\nCurrent state: `SolveResult::Solved` carries no metadata about which code path produced the result. The fallback path logs via `tracing::debug!` but this isn't programmatically accessible.\n\nProposed fix: Add an optional `diagnostics` or `path` field to `SolveResult::Solved` (or a separate `SolverDiagnostics` struct) that indicates whether the result came from:\n1. Early-exit (initial already feasible, no objective)\n2. Optimization convergence\n3. Fallback to initial (optimizer drifted infeasible)\n\nThen update fallback tests to assert the path taken, not just the values.\n\nNote: `build_solved_values` already has 3 unit tests in solver.rs (lines ~2188-2280) covering the value construction itself. This task is about the integration-level path verification.\n\nMemory hints: search \"solver fallback path\", search \"SolveResult diagnostics\", entity DimensionalSolver, entity build_solved_values",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T17:57:35.253Z",
-      "taskCount": 755,
-      "completedCount": 414,
+      "lastModified": "2026-03-30T17:59:11.460Z",
+      "taskCount": 756,
+      "completedCount": 415,
       "tags": [
         "master"
       ]
