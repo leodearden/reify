@@ -969,3 +969,21 @@ fn prelude_unit_resolves_in_unit_conversion_expr() {
         mylen.factor
     );
 }
+
+// ─── step-11 (task-208): module-local duplicate of prelude unit ──────────────
+
+/// Module-local unit declaration with the same name as a prelude unit produces
+/// a "duplicate" error diagnostic.
+#[test]
+fn local_unit_duplicate_of_prelude_emits_error() {
+    let source = "unit mm : Length = 0.002";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("duplicate") && d.message.contains("mm")
+        }),
+        "expected a 'duplicate' error mentioning 'mm' when module-local unit shadows prelude, got: {:?}",
+        errors
+    );
+}
