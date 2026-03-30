@@ -13,7 +13,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     let ctx = AnalysisContext::new(source, uri);
 
     // Determine the enclosing structure so member lookup is scoped correctly
-    let enclosing = ctx.enclosing_structure_name_at(offset);
+    let enclosing = ctx.enclosing_decl_name_at(offset);
 
     // Try member lookup first
     if let Some(info) = ctx.find_member_decl(word, enclosing) {

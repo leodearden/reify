@@ -30,7 +30,7 @@ pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext
     let offset = position_to_offset(source, position);
 
     // Check if cursor is inside a structure/occurrence span
-    let enclosing = ctx.enclosing_structure_name_at(offset);
+    let enclosing = ctx.enclosing_decl_name_at(offset);
 
     if enclosing.is_none() {
         return CursorContext::TopLevel;

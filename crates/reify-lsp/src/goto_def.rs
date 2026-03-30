@@ -2,7 +2,7 @@ use reify_syntax::ImportKind;
 use reify_types::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{find_named_member_span, module_name_from_uri};
+use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
 use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -18,29 +18,23 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     let module_name = module_name_from_uri(uri);
     let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
-    let offset_u32 = offset as u32;
-
     // Try to find the enclosing declaration by checking if the cursor offset
     // falls within a declaration's span. If found, search only that declaration
     // first for scoped resolution.
-    for decl in &parsed.declarations {
-        let (members, decl_span) = match decl {
-            reify_syntax::Declaration::Structure(s) => (&s.members, s.span),
-            reify_syntax::Declaration::Occurrence(o) => (&o.members, o.span),
-            _ => continue,
+    if let Some(enclosing) = enclosing_decl_at(&parsed.declarations, offset) {
+        let members = match enclosing {
+            reify_syntax::Declaration::Structure(s) => &s.members,
+            reify_syntax::Declaration::Occurrence(o) => &o.members,
+            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
         };
-        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-            // Cursor is inside this declaration — search its members only
-            if let Some((span, _doc)) = find_named_member_span(members, word) {
-                return Some(Location {
-                    uri: uri.clone(),
-                    range: span_to_range(source, span),
-                });
-            }
-            // Member not found in enclosing declaration; fall through to
-            // the all-declarations search below.
-            break;
+        if let Some((span, _doc)) = find_named_member_span(members, word) {
+            return Some(Location {
+                uri: uri.clone(),
+                range: span_to_range(source, span),
+            });
         }
+        // Member not found in enclosing declaration; fall through to
+        // the all-declarations search below.
     }
 
     // Fallback: search all declarations (cursor outside any declaration,
@@ -777,5 +771,77 @@ mod tests {
             compute_goto_definition_cross_file(source, &test_uri(), Position::new(7, 8), &resolver)
                 .expect("volume should still resolve in single-file mode");
         assert_eq!(loc.range.start.line, 7);
+    }
+
+    // --- enclosing_decl_at integration regression tests ---
+
+    #[test]
+    fn enclosing_decl_at_integration_scoped_member_in_second_decl() {
+        // Verify that using enclosing_decl_at from goto_def's context
+        // correctly identifies the enclosing declaration for scoped member resolution.
+        use crate::analysis::enclosing_decl_at;
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
+        let uri = test_uri();
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+
+        // Offset inside B's 'let y = x'
+        let offset = source.find("let y").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, offset);
+        assert!(decl.is_some(), "offset inside B should find enclosing decl");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => {
+                assert_eq!(s.name, "B", "enclosing decl should be B");
+                // Verify we can extract members from the returned declaration
+                assert!(!s.members.is_empty(), "B should have members");
+            }
+            other => panic!("expected Structure B, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_integration_cursor_outside_returns_none() {
+        // Cursor outside all declarations — enclosing_decl_at should return None,
+        // and goto_def should fall back to searching all declarations.
+        use crate::analysis::enclosing_decl_at;
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nx\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let uri = test_uri();
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+
+        // Offset on 'x' standalone between declarations
+        let offset = source.find("\nx\n").unwrap() + 1;
+        let decl = enclosing_decl_at(&parsed.declarations, offset);
+        assert!(decl.is_none(), "offset outside declarations should return None");
+
+        // But goto_def should still find 'x' via fallback (line 3 is the standalone 'x')
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(3, 0))
+            .expect("goto-def should fall back to find x in A");
+        assert_eq!(loc.range.start.line, 1, "should point to A's param x");
+    }
+
+    #[test]
+    fn enclosing_decl_at_integration_missing_member_falls_back() {
+        // Cursor in A on 'y', which doesn't exist in A but exists in B.
+        // enclosing_decl_at finds A, but member not found → falls back.
+        use crate::analysis::enclosing_decl_at;
+        let source = "structure A {\n    param x: Scalar = 5mm\n    let z = y\n}\nstructure B {\n    param y: Scalar = 20mm\n}";
+        let uri = test_uri();
+        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single(module_name));
+
+        // Offset inside A
+        let offset = source.find("let z").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, offset);
+        assert!(decl.is_some());
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "A"),
+            _ => panic!("expected A"),
+        }
+
+        // goto_def should fall through and find y in B
+        let loc = compute_goto_definition(source, &test_uri(), Position::new(2, 12))
+            .expect("goto-def for y should fall back to B");
+        assert_eq!(loc.range.start.line, 5, "should find y in B via fallback");
     }
 }

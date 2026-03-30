@@ -1,7 +1,7 @@
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
-use reify_syntax::ParsedModule;
+use reify_syntax::{Declaration, ParsedModule};
 use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
@@ -61,13 +61,13 @@ impl AnalysisContext {
     /// Find a member declaration by name, returning combined info from
     /// parsed (span) and compiled (kind, type) modules.
     ///
-    /// When `structure` is `Some`, only the named declaration is searched.
+    /// When `enclosing_decl` is `Some`, only the named declaration is searched.
     /// When `None`, returns the first match across all declarations.
     ///
     /// Returns `None` if no value cell with that name exists.
-    pub fn find_member_decl(&self, name: &str, structure: Option<&str>) -> Option<MemberInfo<'_>> {
+    pub fn find_member_decl(&self, name: &str, enclosing_decl: Option<&str>) -> Option<MemberInfo<'_>> {
         // Get the span, doc, and owning declaration name from the parsed module
-        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, structure)?;
+        let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, enclosing_decl)?;
 
         // Find type info from the compiled module, scoped to the same declaration
         for template in &self.compiled.templates {
@@ -109,12 +109,12 @@ impl AnalysisContext {
     /// Find the source span, doc comment, and owning declaration name for a
     /// named member in the parsed module.
     ///
-    /// When `structure` is `Some`, only the declaration with that name is
+    /// When `enclosing_decl` is `Some`, only the declaration with that name is
     /// searched; otherwise all declarations are searched in order.
     fn find_parsed_member_span_and_doc(
         &self,
         name: &str,
-        structure: Option<&str>,
+        enclosing_decl: Option<&str>,
     ) -> Option<(SourceSpan, Option<&str>, &str)> {
         for decl in &self.parsed.declarations {
             let (members, decl_name) = match decl {
@@ -122,7 +122,7 @@ impl AnalysisContext {
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
                 _ => continue,
             };
-            if let Some(target) = structure
+            if let Some(target) = enclosing_decl
                 && decl_name != target
             {
                 continue;
@@ -221,20 +221,34 @@ impl AnalysisContext {
 
     /// Return the name of the structure/occurrence whose span contains `offset`,
     /// or `None` if the offset is outside all declarations.
-    pub fn enclosing_structure_name_at(&self, offset: usize) -> Option<&str> {
-        let offset_u32 = offset as u32;
-        for decl in &self.parsed.declarations {
-            let (decl_name, decl_span) = match decl {
-                reify_syntax::Declaration::Structure(s) => (s.name.as_str(), s.span),
-                reify_syntax::Declaration::Occurrence(o) => (o.name.as_str(), o.span),
-                _ => continue,
-            };
-            if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
-                return Some(decl_name);
-            }
-        }
-        None
+    pub fn enclosing_decl_name_at(&self, offset: usize) -> Option<&str> {
+        enclosing_decl_at(&self.parsed.declarations, offset).map(|decl| match decl {
+            Declaration::Structure(s) => s.name.as_str(),
+            Declaration::Occurrence(o) => o.name.as_str(),
+            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+        })
     }
+}
+
+/// Return the declaration (Structure or Occurrence) whose span contains `offset`,
+/// or `None` if the offset is outside all such declarations.
+///
+/// This is a free function that operates on `&[Declaration]` directly, so it can
+/// be used by callers that only have a `ParsedModule` (e.g., goto-def) without
+/// needing a full `AnalysisContext`.
+pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<&Declaration> {
+    let offset_u32 = offset as u32;
+    for decl in declarations {
+        let decl_span = match decl {
+            Declaration::Structure(s) => s.span,
+            Declaration::Occurrence(o) => o.span,
+            _ => continue,
+        };
+        if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
+            return Some(decl);
+        }
+    }
+    None
 }
 
 /// Recursively search a member list for a named param or let declaration.
@@ -801,33 +815,61 @@ mod tests {
         assert_eq!(info.decl_name, "Foo");
     }
 
-    // --- enclosing_structure_name_at tests ---
+    // --- enclosing_decl_name_at tests ---
 
     #[test]
-    fn enclosing_structure_name_at_inside_second() {
+    fn enclosing_decl_name_at_inside_second() {
         let source =
             "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B: 'y' in "param y: Bool = true"
         let b_y_offset = source.find("param y").unwrap() + 6;
         assert_eq!(
-            ctx.enclosing_structure_name_at(b_y_offset),
+            ctx.enclosing_decl_name_at(b_y_offset),
             Some("B"),
             "offset inside B should return Some(\"B\")"
         );
         // Offset inside A: 'x' in "param x: Scalar = 5mm"
         let a_x_offset = source.find("param x").unwrap() + 6;
         assert_eq!(
-            ctx.enclosing_structure_name_at(a_x_offset),
+            ctx.enclosing_decl_name_at(a_x_offset),
             Some("A"),
             "offset inside A should return Some(\"A\")"
         );
         // Offset outside any structure (between A and B)
         let between_offset = source.find("\nstructure B").unwrap();
         assert_eq!(
-            ctx.enclosing_structure_name_at(between_offset),
+            ctx.enclosing_decl_name_at(between_offset),
             None,
             "offset between structures should return None"
+        );
+    }
+
+    // --- enclosing_decl_name_at (renamed method) tests ---
+
+    #[test]
+    fn enclosing_decl_name_at_delegates_to_free_function() {
+        let source =
+            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Offset inside B
+        let b_y_offset = source.find("param y").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_decl_name_at(b_y_offset),
+            Some("B"),
+            "renamed method should return same result as old method"
+        );
+        // Offset inside A
+        let a_x_offset = source.find("param x").unwrap() + 6;
+        assert_eq!(
+            ctx.enclosing_decl_name_at(a_x_offset),
+            Some("A"),
+        );
+        // Offset outside
+        let between_offset = source.find("\nstructure B").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(between_offset),
+            None,
         );
     }
 
@@ -1157,5 +1199,72 @@ mod tests {
             constraint_count, 1,
             "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
         );
+    }
+
+    // --- enclosing_decl_at free function tests ---
+
+    #[test]
+    fn enclosing_decl_at_returns_structure_for_offset_inside() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset inside A: 'x' in "param x: Scalar = 5mm"
+        let a_x_offset = source.find("param x").unwrap() + 6;
+        let decl = enclosing_decl_at(&parsed.declarations, a_x_offset);
+        assert!(decl.is_some(), "offset inside A should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "A"),
+            other => panic!("expected Structure A, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_correct_structure_for_second_decl() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset inside B: 'y' in "param y: Bool = true"
+        let b_y_offset = source.find("param y").unwrap() + 6;
+        let decl = enclosing_decl_at(&parsed.declarations, b_y_offset);
+        assert!(decl.is_some(), "offset inside B should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Structure(s) => assert_eq!(s.name, "B"),
+            other => panic!("expected Structure B, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let offset = source.find("diameter").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, offset);
+        assert!(decl.is_some(), "offset inside occurrence should return Some");
+        match decl.unwrap() {
+            reify_syntax::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
+            other => panic!("expected Occurrence Joint, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_none_between_declarations() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        // Offset between A and B (the newline between them)
+        let between_offset = source.find("\nstructure B").unwrap();
+        let decl = enclosing_decl_at(&parsed.declarations, between_offset);
+        assert!(decl.is_none(), "offset between declarations should return None");
+    }
+
+    #[test]
+    fn enclosing_decl_at_returns_none_for_offset_past_end() {
+        let source = "structure A {\n    param x: Scalar = 5mm\n}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let decl = enclosing_decl_at(&parsed.declarations, source.len() + 100);
+        assert!(decl.is_none(), "offset past end should return None");
+    }
+
+    #[test]
+    fn enclosing_decl_at_empty_declarations() {
+        let decl = enclosing_decl_at(&[], 0);
+        assert!(decl.is_none(), "empty declarations should return None");
     }
 }
