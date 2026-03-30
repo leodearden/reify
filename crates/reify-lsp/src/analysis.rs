@@ -1047,7 +1047,25 @@ mod tests {
         assert_eq!(format_value(&v), "3 + 4i m");
     }
 
-    // --- port internal member counting tests ---
+    // --- port internal member tests ---
+
+    #[test]
+    fn find_named_member_span_finds_port_internal_param() {
+        let source = r#"structure S {
+    port x : MechPort { param d : Length = 10mm }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let info = ctx
+            .find_member_decl("d", None)
+            .expect("d inside port body should be found");
+        assert_eq!(info.name, "d");
+        assert_eq!(info.kind, ValueCellKind::Param);
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
+        assert!(
+            decl_text.contains("d") && decl_text.contains("10mm"),
+            "span should cover full param declaration, got: {decl_text:?}"
+        );
+    }
 
     #[test]
     fn structure_names_counts_port_internal_members() {
