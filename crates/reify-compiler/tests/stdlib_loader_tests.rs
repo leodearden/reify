@@ -79,6 +79,27 @@ fn load_stdlib_is_cached() {
     );
 }
 
+// ─── step-1b: std.units is the first stdlib module (bootstrap order) ─
+
+/// load_stdlib() returns std.units as the first module in the slice.
+/// This ensures units are available to all subsequent stdlib modules.
+#[test]
+fn std_units_is_first_module() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        modules.len() >= 2,
+        "expected at least 2 stdlib modules (units + materials), got {}",
+        modules.len()
+    );
+    let first = &modules[0];
+    let path_str = format!("{}", first.path);
+    assert!(
+        path_str.contains("units"),
+        "first stdlib module should be std.units, got path: {}",
+        path_str
+    );
+}
+
 // ─── step-3: compile_with_prelude makes prelude traits visible ──────
 
 /// compile_with_prelude() makes prelude traits visible to user code.
