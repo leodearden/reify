@@ -262,6 +262,11 @@ pub fn find_named_member_span<'a>(
                     return Some(result);
                 }
             }
+            reify_syntax::MemberDecl::Port(port) => {
+                if let Some(result) = find_named_member_span(&port.members, name) {
+                    return Some(result);
+                }
+            }
             _ => {}
         }
     }
@@ -287,6 +292,12 @@ pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, 
                 lets += l;
                 constraints += c;
                 let (p, l, c) = count_members_recursive(&g.else_members);
+                params += p;
+                lets += l;
+                constraints += c;
+            }
+            reify_syntax::MemberDecl::Port(port) => {
+                let (p, l, c) = count_members_recursive(&port.members);
                 params += p;
                 lets += l;
                 constraints += c;
@@ -1045,5 +1056,106 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         assert_eq!(format_value(&v), "3 + 4i m");
+    }
+
+    // --- port internal member tests ---
+
+    #[test]
+    fn find_named_member_span_finds_port_internal_param() {
+        let source = r#"structure S {
+    port x : MechPort { param d : Length = 10mm }
+}"#;
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let structure = match &parsed.declarations[0] {
+            reify_syntax::Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let result = find_named_member_span(&structure.members, "d");
+        assert!(result.is_some(), "d inside port body should be found via find_named_member_span");
+        let (span, _doc) = result.unwrap();
+        let decl_text = &source[span.start as usize..span.end as usize];
+        assert!(
+            decl_text.contains("d") && decl_text.contains("10mm"),
+            "span should cover full param declaration, got: {decl_text:?}"
+        );
+    }
+
+    #[test]
+    fn structure_names_counts_port_with_guarded_group() {
+        // Verifies that count_members_recursive correctly handles both Port
+        // and GuardedGroup recursion in the same structure. The tree-sitter
+        // grammar does not support where-blocks inside port bodies, so we
+        // test them at the same level instead.
+        let source = r#"structure S {
+    param cond : Bool = true
+    port x : MechPort { param d : Length = 10mm  constraint d > 0mm }
+    where cond {
+        param guarded_p : Scalar = 5mm
+    }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: cond + d (inside port) + guarded_p (inside where) = 3 params
+        assert_eq!(
+            param_count, 3,
+            "expected 3 params (cond, d inside port, guarded_p inside where), got {param_count}"
+        );
+        assert_eq!(let_count, 0, "expected 0 lets, got {let_count}");
+        // Should count: d > 0mm (inside port) = 1 constraint
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_finds_port_internal_let() {
+        let source = r#"structure S {
+    port x : MechPort { let ratio = 2 }
+}"#;
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let structure = match &parsed.declarations[0] {
+            reify_syntax::Declaration::Structure(s) => s,
+            other => panic!("expected Structure, got {:?}", other),
+        };
+        let result = find_named_member_span(&structure.members, "ratio");
+        assert!(result.is_some(), "ratio inside port body should be found via find_named_member_span");
+        let (span, _doc) = result.unwrap();
+        let decl_text = &source[span.start as usize..span.end as usize];
+        assert!(
+            decl_text.contains("ratio"),
+            "span should cover the let declaration, got: {decl_text:?}"
+        );
+    }
+
+    #[test]
+    fn structure_names_counts_port_internal_members() {
+        let source = r#"structure S {
+    param a : Scalar = 1mm
+    port x : MechPort { param d : Length = 10mm  let ratio = 2  constraint d > 0mm }
+}"#;
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let structs = ctx.structure_names();
+        assert_eq!(structs.len(), 1);
+        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
+        assert_eq!(name, "S");
+        // Should count: a + d = 2 params (d is inside port body)
+        assert_eq!(
+            param_count, 2,
+            "expected 2 params (a, d inside port), got {param_count}"
+        );
+        // Should count: ratio = 1 let (inside port body)
+        assert_eq!(
+            let_count, 1,
+            "expected 1 let (ratio inside port), got {let_count}"
+        );
+        // Should count: d > 0mm = 1 constraint (inside port body)
+        assert_eq!(
+            constraint_count, 1,
+            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+        );
     }
 }
