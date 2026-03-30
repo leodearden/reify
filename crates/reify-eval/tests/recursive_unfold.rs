@@ -1485,3 +1485,65 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
          If Undef, the BFS gate on found_any prevented traversal through the wrapper."
     );
 }
+
+// ─── Missing template reference diagnostic tests ────────────────────────────
+
+/// A recursive sub referencing a non-existent template should produce an
+/// Error-severity diagnostic, not just a warning. This indicates a
+/// post-compilation inconsistency (compiler should have validated template refs).
+///
+/// Setup:
+///   Template S: param n: Int = 1,
+///               sub child = "Nonexistent"(n: n-1) where n > 0
+///               is_recursive = true
+///
+/// "Nonexistent" does not exist in the module → the unfold path should emit
+/// Diagnostic::error mentioning "unknown structure".
+#[test]
+fn missing_template_ref_emits_error_diagnostic() {
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "child",
+            "Nonexistent",
+            vec![("n".to_string(), n_minus_1)],
+            guard,
+        )
+        .build();
+
+    let result = eval_single_template(template);
+
+    // Should have an Error-severity diagnostic about the unknown structure.
+    let has_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("unknown structure")
+    });
+    assert!(
+        has_error,
+        "Expected Error-severity diagnostic about unknown structure 'Nonexistent', \
+         got: {:?}",
+        result.diagnostics
+    );
+
+    // Should NOT have only warnings about it — the severity must be Error.
+    let has_only_warning = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Warning && d.message.contains("unknown structure")
+    });
+    assert!(
+        !has_only_warning,
+        "Unknown structure reference should be Error, not Warning: {:?}",
+        result.diagnostics
+    );
+}
