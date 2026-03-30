@@ -5452,7 +5452,7 @@
         "dependencies": [
           "287"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-stdlib",
@@ -5462,7 +5462,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-29T08:53:05.976Z"
+        "updatedAt": "2026-03-30T17:49:29.206Z"
       },
       {
         "id": "289",
@@ -15654,7 +15654,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T17:49:29.099Z",
+      "lastModified": "2026-03-30T17:49:29.206Z",
       "taskCount": 753,
       "completedCount": 413,
       "tags": [
