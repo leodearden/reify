@@ -96,10 +96,7 @@ impl Default for MockToolContext {
                 progress: None,
                 dirty_count: 0,
             },
-            selection: SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            },
+            selection: SelectionInfo::default(),
             source_locations: std::collections::HashMap::new(),
             update_source_error: None,
             set_param_error: None,
