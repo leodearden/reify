@@ -8632,11 +8632,11 @@
         "description": "In crates/reify-eval/tests/m9_trait_conformance.rs: (1) Replace or configure MockConstraintChecker so satisfaction assertions are meaningful (currently always returns Satisfied). (2) Assert eval diagnostics contain no errors in 3 tests that discard _result. (3) In diamond_merging_values, assert Base constraint appears exactly once (not duplicated). (4) In multi_trait_values, add assertion for Part.half_size = 0.05 SI (inherited let from Measurable). (Review followup from task 194)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-30T22:00:12.315Z",
+        "updatedAt": "2026-03-30T22:37:03.099Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -15870,9 +15870,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T22:29:18.361Z",
+      "lastModified": "2026-03-30T22:37:03.099Z",
       "taskCount": 770,
-      "completedCount": 429,
+      "completedCount": 430,
       "tags": [
         "master"
       ]
