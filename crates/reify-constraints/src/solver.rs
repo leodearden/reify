@@ -2280,9 +2280,10 @@ mod tests {
     }
 
     /// A feasible initial point with an always-undefined objective (x/0)
-    /// must return NoProgress, never Solved. This validates the contract
-    /// that undefined objectives are never silently promoted to Solved,
-    /// covering both the normal path and the fallback path.
+    /// must return NoProgress, never Solved. Because the objective is Undef
+    /// everywhere, the optimizer stays near the initial (feasible) point and
+    /// the post-solve validation (not the fallback path) catches the undefined
+    /// objective. The reason string should mention "solution point".
     #[test]
     fn undefined_objective_at_feasible_initial_returns_no_progress() {
         use crate::DimensionalSolver;
@@ -2333,10 +2334,18 @@ mod tests {
         };
 
         let result = solver.solve(&problem);
-        assert!(
-            matches!(result, SolveResult::NoProgress { .. }),
-            "feasible initial + undefined objective should return NoProgress, got {:?}",
-            result
-        );
+        match result {
+            SolveResult::NoProgress { reason } => {
+                assert!(
+                    reason.contains("solution point"),
+                    "expected post-solve path ('solution point'), got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "feasible initial + undefined objective should return NoProgress, got {:?}",
+                other
+            ),
+        }
     }
 }
