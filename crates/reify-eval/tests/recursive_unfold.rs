@@ -1547,3 +1547,63 @@ fn missing_template_ref_emits_error_diagnostic() {
         result.diagnostics
     );
 }
+
+// ─── Cycle diagnostic UX: template name in message ──────────────────────────
+
+/// The cyclic let-binding diagnostic should include the template name, not just
+/// the entity path. Format: 'in template S (entity S.child): [a, b]' to match
+/// the termination-check diagnostic style.
+///
+/// This is a separate test from `cyclic_let_bindings_emit_diagnostic` which only
+/// checks for 'circular', 'a', and 'b'. This test specifically verifies the
+/// template name appears in the message.
+#[test]
+fn cyclic_let_binding_diagnostic_includes_template_name() {
+    // let a = b + 1 (depends on S.b)
+    let a_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Int),
+        literal(Value::Int(1)),
+    );
+    // let b = a + 1 (depends on S.a)
+    let b_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "a", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .let_binding("S", "a", Type::Int, a_expr)
+        .let_binding("S", "b", Type::Int, b_expr)
+        .is_recursive(true)
+        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+        .build();
+
+    let result = eval_single_template(template);
+
+    // The cycle diagnostic should include the template name "S" in the format
+    // 'in template S (entity ...)' — not just the entity path.
+    let has_template_in_diagnostic = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message.contains("circular")
+            && d.message.contains("template S")
+    });
+    assert!(
+        has_template_in_diagnostic,
+        "Expected cycle diagnostic to include 'template S' in message, got: {:?}",
+        result.diagnostics
+    );
+}
