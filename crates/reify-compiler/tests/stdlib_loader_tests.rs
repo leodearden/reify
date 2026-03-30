@@ -100,6 +100,68 @@ fn std_units_is_first_module() {
     );
 }
 
+// ─── step-3b: std.units module content validation ───────────────────
+
+/// std.units module has zero error diagnostics and contains at minimum
+/// the 9 hardcoded units: mm, cm, m, in, deg, rad, kg, g, s.
+#[test]
+fn std_units_module_has_expected_units() {
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = &modules[0];
+
+    // No error diagnostics
+    let errors: Vec<_> = units_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "std.units should have zero error diagnostics, got: {:?}",
+        errors
+    );
+
+    // At least the 9 original hardcoded units
+    assert!(
+        units_module.units.len() >= 9,
+        "expected at least 9 units, got {}",
+        units_module.units.len()
+    );
+
+    let unit_names: Vec<&str> = units_module.units.iter().map(|u| u.name.as_str()).collect();
+
+    let required = ["mm", "cm", "m", "in", "deg", "rad", "kg", "g", "s"];
+    for name in &required {
+        assert!(
+            unit_names.contains(name),
+            "expected unit '{}' in std.units, found: {:?}",
+            name,
+            unit_names
+        );
+    }
+
+    // Verify dimensions for a few key units
+    let mm = units_module.units.iter().find(|u| u.name == "mm").unwrap();
+    assert_eq!(mm.dimension, reify_types::DimensionVector::LENGTH);
+    assert!((mm.factor - 0.001).abs() < 1e-12);
+
+    let deg = units_module.units.iter().find(|u| u.name == "deg").unwrap();
+    assert_eq!(deg.dimension, reify_types::DimensionVector::ANGLE);
+    assert!(
+        (deg.factor - std::f64::consts::PI / 180.0).abs() < 1e-15,
+        "deg factor should be PI/180, got {}",
+        deg.factor
+    );
+
+    let kg = units_module.units.iter().find(|u| u.name == "kg").unwrap();
+    assert_eq!(kg.dimension, reify_types::DimensionVector::MASS);
+    assert!((kg.factor - 1.0).abs() < 1e-12);
+
+    let s = units_module.units.iter().find(|u| u.name == "s").unwrap();
+    assert_eq!(s.dimension, reify_types::DimensionVector::TIME);
+    assert!((s.factor - 1.0).abs() < 1e-12);
+}
+
 // ─── step-3: compile_with_prelude makes prelude traits visible ──────
 
 /// compile_with_prelude() makes prelude traits visible to user code.
