@@ -15785,6 +15785,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 764,
+        "title": "Rename member_names_for_structure to member_names_for_decl for naming consistency",
+        "description": "Task 693 established the rename direction structure→decl for LSP declaration-generic helpers (enclosing_structure_name_at → enclosing_decl_name_at, etc.), but `member_names_for_structure` in AnalysisContext (analysis.rs:161) was not updated.\n\nRename `member_names_for_structure` to `member_names_for_decl` across:\n- analysis.rs: method definition + tests\n- completion.rs: call site (line ~214)\n\nmemory_hints: search \"member_names_for_structure LSP rename\" and get_entity \"AnalysisContext\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15797,7 +15808,7 @@
       ],
       "created": "2026-03-30T22:16:55.990Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-30T22:16:56.341Z"
+      "updated": "2026-03-30T22:16:59.719Z"
     }
   }
 }
