@@ -251,6 +251,23 @@ fn parse_dimensional_type_missing_right_operand_no_panic() {
     let source = "type Foo = Force /";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
+
+    // If parser recovers a TypeAlias, validate the recovery shape
+    if let Some(ta) = decls.iter().find_map(|d| match d {
+        Declaration::TypeAlias(ta) => Some(ta),
+        _ => None,
+    }) {
+        assert_eq!(ta.name, "Foo");
+        // Recovery should NOT produce a well-formed binary dimensional op
+        // (which would have name="/" or "*" with exactly 2 type_args)
+        let looks_like_valid_binop =
+            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        assert!(
+            !looks_like_valid_binop,
+            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
+            ta.type_expr.name, ta.type_expr.type_args,
+        );
+    }
 }
 
 #[test]
@@ -260,6 +277,23 @@ fn parse_dimensional_type_missing_left_operand_no_panic() {
     let source = "type Foo = / Area";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
+
+    // If parser recovers a TypeAlias, validate the recovery shape
+    if let Some(ta) = decls.iter().find_map(|d| match d {
+        Declaration::TypeAlias(ta) => Some(ta),
+        _ => None,
+    }) {
+        assert_eq!(ta.name, "Foo");
+        // Recovery should NOT produce a well-formed binary dimensional op
+        // (which would have name="/" or "*" with exactly 2 type_args)
+        let looks_like_valid_binop =
+            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        assert!(
+            !looks_like_valid_binop,
+            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
+            ta.type_expr.name, ta.type_expr.type_args,
+        );
+    }
 }
 
 #[test]
@@ -269,6 +303,23 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
     let source = "type Foo = /";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
+
+    // If parser recovers a TypeAlias, validate the recovery shape
+    if let Some(ta) = decls.iter().find_map(|d| match d {
+        Declaration::TypeAlias(ta) => Some(ta),
+        _ => None,
+    }) {
+        assert_eq!(ta.name, "Foo");
+        // Recovery should NOT produce a well-formed binary dimensional op
+        // (which would have name="/" or "*" with exactly 2 type_args)
+        let looks_like_valid_binop =
+            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        assert!(
+            !looks_like_valid_binop,
+            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
+            ta.type_expr.name, ta.type_expr.type_args,
+        );
+    }
 }
 
 // ── Error case: missing name ─────────────────────────────────────
@@ -301,25 +352,30 @@ fn parse_type_alias_empty_rhs_no_panic() {
     // Should NOT panic. Tree-sitter error recovery produces a zero-width node
     // that gets lowered to a TypeAlias with an empty-name type_expr.
     let source = "type Foo =";
-    let (decls, errors) = parse_decls(source);
-    // Key invariant: no panic. The parser may produce a TypeAlias with an
-    // empty type_expr name (due to Tree-sitter's error recovery providing a
-    // zero-width node rather than None), or errors, or both.
-    let ta = decls.iter().find_map(|d| match d {
-        Declaration::TypeAlias(ta) => Some(ta),
-        _ => None,
-    });
-    if let Some(ta) = ta {
-        // If a TypeAlias is produced, it should at least have the correct name
-        assert_eq!(ta.name, "Foo");
-        // Document that the type_expr has an empty name (zero-width recovery node)
-        assert!(
-            ta.type_expr.name.is_empty() || !errors.is_empty(),
-            "expected empty type_expr name or parse errors for empty RHS, got type_expr={:?}, errors={:?}",
-            ta.type_expr,
-            errors,
-        );
-    }
+    let (decls, _errors) = parse_decls(source);
+
+    // Tree-sitter recovery produces a TypeAlias — extract it unconditionally.
+    let ta = decls
+        .iter()
+        .find_map(|d| match d {
+            Declaration::TypeAlias(ta) => Some(ta),
+            _ => None,
+        })
+        .expect("expected Tree-sitter recovery to produce a TypeAlias for empty RHS");
+
+    // Name should survive recovery intact
+    assert_eq!(ta.name, "Foo");
+    // Zero-width recovery node produces an empty-name type_expr with no type_args
+    assert!(
+        ta.type_expr.name.is_empty(),
+        "expected empty type_expr.name for zero-width recovery node, got {:?}",
+        ta.type_expr.name,
+    );
+    assert!(
+        ta.type_expr.type_args.is_empty(),
+        "expected no type_args for zero-width recovery node, got {:?}",
+        ta.type_expr.type_args,
+    );
 }
 
 // ── Type params combined with dimensional RHS ────────────────────
