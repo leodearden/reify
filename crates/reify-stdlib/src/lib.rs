@@ -4831,6 +4831,38 @@ mod tests {
     }
 
     #[test]
+    fn magnitude_complex_overflow_dimensioned_returns_undef() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        // Mirrors complex_magnitude_overflow_dimensioned_returns_undef but
+        // goes through the magnitude wrapper → complex_abs path.
+        let z = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("magnitude", &[z]).is_undef(),
+            "magnitude with f64::MAX components and LENGTH dimension must return Undef"
+        );
+    }
+
+    #[test]
+    fn magnitude_complex_nan_component_returns_undef() {
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
+        // Mirrors complex_magnitude_nan_component_returns_undef but goes through the
+        // magnitude wrapper → complex_abs path.
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("magnitude", &[z]).is_undef(),
+            "magnitude with NaN component must return Undef"
+        );
+    }
+
+    #[test]
     fn magnitude_large_representable_complex_no_overflow() {
         // magnitude(Complex{1e200, 0, DIMLESS}) must return Real(1e200), not Undef.
         // Covers the generic 'magnitude' builtin path to complex_abs.
