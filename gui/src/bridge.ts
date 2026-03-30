@@ -126,19 +126,60 @@ export async function lspRequest(method: string, params: unknown): Promise<unkno
 import type { MessageContext } from './stores/claudeStore';
 export type { MessageContext as ClaudeMessageContext } from './stores/claudeStore';
 
+/**
+ * Exhaustive camelCase→snake_case mapping for MessageContext fields.
+ * Uses `as const satisfies` so that:
+ *  - Values are narrowed to their literal string types (e.g. 'selected_entity', not string)
+ *  - Adding a new field to MessageContext without updating this table still causes a tsc error
+ *
+ * SYNC: When adding a field to MessageContext, update this table AND
+ * ChatPanel.tsx buildMessageContext(). See gui/src/__tests__/types.typecheck.ts.
+ */
+export const MESSAGE_CONTEXT_FIELD_MAP = {
+  selectedEntity: 'selected_entity',
+  diagnostics: 'diagnostics',
+  constraints: 'constraints',
+  currentFile: 'current_file',
+  attachedContexts: 'attached_contexts',
+} as const satisfies Record<keyof Required<MessageContext>, string>;
+
+/**
+ * Every MessageContext key that buildMessageContext() in ChatPanel.tsx is
+ * expected to handle.  The `satisfies` clause ensures each element is a valid
+ * MessageContext key; an Equals<> assertion in types.typecheck.ts ensures
+ * completeness against the full MessageContext interface.
+ */
+export const BUILD_CONTEXT_HANDLED_FIELDS = [
+  'selectedEntity',
+  'diagnostics',
+  'constraints',
+  'currentFile',
+  'attachedContexts',
+] as const satisfies readonly (keyof Required<MessageContext>)[];
+
+/**
+ * Snake_case wire representation of MessageContext, derived from
+ * MESSAGE_CONTEXT_FIELD_MAP via key remapping. Adding a field to MessageContext
+ * and the map automatically extends this type.
+ */
+export type WireMessageContext = {
+  [K in keyof Required<MessageContext> as (typeof MESSAGE_CONTEXT_FIELD_MAP)[K]]: MessageContext[K];
+};
+
+/** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
+export function mapContextToWire(ctx: MessageContext): WireMessageContext {
+  const wire: Record<string, unknown> = {};
+  for (const [camel, snake] of Object.entries(MESSAGE_CONTEXT_FIELD_MAP)) {
+    wire[snake] = ctx[camel as keyof MessageContext];
+  }
+  return wire as WireMessageContext;
+}
+
 /** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
 export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
     text,
-    context: context
-      ? {
-          selected_entity: context.selectedEntity,
-          diagnostics: context.diagnostics,
-          constraints: context.constraints,
-          current_file: context.currentFile,
-          attached_contexts: context.attachedContexts,
-        }
-      : undefined,
+    context: context ? mapContextToWire(context) : undefined,
   });
 }
 
