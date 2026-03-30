@@ -15661,6 +15661,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 755,
+        "title": "Add per-template resolution failure-mode and cross-template test coverage",
+        "description": "Task 491 added 5 tests for per-template resolution but left several coverage gaps identified by review:\n\n**Failure-mode isolation (high):**\n- Add test `eval_infeasible_in_one_template_does_not_suppress_other`: provide Infeasible result for Bracket and Solved for Bolt, assert Bolt's auto param is resolved correctly, diagnostics contain only Bracket's infeasibility info, Bolt's value is present\n\n**Cross-template wave2 propagation (medium):**\n- Add test with a derived value node whose default_expr references auto params from both Bracket and Bolt templates. After eval(), assert the derived node is re-evaluated to the correct combined value, confirming the unified wave2 propagation works\n\n**Missing output assertions (medium):**\n- concurrent_edit_resolves_per_template_not_cross_template (line 1287-1320): add assertions on result.values and result.resolved_params to verify bracket_thickness=mm(6.0) was actually written back\n\n**Missing call count assertion (low):**\n- edit_param_matches_eval_for_multi_template_module (line 1324-1456): uses SequencedMockConstraintSolver directly without asserting call count. Switch to MultiCallSpyConstraintSolver or add call_count check to detect spurious extra solver calls\n\n**Memory hints:** search for \"per-template resolution tests\", \"MultiCallSpyConstraintSolver\"; entity names: resolve_concurrent_edit, edit_param, SolveResult::Infeasible",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15673,7 +15684,7 @@
       ],
       "created": "2026-03-30T17:57:03.851Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-30T17:57:03.857Z"
+      "updated": "2026-03-30T17:57:14.195Z"
     }
   }
 }
