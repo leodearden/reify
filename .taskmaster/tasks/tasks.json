@@ -12783,7 +12783,7 @@
         "description": "The unit tests added in solver.rs (lines 1920-2034) manually construct CompiledExpr, ValueCellId, and ConstraintNodeId instead of using the reify-test-support helpers (vcid, value_ref, gt, lt, literal, mm, cnid) that are already a dev-dependency and used throughout the integration tests. Refactor `feasibility_check_runs_with_objective` and `termination_reason_extracted_without_panic` to use helpers, reducing ~80 lines of boilerplate to ~20.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12794,7 +12794,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-30T18:16:33.848Z"
       },
       {
         "id": "615",
@@ -15756,7 +15757,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T18:16:31.819Z",
+      "lastModified": "2026-03-30T18:16:33.848Z",
       "taskCount": 761,
       "completedCount": 420,
       "tags": [
