@@ -1179,7 +1179,7 @@ impl Engine {
                 {
                     Some(t) => t,
                     None => {
-                        diagnostics.push(Diagnostic::warning(format!(
+                        diagnostics.push(Diagnostic::error(format!(
                             "sub-component \"{}\" references unknown structure \"{}\"",
                             sub.name, sub.structure_name
                         )));
@@ -3656,7 +3656,7 @@ fn unfold_recursive_sub<'t>(
         {
             Some(t) => t,
             None => {
-                diagnostics.push(Diagnostic::warning(format!(
+                diagnostics.push(Diagnostic::error(format!(
                     "recursive sub \"{}\" in \"{}\" at depth {} references unknown structure \"{}\"; skipping branch",
                     next_sub.name, next_entity, depth + 1, next_sub.structure_name
                 )));
@@ -3891,7 +3891,7 @@ fn elaborate_child_lets_only<'t>(
                 // Look up the sub declaration to find its target template.
                 let sub_decl = child_template.sub_components.iter().find(|s| s.name == *name)?;
                 let target_tmpl = templates.iter().find(|t| t.name == sub_decl.structure_name).or_else(|| {
-                    diagnostics.push(Diagnostic::warning(format!(
+                    diagnostics.push(Diagnostic::error(format!(
                         "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
                         name, scoped_entity, sub_decl.structure_name
                     )));
@@ -3935,7 +3935,7 @@ fn elaborate_child_lets_only<'t>(
                                 target_tmpl,
                             ));
                         } else {
-                            diagnostics.push(Diagnostic::warning(format!(
+                            diagnostics.push(Diagnostic::error(format!(
                                 "BFS expand: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping subtree",
                                 sub_decl.name, depth_entity, sub_decl.structure_name
                             )));
