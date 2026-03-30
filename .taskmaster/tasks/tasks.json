@@ -14422,7 +14422,7 @@
         "description": "1) In hover.rs test `hover_on_shared_member_in_second_structure`, add assertion that markdown contains `= true` and does not contain `= 5mm`. 2) In analysis.rs, add test `enclosing_decl_name_at_inside_occurrence` with an occurrence declaration. 3) In analysis.rs, add test `find_member_decl_nonexistent_decl_returns_none` asserting `find_member_decl(\"x\", Some(\"NonExistent\"))` returns None.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14434,7 +14434,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-30T22:17:31.741Z"
       },
       {
         "id": "695",
@@ -15834,7 +15835,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T22:17:30.529Z",
+      "lastModified": "2026-03-30T22:17:31.741Z",
       "taskCount": 767,
       "completedCount": 425,
       "tags": [
