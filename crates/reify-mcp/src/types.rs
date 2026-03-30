@@ -88,7 +88,7 @@ pub struct EvalStatusInfo {
 }
 
 /// Current selection in the viewport.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SelectionInfo {
     pub selected_entity: Option<String>,
     pub hovered_entity: Option<String>,
