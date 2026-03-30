@@ -15774,6 +15774,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 763,
+        "title": "Add From<&CompiledUnit> for UnitEntry conversion",
+        "description": "The prelude-unit seeding loop in compile_with_prelude constructs UnitEntry field-by-field from CompiledUnit. This is fragile: if UnitEntry gains a new field, the manual copy will silently compile with a default rather than carrying the field through.\n\nFix: Implement `From<&CompiledUnit> for UnitEntry` (using `SourceSpan::empty(0)` for span) and use it in the seeding loop. This makes the conversion canonical and ensures new fields are automatically carried through.\n\nLocations: crates/reify-compiler/src/lib.rs:2805-2813 (seeding loop), UnitEntry/CompiledUnit struct definitions.\n\nmemory_hints: search \"UnitEntry CompiledUnit struct fields\" for current struct shapes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15786,7 +15797,7 @@
       ],
       "created": "2026-03-30T22:16:55.990Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-30T22:16:55.996Z"
+      "updated": "2026-03-30T22:16:56.341Z"
     }
   }
 }
