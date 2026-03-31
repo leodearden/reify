@@ -16554,6 +16554,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 798,
+        "title": "Extract timeout helper and fix panic-masking in concurrent solver tests",
+        "description": "In `crates/reify-test-support/src/mocks.rs`: (1) extract a `fn run_with_deadlock_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T` helper centralising the `sync_channel` + `spawn` + `recv_timeout(Duration::from_secs(10))` pattern used identically in both tests (~lines 1805-1828 and 1895-1913); (2) replace `collected.into_inner().unwrap()` with `collected.into_inner().unwrap_or_else(|e| e.into_inner())` to recover the Vec from a poisoned mutex so real panics surface rather than masking as deadlock timeout; (3) use `std::panic::catch_unwind` or a `Result`-bearing channel to forward inner panics so `recv_timeout` returning `Disconnected` is distinguishable from a genuine timeout; (4) add a comment at the timeout expiry path acknowledging that spawned/scoped threads are leaked on timeout.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16566,7 +16577,7 @@
       ],
       "created": "2026-03-31T20:56:10.317Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T20:56:10.332Z"
+      "updated": "2026-03-31T20:56:16.283Z"
     }
   }
 }
