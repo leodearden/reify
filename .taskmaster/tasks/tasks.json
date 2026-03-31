@@ -16070,6 +16070,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 785,
+        "title": "Expand frame3_identity arg coverage and Orientation Ord robustness",
+        "description": "Add 4+ arg test case for frame3_identity_with_any_args_returns_undef (or rename test to match actual coverage). Add Ord test with equal-w-different-x quaternion pair to protect against field-order changes in Orientation comparison.",
+        "details": "Source: escalation esc-382-149 (task 382 review). Files: crates/reify-stdlib/src/lib.rs:6179, crates/reify-types/src/value.rs:4243-4263.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16082,7 +16093,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:39.285Z"
+      "updated": "2026-03-31T15:14:43.041Z"
     }
   }
 }
