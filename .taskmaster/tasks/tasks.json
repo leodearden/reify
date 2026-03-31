@@ -14050,7 +14050,7 @@
         "description": "After the task 660 split of `partial_feasibility_not_treated_as_warm_start` into two focused tests, the scenario where an objective competes with constraint satisfaction from a partially-infeasible starting point is now untested. Add a test `partial_feasibility_solved_with_objective_close_to_boundary` that includes `objective: Some(Minimize(p0+p1))` with p1 starting at 19.5mm (just below the 20mm boundary) and bounds [1mm, 100mm]. This is the real-world failure mode where objective minimization fights constraint satisfaction.\n\nMemory hints: search for \"partial feasibility\", \"solver test coverage\", entity: NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "660"
         ],
@@ -14064,7 +14064,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:53:52.920Z"
+        "updatedAt": "2026-03-31T21:18:51.064Z"
       },
       {
         "id": "676",
@@ -16732,9 +16732,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:15:34.061Z",
+      "lastModified": "2026-03-31T21:18:51.064Z",
       "taskCount": 811,
-      "completedCount": 465,
+      "completedCount": 466,
       "tags": [
         "master"
       ]
