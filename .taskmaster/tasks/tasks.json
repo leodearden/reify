@@ -16015,6 +16015,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 780,
+        "title": "Add constraint_summary_message to build path output",
+        "description": "The check path (cmd_check, line 100) calls `println!(\"{}\", constraint_summary_message(...))` which prints \"No constraint violations (some indeterminate).\" or \"All constraints satisfied.\" But the build path (cmd_build, lines 157-173) never calls constraint_summary_message — it only prints \"Some constraints violated.\" on failure. On success, no constraint status is printed. Add the same constraint_summary_message call to the build path so users see constraint status in both commands.",
+        "details": "Source: escalation esc-701-49 (task 701 design concern). File: crates/reify-cli/src/main.rs, cmd_build function around lines 157-173.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16027,7 +16038,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:12:28.302Z"
+      "updated": "2026-03-31T15:12:32.284Z"
     }
   }
 }
