@@ -1355,6 +1355,7 @@ describe('App re-evaluate error toast', () => {
         expect(toastEl).toBeTruthy();
         expect(toastEl.dataset.type).toBe('error');
         expect(toastEl.textContent).toContain('Re-evaluation failed');
+        expect(toastEl.textContent).toContain('eval error');
       });
 
       // console.error should NOT be called
