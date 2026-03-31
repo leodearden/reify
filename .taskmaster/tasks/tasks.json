@@ -11539,11 +11539,11 @@
         "description": "Recovering from poisoned locks silently propagates potentially-corrupt data with no logging or caller notification.",
         "details": "1. Add AtomicBool tainted field to ConcurrentEvalAdapter. Set on any poison recovery.\n2. Surface tainted flag in ConcurrentEditResult so callers can log warning or invalidate result.\n3. Add log/eprintln at each recovery site to make task panics observable.\n4. Document in module-level doc that evaluate() may compute incorrect results when recovering from poisoned values.\n\nFiles: crates/reify-runtime/src/concurrent_eval.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T09:09:04.618Z",
+        "updatedAt": "2026-03-31T20:14:13.762Z",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -16505,7 +16505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:13.676Z",
+      "lastModified": "2026-03-31T20:14:13.762Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
