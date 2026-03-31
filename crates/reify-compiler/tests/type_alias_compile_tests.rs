@@ -96,3 +96,22 @@ fn type_alias_registry_duplicate_register_returns_err() {
     assert!(reg.register(entry1).is_ok());
     assert!(reg.register(entry2).is_err());
 }
+
+// ─── step-3: simple alias compilation ────────────────────────────────────────
+
+#[test]
+fn simple_alias_compiles_without_errors() {
+    let source = r#"
+        type Pressure = Force
+        structure S {
+            param p : Pressure = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for simple alias; got: {:?}",
+        errs
+    );
+}
