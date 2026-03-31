@@ -98,6 +98,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   function isValidValue(value: string): boolean {
     if (value === '') return false;
+    // NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)
     if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
     if (QUANTITY_RE.test(value)) {
       // Strip the unit suffix and check the numeric part for overflow.

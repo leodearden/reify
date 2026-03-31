@@ -16,6 +16,11 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
   };
 }
 
+/** Single editable (determined) param — shared fixture for most describe blocks. */
+const EDITABLE_C1: Record<string, ValueData> = {
+  c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+};
+
 describe('PropertyEditor basic rendering', () => {
   it('renders with data-testid="property-editor"', () => {
     render(() => (
@@ -800,6 +805,26 @@ describe('PropertyEditor validation - Infinity rejection', () => {
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
+  it('dual-guard: 1e999 passes NUM_RE but fails isFinite, proving both checks are necessary', () => {
+    // Verify the regex alone would accept '1e999' — it's syntactically valid
+    const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+    expect(NUM_RE.test('1e999')).toBe(true);
+    // But Number('1e999') overflows to Infinity, which isFinite rejects
+    expect(Number.isFinite(Number('1e999'))).toBe(false);
+
+    // Confirm the component correctly rejects it
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
   it("'1e999mm' (quantity overflow) on Enter does NOT call onSetParameter and sets data-invalid", () => {
     const onSetParam = vi.fn();
     render(() => (
@@ -851,6 +876,37 @@ describe('PropertyEditor validation - valid sci-notation quantities still accept
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', quantity);
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor validation - quantity overflow rejection', () => {
+  const values = EDITABLE_C1;
+
+  it('QUANTITY_RE accepts overflow strings but Number(strip) reveals Infinity — documents the gap', () => {
+    const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+    // The regex happily accepts these — it has no numeric range check
+    expect(QUANTITY_RE.test('1e999mm')).toBe(true);
+    expect(QUANTITY_RE.test('-1e999deg')).toBe(true);
+    expect(QUANTITY_RE.test('1e999m')).toBe(true);
+    // But stripping the unit and converting via Number() reveals Infinity
+    const strip = (v: string) => Number(v.replace(/(mm|cm|deg|rad|m)$/, ''));
+    expect(Number.isFinite(strip('1e999mm'))).toBe(false);
+    expect(Number.isFinite(strip('-1e999deg'))).toBe(false);
+    expect(Number.isFinite(strip('1e999m'))).toBe(false);
+  });
+
+  it("'1e999m' (overflow m) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999m' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 });
 
