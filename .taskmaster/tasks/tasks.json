@@ -16059,6 +16059,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 784,
+        "title": "Fix Frame exports test: use Value::length and assert factory equality",
+        "description": "Use Value::length(0.0) for Point components in exports.rs Frame construction (currently uses dimensionless Value::Real(0.0)). Add assert_eq for Type::frame(3) vs Type::Frame(3) to verify factory method correctness.",
+        "details": "Source: escalation esc-382-149 (task 382 review). File: crates/reify-types/tests/exports.rs:178-201.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16071,7 +16082,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:26.243Z"
+      "updated": "2026-03-31T15:14:39.285Z"
     }
   }
 }
