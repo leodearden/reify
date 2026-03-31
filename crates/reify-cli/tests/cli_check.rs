@@ -140,6 +140,20 @@ fn check_violated_with_indeterminate_exits_failure() {
         stdout.contains("Some constraints violated."),
         "stdout should contain violation summary, got: {stdout}"
     );
+    // Negative assertions: the fixture has zero satisfied constraints
+    // (thickness=1mm violates thickness>2mm, tolerance=auto makes tolerance>0.1mm indeterminate).
+    assert!(
+        !stdout.contains("OK"),
+        "stdout should NOT contain 'OK' (no satisfied constraints in fixture), got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("All constraints satisfied"),
+        "stdout should NOT contain 'All constraints satisfied' when violations exist, got: {stdout}"
+    );
+    assert!(
+        !stderr.contains("panic"),
+        "stderr should not contain 'panic', got: {stderr}"
+    );
 }
 
 #[test]
