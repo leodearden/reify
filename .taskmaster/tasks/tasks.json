@@ -13772,7 +13772,7 @@
         "description": "Several DRY and consistency improvements in solver tests:\n\n1. **Extract `assert_infeasible_with_residual` helper** (solver_integration.rs): The pattern `assert!(!diagnostics.is_empty()); let msg = &diagnostics[0].message; assert!(msg.contains(\"residual\"), ...)` appears 4 times (lines ~340, ~714, ~1095, ~1290). Extract a shared test helper that encapsulates the Infeasible match arm plus the two residual assertions.\n\n2. **Use mm() helper consistently** (solver_integration.rs): `multi_param_warm_start_with_objective` and `partial_feasibility_not_treated_as_warm_start` use raw `Value::Scalar { si_value: 0.030, dimension: DimensionVector::LENGTH }` for current_values instead of the `mm()` helper from `reify_test_support` already imported. Replace with `mm(30.0)`, `mm(10.0)` etc.\n\n3. **Extract AutoParam construction helper**: `AutoParam { id, param_type: Type::length(), bounds: Some((lo, hi)) }` is repeated many times across tests. A local `fn length_auto_param(id: ValueCellId, bounds: (f64, f64)) -> AutoParam` would reduce boilerplate.\n\n4. **Use .expect() instead of .unwrap()** (solver_integration.rs:1306-1307, solver.rs:2086): `values.get(&x_id).unwrap().as_f64().unwrap()` gives unhelpful panic messages. Use `.expect(\"x_id missing from solved values\")` for better diagnostics.\n\nMemory hints: search for \"solver test helpers\", entity: AutoParam, NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "529"
         ],
@@ -13787,7 +13787,8 @@
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T20:36:59.823Z"
       },
       {
         "id": "663",
@@ -16539,7 +16540,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:36:59.684Z",
+      "lastModified": "2026-03-31T20:36:59.823Z",
       "taskCount": 796,
       "completedCount": 448,
       "tags": [
