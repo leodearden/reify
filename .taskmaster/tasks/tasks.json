@@ -16026,6 +16026,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 781,
+        "title": "Add orient_basis non-unit y/z and orient_axis_angle Int(0) boundary tests",
+        "description": "Add two more orient_basis tests with non-unit y=[0,2,0] and z=[0,0,2] to cover all three magnitude branches independently, plus orient_axis_angle_integer_angle_zero_is_identity asserting identity quaternion for Value::Int(0).",
+        "details": "Source: escalation esc-647-243 (task 647 review). File: crates/reify-stdlib/src/lib.rs. The existing test only covers non-unit x; y and z branches of the independent magnitude check (mag_y, mag_z at ~line 987) are untested.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16038,7 +16049,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:12:32.284Z"
+      "updated": "2026-03-31T15:14:21.081Z"
     }
   }
 }
