@@ -16471,7 +16471,7 @@
         "description": "Add timeout mechanism to both deadlock tests (sequenced_solver_concurrent_no_deadlock, sequenced_solver_concurrent_last_fallback) so CI fails instead of hanging. Use distinct values per result slot to detect double-consumption races. Fix misleading \"each thread pops its own\" comment. Hoist StdMutex import to module level.",
         "details": "Source: escalation esc-617-249 (task 617 review). File: crates/reify-test-support/src/mocks.rs.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -16482,7 +16482,8 @@
           "modules": [
             "crates/reify-test-support"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T20:14:14.898Z"
       },
       {
         "id": "796",
@@ -16506,7 +16507,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:14.736Z",
+      "lastModified": "2026-03-31T20:14:14.898Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
