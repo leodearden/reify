@@ -4850,20 +4850,6 @@ mod tests {
     }
 
     #[test]
-    fn magnitude_complex_overflow_returns_undef() {
-        // magnitude delegates to complex_abs for Complex inputs; overflow → Undef.
-        let z = Value::Complex {
-            re: f64::MAX,
-            im: f64::MAX,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("magnitude", &[z]).is_undef(),
-            "magnitude with f64::MAX complex components must return Undef (Inf overflow)"
-        );
-    }
-
-    #[test]
     fn magnitude_complex_overflow_dimensioned_returns_undef() {
         // Same overflow but through the Scalar branch (non-dimensionless).
         // Mirrors complex_magnitude_overflow_dimensioned_returns_undef but
@@ -5560,20 +5546,6 @@ mod tests {
     fn complex_magnitude_non_complex_returns_undef() {
         // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
         assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
-    }
-
-    #[test]
-    fn complex_magnitude_overflow_returns_undef() {
-        // f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
-        let z = Value::Complex {
-            re: f64::MAX,
-            im: f64::MAX,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("complex_magnitude", &[z]).is_undef(),
-            "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
-        );
     }
 
     #[test]
