@@ -9358,7 +9358,13 @@
           "modules": [
             "crates/reify-eval",
             "crates/reify-runtime"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Use Arc<MetaMap> in ConcurrentEditSetup to avoid deep clone"
+            ]
+          }
         }
       },
       {
@@ -12656,7 +12662,7 @@
         "description": "The stamp file is written to OUT_DIR which is unique per cargo profile (test/build/clippy). Switching profiles triggers redundant regeneration even when grammar.js hasn't changed. Store the stamp alongside the generated files in tree-sitter-reify/src/ (already gitignored) or at a fixed path in target/, so all cargo invocations share one stamp.",
         "details": "File: tree-sitter-reify/build.rs:138-139. This multiplies unnecessary tree-sitter generate calls in the orchestrator's multi-command verification pipeline. Memory hint: search for \"task 563 stamp file\" for context.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12675,7 +12681,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T20:20:04.769Z"
+        "updatedAt": "2026-03-31T20:23:47.793Z"
       },
       {
         "id": "610",
@@ -16526,7 +16532,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:23:38.468Z",
+      "lastModified": "2026-03-31T20:23:47.793Z",
       "taskCount": 796,
       "completedCount": 439,
       "tags": [
