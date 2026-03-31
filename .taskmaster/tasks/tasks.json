@@ -14367,7 +14367,7 @@
         "description": "`SelectionInfo { selected_entity: None, hovered_entity: None }` is repeated across 8+ sites (mcp_context.rs builder, mcp_context_tests.rs, mcp_dispatch_tests.rs, commands_tests.rs, claude_bridge_tests.rs). Adding `#[derive(Default)]` to `SelectionInfo` in `crates/reify-mcp/src/types.rs` would let all sites use `SelectionInfo::default()`.\n\n## Files to modify\n- crates/reify-mcp/src/types.rs — add Default derive\n- gui/src-tauri/src/mcp_context.rs — use SelectionInfo::default() in build()\n- gui/src-tauri/src/tests/*.rs — simplify test helpers",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14386,7 +14386,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:33:51.745Z"
+        "updatedAt": "2026-03-31T20:36:40.254Z"
       },
       {
         "id": "692",
@@ -16539,9 +16539,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:35:04.206Z",
+      "lastModified": "2026-03-31T20:36:40.255Z",
       "taskCount": 796,
-      "completedCount": 446,
+      "completedCount": 447,
       "tags": [
         "master"
       ]
