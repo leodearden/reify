@@ -3343,6 +3343,11 @@ mod tests {
             .expect("Error loading Reify grammar");
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
+        assert!(
+            !root.has_error(),
+            "source '{}' should parse without errors — grammar regression?",
+            source,
+        );
 
         let node = find_node_by_kind(root, kind)
             .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
