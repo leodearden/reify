@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
-import { flushMicrotasks } from './test-utils';
+import { flushMicrotasks, deferred } from './test-utils';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -348,10 +348,8 @@ describe('App async mount/cleanup race conditions', () => {
     const constraintRemovedUnlisten = vi.fn();
 
     // Make onMeshUpdate return a deferred promise (delays subscribeToEvents completion)
-    let resolveMeshListen!: (unsub: () => void) => void;
-    vi.mocked(bridge.onMeshUpdate).mockReturnValue(
-      new Promise<() => void>((resolve) => { resolveMeshListen = resolve; }),
-    );
+    const { promise: meshListenPromise, resolve: resolveMeshListen } = deferred<() => void>();
+    vi.mocked(bridge.onMeshUpdate).mockReturnValue(meshListenPromise);
 
     // All other event listeners resolve immediately with tracked unlistens
     vi.mocked(bridge.onValueUpdate).mockResolvedValue(valueUnlisten);
@@ -389,10 +387,8 @@ describe('App async mount/cleanup race conditions', () => {
 
   it('does not call initFromState on dead component when unmounted before getInitialState resolves', async () => {
     // Create deferred promise for getInitialState
-    let resolveGetState!: (state: GuiState) => void;
-    vi.mocked(bridge.getInitialState).mockReturnValue(
-      new Promise<GuiState>((resolve) => { resolveGetState = resolve; }),
-    );
+    const { promise: getStatePromise, resolve: resolveGetState } = deferred<GuiState>();
+    vi.mocked(bridge.getInitialState).mockReturnValue(getStatePromise);
 
     const { unmount } = render(() => <App />);
 
@@ -445,10 +441,8 @@ describe('App async mount/cleanup race conditions', () => {
   it('does not leak Claude event listeners when unmounted before subscribeToClaudeEvents resolves', async () => {
     // Create a deferred promise for subscribeToClaudeEvents
     const unlistenClaude = vi.fn();
-    let resolveClaudeSub!: (unsub: () => void) => void;
-    vi.mocked(bridge.subscribeToClaudeEvents).mockReturnValue(
-      new Promise<() => void>((resolve) => { resolveClaudeSub = resolve; }),
-    );
+    const { promise: claudeSubPromise, resolve: resolveClaudeSub } = deferred<() => void>();
+    vi.mocked(bridge.subscribeToClaudeEvents).mockReturnValue(claudeSubPromise);
 
     const { unmount } = render(() => <App />);
 
@@ -619,10 +613,8 @@ describe('App navigation wiring', () => {
 describe('App initialization loading state', () => {
   it('shows app-loading while getInitialState is pending', async () => {
     // Create a deferred promise so getInitialState stays pending
-    let resolveGetState!: (state: GuiState) => void;
-    vi.mocked(bridge.getInitialState).mockReturnValue(
-      new Promise<GuiState>((resolve) => { resolveGetState = resolve; }),
-    );
+    const { promise: getStatePromise, resolve: resolveGetState } = deferred<GuiState>();
+    vi.mocked(bridge.getInitialState).mockReturnValue(getStatePromise);
 
     render(() => <App />);
 
@@ -1621,10 +1613,8 @@ describe('App initApp concurrent execution guard', () => {
     });
 
     // Set up deferred promise for retry (keeps initApp in-flight)
-    let resolveRetry!: (state: GuiState) => void;
-    vi.mocked(bridge.getInitialState).mockReturnValue(
-      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
-    );
+    const { promise: retryPromise, resolve: resolveRetry } = deferred<GuiState>();
+    vi.mocked(bridge.getInitialState).mockReturnValue(retryPromise);
 
     // Click Retry — first retry
     fireEvent.click(screen.getByText('Retry'));
@@ -1714,10 +1704,8 @@ describe('App initApp concurrent execution guard', () => {
     expect(retryBtn.disabled).toBe(false);
 
     // Set up deferred getInitialState so initApp stays in loading phase
-    let resolveRetry!: (state: GuiState) => void;
-    vi.mocked(bridge.getInitialState).mockReturnValue(
-      new Promise<GuiState>((resolve) => { resolveRetry = resolve; }),
-    );
+    const { promise: retryPromise, resolve: resolveRetry } = deferred<GuiState>();
+    vi.mocked(bridge.getInitialState).mockReturnValue(retryPromise);
 
     // Click Retry — should transition to loading phase
     fireEvent.click(retryBtn);
