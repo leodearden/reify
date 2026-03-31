@@ -3167,8 +3167,11 @@ pub fn compile_with_prelude(
     // and previously-registered aliases.
     let mut alias_registry = TypeAliasRegistry::new();
     for alias_decl in &alias_refs {
-        let resolved = resolve_type_name(&alias_decl.type_expr.name)
-            .or_else(|| alias_registry.lookup(&alias_decl.type_expr.name).and_then(|e| e.resolved_type.clone()));
+        let resolved = resolve_type_alias_expr(
+            &alias_decl.type_expr,
+            &alias_registry,
+            &mut diagnostics,
+        );
         let type_params = convert_type_params(&alias_decl.type_params);
         let entry = TypeAliasEntry {
             name: alias_decl.name.clone(),
