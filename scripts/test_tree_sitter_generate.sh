@@ -137,13 +137,17 @@ assert "--force does NOT print 'up to date'" \
 
 # ── Test 8: shared lib.sh integration ─────────────────────────────
 echo ""
-echo "--- Test 8: sources lib.sh instead of local compute_sha256 ---"
+echo "--- Test 8: sources lib.sh and lib_portable.sh available ---"
 
 assert "script sources lib.sh" \
     grep -qE '(source|\.)\s+.*lib\.sh' "$GENERATE_SCRIPT"
 
 assert "script does NOT define compute_sha256 locally" \
     bash -c '! grep -q "^compute_sha256()" '"$GENERATE_SCRIPT"
+
+# lib.sh now sources lib_portable.sh, so portable helpers are available.
+assert "lib_portable.sh is available (via lib.sh sourcing chain)" \
+    bash -c "source '$SCRIPT_DIR/lib.sh' && declare -f portable_sha256 >/dev/null && declare -f portable_timeout >/dev/null"
 
 # ── Test 9: MAX_WAIT_SECS timeout alignment ──────────────────────
 echo ""
@@ -192,6 +196,16 @@ echo "--- Test 12: .generate.lock in .gitignore ---"
 # It should not be tracked in version control.
 assert ".generate.lock pattern appears in root .gitignore" \
     grep -q '\.generate\.lock' "$ROOT/.gitignore"
+
+# ── Test 13: uses portable_timeout from lib_portable.sh ──────────
+echo ""
+echo "--- Test 13: uses portable_timeout instead of inline block ---"
+
+assert "script calls portable_timeout for tree-sitter generate" \
+    grep -q 'portable_timeout.*tree-sitter generate' "$GENERATE_SCRIPT"
+
+assert "script does NOT have inline gtimeout fallback (replaced by portable_timeout)" \
+    bash -c '! grep -q "gtimeout 60 tree-sitter generate" '"$GENERATE_SCRIPT"
 
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
