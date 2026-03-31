@@ -1553,6 +1553,19 @@ mod tests {
     }
 
     #[test]
+    fn complex_overflow_dimensioned_returns_undef_both_builtins() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
         match result {
