@@ -599,8 +599,8 @@ fn compute_gradient(field_val: &Value) -> Value {
         }
     };
 
-    // Return a gradient field: source=Composed, lambda slot stores the original field.
-    // The sample handler detects lambda=Field + source=Composed and dispatches to
+    // Return a gradient field: source=Gradient, lambda slot stores the original field.
+    // The sample handler detects lambda=Field + source=Gradient and dispatches to
     // compute_numerical_gradient_at_point.
     Value::Field {
         domain_type: domain_type.clone(),
