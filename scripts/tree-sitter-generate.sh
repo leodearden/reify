@@ -27,17 +27,8 @@ if [ ! -f "$TS_DIR/grammar.js" ]; then
     exit 1
 fi
 
-# Portable SHA-256: prefer sha256sum (GNU coreutils), fall back to shasum (macOS).
-compute_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1"
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1"
-    else
-        echo "ERROR: neither sha256sum nor shasum found on PATH." >&2
-        exit 1
-    fi
-}
+# Shared utilities (compute_sha256, etc.)
+source "$SCRIPT_DIR/lib.sh"
 
 cd "$TS_DIR"
 
