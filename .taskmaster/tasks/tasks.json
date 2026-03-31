@@ -15686,7 +15686,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/resolution.rs",
+            "crates/reify-test-support/src/mocks.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests",
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 756,
@@ -15697,7 +15707,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/constraint.rs",
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-constraints/tests/solver_integration.rs"
+          ],
+          "modules": [
+            "crates/reify-types",
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": 757,
