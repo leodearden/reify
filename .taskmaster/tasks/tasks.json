@@ -16047,13 +16047,13 @@
         "description": "Task 625 added tests for both the post-solve and fallback NoProgress paths when the objective is undefined. But the happy path of the fallback mechanism — where the optimizer drifts infeasible, the objective IS defined at the initial feasible point, and the solver returns `SolveResult::Solved { values: fallback }` (solver.rs ~lines 651-658) — has no test coverage. This is the primary success path of the fallback mechanism.\n\nAdd a test that constructs a problem where: (1) the feasible region has a defined objective, (2) the infeasible region has a better objective value, (3) the optimizer drifts infeasible chasing the better value, and (4) the solver correctly falls back to `SolveResult::Solved` with the initial feasible values. Assert that returned values match the initial point, not the infeasible optimizer result.\n\nMemory hints: search \"fallback objective validation\", search \"optimizer drifts infeasible\"",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "in-progress",
         "dependencies": [
           "625"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T20:24:16.832Z",
+        "updatedAt": "2026-03-31T20:24:58.819Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -16532,9 +16532,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:24:58.752Z",
+      "lastModified": "2026-03-31T20:24:58.819Z",
       "taskCount": 796,
-      "completedCount": 440,
+      "completedCount": 439,
       "tags": [
         "master"
       ]
