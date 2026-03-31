@@ -90,7 +90,7 @@ fn type_alias_registry_duplicate_register_returns_err() {
         type_params: vec![],
         type_expr: None,
         is_pub: true,
-        span: SourceSpan::new(10, 5),
+        span: SourceSpan::new(10, 15),
         content_hash: ContentHash::of_str("Pressure2"),
     };
     assert!(reg.register(entry1).is_ok());

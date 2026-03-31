@@ -572,6 +572,72 @@ impl Default for UnitRegistry {
     }
 }
 
+// --- Type alias registry ---
+
+/// Internal type alias entry — stored in the registry during compilation.
+///
+/// For non-parameterized aliases, `resolved_type` holds the fully-resolved `Type`.
+/// For parameterized aliases, `type_params` is non-empty and `type_expr` holds the
+/// original `TypeExpr` for deferred substitution at each use site.
+#[derive(Debug, Clone)]
+pub struct TypeAliasEntry {
+    pub name: String,
+    /// The resolved type for non-parameterized aliases; `None` for parameterized aliases
+    /// (which require instantiation with concrete type arguments).
+    pub resolved_type: Option<Type>,
+    /// Type parameters for parameterized aliases (empty for simple aliases).
+    pub type_params: Vec<reify_types::TypeParam>,
+    /// The original type expression, stored for parameterized alias substitution.
+    pub type_expr: Option<reify_syntax::TypeExpr>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// Registry mapping type alias names to compiled alias entries.
+/// Built during the pre-pass so type resolution can check aliases.
+pub struct TypeAliasRegistry {
+    entries: HashMap<String, TypeAliasEntry>,
+}
+
+impl TypeAliasRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        TypeAliasRegistry {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
+    pub fn register(&mut self, entry: TypeAliasEntry) -> Result<(), TypeAliasEntry> {
+        if self.entries.contains_key(&entry.name) {
+            Err(entry)
+        } else {
+            self.entries.insert(entry.name.clone(), entry);
+            Ok(())
+        }
+    }
+
+    /// Seed a prelude type alias into the registry (overwrite semantics).
+    ///
+    /// Used to pre-populate the registry with aliases from prelude modules
+    /// before processing module-local declarations.
+    pub fn seed_prelude_alias(&mut self, entry: TypeAliasEntry) {
+        self.entries.insert(entry.name.clone(), entry);
+    }
+
+    /// Look up a type alias by name.
+    pub fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
+        self.entries.get(name)
+    }
+}
+
+impl Default for TypeAliasRegistry {
+    fn default() -> Self {
+        TypeAliasRegistry::new()
+    }
+}
+
 /// A compiled unit — the public output representation in `CompiledModule`.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
