@@ -223,6 +223,31 @@ impl AnalysisContext {
         result
     }
 
+    /// Return all structure/occurrence declarations with member counts.
+    pub fn entity_names(&self) -> Vec<EntitySummary<'_>> {
+        let mut result = Vec::new();
+        for decl in &self.parsed.declarations {
+            let (members, name, kind) = match decl {
+                reify_syntax::Declaration::Structure(s) => {
+                    (&s.members, s.name.as_str(), EntityKind::Structure)
+                }
+                reify_syntax::Declaration::Occurrence(o) => {
+                    (&o.members, o.name.as_str(), EntityKind::Occurrence)
+                }
+                _ => continue,
+            };
+            let (param_count, let_count, constraint_count) = count_members_recursive(members);
+            result.push(EntitySummary {
+                name,
+                params: param_count,
+                lets: let_count,
+                constraints: constraint_count,
+                kind,
+            });
+        }
+        result
+    }
+
     /// Return all structure/occurrence names with member counts:
     /// `(name, param_count, let_count, constraint_count, kind)`.
     pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize, &str)> {
