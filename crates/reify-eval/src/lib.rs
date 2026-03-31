@@ -3978,13 +3978,23 @@ fn elaborate_child_lets_only<'t>(
                     found_any = true;
                 }
             }
-            if found_any || entity_template.value_cells.is_empty() {
+            // For structural intermediaries (zero value_cells), found_any is always
+            // false. Check whether any key in `values` has this entity as a prefix,
+            // proving unfold_recursive_sub actually created descendants. Without this
+            // check, two structural intermediaries forming a cycle (W1→W2→W1) would
+            // cause the BFS to generate ever-growing entity paths without bound.
+            let intermediary_has_descendants = entity_template.value_cells.is_empty()
+                && values
+                    .iter()
+                    .any(|(k, _)| k.entity.starts_with(&format!("{}.", depth_entity)));
+            if found_any || intermediary_has_descendants {
                 // Enqueue children if:
                 // 1. found_any: values were projected from this entity (entity exists), OR
-                // 2. value_cells is empty: structural intermediary template with zero
-                //    value_cells — found_any is meaningless, but children may have values.
+                // 2. intermediary_has_descendants: structural intermediary with zero
+                //    value_cells but confirmed descendants in the values map.
                 // For templates WITH value_cells, found_any==false means the entity was
                 // never unfolded (e.g., guard was false), so BFS terminates naturally.
+                // For structural intermediaries, the prefix check serves the same purpose.
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
                         if let Some(target_tmpl) =
