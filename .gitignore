@@ -25,3 +25,4 @@ tree-sitter-reify/src/parser.c
 tree-sitter-reify/src/grammar.json
 tree-sitter-reify/src/node-types.json
 tree-sitter-reify/src/.grammar_hash.stamp
+tree-sitter-reify/src/.generate.lock
