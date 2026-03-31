@@ -14309,7 +14309,7 @@
         "description": "build_solved_values (solver.rs:55) uses Iterator::zip which silently truncates to the shorter slice if params.len() != x.len(). If a solver bug produces fewer solution values than auto-params, entries are silently dropped with no error or warning.\n\nAdd `debug_assert_eq!(params.len(), x.len(), \"params/x length mismatch: {} vs {}\", params.len(), x.len())` before the zip call. Also add a test for the mismatched-length case that documents the contract.\n\nThis aligns with the project's \"silent defaults\" convention — logic errors should be noisy, not silently swallowed.\n\nMemory hints: search for \"silent defaults pattern\", entity names: DimensionalSolver, build_solved_values",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "530"
         ],
@@ -14323,7 +14323,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-03-31T21:21:00.791Z"
+        "updatedAt": "2026-03-31T21:24:12.343Z"
       },
       {
         "id": "689",
@@ -16796,9 +16796,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:24:09.667Z",
+      "lastModified": "2026-03-31T21:24:12.343Z",
       "taskCount": 815,
-      "completedCount": 469,
+      "completedCount": 470,
       "tags": [
         "master"
       ]
