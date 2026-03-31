@@ -4492,6 +4492,19 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_non_unit_z_returns_undef() {
+        // Orthogonal but non-unit z=[0,0,2] must be rejected — isolates the mag_z
+        // branch of the unit-length guard (|z|=2.0, |2.0-1.0|=1.0 > 1e-6).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit z basis vector should be rejected"
+        );
+    }
+
+    #[test]
     fn orient_axis_angle_integer_angle_accepted() {
         // Value::Int(1) = 1 radian, exercises the Value::Int(i) => Some(*i as f64) arm
         // in trig_input. Expected: half=0.5, q=(cos(0.5), 0, 0, sin(0.5)).
