@@ -573,7 +573,9 @@ fn test_stamp_path_is_profile_independent() {
     let debug_stamp = debug_out.join("grammar_hash.stamp");
     let release_stamp = release_out.join("grammar_hash.stamp");
     stamp_write(&debug_stamp, &hash);
+    assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
     stamp_write(&release_stamp, &hash);
+    assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
 
     // Both profiles report no regeneration needed
     assert!(
@@ -622,6 +624,7 @@ fn test_stamp_shared_across_simulated_profiles() {
 
     // Write stamp to only OUT_DIR_1
     stamp_write(&stamp_1, &hash);
+    assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
 
     // OUT_DIR_1 has matching stamp — no regeneration needed
     assert!(
@@ -636,6 +639,7 @@ fn test_stamp_shared_across_simulated_profiles() {
 
     // Now write the same stamp to OUT_DIR_2
     stamp_write(&stamp_2, &hash);
+    assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
 
     // Both locations now report no regeneration needed
     assert!(
