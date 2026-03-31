@@ -1044,3 +1044,167 @@ fn gradient_at_origin() {
         ),
     }
 }
+
+/// Gradient perturbation with dimensioned Scalar lambda args.
+///
+/// Build a 3D field with domain Point3<Scalar[m]> and codomain Scalar[m²].
+/// Lambda: |x,y,z| x*x + y*y + z*z where x/y/z receive Value::Scalar{dimension: m}.
+/// With correct Scalar[m] args, Scalar[m]*Scalar[m] = Scalar[m²] via eval_mul.
+/// With Real args (the bug), Real*Real = Real (dimensionless).
+///
+/// Gradient at (1,2,3): df/dx=2*1=2, df/dy=2*2=4, df/dz=2*3=6.
+/// Components should be Scalar with dimension m²/m = m (LENGTH).
+#[test]
+fn gradient_dimensioned_scalar_lambda_args() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let dim_m = DimensionVector::LENGTH;
+    let dim_m2 = dim_m.mul(&dim_m);
+    let scalar_m = Type::Scalar { dimension: dim_m };
+    let scalar_m2 = Type::Scalar { dimension: dim_m2 };
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    // x, y, z are expected to be Scalar[m], so x*x = Scalar[m²].
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x*x → Scalar[m²]
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+                CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+                scalar_m2.clone(),
+            ),
+            // y*y → Scalar[m²]
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(y_id.clone(), scalar_m.clone()),
+                CompiledExpr::value_ref(y_id.clone(), scalar_m.clone()),
+                scalar_m2.clone(),
+            ),
+            scalar_m2.clone(),
+        ),
+        // z*z → Scalar[m²]
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(z_id.clone(), scalar_m.clone()),
+            CompiledExpr::value_ref(z_id.clone(), scalar_m.clone()),
+            scalar_m2.clone(),
+        ),
+        scalar_m2.clone(),
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(scalar_m.clone());
+    let codomain_type = scalar_m2.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(scalar_m2.clone())),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1.0m, 2.0m, 3.0m)
+    let point = Value::Point(vec![
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: dim_m,
+        },
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: dim_m,
+        },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: dim_m,
+        },
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::point3(scalar_m.clone())),
+        codomain: Box::new(Type::vec3(scalar_m2)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(scalar_m)),
+        ],
+        Type::vec3(Type::Scalar { dimension: dim_m }),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3 with components ≈2.0, ≈4.0, ≈6.0 in dimension m (=m²/m)
+    // df/dx = 2x = 2*1 = 2, df/dy = 2y = 2*2 = 4, df/dz = 2z = 2*3 = 6
+    let expected_dim = dim_m; // m²/m = m
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            let expected_vals = [2.0, 4.0, 6.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected_vals.iter()).enumerate() {
+                match comp {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert!(
+                            (si_value - exp).abs() < 1e-4,
+                            "gradient component {} should be ~{}, got {}",
+                            i,
+                            exp,
+                            si_value
+                        );
+                        assert_eq!(
+                            *dimension, expected_dim,
+                            "gradient component {} should have dimension LENGTH (m), got {:?}",
+                            i, dimension
+                        );
+                    }
+                    _ => panic!(
+                        "gradient component {} should be a Scalar with dimension, got {:?}",
+                        i, comp
+                    ),
+                }
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, got {:?}",
+            sample_result
+        ),
+    }
+}
