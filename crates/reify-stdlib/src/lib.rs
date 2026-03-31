@@ -4521,6 +4521,21 @@ mod tests {
     }
 
     #[test]
+    fn orient_axis_angle_integer_angle_zero_is_identity() {
+        // Value::Int(0) = 0 radians, exercises the zero-angle boundary of
+        // half-angle trig: cos(0)=1, sin(0)=0 → identity quaternion (1,0,0,0).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(0);
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
