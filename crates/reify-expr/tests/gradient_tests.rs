@@ -1614,3 +1614,244 @@ fn gradient_of_gradient_field_returns_undef() {
         grad_grad_result
     );
 }
+
+// ── NaN/Inf propagation tests ──────────────────────────────────────────
+
+/// NaN in a Point coordinate must cause gradient sampling to return Undef.
+///
+/// Build a 3D analytical field f(x,y,z) = x + y + z with a 3-param lambda.
+/// Construct a sample point with NaN in the y coordinate:
+///   Point3(1.0, NaN, 3.0).
+/// Without the is_finite guard, coords[1] = NaN, h = 1e-6 * NaN = NaN,
+/// perturbed coords become NaN, and the gradient silently produces NaN.
+#[test]
+fn gradient_nan_in_point_coord_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at a point with NaN in y-coordinate
+    let nan_point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(f64::NAN),
+        Value::Real(3.0),
+    ]);
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at a point with NaN coordinate must return Undef, got {:?}",
+        sample_result
+    );
+}
+
+/// Inf in a 1D Real coordinate must cause gradient sampling to return Undef.
+///
+/// Build a 1D field f(x) = x*x with a 1-param lambda.
+/// Sample the gradient at Value::Real(f64::INFINITY).
+/// Without the guard, coord = Inf, h = 1e-6 * Inf = Inf,
+/// perturbed values are Inf, and the gradient produces NaN (Inf - Inf) / (2*Inf).
+#[test]
+fn gradient_inf_in_scalar_coord_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x * x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at Infinity
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(f64::INFINITY), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Infinity must return Undef, got {:?}",
+        sample_result
+    );
+}
+
+/// NaN in a dimensioned Scalar coordinate must cause gradient sampling to return Undef.
+///
+/// Build a 1D dimensioned field f(x) = x*x with domain Scalar[m].
+/// Sample the gradient at Value::Scalar{si_value: NaN, dimension: LENGTH}.
+/// This tests the Value::Scalar{si_value, ..} extraction path.
+#[test]
+fn gradient_nan_in_dimensioned_scalar_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x * x (Scalar[m] * Scalar[m] = Scalar[m^2])
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
+        },
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::length();
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at NaN with dimension LENGTH
+    let nan_scalar = Value::Scalar {
+        si_value: f64::NAN,
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(nan_scalar, domain_type),
+        ],
+        codomain_type,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Scalar(NaN, LENGTH) must return Undef, got {:?}",
+        sample_result
+    );
+}
