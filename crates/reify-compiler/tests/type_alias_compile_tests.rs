@@ -248,3 +248,30 @@ fn self_referential_alias_produces_error() {
         errs
     );
 }
+
+// ─── step-11: duplicate alias name ──────────────────────────────────────────
+
+#[test]
+fn duplicate_alias_name_produces_error() {
+    let source = r#"
+        type Foo = Int
+        type Foo = Real
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| d.message.contains("duplicate")),
+        "expected duplicate alias error; got: {:?}",
+        errs
+    );
+    // Should have span labels pointing to both declarations
+    let dup_err = errs
+        .iter()
+        .find(|d| d.message.contains("duplicate"))
+        .unwrap();
+    assert!(
+        dup_err.labels.len() >= 2,
+        "expected at least 2 span labels (original + duplicate); got: {:?}",
+        dup_err.labels
+    );
+}
