@@ -16081,6 +16081,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 786,
+        "title": "Add debug-mode quaternion norm validation to Value::Orientation",
+        "description": "Add debug_assert or orientation_checked constructor verifying unit-norm invariant on Orientation, with doc comment on the invariant. Currently Value::Orientation accepts zero/non-unit quaternions silently.",
+        "details": "Source: escalation esc-382-149 (task 382 review). File: crates/reify-types/src/value.rs:4252.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16093,7 +16104,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:43.041Z"
+      "updated": "2026-03-31T15:14:43.909Z"
     }
   }
 }
