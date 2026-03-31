@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
-import { flushMicrotasks, deferred } from './test-utils';
+import { flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -1922,10 +1922,7 @@ describe('App Ctrl+O open file', () => {
 
 describe('App end-to-end toast integration', () => {
   it('App renders, loads state (ready), then setParameter failure shows toast with correct message', async () => {
-    const rejectHandler = (e: any) => e.preventDefault();
-    window.addEventListener('unhandledrejection', rejectHandler);
-
-    try {
+    await withSuppressedRejections(async () => {
       vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
       vi.mocked(bridge.getInitialState).mockResolvedValue({
         meshes: [],
@@ -1966,9 +1963,7 @@ describe('App end-to-end toast integration', () => {
         expect(toastEl.textContent).toContain('Parameter update failed');
         expect(toastEl.textContent).toContain('backend unavailable');
       });
-    } finally {
-      window.removeEventListener('unhandledrejection', rejectHandler);
-    }
+    });
   });
 });
 
@@ -2163,10 +2158,7 @@ describe('App onSend context forwarding', () => {
 
 describe('App claudeSendMessage error-path integration', () => {
   it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
-    const rejectHandler = (e: any) => e.preventDefault();
-    window.addEventListener('unhandledrejection', rejectHandler);
-
-    try {
+    await withSuppressedRejections(async () => {
       vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
       vi.mocked(bridge.getInitialState).mockResolvedValue({
         meshes: [],
@@ -2197,9 +2189,7 @@ describe('App claudeSendMessage error-path integration', () => {
         expect(sysMsg.textContent).toContain('Failed to send message');
         expect(sysMsg.textContent).toContain('IPC channel broken');
       });
-    } finally {
-      window.removeEventListener('unhandledrejection', rejectHandler);
-    }
+    });
   });
 });
 
@@ -2222,10 +2212,7 @@ describe('App error-path integration: errorMessage propagation', () => {
   }
 
   it('export failure toast contains the original error message', async () => {
-    const rejectHandler = (e: any) => e.preventDefault();
-    window.addEventListener('unhandledrejection', rejectHandler);
-
-    try {
+    await withSuppressedRejections(async () => {
       vi.mocked(bridge.exportGeometry).mockRejectedValueOnce(new Error('geometry kernel crashed'));
       render(() => <App />);
       await triggerExportDialog();
@@ -2237,16 +2224,11 @@ describe('App error-path integration: errorMessage propagation', () => {
         expect(errorToast!.textContent).toContain('Export failed');
         expect(errorToast!.textContent).toContain('geometry kernel crashed');
       });
-    } finally {
-      window.removeEventListener('unhandledrejection', rejectHandler);
-    }
+    });
   });
 
   it('pickSavePath failure toast contains the original error message', async () => {
-    const rejectHandler = (e: any) => e.preventDefault();
-    window.addEventListener('unhandledrejection', rejectHandler);
-
-    try {
+    await withSuppressedRejections(async () => {
       vi.mocked(bridge.pickSavePath).mockRejectedValueOnce(new Error('dialog permission denied'));
       render(() => <App />);
       await triggerExportDialog();
@@ -2258,8 +2240,6 @@ describe('App error-path integration: errorMessage propagation', () => {
         expect(errorToast!.textContent).toContain('Could not open save dialog');
         expect(errorToast!.textContent).toContain('dialog permission denied');
       });
-    } finally {
-      window.removeEventListener('unhandledrejection', rejectHandler);
-    }
+    });
   });
 });
