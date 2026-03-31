@@ -16711,6 +16711,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 811,
+        "title": "Add DocumentStore iter-after-close contract test",
+        "description": "In crates/reify-lsp/src/document.rs test module, add a test iter_excludes_closed_documents that: opens two documents, closes one, calls iter(), and asserts exactly one entry is returned with the URI of the still-open document. This covers the close/iter interaction that is currently absent from the test suite.\n\nmemory_hints: search \"DocumentStore iter close test\" for prior context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16723,7 +16734,7 @@
       ],
       "created": "2026-03-31T21:14:02.431Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:14:08.260Z"
+      "updated": "2026-03-31T21:14:10.940Z"
     }
   }
 }
