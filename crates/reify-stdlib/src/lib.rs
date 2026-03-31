@@ -1566,6 +1566,19 @@ mod tests {
     }
 
     #[test]
+    fn complex_nan_component_returns_undef_both_builtins() {
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NAN,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
+    }
+
+    #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
         match result {
