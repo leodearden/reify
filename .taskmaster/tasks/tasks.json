@@ -16295,7 +16295,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ],
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": 787,
@@ -16306,7 +16314,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/m9_trait_conformance.rs",
+            "crates/reify-test-support/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests",
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 788,
@@ -16317,7 +16335,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/m9_trait_conformance.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 789,
