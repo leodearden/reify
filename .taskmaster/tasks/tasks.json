@@ -3287,7 +3287,7 @@
         "testStrategy": "Parser tests: both qualified access forms, precedence.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3312,7 +3312,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:10:12.264Z"
+        "updatedAt": "2026-03-31T20:14:13.561Z"
       },
       {
         "id": "192",
@@ -16505,7 +16505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:13.402Z",
+      "lastModified": "2026-03-31T20:14:13.561Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
