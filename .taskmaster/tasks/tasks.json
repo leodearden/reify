@@ -16004,6 +16004,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 779,
+        "title": "Fix WireMessageContext optionality: use optional keys instead of Required<MessageContext>",
+        "description": "WireMessageContext uses `Required<MessageContext>` which makes all keys present with `| undefined` values, but JSON.stringify strips undefined-valued keys before Tauri IPC. The Rust side receives absent fields, not explicit null. Change to optional keys (`?`) so the TypeScript type matches the wire format.",
+        "details": "Source: escalation esc-748-204 (task 748 review). Affects GUI sidecar IPC layer. The type mismatch is silent — Rust deserialization succeeds because serde treats missing optional fields as None, but the TypeScript type contract is misleading.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16016,7 +16027,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:12:24.417Z"
+      "updated": "2026-03-31T15:12:28.302Z"
     }
   }
 }
