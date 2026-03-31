@@ -1065,6 +1065,7 @@ impl Engine {
                     version_id,
                     functions,
                     &meta_map,
+                    &mut diagnostics,
                 );
             }
 
@@ -1304,6 +1305,7 @@ impl Engine {
                     version_id,
                     functions,
                     &meta_map,
+                    &mut diagnostics,
                 );
             }
         }
@@ -1442,6 +1444,7 @@ impl Engine {
                             res_version_id,
                             &module.functions,
                             &meta_map,
+                            &mut diagnostics,
                         );
                     }
                     SolveResult::Infeasible {
@@ -3067,6 +3070,7 @@ impl Engine {
         version_id: u64,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
+        diagnostics: &mut Vec<Diagnostic>,
     ) {
         let let_cells: HashMap<NodeId, &reify_types::CompiledExpr> = template
             .value_cells
@@ -3087,6 +3091,26 @@ impl Engine {
             .collect();
 
         let sorted_lets = topological_sort(&let_node_ids, &let_traces);
+
+        // Detect cyclic let-binding dependencies: if topological_sort dropped nodes
+        // (Kahn's algorithm silently omits nodes in cycles), report them.
+        if sorted_lets.len() < let_node_ids.len() {
+            let sorted_set: HashSet<&NodeId> = sorted_lets.iter().collect();
+            let mut cyclic_members: Vec<&str> = let_node_ids
+                .iter()
+                .filter(|nid| !sorted_set.contains(nid))
+                .filter_map(|nid| match nid {
+                    NodeId::Value(vcid) => Some(vcid.member.as_str()),
+                    _ => None,
+                })
+                .collect();
+            cyclic_members.sort();
+            diagnostics.push(Diagnostic::error(format!(
+                "circular let-binding dependency in template {}: [{}]",
+                template.name,
+                cyclic_members.join(", "),
+            )));
+        }
 
         for node_id in sorted_lets {
             let expr = let_cells[&node_id];
