@@ -15,7 +15,17 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     // Determine the enclosing structure so member lookup is scoped correctly
     let enclosing = ctx.enclosing_decl_name_at(offset);
 
-    // Try member lookup first
+    // Try member lookup first.
+    //
+    // Unlike goto_def.rs, which falls back to an unscoped lookup
+    // (`find_member_decl(word, None)`) when the scoped search misses — as a
+    // navigation convenience — hover intentionally stays scoped. Cross-structure
+    // member references are not valid in the Reify language, so showing
+    // type/value info from a foreign structure's member would be misleading.
+    // If scoped lookup returns None, we fall through to structure names,
+    // fn/trait/enum names, and keywords — which is the correct behavior.
+    //
+    // See test: hover_no_fallback_to_other_structure_member
     if let Some(info) = ctx.find_member_decl(word, enclosing) {
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
