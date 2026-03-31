@@ -15812,10 +15812,11 @@
         "description": "Two related issues with prelude unit handling:\n\n1. **Misleading error spans**: Prelude units are seeded with `SourceSpan::empty(0)`. When a module-local unit duplicates a prelude name, the \"first declared here\" label points to byte 0 of the user's file — misleading. Fix: introduce a `SourceSpan::prelude()` sentinel that the diagnostic renderer shows as \"defined in stdlib prelude\" instead of a raw offset.\n\n2. **Silent cross-module collision**: `seed_prelude_unit` uses last-wins overwrite with no diagnostic when two prelude modules define a unit with the same name. Fix: in compile_with_prelude's seeding loop, detect when `unit_registry.lookup(&cu.name)` already returns Some before calling seed_prelude_unit, and emit a Severity::Warning naming both conflicting prelude modules.\n\nLocations: crates/reify-compiler/src/lib.rs:543-552 (seed_prelude_unit), lib.rs:2800-2816 (seeding loop), SourceSpan definition.\n\nmemory_hints: search \"SourceSpan definition\" and \"UnitRegistry seed_prelude_unit\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-31T03:03:45.451Z"
       },
       {
         "id": "766",
@@ -15876,7 +15877,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:03:45.356Z",
+      "lastModified": "2026-03-31T03:03:45.451Z",
       "taskCount": 770,
       "completedCount": 431,
       "tags": [
