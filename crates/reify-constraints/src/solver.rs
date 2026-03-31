@@ -2279,6 +2279,23 @@ mod tests {
         }
     }
 
+    #[test]
+    #[should_panic(expected = "params and x must have the same length")]
+    fn build_solved_values_panics_on_length_mismatch() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let params = vec![AutoParam {
+            id: ValueCellId::new("Part", "length"),
+            param_type: Type::length(),
+            bounds: Some((0.001, 1.0)),
+        }];
+        // x has 2 elements but params has 1 — should panic
+        let x = [0.025, 0.050];
+
+        let _ = build_solved_values(&params, &x);
+    }
+
     /// A feasible initial point with an always-undefined objective (x/0)
     /// must return NoProgress, never Solved. Because the objective is Undef
     /// everywhere, the optimizer stays near the initial (feasible) point and
