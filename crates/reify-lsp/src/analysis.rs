@@ -33,6 +33,22 @@ pub struct MemberInfo<'a> {
     pub decl_name: &'a str,
 }
 
+/// Classification of a top-level entity declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityKind {
+    Structure,
+    Occurrence,
+}
+
+impl std::fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntityKind::Structure => f.write_str("structure"),
+            EntityKind::Occurrence => f.write_str("occurrence"),
+        }
+    }
+}
+
 /// Shared analysis context that runs the parse → compile → check pipeline once
 /// and provides structured accessors for hover, goto-def, and completions.
 pub struct AnalysisContext {
