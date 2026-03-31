@@ -15308,7 +15308,7 @@
         "description": "`.task/plan.json` is still tracked on main, leaked by commit 14ae324a from task-517. The file is deleted from the working tree but remains in the git index. A previous cleanup (commit a1fdd7bd, 2026-03-25) addressed other .task files but plan.json was re-leaked. Pre-existing TS type errors that blocked pre-commit hooks were fixed in the 2026-03-27 session, so this cleanup should now be unblocked.\n\nFix: `git rm --cached .task/plan.json` and commit to main. Verify .task/ is in .gitignore.\n\nMemory hints: search \"plan.json tracked git cleanup task-517 commit 14ae324a\", entities: .task/plan.json",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15332,7 +15332,7 @@
             ".task"
           ]
         },
-        "updatedAt": "2026-03-31T21:10:06.705Z"
+        "updatedAt": "2026-03-31T21:11:34.160Z"
       },
       {
         "id": "737",
@@ -16647,9 +16647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:10:48.373Z",
+      "lastModified": "2026-03-31T21:11:34.160Z",
       "taskCount": 804,
-      "completedCount": 460,
+      "completedCount": 461,
       "tags": [
         "master"
       ]
