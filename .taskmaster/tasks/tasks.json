@@ -15550,13 +15550,13 @@
         "description": "Two issues from task 611 review:\n\n1. **buildMessageContext() enforcement gap** (ChatPanel.tsx:68): MESSAGE_CONTEXT_FIELD_MAP in bridge.ts is compile-time enforced, but buildMessageContext() in ChatPanel.tsx is only guarded by a comment. Adding a new MessageContext field triggers a tsc error in bridge.ts but gives no signal that buildMessageContext() needs updating. Add a compile-time assertion in types.typecheck.ts that verifies buildMessageContext() return type satisfies Required<MessageContext>, or add a runtime CI test asserting its camelCase keys match Object.keys(MESSAGE_CONTEXT_FIELD_MAP).\n\n2. **toEqual vs toStrictEqual** (claudeBridge.test.ts:183-189): The test \"mapContextToWire passes undefined fields through\" uses toEqual, but Vitest toEqual ignores undefined-valued properties ({a: undefined} equals {}). Switch to toStrictEqual so the test actually verifies that all snake_case keys are present in the output even when input fields are absent.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "611"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-30T17:49:30.050Z",
+        "updatedAt": "2026-03-31T03:02:32.370Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -15871,9 +15871,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-30T22:37:05.233Z",
+      "lastModified": "2026-03-31T03:02:32.370Z",
       "taskCount": 770,
-      "completedCount": 430,
+      "completedCount": 431,
       "tags": [
         "master"
       ]
