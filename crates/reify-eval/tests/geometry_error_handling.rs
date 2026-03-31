@@ -573,3 +573,69 @@ fn realization_abort_is_per_realization() {
         "should NOT have 'all geometry operations failed' since realization 1 succeeded"
     );
 }
+
+/// The tessellate path (tessellate_realizations → tessellate_from_values) should
+/// also abort on the first compile failure, producing exactly 1 diagnostic and
+/// no meshes for the failing realization.
+#[test]
+fn tessellate_aborts_cascading_compile_failures() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Three Boolean(Union) ops, all referencing non-existent Step indices.
+    let union_op_0 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    let union_op_1 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    let union_op_2 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.tessellate_realizations(&module);
+
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected exactly 1 compile-failure diagnostic from tessellate, got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes when all ops fail to compile"
+    );
+}
