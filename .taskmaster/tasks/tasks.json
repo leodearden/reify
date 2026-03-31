@@ -15042,7 +15042,7 @@
         "description": "hooks/project-checks and orchestrator.yaml test/lint commands only run `npm ci` in gui/. The gui/sidecar/ and tree-sitter-reify/ directories also have committed package-lock.json files but their lockfile integrity is never verified by any automated step.\n\nSteps:\n1. In hooks/project-checks, add `npm ci` for gui/sidecar/ (conditional on package-lock.json existing)\n2. In hooks/project-checks, add `npm ci` for tree-sitter-reify/ (conditional on package-lock.json existing)\n3. In orchestrator.yaml test_command and lint_command, extend the npm ci step to also cover gui/sidecar/ and tree-sitter-reify/\n4. Verify the pre-commit hook still runs in acceptable time (these are small packages, should be fast)\n\nmemory_hints: search \"hooks/project-checks npm ci\", search \"package manager standardization\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15055,7 +15055,7 @@
             "hooks"
           ]
         },
-        "updatedAt": "2026-03-31T20:48:05.458Z"
+        "updatedAt": "2026-03-31T20:49:31.176Z"
       },
       {
         "id": "724",
@@ -15390,11 +15390,11 @@
         "description": "Review follow-ups from task 485 (cross-file goto-definition), grouped by server.rs changes:\n\n**S1: Hardcoded stdlib path** — `server.rs:283` hardcodes `root.join(\"crates/reify-compiler/stdlib\")` as dev-mode only. Accept optional stdlib path via `InitializeParams::initialization_options` (e.g. `{ \"stdlibPath\": \"...\" }`), falling back to dev-mode heuristic. ModuleResolver already takes an explicit stdlib_root.\n\n**S3: Unnecessary disk I/O for open documents** — `server.rs:286-290` always calls `std::fs::read_to_string` even for files already in DocumentStore. Snapshot open document contents into a HashMap before entering spawn_blocking, check store first, fall back to disk only for unopened files. Also gives correct results for unsaved editor changes.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T20:14:14.291Z",
+        "updatedAt": "2026-03-31T20:49:31.219Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -16546,7 +16546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:49:31.137Z",
+      "lastModified": "2026-03-31T20:49:31.219Z",
       "taskCount": 796,
       "completedCount": 454,
       "tags": [
