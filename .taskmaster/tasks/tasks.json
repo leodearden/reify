@@ -15899,7 +15899,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 767,
@@ -15944,7 +15952,23 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/fixtures.rs",
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/hover.rs",
+            "crates/reify-lsp/src/completion.rs",
+            "crates/reify-lsp/src/convert.rs",
+            "crates/reify-lsp/src/diagnostics.rs",
+            "crates/reify-lsp/src/server.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support",
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 770,
@@ -15955,7 +15979,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib"
+          ]
+        }
       },
       {
         "id": 771,
