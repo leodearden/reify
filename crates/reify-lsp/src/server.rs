@@ -281,6 +281,7 @@ impl LanguageServer for ReifyLanguageServer {
             None => return Ok(None),
         };
         let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
         drop(state);
 
         // Move all CPU-bound parsing and blocking filesystem I/O
@@ -290,9 +291,10 @@ impl LanguageServer for ReifyLanguageServer {
         let location = match tokio::task::spawn_blocking(move || {
             if let Some(root) = workspace_root {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
-                // For stdlib_root, try the dev-mode path relative to workspace; fall back to
-                // a non-existent path (resolve_import_path will return Err, resolver returns None).
-                let stdlib_root = root.join("crates/reify-compiler/stdlib");
+                // Use explicit stdlib_path if configured; fall back to the dev-mode path
+                // relative to workspace root.
+                let stdlib_root = stdlib_path
+                    .unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
                 let resolver =
                     reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
@@ -1001,6 +1003,90 @@ mod tests {
             state.stdlib_path.is_none(),
             "stdlib_path should be None when initialization_options are absent"
         );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_uses_custom_stdlib_path() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace with a custom stdlib directory
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "reify-lsp-stdlib-{}",
+            std::process::id()
+        ));
+        let custom_stdlib = tmp_dir.join("custom-stdlib");
+        std::fs::create_dir_all(&custom_stdlib).unwrap();
+
+        // Write a module in the custom stdlib
+        std::fs::write(
+            custom_stdlib.join("mymod.ri"),
+            "structure Widget {\n    param size: Scalar = 5mm\n}",
+        )
+        .unwrap();
+
+        // Initialize with stdlibPath pointing to the custom stdlib
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                initialization_options: Some(serde_json::json!({
+                    "stdlibPath": custom_stdlib.to_str().unwrap()
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open main.ri that imports from std.mymod
+        let main_source = "import std.mymod.Widget\nstructure S {\n    sub w = Widget\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Widget' in 'sub w = Widget' (line 2, col 12)
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(2, 12),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Should resolve to custom-stdlib/mymod.ri
+        let response = goto_result
+            .expect("goto-def should resolve Widget from custom stdlib");
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("mymod.ri"),
+                    "should point to mymod.ri, got {}",
+                    loc.uri
+                );
+                assert_eq!(
+                    loc.range.start.line, 0,
+                    "should point to structure Widget on line 0"
+                );
+            }
+            other => panic!("expected Scalar location, got {other:?}"),
+        }
     }
 
     #[tokio::test]
