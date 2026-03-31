@@ -3062,6 +3062,7 @@ impl Engine {
     /// topologically sorts, and evaluates each in order — recording
     /// journal events and cache entries. Used by both the initial eval()
     /// pass and the post-resolution re-evaluation pass.
+    #[allow(clippy::too_many_arguments)]
     fn evaluate_let_bindings(
         &mut self,
         template: &reify_compiler::TopologyTemplate,
