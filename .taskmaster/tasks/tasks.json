@@ -16651,10 +16651,11 @@
         "description": "In crates/reify-lsp/src/document.rs, add a pub fn snapshot_as_path_map(&self) -> HashMap<PathBuf, String> method on DocumentStore that encapsulates the URL→PathBuf conversion and text cloning. Update crates/reify-lsp/src/server.rs goto_definition (lines 288-294) to call state.documents.snapshot_as_path_map() instead of inlining the filter_map logic. This makes the buffer-preference semantics reusable for future handlers (hover, completions).\n\nmemory_hints: search \"DocumentStore snapshot goto_definition\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-31T21:14:02.130Z"
       },
       {
         "id": "806",
@@ -16692,7 +16693,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:14:01.960Z",
+      "lastModified": "2026-03-31T21:14:02.131Z",
       "taskCount": 808,
       "completedCount": 464,
       "tags": [
