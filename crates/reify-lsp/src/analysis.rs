@@ -593,6 +593,24 @@ mod tests {
     }
 
     #[test]
+    fn entity_names_includes_occurrence() {
+        let source = "structure Bracket {\n    param width: Scalar = 80mm\n}\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 2, "should have Bracket and Joint");
+        assert_eq!(entities[0].name, "Bracket");
+        assert_eq!(entities[0].kind, EntityKind::Structure);
+        assert_eq!(entities[0].params, 1);
+        assert_eq!(entities[0].lets, 0);
+        assert_eq!(entities[0].constraints, 0);
+        assert_eq!(entities[1].name, "Joint");
+        assert_eq!(entities[1].kind, EntityKind::Occurrence);
+        assert_eq!(entities[1].params, 1);
+        assert_eq!(entities[1].lets, 1);
+        assert_eq!(entities[1].constraints, 1);
+    }
+
+    #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
         assert_eq!(EntityKind::Occurrence.to_string(), "occurrence");
