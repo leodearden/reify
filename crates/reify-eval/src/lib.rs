@@ -4559,4 +4559,47 @@ mod tests {
             other => panic!("expected Some(LinearPattern), got {:?}", other),
         }
     }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), literal_f64(1.5708)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(count, 4);
+                // angle should be a Real value, not Undef
+                assert!(
+                    !matches!(angle, reify_types::Value::Undef),
+                    "angle should not be Undef when arg is present"
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
 }
