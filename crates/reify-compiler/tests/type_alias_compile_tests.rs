@@ -180,3 +180,40 @@ fn dimensional_alias_force_mul_length() {
         "Energy alias should resolve to Scalar{{FORCE*LENGTH}}"
     );
 }
+
+// ─── step-7: chained dimensional alias ──────────────────────────────────────
+
+#[test]
+fn chained_dimensional_alias_acceleration() {
+    let source = r#"
+        type Velocity = Length / Time
+        type Acceleration = Velocity / Time
+        structure S {
+            param a : Acceleration = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for chained dimensional alias; got: {:?}",
+        errs
+    );
+    // Acceleration should be LENGTH / TIME^2
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "a")
+        .expect("a not found");
+    // LENGTH / TIME = Velocity, then Velocity / TIME = LENGTH / TIME^2
+    let velocity_dim = reify_types::DimensionVector::LENGTH.div(&reify_types::DimensionVector::TIME);
+    let expected_dim = velocity_dim.div(&reify_types::DimensionVector::TIME);
+    assert_eq!(
+        a_cell.cell_type,
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+        "Acceleration alias should resolve to Scalar{{LENGTH/TIME^2}}"
+    );
+}
