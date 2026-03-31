@@ -503,6 +503,10 @@ fn test_subprocess_timeout_kills_hung_process() {
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
              // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_stamp_write_failure_no_panic() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
     // Verify that stamp_write does not panic when the destination is read-only.
     // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
     let dir = tempfile::tempdir().unwrap();
@@ -767,6 +771,10 @@ fn test_readonly_guard_drop_logs_error() {
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
              // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
     // Verify that ReadonlyGuard's Drop impl restores write permissions.
     let dir = tempfile::tempdir().unwrap();
     let subdir = dir.path().join("guarded");
