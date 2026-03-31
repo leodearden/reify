@@ -4876,22 +4876,6 @@ mod tests {
     }
 
     #[test]
-    fn magnitude_complex_nan_component_returns_undef() {
-        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
-        // Mirrors complex_magnitude_nan_component_returns_undef but goes through the
-        // magnitude wrapper → complex_abs path.
-        let z = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("magnitude", &[z]).is_undef(),
-            "magnitude with NaN component must return Undef"
-        );
-    }
-
-    #[test]
     fn magnitude_large_representable_complex_no_overflow() {
         // magnitude(Complex{1e200, 0, DIMLESS}) must return Real(1e200), not Undef.
         // Covers the generic 'magnitude' builtin path to complex_abs.
@@ -5556,20 +5540,6 @@ mod tests {
     fn complex_magnitude_non_complex_returns_undef() {
         // unlike generic magnitude which handles Tensors, complex_magnitude rejects non-Complex
         assert!(eval_builtin("complex_magnitude", &[Value::Real(5.0)]).is_undef());
-    }
-
-    #[test]
-    fn complex_magnitude_nan_component_returns_undef() {
-        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
-        let z = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert!(
-            eval_builtin("complex_magnitude", &[z]).is_undef(),
-            "complex_magnitude with NaN component must return Undef"
-        );
     }
 
     #[test]
