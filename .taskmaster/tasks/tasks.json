@@ -16575,10 +16575,11 @@
         "description": "In `sequenced_solver_concurrent_no_deadlock` in `crates/reify-test-support/src/mocks.rs`: (1) derive the `expected: Vec<f64>` assertion vector directly from `expected_slots` (e.g. by extracting `si_value` from each slot's HashMap) rather than re-computing `0.001 * (i+1)` independently, so a change to the slot-population formula is automatically reflected in the assertion; (2) ensure a sentinel/fallback `last` value is loaded that lies outside the expected set so that any thread hitting the fallback path produces a value that fails the sorted `assert_eq!(seen, expected)`, fulfilling the stated distinct-slot intent of the task.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-31T20:59:11.976Z"
       },
       {
         "id": "800",
@@ -16594,7 +16595,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:59:11.873Z",
+      "lastModified": "2026-03-31T20:59:11.976Z",
       "taskCount": 800,
       "completedCount": 458,
       "tags": [
