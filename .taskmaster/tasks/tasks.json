@@ -15862,11 +15862,11 @@
         "description": "In `crates/reify-eval/src/lib.rs` around line 3921, `elaborate_child_lets_only` has a potential infinite loop for structural intermediary templates. The condition `if found_any || entity_template.value_cells.is_empty()` always enqueues children for structural intermediaries (zero value_cells), even when the entity path does not exist in `values`. For any structural template with a guarded sub-component pointing to itself or another structural template, the BFS will enqueue unbounded depth paths without termination.\n\nFix: Before enqueuing children of a structural intermediary, verify the entity actually exists in the values map (check whether any key with the depth_entity prefix exists in values). Alternatively, add a max_depth parameter (mirroring unfold_recursive_sub's node_budget) or maintain a visited HashSet to detect repeated entity paths.\n\nmemory_hints: search \"elaborate_child_lets_only unfold_recursive_sub node_budget BFS\", get_entity \"ConcurrentEvalAdapter\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:04:31.516Z",
+        "updatedAt": "2026-03-31T03:23:39.891Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -15996,7 +15996,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:23:36.464Z",
+      "lastModified": "2026-03-31T03:23:39.891Z",
       "taskCount": 777,
       "completedCount": 436,
       "tags": [
