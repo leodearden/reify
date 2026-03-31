@@ -7057,11 +7057,11 @@
         "description": "Fix phase(0+0i) returning Scalar{0.0, ANGLE} instead of Undef (mathematically undefined). Extract complex_component_to_value() helper to deduplicate dimension-to-value conversion pattern across re/im/magnitude (3-way duplication).\n\nMissing tests to add:\n- NaN/Inf in second arg (im) for complex functions (only first arg tested)\n- phase(0+0i) edge case\n- phase() on dimensioned Complex (documents dimension-agnostic behavior)\n- magnitude(0+0i) edge case\n- Negative assertions that re/im are NOT in LSP completions (guards design decision)\n\nMemory hints: search \"phase complex magnitude edge case\", entities: eval_builtin, phase, complex_magnitude",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-30T18:03:48.358Z",
+        "updatedAt": "2026-03-31T03:14:58.936Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8137,7 +8137,7 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T02:41:15.170Z",
+        "updatedAt": "2026-03-31T03:19:33.452Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8145,8 +8145,9 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-expr/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-expr",
+            "crates/reify-test-support",
+            "crates/reify-types"
           ]
         }
       },
@@ -8871,11 +8872,11 @@
         "description": "In reify-expr/src/lib.rs, the Vector/Point scalar guards in eval_mul (lines ~920-930) and eval_div (lines ~993-1001) exclude Vector, Point, and Tensor but not Matrix:\n```rust\n!matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_))\n```\n\nValue::Matrix is a live enum variant (value.rs:84) that should be excluded. Currently Matrix falls through to Undef via inner eval_mul, so behavior is correct but the guard is incomplete.\n\nAdditionally, the Tensor scalar guard (line ~915) is narrower — it only excludes `Value::Tensor(_)` — creating an asymmetry with the Vector/Point guards. Either document why Tensor deliberately allows Vector/Point scalars, or widen it to match.\n\nFix: Add `| Value::Matrix(_)` to all exclusion guards. Document or widen Tensor guard.\n\nmemory_hints: search \"Value::Matrix enum variant\" for Matrix usage",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.772Z",
+        "updatedAt": "2026-03-31T03:22:36.084Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8971,11 +8972,11 @@
         "description": "The Transform and Pattern branches of compile_geometry_op in crates/reify-eval/src/lib.rs use eval_arg_f64 closures that return f64 with .unwrap_or(0.0) (lines 3091-3096 and 3148-3153). This silently defaults to 0.0 when an arg is missing or non-numeric, violating the project convention against silent defaults (feedback_silent_defaults_pattern). The Revolve branch (line 3240) already correctly returns Option<f64> with ? propagation. Apply the same pattern to Transform and Pattern: change eval_arg_f64 to return Option<f64>, propagate with ? at each call site, and return None from compile_geometry_op if any required arg fails.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:04:31.592Z",
+        "updatedAt": "2026-03-31T03:22:34.447Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -13038,7 +13039,7 @@
         "description": "params_to_value_map (solver.rs:55) uses Iterator::zip which silently truncates to the shorter slice if params.len() != x.len(). Add debug_assert_eq!(params.len(), x.len()) as the first line to catch caller bugs in tests at zero release cost. Also add a test for the empty-params case (params=[], x=[]) asserting result.is_empty().\n\nMemory hints: search \"params_to_value_map\", entity DimensionalSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "589"
         ],
@@ -13051,7 +13052,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T03:11:56.330Z"
       },
       {
         "id": "627",
@@ -13157,11 +13159,11 @@
         "description": "In crates/reify-expr/tests/field_eval_tests.rs: (1) Tighten tolerance in sample_gradient_of_constant_field_near_zero from 1e-3 to 1e-9. (2) Add test for gradient(gradient(field)) documenting it returns Undef. (3) Add test for Gradient field with manually constructed inner_field=None. (4) Add sample() call in gradient_dimension_temperature_over_length. (5) Add test for gradient of field where inner lambda returns non-numeric value.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-30T22:02:17.294Z",
+        "updatedAt": "2026-03-31T03:11:54.786Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -14310,7 +14312,7 @@
         "description": "McpConfig in claude_bridge.rs names its event callback field `event_sink`, while the same concept is consistently called `event_emitter` throughout mcp_context.rs (field name, type alias EventEmitter, builder method with_event_emitter). Additionally, all McpConfig fields are `pub` but only need `pub(crate)` since the struct is only constructed/consumed within the crate.\n\n## Changes\n1. Rename `McpConfig.event_sink` → `McpConfig.event_emitter` in claude_bridge.rs (lines ~142, 201, 209, 220, 261, 505, 540)\n2. Change all McpConfig field visibility from `pub` to `pub(crate)`\n3. Update all references and tests\n\n## Files to modify\n- gui/src-tauri/src/claude_bridge.rs\n- gui/src-tauri/src/tests/claude_bridge_tests.rs\n- gui/src-tauri/src/tests/mcp_context_tests.rs (McpConfig test)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14324,7 +14326,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T03:14:59.530Z"
       },
       {
         "id": "690",
@@ -14443,7 +14446,7 @@
         "description": "In hover.rs, the scoped member lookup via `find_member_decl(word, enclosing)` does not fall back to `find_member_decl(word, None)` when scoped lookup returns None, unlike goto_def.rs which does. Either: (a) add a comment explaining this is intentional because hover should only show info for members of the enclosing declaration, or (b) implement the same two-pass pattern as goto_def.rs. Investigate whether cross-structure member references are possible in the language to determine which approach is correct.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14455,7 +14458,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-03-30T22:29:18.361Z"
+        "updatedAt": "2026-03-31T03:14:43.662Z"
       },
       {
         "id": "696",
@@ -14591,7 +14594,7 @@
         "description": "Reduce boilerplate: 1) Move fixture_path from cli_build.rs and cli_check.rs into shared tests/common/mod.rs. 2) Extract run_build(fixture) helper that handles tempdir, output_path, Command setup. Each of the 5 build tests reduces to calling the helper and asserting on results.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14605,7 +14608,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-29T08:53:06.893Z"
+        "updatedAt": "2026-03-31T03:19:33.743Z"
       },
       {
         "id": "703",
@@ -15368,11 +15371,11 @@
         "description": "Review follow-ups from task 485 (cross-file goto-definition), grouped by server.rs changes:\n\n**S1: Hardcoded stdlib path** — `server.rs:283` hardcodes `root.join(\"crates/reify-compiler/stdlib\")` as dev-mode only. Accept optional stdlib path via `InitializeParams::initialization_options` (e.g. `{ \"stdlibPath\": \"...\" }`), falling back to dev-mode heuristic. ModuleResolver already takes an explicit stdlib_root.\n\n**S3: Unnecessary disk I/O for open documents** — `server.rs:286-290` always calls `std::fs::read_to_string` even for files already in DocumentStore. Snapshot open document contents into a HashMap before entering spawn_blocking, check store first, fall back to disk only for unopened files. Also gives correct results for unsaved editor changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-28T19:14:16.492Z",
+        "updatedAt": "2026-03-31T03:17:22.514Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -15812,11 +15815,18 @@
         "description": "Two related issues with prelude unit handling:\n\n1. **Misleading error spans**: Prelude units are seeded with `SourceSpan::empty(0)`. When a module-local unit duplicates a prelude name, the \"first declared here\" label points to byte 0 of the user's file — misleading. Fix: introduce a `SourceSpan::prelude()` sentinel that the diagnostic renderer shows as \"defined in stdlib prelude\" instead of a raw offset.\n\n2. **Silent cross-module collision**: `seed_prelude_unit` uses last-wins overwrite with no diagnostic when two prelude modules define a unit with the same name. Fix: in compile_with_prelude's seeding loop, detect when `unit_registry.lookup(&cu.name)` already returns Some before calling seed_prelude_unit, and emit a Severity::Warning naming both conflicting prelude modules.\n\nLocations: crates/reify-compiler/src/lib.rs:543-552 (seed_prelude_unit), lib.rs:2800-2816 (seeding loop), SourceSpan definition.\n\nmemory_hints: search \"SourceSpan definition\" and \"UnitRegistry seed_prelude_unit\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:03:45.451Z"
+        "updatedAt": "2026-03-31T03:08:52.529Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-lsp",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": "766",
@@ -15835,11 +15845,16 @@
         "description": "Four test coverage gaps identified in the unit registry tests:\n\n1. **degF offset unit**: `degF` has a non-trivial offset (5/9, offset 255.3722...) but zero test coverage. Add test: `32degF → 273.15K`, `212degF → 373.15K`.\n\n2. **Private prelude units excluded**: The `if cu.is_pub` guard ensures private units aren't seeded, but no test verifies it. Add test: compile prelude with one pub + one private unit, verify private is inaccessible.\n\n3. **Bare compile() negative test**: No test verifies that bare `compile()` does NOT resolve `1mm`. Add test: compile with bare compile(), assert unknown-unit error for mm.\n\n4. **thou via stdlib**: `thou` is a chain unit (references mm), but no integration test verifies it resolves via stdlib prelude. Add test: `10thou → 0.000254`.\n\nLocation: crates/reify-compiler/tests/unit_registry_tests.rs.\n\nmemory_hints: search \"unit registry tests\" for current test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:06:00.694Z"
+        "updatedAt": "2026-03-31T03:10:24.677Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "768",
@@ -15904,7 +15919,16 @@
           "625"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-31T03:14:57.958Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints",
+            "crates/reify-eval",
+            "crates/reify-test-support",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": "773",
@@ -15917,14 +15941,64 @@
           "625"
         ],
         "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-03-31T03:17:21.628Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "774",
+        "title": "Add durable test: sample() with lambda arity mismatch",
+        "description": "Add durable tests for sample() when lambda parameter count doesn't match point dimension count. apply_lambda explicitly checks evaluated_args.len() != params.len() and returns Value::Undef — this behavioral contract should be pinned.\n\nTests to add in crates/reify-expr/tests/field_eval_tests.rs:\n1. Build a field with 1-param lambda (|x|), call sample(field, point_3d) with 3-element point → assert Undef\n2. Build a field with 3-param lambda (|x,y,z|), call sample(field, scalar) with 1-element point → assert Undef\n\nmemory_hints: search \"apply_lambda arity check\" and \"sample field eval\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "775",
+        "title": "Add durable test: multi-param lambda invocation through sample()",
+        "description": "Add a durable test for successful multi-param lambda invocation through sample(). Current tests only cover 1D domain (sample_temperature_over_length_field) and an Undef lambda case. No test exercises multi-param argument binding in apply_lambda.\n\nTest to add in crates/reify-expr/tests/field_eval_tests.rs:\n- Build a 3D field with lambda |x, y, z| x + y + z\n- Call sample(field, Point([1.0, 2.0, 3.0]))\n- Assert result is Value::Real(6.0)\n\nThis pins the multi-param binding contract so regressions in apply_lambda are detected.\n\nmemory_hints: search \"apply_lambda multi param\" and \"sample field 3D\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "776",
+        "title": "Fix hover.rs comment inaccuracy and add positive companion test",
+        "description": "Two small fixes in crates/reify-lsp/src/hover.rs from task 695 review:\n\n1. **Comment accuracy (line 20-21):** The comment says goto_def.rs falls back to `find_member_decl(word, None)` but goto_def.rs does not call find_member_decl at all — it uses `find_named_member_span()` in a manual two-pass loop (scoped iteration over enclosing decl members, then full-declaration scan). Change the parenthetical from `(find_member_decl(word, None))` to something like `(a manual scan across all declarations via find_named_member_span)`.\n\n2. **Positive companion test (line 607):** The `hover_no_fallback_to_other_structure_member` test only checks that hovering on `unique_a` inside structure B returns None. Add a companion assertion (or separate test) that hovers on `unique_a` at its declaration site inside structure A and confirms it returns Some(...) with expected `param` info. This anchors the test: scoped lookup works in A, and correctly returns None in B.\n\nmemory_hints: search \"hover scoping goto_def fallback find_named_member_span\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
+      },
+      {
+        "id": "777",
+        "title": "Fix remaining silent-default eval_arg in Primitive/Modify arms of compile_geometry_op",
+        "description": "Task 450 fixed silent defaults in the Transform and Pattern arms of compile_geometry_op (crates/reify-eval/src/lib.rs), but left the Primitive arm (line ~3157) and Modify arm (line ~3213) with the old `unwrap_or(Value::Undef)` pattern. This creates an inconsistent contract within the same match expression: missing args in Pattern/Transform ops are hard errors (None), but missing args in Primitive/Modify ops silently produce Undef.\n\nApply the same `Option<Value>` + `?` pattern to the `eval_arg` closures in the Primitive and Modify arms. Additionally, decide whether `eval_arg` should filter out `Value::Undef` results from `eval_expr` (present-but-Undef args currently pass through as `Some(Value::Undef)` rather than returning `None`). Add test coverage for the present-but-Undef edge case.\n\nAlso consider making `eval_arg_f64` a thin wrapper over `eval_arg` where both closures exist in the same scope (e.g., Pattern arm: `eval_arg(name)?.as_f64().filter(|v| v.is_finite())`).\n\nmemory_hints: search \"silent defaults convention feedback_silent_defaults_pattern\", get_entity \"compile_geometry_op\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
         "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:06:00.694Z",
-      "taskCount": 773,
-      "completedCount": 432,
+      "lastModified": "2026-03-31T03:22:36.084Z",
+      "taskCount": 777,
+      "completedCount": 435,
       "tags": [
         "master"
       ]

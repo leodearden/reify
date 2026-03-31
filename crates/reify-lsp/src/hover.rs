@@ -15,7 +15,17 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
     // Determine the enclosing structure so member lookup is scoped correctly
     let enclosing = ctx.enclosing_decl_name_at(offset);
 
-    // Try member lookup first
+    // Try member lookup first.
+    //
+    // Unlike goto_def.rs, which falls back to an unscoped lookup
+    // (`find_member_decl(word, None)`) when the scoped search misses — as a
+    // navigation convenience — hover intentionally stays scoped. Cross-structure
+    // member references are not valid in the Reify language, so showing
+    // type/value info from a foreign structure's member would be misleading.
+    // If scoped lookup returns None, we fall through to structure names,
+    // fn/trait/enum names, and keywords — which is the correct behavior.
+    //
+    // See test: hover_no_fallback_to_other_structure_member
     if let Some(info) = ctx.find_member_decl(word, enclosing) {
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
@@ -582,6 +592,37 @@ mod tests {
     }
 
     // --- cross-structure scoping tests ---
+
+    /// Characterization test: hover intentionally does NOT fall back to unscoped
+    /// member lookup when the scoped lookup returns None. This is the key
+    /// difference from goto_def.rs, which does a two-pass search (scoped, then
+    /// unscoped) as a navigation convenience. For hover, showing type/value info
+    /// from a foreign structure's member would be misleading, because
+    /// cross-structure member references are not valid in the Reify language.
+    ///
+    /// Here, `unique_a` only exists in structure A. Hovering on the text
+    /// `unique_a` inside structure B should return None — it should NOT show
+    /// A's member info via an unscoped fallback.
+    #[test]
+    fn hover_no_fallback_to_other_structure_member() {
+        let source = "\
+structure A {
+    param unique_a: Scalar = 5mm
+}
+structure B {
+    param unique_b: Scalar = 10mm
+    let ref_a = unique_a
+}";
+        // 'unique_a' in 'let ref_a = unique_a' is on line 5, col 16
+        let position = Position::new(5, 16);
+        let result = hover_markdown(source, position);
+        assert!(
+            result.is_none(),
+            "hover on 'unique_a' inside B should return None \
+             (no fallback to A's member), got: {:?}",
+            result
+        );
+    }
 
     #[test]
     fn hover_value_scoped_to_owning_declaration() {

@@ -3336,16 +3336,12 @@ fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let eval_arg = |name: &str| -> Option<reify_types::Value> {
+                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+                Some(reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                ))
             };
             let eval_arg_f64 = |name: &str| -> Option<f64> {
                 let (_, expr) = args.iter().find(|(n, _)| n == name)?;
@@ -3371,7 +3367,7 @@ fn compile_geometry_op(
                             eval_arg_f64("dz")?,
                         ],
                         count: eval_arg_f64("count")? as usize,
-                        spacing: eval_arg("spacing"),
+                        spacing: eval_arg("spacing")?,
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
@@ -3388,7 +3384,7 @@ fn compile_geometry_op(
                             eval_arg_f64("az")?,
                         ],
                         count: eval_arg_f64("count")? as usize,
-                        angle: eval_arg("angle"),
+                        angle: eval_arg("angle")?,
                     })
                 }
                 reify_compiler::PatternKind::Mirror => Some(reify_types::GeometryOp::Mirror {
@@ -4037,7 +4033,7 @@ fn elaborate_child_lets_only<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compiler::{CompiledGeometryOp, GeomRef, SweepKind, TransformKind};
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
     use reify_types::GeometryHandleId;
 
     /// Helper: build a CompiledExpr literal from a constant f64.
@@ -4471,5 +4467,172 @@ mod tests {
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
         assert!(result.is_none(), "missing axis_z should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_missing_spacing_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(
+            result.is_none(),
+            "missing spacing should return None, not silently default to Value::Undef"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_missing_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // CircularPattern with ox/oy/oz/ax/ay/az/count but OMITS angle
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(4.0)),
+                // angle deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(
+            result.is_none(),
+            "missing angle should return None, not silently default to Value::Undef"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(direction, [10.0, 0.0, 0.0]);
+                assert_eq!(count, 3);
+                // spacing should be a Scalar value, not Undef
+                assert!(
+                    !matches!(spacing, reify_types::Value::Undef),
+                    "spacing should not be Undef when arg is present"
+                );
+            }
+            other => panic!("expected Some(LinearPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_circular_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), literal_f64(1.5708)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::CircularPattern {
+                target,
+                axis_origin,
+                axis_dir,
+                count,
+                angle,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(axis_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(count, 4);
+                // angle should be a Real value, not Undef
+                assert!(
+                    !matches!(angle, reify_types::Value::Undef),
+                    "angle should not be Undef when arg is present"
+                );
+            }
+            other => panic!("expected Some(CircularPattern), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_mirror_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Some(Mirror), got {:?}", other),
+        }
     }
 }
