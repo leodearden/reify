@@ -530,6 +530,27 @@ fn test_stamp_write_failure_no_panic() {
 }
 
 #[test]
+fn test_stamp_write_exact_content() {
+    // Validates that stamp_write produces exact hash bytes with no trailing
+    // whitespace, newline, or other content corruption. Since needs_generate
+    // uses .trim() when reading, corruption would be silently masked without
+    // this direct content assertion.
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = dir.path().join("grammar_hash.stamp");
+    let hash = "a1b2c3d4e5f60708";
+
+    stamp_write(&stamp_path, hash);
+
+    let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
+    assert_eq!(
+        raw_content, hash,
+        "stamp_write must produce exact hash bytes — no trailing newline, whitespace, or BOM. \
+         Got {:?}, expected {:?}",
+        raw_content, hash
+    );
+}
+
+#[test]
 fn test_stamp_path_is_profile_independent() {
     // Prove that staleness detection is purely hash-driven and works identically
     // across different OUT_DIR paths (simulating debug vs release profiles).
