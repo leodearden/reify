@@ -482,7 +482,7 @@ mod tests {
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
-    use std::sync::{Barrier, Mutex as StdMutex};
+    use std::sync::Barrier;
     use std::time::Duration;
 
     #[test]
@@ -1772,7 +1772,7 @@ mod tests {
 
     #[test]
     fn sequenced_solver_concurrent_no_deadlock() {
-        // Pre-load 4 distinct results so each thread pops a different entry
+        // Pre-load 4 distinct results that threads race to consume
         // from `results` and writes to `self.last`.  Distinct values let us
         // verify every slot is consumed exactly once (no double-consumption).
         // This exercises concurrent acquisition of both locks without any
@@ -1809,7 +1809,7 @@ mod tests {
         // deadlock would hang CI forever without this.
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<SolveResult>>(1);
         std::thread::spawn(move || {
-            let collected = StdMutex::new(Vec::new());
+            let collected = Mutex::new(Vec::new());
             // 4 threads each calling solve() once — threads race to pop
             // the next available result (order is non-deterministic).
             std::thread::scope(|s| {
@@ -1890,7 +1890,7 @@ mod tests {
 
             // Phase 2: 3 threads concurrently hit the `last` fallback path.
             let barrier = Barrier::new(3);
-            let collected = StdMutex::new(Vec::new());
+            let collected = Mutex::new(Vec::new());
 
             std::thread::scope(|s| {
                 for _ in 0..3 {
