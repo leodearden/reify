@@ -15812,11 +15812,11 @@
         "description": "In crates/reify-eval/src/lib.rs, both `resolve_concurrent_edit` (line ~759) and `edit_param` (line ~1809) have the same bug: per-entity-group solver loops pass `result.values.clone()` / `values.clone()` as `current_values` to each group's ResolutionProblem, but mutate the values map inside the loop when a group solve succeeds. Later-iterated groups see earlier groups' resolved params. Since `entity_groups` is a HashMap, iteration order is non-deterministic, producing different results across runs.\n\nFix: Snapshot values once before each loop and use `snapshot_values.clone()` in each iteration's ResolutionProblem.\n\nAdditionally, replace `.unwrap()` at line ~1864 with `.expect(\"edit_param requires eval_state\")` for consistency with resolve_concurrent_edit's style, even though the early guard at line ~1488 makes it unreachable.\n\nMemory hints: search \"resolve_concurrent_edit cross-group contamination\", get_entity \"ResolutionProblem\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-31T20:19:22.997Z",
+        "updatedAt": "2026-03-31T20:28:26.379Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -16533,9 +16533,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:28:22.889Z",
+      "lastModified": "2026-03-31T20:28:26.379Z",
       "taskCount": 796,
-      "completedCount": 440,
+      "completedCount": 441,
       "tags": [
         "master"
       ]
