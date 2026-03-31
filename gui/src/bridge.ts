@@ -221,6 +221,12 @@ function validatePayload(
   return rec;
 }
 
+/** Required-key arrays for validatePayload, hoisted to avoid per-call allocations. */
+const KEYS_ID_CONTENT: string[] = ['id', 'content'];
+const KEYS_ID_TOOL_NAME: string[] = ['id', 'tool_name'];
+const KEYS_ID: string[] = ['id'];
+const KEYS_ID_MESSAGE: string[] = ['id', 'message'];
+
 /**
  * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
  * Returns a combined unlisten function that tears down all 7 subscriptions.
@@ -235,17 +241,17 @@ export async function subscribeToClaudeEvents(
 
   const entries: EventEntry[] = [
     ['claude-text-delta', (event) => {
-      const p = validatePayload('claude-text-delta', event.payload, ['id', 'content']);
+      const p = validatePayload('claude-text-delta', event.payload, KEYS_ID_CONTENT);
       if (!p) return;
       handler({ type: 'text_delta', id: p.id as string, content: p.content as string });
     }],
     ['claude-thinking-delta', (event) => {
-      const p = validatePayload('claude-thinking-delta', event.payload, ['id', 'content']);
+      const p = validatePayload('claude-thinking-delta', event.payload, KEYS_ID_CONTENT);
       if (!p) return;
       handler({ type: 'thinking_delta', id: p.id as string, content: p.content as string });
     }],
     ['claude-tool-call', (event) => {
-      const p = validatePayload('claude-tool-call', event.payload, ['id', 'tool_name']);
+      const p = validatePayload('claude-tool-call', event.payload, KEYS_ID_TOOL_NAME);
       if (!p) return;
       const toolInput = (p.tool_input != null && typeof p.tool_input === 'object' && !Array.isArray(p.tool_input))
         ? p.tool_input as Record<string, unknown>
@@ -253,17 +259,17 @@ export async function subscribeToClaudeEvents(
       handler({ type: 'tool_call', id: p.id as string, tool_name: p.tool_name as string, tool_input: toolInput });
     }],
     ['claude-tool-result', (event) => {
-      const p = validatePayload('claude-tool-result', event.payload, ['id', 'tool_name']);
+      const p = validatePayload('claude-tool-result', event.payload, KEYS_ID_TOOL_NAME);
       if (!p) return;
       handler({ type: 'tool_result', id: p.id as string, tool_name: p.tool_name as string, result: p.result });
     }],
     ['claude-done', (event) => {
-      const p = validatePayload('claude-done', event.payload, ['id']);
+      const p = validatePayload('claude-done', event.payload, KEYS_ID);
       if (!p) return;
       handler({ type: 'done', id: p.id as string });
     }],
     ['claude-error', (event) => {
-      const p = validatePayload('claude-error', event.payload, ['id', 'message']);
+      const p = validatePayload('claude-error', event.payload, KEYS_ID_MESSAGE);
       if (!p) return;
       handler({ type: 'error', id: p.id as string, message: p.message as string });
     }],
