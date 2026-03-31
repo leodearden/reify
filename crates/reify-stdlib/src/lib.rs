@@ -4479,6 +4479,32 @@ mod tests {
     }
 
     #[test]
+    fn orient_basis_non_unit_y_returns_undef() {
+        // Orthogonal but non-unit y=[0,2,0] must be rejected — isolates the mag_y
+        // branch of the unit-length guard (|y|=2.0, |2.0-1.0|=1.0 > 1e-6).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit y basis vector should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_unit_z_returns_undef() {
+        // Orthogonal but non-unit z=[0,0,2] must be rejected — isolates the mag_z
+        // branch of the unit-length guard (|z|=2.0, |2.0-1.0|=1.0 > 1e-6).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit z basis vector should be rejected"
+        );
+    }
+
+    #[test]
     fn orient_axis_angle_integer_angle_accepted() {
         // Value::Int(1) = 1 radian, exercises the Value::Int(i) => Some(*i as f64) arm
         // in trig_input. Expected: half=0.5, q=(cos(0.5), 0, 0, sin(0.5)).
@@ -4491,6 +4517,21 @@ mod tests {
             0.0,
             0.0,
             half.sin()
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_integer_angle_zero_is_identity() {
+        // Value::Int(0) = 0 radians, exercises the zero-angle boundary of
+        // half-angle trig: cos(0)=1, sin(0)=0 → identity quaternion (1,0,0,0).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(0);
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            1.0,
+            0.0,
+            0.0,
+            0.0
         );
     }
 
