@@ -217,3 +217,34 @@ fn chained_dimensional_alias_acceleration() {
         "Acceleration alias should resolve to Scalar{{LENGTH/TIME^2}}"
     );
 }
+
+// ─── step-9: circular alias detection ───────────────────────────────────────
+
+#[test]
+fn circular_alias_a_b_a_produces_error() {
+    let source = r#"
+        type A = B
+        type B = A
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| d.message.contains("circular")),
+        "expected circular alias error; got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn self_referential_alias_produces_error() {
+    let source = r#"
+        type X = X
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| d.message.contains("circular")),
+        "expected circular alias error for self-reference; got: {:?}",
+        errs
+    );
+}
