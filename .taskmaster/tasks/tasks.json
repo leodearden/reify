@@ -15841,7 +15841,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 764,
@@ -15852,7 +15860,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/completion.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 765,
