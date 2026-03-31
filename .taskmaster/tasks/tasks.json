@@ -16169,6 +16169,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 794,
+        "title": "Fix misleading timeout error in tree-sitter-generate.sh",
+        "description": "Track whether timeout was actually applied and only diagnose exit code 124 as a timeout when it was. Currently the fallback path (no timeout binary) can misdiagnose exit 124 as timeout failure.",
+        "details": "Source: escalation esc-610-194 (task 610 review). File: scripts/tree-sitter-generate.sh:89-91.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16181,7 +16192,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:15:17.903Z"
+      "updated": "2026-03-31T15:15:20.184Z"
     }
   }
 }
