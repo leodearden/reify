@@ -1895,40 +1895,40 @@ impl Engine {
             // edit_param entry ensures this is unreachable, but an if-let is
             // consistent with the guard re-elaboration phase below which uses
             // .and_then for the same field).
-            if !all_resolved_ids.is_empty() {
-                if let Some(es) = self.eval_state.as_ref() {
-                    let wave2_dirty =
-                        crate::dirty::compute_dirty_cone(&all_resolved_ids, &es.reverse_index);
-                    let wave2_eval =
-                        crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
+            if !all_resolved_ids.is_empty()
+                && let Some(es) = self.eval_state.as_ref()
+            {
+                let wave2_dirty =
+                    crate::dirty::compute_dirty_cone(&all_resolved_ids, &es.reverse_index);
+                let wave2_eval =
+                    crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
 
-                    for node_id in &wave2_eval {
-                        if let NodeId::Value(vcid) = node_id
-                            && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
-                            && let Some(ref expr) = node.default_expr
-                        {
-                            let val = reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
-                            );
-                            values.insert(vcid.clone(), val.clone());
-                            new_snapshot.values.insert(
-                                vcid.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                for node_id in &wave2_eval {
+                    if let NodeId::Value(vcid) = node_id
+                        && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
+                        && let Some(ref expr) = node.default_expr
+                    {
+                        let val = reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(&values, &functions)
+                                .with_meta(&self.meta_map),
+                        );
+                        values.insert(vcid.clone(), val.clone());
+                        new_snapshot.values.insert(
+                            vcid.clone(),
+                            (val.clone(), DeterminacyState::Determined),
+                        );
 
-                            // Update cache for re-evaluated node
-                            let trace = extract_dependency_trace(expr);
-                            let cached_result =
-                                CachedResult::Value(val, DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id.clone(),
-                                cached_result,
-                                VersionId(version_id),
-                                trace,
-                            );
-                        }
+                        // Update cache for re-evaluated node
+                        let trace = extract_dependency_trace(expr);
+                        let cached_result =
+                            CachedResult::Value(val, DeterminacyState::Determined);
+                        self.cache.record_evaluation(
+                            node_id.clone(),
+                            cached_result,
+                            VersionId(version_id),
+                            trace,
+                        );
                     }
                 }
             }
@@ -4650,7 +4650,7 @@ mod tests {
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_f64(1.5708)),
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
             ],
         };
 
