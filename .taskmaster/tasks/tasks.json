@@ -8971,11 +8971,11 @@
         "description": "The Transform and Pattern branches of compile_geometry_op in crates/reify-eval/src/lib.rs use eval_arg_f64 closures that return f64 with .unwrap_or(0.0) (lines 3091-3096 and 3148-3153). This silently defaults to 0.0 when an arg is missing or non-numeric, violating the project convention against silent defaults (feedback_silent_defaults_pattern). The Revolve branch (line 3240) already correctly returns Option<f64> with ? propagation. Apply the same pattern to Transform and Pattern: change eval_arg_f64 to return Option<f64>, propagate with ? at each call site, and return None from compile_geometry_op if any required arg fails.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-26T07:30:30.742Z",
+        "updatedAt": "2026-03-31T03:04:31.592Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -15882,7 +15882,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:04:31.516Z",
+      "lastModified": "2026-03-31T03:04:31.592Z",
       "taskCount": 770,
       "completedCount": 431,
       "tags": [
