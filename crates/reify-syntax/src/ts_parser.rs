@@ -3343,6 +3343,33 @@ mod tests {
             .expect("Error loading Reify grammar");
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
+        assert!(
+            !root.has_error(),
+            "source '{}' should parse without errors — grammar regression?",
+            source,
+        );
+
+        let node = find_node_by_kind(root, kind)
+            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
+
+        let mut lowering = Lowering::new(source);
+        lower_fn(&mut lowering, node);
+        lowering.errors
+    }
+
+    /// Like `lower_node_directly`, but skips the clean-parse assertion.
+    /// Use for tests that deliberately feed malformed source to exercise
+    /// error-handling code paths.
+    fn lower_node_with_errors<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
+    where
+        F: FnOnce(&mut Lowering, tree_sitter::Node),
+    {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
 
         let node = find_node_by_kind(root, kind)
             .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
@@ -3358,11 +3385,26 @@ mod tests {
         lower_node_directly(source, "connect_body", |l, n| { l.lower_connect_body(n); })
     }
 
+    /// Like `lower_body_directly`, but skips the clean-parse assertion.
+    fn lower_body_with_errors(source: &str) -> Vec<ParseError> {
+        lower_node_with_errors(source, "connect_body", |l, n| { l.lower_connect_body(n); })
+    }
+
+    #[test]
+    #[should_panic(expected = "should parse without errors")]
+    fn lower_node_directly_rejects_source_with_parse_errors() {
+        // Deliberately broken source: `{ >= }` produces parse errors.
+        // lower_node_directly should panic because root.has_error() is true.
+        lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+        );
+    }
+
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
         );
         assert!(
@@ -3382,7 +3424,7 @@ mod tests {
     fn lower_connect_body_malformed_param_emits_diagnostic() {
         // `{ grade = }` produces a connect_param_assignment with has_error().
         // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
         );
         assert!(
@@ -3402,7 +3444,7 @@ mod tests {
     fn lower_connect_body_malformed_mapping_emits_diagnostic() {
         // `{ shaft -> }` produces a port_mapping with has_error().
         // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
         );
         assert!(
@@ -3495,11 +3537,16 @@ mod tests {
         lower_node_directly(source, "port_body", |l, n| { l.lower_port_body(n); })
     }
 
+    /// Like `lower_port_body_directly`, but skips the clean-parse assertion.
+    fn lower_port_body_with_errors(source: &str) -> Vec<ParseError> {
+        lower_node_with_errors(source, "port_body", |l, n| { l.lower_port_body(n); })
+    }
+
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside port_body.
         // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_directly(
+        let errors = lower_port_body_with_errors(
             "structure S { port a : in T { >= } }",
         );
         assert!(
