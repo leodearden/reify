@@ -15067,7 +15067,7 @@
         "description": "The `constraint_summary_message` function in `crates/reify-cli/src/main.rs` accepts both `results: &[ConstraintCheckEntry]` and `no_violations: bool`, but the boolean is entirely derivable from `results`. This creates two sources of truth and opens a silent inconsistency path.\n\nRefactor:\n1. Drop the `no_violations: bool` parameter from `constraint_summary_message` — derive it inside: `let has_violations = results.iter().any(|e| e.satisfaction == Satisfaction::Violated);`\n2. Have `report_constraint_results` return a richer type (e.g. enum `ConstraintOutcome { AllSatisfied, SomeIndeterminate, SomeViolated }`) to avoid double-iteration over the results slice.\n3. Update the call site in `cmd_check` (line ~100) to pass only the results slice.\n4. Rename or eliminate the `all_satisfied` local variable to match the new API.\n5. Update unit tests (`summary_message_all_satisfied`, `summary_message_indeterminate_no_violations`, `summary_message_violated`) to use the new single-argument signature.\n\nThis also resolves the naming inconsistency between `all_satisfied` (at call sites) and `no_violations` (in the helper parameter).\n\nMemory hints: search \"task 516 CLI constraint reporting\" for related refactoring scope; search \"constraint_summary_message\" for current implementation.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15078,7 +15078,8 @@
           "modules": [
             "crates/reify-cli/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T21:10:48.373Z"
       },
       {
         "id": "725",
@@ -16646,7 +16647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:10:48.276Z",
+      "lastModified": "2026-03-31T21:10:48.373Z",
       "taskCount": 804,
       "completedCount": 460,
       "tags": [
