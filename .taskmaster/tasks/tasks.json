@@ -11846,7 +11846,7 @@
         "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, `test_committed_node_survives_cancellation` uses `std::thread::sleep(Duration::from_millis(50))` inside an async evaluator body within a `tokio::spawn` task. Under the `#[tokio::test]` current_thread runtime, this blocks the entire executor for 50ms, preventing other tasks from being polled. The test passes by accident due to current_thread serialization, not by design.\n\n**Fix:** Replace `std::thread::sleep(Duration::from_millis(50))` with `tokio::time::sleep(Duration::from_millis(50)).await` inside the async `evaluate` fn at line ~2132. This is a one-line change since `AsyncNodeEvaluator::evaluate` is already async.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "477"
         ],
@@ -11861,7 +11861,7 @@
             "crates/reify-runtime/tests"
           ]
         },
-        "updatedAt": "2026-03-30T18:08:10.451Z"
+        "updatedAt": "2026-03-31T20:14:12.663Z"
       },
       {
         "id": "576",
@@ -12655,7 +12655,7 @@
         "description": "The stamp file is written to OUT_DIR which is unique per cargo profile (test/build/clippy). Switching profiles triggers redundant regeneration even when grammar.js hasn't changed. Store the stamp alongside the generated files in tree-sitter-reify/src/ (already gitignored) or at a fixed path in target/, so all cargo invocations share one stamp.",
         "details": "File: tree-sitter-reify/build.rs:138-139. This multiplies unnecessary tree-sitter generate calls in the orchestrator's multi-command verification pipeline. Memory hint: search for \"task 563 stamp file\" for context.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12674,7 +12674,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-30T17:49:29.603Z"
+        "updatedAt": "2026-03-31T20:14:12.703Z"
       },
       {
         "id": "610",
@@ -16505,7 +16505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:12.630Z",
+      "lastModified": "2026-03-31T20:14:12.703Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
