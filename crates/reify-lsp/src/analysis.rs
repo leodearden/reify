@@ -49,6 +49,20 @@ impl std::fmt::Display for EntityKind {
     }
 }
 
+/// Summary of a top-level entity declaration (structure or occurrence) with member counts.
+pub struct EntitySummary<'a> {
+    /// The entity name.
+    pub name: &'a str,
+    /// Number of param declarations (including nested where-blocks and ports).
+    pub params: usize,
+    /// Number of let declarations (including nested where-blocks and ports).
+    pub lets: usize,
+    /// Number of constraint declarations (including nested where-blocks and ports).
+    pub constraints: usize,
+    /// Whether this is a structure or occurrence.
+    pub kind: EntityKind,
+}
+
 /// Shared analysis context that runs the parse → compile → check pipeline once
 /// and provides structured accessors for hover, goto-def, and completions.
 pub struct AnalysisContext {
