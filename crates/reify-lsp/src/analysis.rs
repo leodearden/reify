@@ -538,6 +538,22 @@ mod tests {
     // --- EntityKind / EntitySummary tests ---
 
     #[test]
+    fn entity_summary_fields() {
+        let summary = EntitySummary {
+            name: "Bracket",
+            params: 5,
+            lets: 2,
+            constraints: 3,
+            kind: EntityKind::Structure,
+        };
+        assert_eq!(summary.name, "Bracket");
+        assert_eq!(summary.params, 5);
+        assert_eq!(summary.lets, 2);
+        assert_eq!(summary.constraints, 3);
+        assert_eq!(summary.kind, EntityKind::Structure);
+    }
+
+    #[test]
     fn entity_kind_display() {
         assert_eq!(EntityKind::Structure.to_string(), "structure");
         assert_eq!(EntityKind::Occurrence.to_string(), "occurrence");
