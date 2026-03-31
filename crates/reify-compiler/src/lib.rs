@@ -953,6 +953,27 @@ fn resolve_type_with_params(name: &str, type_param_names: &HashSet<String>) -> O
     None
 }
 
+/// Resolve a type name, checking builtins, type parameters, then the alias registry.
+///
+/// This is the primary type resolution function when aliases are available.
+/// Falls through: builtins → type params → alias registry.
+fn resolve_type_with_aliases(
+    name: &str,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+) -> Option<Type> {
+    if let Some(ty) = resolve_type_with_params(name, type_param_names) {
+        return Some(ty);
+    }
+    // Check alias registry for non-parameterized aliases
+    if let Some(alias_entry) = alias_registry.lookup(name) {
+        if let Some(ref resolved) = alias_entry.resolved_type {
+            return Some(resolved.clone());
+        }
+    }
+    None
+}
+
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
 fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
     decls
@@ -2845,6 +2866,7 @@ pub fn compile_with_prelude(
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
     let mut unit_refs: Vec<&reify_syntax::UnitDecl> = Vec::new();
+    let mut alias_refs: Vec<&reify_syntax::TypeAliasDecl> = Vec::new();
     // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     // constraints, and fields all share the entity name space.
     // Maps name → (first_span, first_kind_label).
@@ -2952,6 +2974,9 @@ pub fn compile_with_prelude(
             reify_syntax::Declaration::Unit(unit_decl) => {
                 unit_refs.push(unit_decl);
             }
+            reify_syntax::Declaration::TypeAlias(alias_decl) => {
+                alias_refs.push(alias_decl);
+            }
             // Import, Purpose handled in pass 2 / purpose pass
             _ => {}
         }
@@ -3032,6 +3057,42 @@ pub fn compile_with_prelude(
                     }
                 }
             }
+        }
+    }
+
+    // Compile type alias declarations in source order.
+    // Aliases are resolved eagerly: each alias's RHS is resolved against builtins
+    // and previously-registered aliases.
+    let mut alias_registry = TypeAliasRegistry::new();
+    for alias_decl in &alias_refs {
+        let resolved = resolve_type_name(&alias_decl.type_expr.name)
+            .or_else(|| alias_registry.lookup(&alias_decl.type_expr.name).and_then(|e| e.resolved_type.clone()));
+        let type_params = convert_type_params(&alias_decl.type_params);
+        let entry = TypeAliasEntry {
+            name: alias_decl.name.clone(),
+            resolved_type: resolved,
+            type_params,
+            type_expr: Some(alias_decl.type_expr.clone()),
+            is_pub: alias_decl.is_pub,
+            span: alias_decl.span,
+            content_hash: alias_decl.content_hash,
+        };
+        if let Err(dup_entry) = alias_registry.register(entry) {
+            let original = alias_registry.lookup(&dup_entry.name).unwrap();
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "duplicate type alias declaration '{}'",
+                    dup_entry.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    dup_entry.span,
+                    "duplicate declared here",
+                ))
+                .with_label(DiagnosticLabel::new(
+                    original.span,
+                    "first declared here",
+                )),
+            );
         }
     }
 
@@ -3120,6 +3181,7 @@ pub fn compile_with_prelude(
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
+                        &alias_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -3168,6 +3230,7 @@ pub fn compile_with_prelude(
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
+                        &alias_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -3188,7 +3251,7 @@ pub fn compile_with_prelude(
                 // Already compiled in unit pre-pass above.
             }
             reify_syntax::Declaration::TypeAlias(_) => {
-                // Type alias declarations: compilation not yet implemented.
+                // Already compiled in type alias pre-pass above.
             }
         }
     }
@@ -3727,6 +3790,7 @@ fn compile_entity(
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &reify_syntax::ConstraintDef>,
     unit_registry: &UnitRegistry,
+    alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
@@ -3777,7 +3841,7 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_with_params(&type_expr.name, &type_param_names) {
+                    match resolve_type_with_aliases(&type_expr.name, &type_param_names, alias_registry) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
