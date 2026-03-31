@@ -282,6 +282,16 @@ impl LanguageServer for ReifyLanguageServer {
         };
         let workspace_root = state.workspace_root.clone();
         let stdlib_path = state.stdlib_path.clone();
+        // Snapshot all open documents so the blocking closure can check editor
+        // buffers before falling back to disk. This avoids unnecessary I/O and
+        // ensures unsaved changes are reflected in goto-def results.
+        let open_docs: HashMap<PathBuf, String> = state
+            .documents
+            .iter()
+            .filter_map(|(doc_uri, doc)| {
+                doc_uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
+            })
+            .collect();
         drop(state);
 
         // Move all CPU-bound parsing and blocking filesystem I/O
@@ -299,7 +309,12 @@ impl LanguageServer for ReifyLanguageServer {
                     reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
                     let path = resolver.resolve_import_path(import_path).ok()?;
-                    let source = std::fs::read_to_string(&path).ok()?;
+                    // Prefer editor buffer content over disk for open documents,
+                    // so unsaved changes are reflected immediately.
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
                     let target_uri = Url::from_file_path(&path).ok()?;
                     Some((target_uri, source))
                 };
