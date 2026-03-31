@@ -695,6 +695,41 @@ impl Drop for ReadonlyGuard {
 }
 
 #[test]
+fn test_unix_permission_tests_have_root_guard() {
+    // Source-level regression guard: both #[cfg(unix)] tests that rely on
+    // DAC permission enforcement must contain an is_root() skip guard.
+    // Without it, tests produce misleading failures under root/CAP_DAC_OVERRIDE.
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    let unix_test_fns = [
+        "fn test_stamp_write_failure_no_panic()",
+        "fn test_readonly_guard_restores_on_drop()",
+    ];
+
+    for fn_sig in &unix_test_fns {
+        let fn_start = source
+            .find(fn_sig)
+            .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
+        // Extract enough of the function body to check for the guard
+        let fn_section = &source[fn_start..];
+        // Find the next test function or end of file as boundary
+        let fn_end = fn_section[1..]
+            .find("\n#[test]")
+            .unwrap_or(fn_section.len() - 1);
+        let fn_body = &fn_section[..fn_end];
+
+        assert!(
+            fn_body.contains("is_root()"),
+            "{} must contain an is_root() skip guard to prevent misleading failures \
+             when running as root. Function body:\n{}",
+            fn_sig,
+            fn_body
+        );
+    }
+}
+
+#[test]
 fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
