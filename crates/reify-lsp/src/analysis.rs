@@ -248,26 +248,6 @@ impl AnalysisContext {
         result
     }
 
-    /// Return all structure/occurrence names with member counts:
-    /// `(name, param_count, let_count, constraint_count, kind)`.
-    pub fn structure_names(&self) -> Vec<(&str, usize, usize, usize, &str)> {
-        let mut result = Vec::new();
-        for decl in &self.parsed.declarations {
-            let (members, name, kind) = match decl {
-                reify_syntax::Declaration::Structure(s) => {
-                    (&s.members, s.name.as_str(), "structure")
-                }
-                reify_syntax::Declaration::Occurrence(o) => {
-                    (&o.members, o.name.as_str(), "occurrence")
-                }
-                _ => continue,
-            };
-            let (param_count, let_count, constraint_count) = count_members_recursive(members);
-            result.push((name, param_count, let_count, constraint_count, kind));
-        }
-        result
-    }
-
     /// Look up an evaluated value from the check result.
     pub fn get_value(&self, entity: &str, member: &str) -> Option<&Value> {
         let id = ValueCellId::new(entity, member);
@@ -634,44 +614,8 @@ mod tests {
         assert_eq!(e.kind, EntityKind::Structure);
     }
 
-    // --- structure_names tests ---
-
     #[test]
-    fn structure_names_returns_bracket() {
-        let source = reify_test_support::bracket_source();
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (name, params, lets, constraints, kind) = structs[0];
-        assert_eq!(name, "Bracket");
-        assert_eq!(params, 5);
-        assert_eq!(lets, 2); // volume + body
-        assert_eq!(constraints, 3);
-        assert_eq!(kind, "structure");
-    }
-
-    #[test]
-    fn structure_names_includes_occurrence() {
-        let source = "structure Bracket {\n    param width: Scalar = 80mm\n}\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
-        let ctx = AnalysisContext::new(source, &test_uri());
-        let names = ctx.structure_names();
-        assert_eq!(names.len(), 2, "should have Bracket and Joint");
-        let (name0, p0, l0, c0, kind0) = names[0];
-        assert_eq!(name0, "Bracket");
-        assert_eq!(kind0, "structure");
-        assert_eq!(p0, 1);
-        assert_eq!(l0, 0);
-        assert_eq!(c0, 0);
-        let (name1, p1, l1, c1, kind1) = names[1];
-        assert_eq!(name1, "Joint");
-        assert_eq!(kind1, "occurrence");
-        assert_eq!(p1, 1);
-        assert_eq!(l1, 1);
-        assert_eq!(c1, 1);
-    }
-
-    #[test]
-    fn structure_names_counts_nested_where_blocks() {
+    fn entity_names_counts_nested_where_blocks() {
         let source = r#"structure S {
     param a : Bool = true
     param b : Bool = true
@@ -682,18 +626,18 @@ mod tests {
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (_name, param_count, _let_count, _constraint_count, _kind) = structs[0];
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
         // Should count: a + b + deep = 3 params
         assert_eq!(
-            param_count, 3,
-            "expected 3 params (a, b, deep), got {param_count}"
+            entities[0].params, 3,
+            "expected 3 params (a, b, deep), got {}",
+            entities[0].params
         );
     }
 
     #[test]
-    fn structure_names_counts_else_branch_members() {
+    fn entity_names_counts_else_branch_members() {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
@@ -703,24 +647,26 @@ mod tests {
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (_name, param_count, let_count, _constraint_count, _kind) = structs[0];
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
         // Should count: cond + when_true = 2 params
         assert_eq!(
-            param_count, 2,
-            "expected 2 params (cond, when_true), got {param_count}"
+            e.params, 2,
+            "expected 2 params (cond, when_true), got {}",
+            e.params
         );
         // Should count: fallback = 1 let (from else branch)
         assert_eq!(
-            let_count, 1,
-            "expected 1 let (fallback in else branch), got {let_count}"
+            e.lets, 1,
+            "expected 1 let (fallback in else branch), got {}",
+            e.lets
         );
     }
 
     #[test]
-    fn structure_names_counts_guarded_group_members() {
-        // Bug: structure_names() only counts top-level members, missing those
+    fn entity_names_counts_guarded_group_members() {
+        // entity_names() counts members recursively, including those
         // inside where-blocks. This test expects the CORRECT (recursive) counts.
         let source = r#"structure S {
     param a : Bool = true
@@ -732,24 +678,28 @@ mod tests {
     constraint b > 0mm
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
-        assert_eq!(name, "S");
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert_eq!(e.name, "S");
+        assert_eq!(e.kind, EntityKind::Structure);
         // Should count: a + b + guarded_x = 3 params
         assert_eq!(
-            param_count, 3,
-            "expected 3 params (a, b, guarded_x), got {param_count}"
+            e.params, 3,
+            "expected 3 params (a, b, guarded_x), got {}",
+            e.params
         );
         // Should count: guarded_y = 1 let
         assert_eq!(
-            let_count, 1,
-            "expected 1 let (guarded_y), got {let_count}"
+            e.lets, 1,
+            "expected 1 let (guarded_y), got {}",
+            e.lets
         );
         // Should count: b > 0mm = 1 constraint
         assert_eq!(
-            constraint_count, 1,
-            "expected 1 constraint, got {constraint_count}"
+            e.constraints, 1,
+            "expected 1 constraint, got {}",
+            e.constraints
         );
     }
 
@@ -1257,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn structure_names_counts_port_with_guarded_group() {
+    fn entity_names_counts_port_with_guarded_group() {
         // Verifies that count_members_recursive correctly handles both Port
         // and GuardedGroup recursion in the same structure. The tree-sitter
         // grammar does not support where-blocks inside port bodies, so we
@@ -1270,20 +1220,23 @@ mod tests {
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
-        assert_eq!(name, "S");
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert_eq!(e.name, "S");
+        assert_eq!(e.kind, EntityKind::Structure);
         // Should count: cond + d (inside port) + guarded_p (inside where) = 3 params
         assert_eq!(
-            param_count, 3,
-            "expected 3 params (cond, d inside port, guarded_p inside where), got {param_count}"
+            e.params, 3,
+            "expected 3 params (cond, d inside port, guarded_p inside where), got {}",
+            e.params
         );
-        assert_eq!(let_count, 0, "expected 0 lets, got {let_count}");
+        assert_eq!(e.lets, 0, "expected 0 lets, got {}", e.lets);
         // Should count: d > 0mm (inside port) = 1 constraint
         assert_eq!(
-            constraint_count, 1,
-            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+            e.constraints, 1,
+            "expected 1 constraint (d > 0mm inside port), got {}",
+            e.constraints
         );
     }
 
@@ -1308,30 +1261,34 @@ mod tests {
     }
 
     #[test]
-    fn structure_names_counts_port_internal_members() {
+    fn entity_names_counts_port_internal_members() {
         let source = r#"structure S {
     param a : Scalar = 1mm
     port x : MechPort { param d : Length = 10mm  let ratio = 2  constraint d > 0mm }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
-        let structs = ctx.structure_names();
-        assert_eq!(structs.len(), 1);
-        let (name, param_count, let_count, constraint_count, _kind) = structs[0];
-        assert_eq!(name, "S");
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert_eq!(e.name, "S");
+        assert_eq!(e.kind, EntityKind::Structure);
         // Should count: a + d = 2 params (d is inside port body)
         assert_eq!(
-            param_count, 2,
-            "expected 2 params (a, d inside port), got {param_count}"
+            e.params, 2,
+            "expected 2 params (a, d inside port), got {}",
+            e.params
         );
         // Should count: ratio = 1 let (inside port body)
         assert_eq!(
-            let_count, 1,
-            "expected 1 let (ratio inside port), got {let_count}"
+            e.lets, 1,
+            "expected 1 let (ratio inside port), got {}",
+            e.lets
         );
         // Should count: d > 0mm = 1 constraint (inside port body)
         assert_eq!(
-            constraint_count, 1,
-            "expected 1 constraint (d > 0mm inside port), got {constraint_count}"
+            e.constraints, 1,
+            "expected 1 constraint (d > 0mm inside port), got {}",
+            e.constraints
         );
     }
 
