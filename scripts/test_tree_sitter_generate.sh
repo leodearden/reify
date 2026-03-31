@@ -145,6 +145,16 @@ assert "--force generates even when up to date (prints 'generated parser files')
 assert "--force does NOT print 'up to date'" \
     bash -c '! grep -q "up to date"' <<< "$output7"
 
+# ── Test 8: shared lib.sh integration ─────────────────────────────
+echo ""
+echo "--- Test 8: sources lib.sh instead of local compute_sha256 ---"
+
+assert "script sources lib.sh" \
+    grep -qE '(source|\.)\s+.*lib\.sh' "$GENERATE_SCRIPT"
+
+assert "script does NOT define compute_sha256 locally" \
+    bash -c '! grep -q "^compute_sha256()" '"$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
