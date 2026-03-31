@@ -145,6 +145,19 @@ assert "script sources lib.sh" \
 assert "script does NOT define compute_sha256 locally" \
     bash -c '! grep -q "^compute_sha256()" '"$GENERATE_SCRIPT"
 
+# ── Test 9: MAX_WAIT_SECS timeout alignment ──────────────────────
+echo ""
+echo "--- Test 9: MAX_WAIT_SECS constant and derived limits ---"
+
+assert "MAX_WAIT_SECS is defined in the script" \
+    grep -q '^MAX_WAIT_SECS=' "$GENERATE_SCRIPT"
+
+assert "flock uses \$MAX_WAIT_SECS (not hardcoded 120)" \
+    grep -q 'flock -x -w \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
+
+assert "mkdir attempt limit uses \$MAX_WAIT_SECS (not hardcoded 75)" \
+    grep -q '\-ge \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
