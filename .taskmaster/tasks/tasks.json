@@ -16677,6 +16677,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 808,
+        "title": "Tighten ServerState field visibility to pub(crate)",
+        "description": "In crates/reify-lsp/src/server.rs, change pub workspace_root and pub stdlib_path on ServerState to pub(crate), matching the visibility of last_published_diagnostics. These fields are lifecycle-managed by the LSP initialize handshake and should not be freely writable from outside the crate. Update any test code that accesses them via server.state().read().await to confirm pub(crate) is sufficient.\n\nmemory_hints: search \"ServerState visibility pub(crate)\" for prior context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16689,7 +16700,7 @@
       ],
       "created": "2026-03-31T21:13:54.453Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:13:54.457Z"
+      "updated": "2026-03-31T21:13:58.024Z"
     }
   }
 }
