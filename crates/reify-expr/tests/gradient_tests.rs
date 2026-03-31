@@ -1313,3 +1313,195 @@ fn gradient_1d_dimensioned_field() {
         ),
     }
 }
+
+/// Gradient of a 3D field with a 1-param lambda: |p| 5.0 (constant function).
+///
+/// The actual language convention uses `source = analytical { |p| ... }` where
+/// the lambda has a single Point parameter. The gradient code must detect this
+/// calling convention and wrap perturbed coordinates in a Point value before
+/// calling apply_lambda.
+///
+/// Without the fix, apply_lambda receives 3 individual args but lambda has 1 param,
+/// causing arity mismatch → Undef for all perturbations → gradient returns Undef.
+#[test]
+fn gradient_1param_constant_field() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| 5.0 (constant function, ignores the Point parameter)
+    let body = CompiledExpr::literal(Value::Real(5.0), Type::Real);
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at Point3(1.0, 2.0, 3.0)
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Gradient of a constant function should be approximately Vector3(0,0,0), NOT Undef.
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            for (i, comp) in components.iter().enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    val.abs() < 1e-4,
+                    "gradient component {} of constant field should be ~0.0, got {}",
+                    i,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, not Undef; got {:?}",
+            sample_result
+        ),
+    }
+}
+
+/// Gradient of a 3D field with a 1-param lambda: |p| magnitude(p).
+///
+/// magnitude(Point3(3,4,0)) = 5.0. The gradient of |p| at (3,4,0) is:
+///   d|p|/dx_i = x_i / |p|
+/// So gradient = (3/5, 4/5, 0/5) = (0.6, 0.8, 0.0).
+///
+/// This tests that the 1-param calling convention fix correctly wraps perturbed
+/// coordinates in a Value::Point so that magnitude (via tensor_components_f64)
+/// can extract components.
+#[test]
+fn gradient_1param_magnitude_field() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| magnitude(p)
+    let body = make_function_call(
+        "magnitude",
+        vec![CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real))],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at Point3(3.0, 4.0, 0.0)
+    let point = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3(0.6, 0.8, 0.0) = (x/|p|, y/|p|, z/|p|) where |p|=5
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            let expected = [0.6, 0.8, 0.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-4,
+                    "gradient component {} should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, not Undef; got {:?}",
+            sample_result
+        ),
+    }
+}
