@@ -352,3 +352,69 @@ fn loft_through_full_eval_pipeline() {
         other => panic!("expected GeometryOp::Loft at op index 2, got {:?}", other),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests: abort realization on first geometry failure
+// ---------------------------------------------------------------------------
+
+/// When a realization contains multiple ops that all fail to compile, only the
+/// first failure should be reported. The loop should abort after the first
+/// compile_geometry_op returns None, preventing cascading diagnostics from
+/// downstream ops that reference the missing step handle.
+#[test]
+fn cascading_compile_failures_aborted_after_first() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Three Boolean(Union) ops, all referencing non-existent Step indices.
+    // compile_geometry_op returns None for each because step_handles is empty.
+    let union_op_0 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    let union_op_1 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    let union_op_2 = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_cascade"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected exactly 1 compile-failure diagnostic (abort after first), got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
