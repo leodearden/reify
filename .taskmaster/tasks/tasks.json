@@ -16037,6 +16037,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 782,
+        "title": "Fix stamp_write format drift and add line-pinning comments to duplicated build.rs functions",
+        "description": "Align test stamp_write eprintln format with build.rs line 170 exactly (currently diverged: build.rs uses \"warning: failed to write stamp file: {}\" while test uses \"cargo:warning=Failed to write stamp file {}: {}\"). Add comments to content_hash, needs_generate, and stamp_write in build_logic_tests.rs pinning the build.rs line numbers they mirror.",
+        "details": "Source: escalation esc-740-139 (task 740 review). File: tree-sitter-reify/tests/build_logic_tests.rs. Three independent reviewers confirmed the drift is real.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16049,7 +16060,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:21.081Z"
+      "updated": "2026-03-31T15:14:23.824Z"
     }
   }
 }
