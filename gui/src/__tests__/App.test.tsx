@@ -1309,6 +1309,7 @@ describe('App handleSetParameter error handling', () => {
         expect(toast).toBeTruthy();
         expect(toast.dataset.type).toBe('error');
         expect(toast.textContent).toContain('Parameter update failed');
+        expect(toast.textContent).toContain('backend unavailable');
       });
 
       // console.error should NOT be called (replaced with toast)
@@ -1354,6 +1355,7 @@ describe('App re-evaluate error toast', () => {
         expect(toastEl).toBeTruthy();
         expect(toastEl.dataset.type).toBe('error');
         expect(toastEl.textContent).toContain('Re-evaluation failed');
+        expect(toastEl.textContent).toContain('eval error');
       });
 
       // console.error should NOT be called
@@ -2156,5 +2158,108 @@ describe('App onSend context forwarding', () => {
     expect(contextArg).toBeDefined();
     expect(contextArg!.currentFile).toBe('bracket.ri');
     expect(contextArg!.attachedContexts).toContain('file');
+  });
+});
+
+describe('App claudeSendMessage error-path integration', () => {
+  it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Type a message in the chat input
+      const chatInput = screen.getByTestId('chat-input');
+      fireEvent.input(chatInput, { target: { value: 'help me' } });
+
+      // Click send button to trigger onSend -> claudeSendMessage
+      const sendBtn = screen.getByTestId('send-button');
+      fireEvent.click(sendBtn);
+
+      // Wait for the system-message element to appear (not a toast — this path uses addSystemMessage)
+      await waitFor(() => {
+        const sysMsg = screen.getByTestId('system-message');
+        expect(sysMsg).toBeTruthy();
+        expect(sysMsg.getAttribute('data-error-type')).toBe('ipc_error');
+        expect(sysMsg.textContent).toContain('Failed to send message');
+        expect(sysMsg.textContent).toContain('IPC channel broken');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
+  });
+});
+
+describe('App error-path integration: errorMessage propagation', () => {
+  async function triggerExportDialog() {
+    // Wait for app to reach ready state
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    // Open export dialog via toolbar Export button
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => expect(screen.getByTestId('export-dialog')).toBeTruthy());
+    // Click the Export button inside the dialog
+    const dialog = screen.getByTestId('export-dialog');
+    const btns = dialog.querySelectorAll('button');
+    for (const b of btns) {
+      if (b.textContent === 'Export') {
+        fireEvent.click(b);
+        break;
+      }
+    }
+  }
+
+  it('export failure toast contains the original error message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.exportGeometry).mockRejectedValueOnce(new Error('geometry kernel crashed'));
+      render(() => <App />);
+      await triggerExportDialog();
+
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.dataset.type === 'error');
+        expect(errorToast).toBeTruthy();
+        expect(errorToast!.textContent).toContain('Export failed');
+        expect(errorToast!.textContent).toContain('geometry kernel crashed');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
+  });
+
+  it('pickSavePath failure toast contains the original error message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.pickSavePath).mockRejectedValueOnce(new Error('dialog permission denied'));
+      render(() => <App />);
+      await triggerExportDialog();
+
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.dataset.type === 'error');
+        expect(errorToast).toBeTruthy();
+        expect(errorToast!.textContent).toContain('Could not open save dialog');
+        expect(errorToast!.textContent).toContain('dialog permission denied');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
   });
 });

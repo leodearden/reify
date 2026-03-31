@@ -328,6 +328,7 @@ describe('Editor save error callback', () => {
     // Wait for the rejected promise to settle
     await vi.waitFor(() => {
       expect(onError).toHaveBeenCalledWith(expect.stringContaining('Failed to save file'));
+        expect(onError).toHaveBeenCalledWith(expect.stringContaining('disk full'));
     });
   });
 });
