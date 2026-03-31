@@ -15464,7 +15464,7 @@
         "description": "In tree-sitter-reify/build.rs: Replace std::hash::DefaultHasher (output not stable across Rust versions) with a stable hash like FNV-1a or CRC32. This prevents a redundant tree-sitter generate on every toolchain upgrade. Low priority since the consequence is one extra build.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15475,7 +15475,8 @@
           "modules": [
             "tree-sitter-reify"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T21:12:03.794Z"
       },
       {
         "id": "744",
@@ -16647,7 +16648,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:12:03.706Z",
+      "lastModified": "2026-03-31T21:12:03.794Z",
       "taskCount": 804,
       "completedCount": 461,
       "tags": [
