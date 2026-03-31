@@ -14026,7 +14026,7 @@
         "description": "The `multi_param_warm_start_with_objective` test (solver_integration.rs ~line 1195) only checks `sum_si <= 0.090 + 1e-9` (non-regression), which would pass even if the optimizer returned initial values unchanged. Add a lower bound assertion like `sum_si < 0.089` to verify the optimizer makes at least some progress. Also fix the misleading epsilon comment: the 1e-9 tolerance is ~10^8× larger than actual IEEE 754 ULP error for 0.090 (~1.4e-17). Update the comment to say \"solver jitter tolerance\" rather than \"a few ULPs\".\n\nMemory hints: search for \"warm-start optimization\", \"solver test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "660"
         ],
@@ -14040,7 +14040,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:44:13.030Z"
+        "updatedAt": "2026-03-31T20:45:34.084Z"
       },
       {
         "id": "675",
@@ -16544,9 +16544,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:44:34.390Z",
+      "lastModified": "2026-03-31T20:45:34.085Z",
       "taskCount": 796,
-      "completedCount": 452,
+      "completedCount": 453,
       "tags": [
         "master"
       ]
