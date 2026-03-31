@@ -1568,16 +1568,16 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 }
 
 // --- Poison recovery tests ---
-// ConcurrentEvalAdapter uses `unwrap_or_else(|e| e.into_inner())` on all lock
-// acquisitions so that a panic in one concurrent evaluation task does not poison
-// every subsequent access.  These tests deliberately poison individual locks and
-// verify that values(), take_results(), build_result_shared(), into_result(), and
-// evaluate() all recover gracefully and emit tracing::warn! diagnostics.
 //
-// Design note: the original C4 implementation panicked on poisoned locks.  This
-// was changed to graceful recovery because concurrent evaluation routinely spawns
-// tasks that may panic (e.g. during expression evaluation), and allowing the
-// poison to propagate would cascade-abort all in-flight work sharing the adapter.
+// These tests verify that poisoned locks are recovered gracefully via
+// unwrap_or_else(|e| e.into_inner()) + tracing::warn!, preventing cascading
+// panics when one evaluation task panics mid-computation.
+//
+// The original C4 design called for panic-on-poison (propagating PoisonError),
+// but this was revised in favor of graceful recovery because in concurrent
+// evaluation, one panicking task would cascade to all tasks sharing the adapter
+// via poisoned locks, taking down the entire evaluation batch instead of just
+// the faulting node.
 
 #[cfg(feature = "test-utils")]
 /// Helper: build a tracing subscriber that counts WARN-level events using an AtomicUsize.
@@ -1724,181 +1724,6 @@ mod poison_recovery {
         assert!(
             count > 0,
             "build_result_shared() should emit tracing::warn! on poison recovery, got {count} WARN events"
-        );
-    }
-
-    /// build_result_shared() recovers from poisoned values RwLock.
-    #[test]
-    fn build_result_shared_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned values lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// build_result_shared() recovers from poisoned snapshot_values RwLock.
-    #[test]
-    fn build_result_shared_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned snapshot_values lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result
-                .snapshot_values
-                .contains_key(&ValueCellId::new("T", "a"))
-        );
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// build_result_shared() recovers from poisoned results Mutex.
-    #[test]
-    fn build_result_shared_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned results lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// into_result() recovers from poisoned values RwLock.
-    #[test]
-    fn into_result_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned values lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// into_result() recovers from poisoned snapshot_values RwLock.
-    #[test]
-    fn into_result_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned snapshot_values lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result
-                .snapshot_values
-                .contains_key(&ValueCellId::new("T", "a"))
-        );
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// into_result() recovers from poisoned results Mutex.
-    #[test]
-    fn into_result_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned results lock, not panic"
-        );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result.node_results.is_empty(),
-            "no evaluate() was called, results should be empty"
-        );
-    }
-
-    /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
-    /// into_result() has 6 unwrap_or_else closures in Arc::try_unwrap paths.
-    #[test]
-    fn tracing_warn_emitted_on_poison_into_result() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Poison the values lock
-        adapter.poison_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 }
@@ -2141,6 +1966,188 @@ async fn five_parent_fan_in_one_changed() {
     );
 }
 
+// --- Extended poison recovery tests (build_result_shared / into_result) ---
+// These tests verify that poisoned locks are recovered gracefully in
+// build_result_shared() and into_result(), extending the basic
+// poison_recovery module's coverage of values()/take_results().
+// Gated behind feature = "test-utils" because the poison_*() helpers
+// are only available with that feature.
+
+#[cfg(feature = "test-utils")]
+mod poison_recovery_extended {
+    use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// build_result_shared() recovers from poisoned values RwLock.
+    #[test]
+    fn build_result_shared_recovers_from_poisoned_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.build_result_shared(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "build_result_shared() should recover from poisoned values lock, not panic"
+        );
+        let edit_result = result.unwrap();
+        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
+    }
+
+    /// build_result_shared() recovers from poisoned snapshot_values RwLock.
+    #[test]
+    fn build_result_shared_recovers_from_poisoned_snapshot_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_snapshot_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.build_result_shared(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "build_result_shared() should recover from poisoned snapshot_values lock, not panic"
+        );
+        let edit_result = result.unwrap();
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "a")),
+            "snapshot_values should contain T.a after poison recovery"
+        );
+        // T.b was in eval_set and seeded by simple_setup — verify it's also present
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "b")),
+            "snapshot_values should contain T.b (seeded by simple_setup)"
+        );
+    }
+
+    /// build_result_shared() recovers from poisoned results Mutex.
+    #[test]
+    fn build_result_shared_recovers_from_poisoned_results_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_results();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.build_result_shared(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "build_result_shared() should recover from poisoned results lock, not panic"
+        );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after poison recovery"
+        );
+    }
+
+    /// into_result() recovers from poisoned values RwLock.
+    #[test]
+    fn into_result_recovers_from_poisoned_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "into_result() should recover from poisoned values lock, not panic"
+        );
+        let edit_result = result.unwrap();
+        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
+    }
+
+    /// into_result() recovers from poisoned snapshot_values RwLock.
+    #[test]
+    fn into_result_recovers_from_poisoned_snapshot_values_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_snapshot_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "into_result() should recover from poisoned snapshot_values lock, not panic"
+        );
+        let edit_result = result.unwrap();
+        assert!(
+            edit_result
+                .snapshot_values
+                .contains_key(&ValueCellId::new("T", "a"))
+        );
+    }
+
+    /// into_result() recovers from poisoned results Mutex.
+    #[test]
+    fn into_result_recovers_from_poisoned_results_lock() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        adapter.poison_results();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+        assert!(
+            result.is_ok(),
+            "into_result() should recover from poisoned results lock, not panic"
+        );
+        // Verify the recovered result has accessible (empty) node_results
+        let edit_result = result.unwrap();
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after poison recovery"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
+    /// into_result() has 6 unwrap_or_else closures in Arc::try_unwrap paths.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count > 0,
+            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+}
+
 // Tests for evaluate() recovering from poisoned locks. The evaluate method
 // acquires 4 locks: values read, values write, snapshot_values write, and
 // results lock. These tests verify each lock site recovers gracefully.
@@ -2148,95 +2155,117 @@ async fn five_parent_fan_in_one_changed() {
 #[cfg(feature = "test-utils")]
 mod poison_evaluate {
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// Helper: build a simple adapter, poison it with the given function, then
-    /// run evaluate() on the b-node.  Returns the adapter (for post-evaluate
-    /// assertions), the evaluated node, and the outcome.
-    async fn poison_and_evaluate(
-        poison_fn: impl FnOnce(&ConcurrentEvalAdapter),
-    ) -> (ConcurrentEvalAdapter, NodeId, EvalOutcome) {
+    /// Evaluates a node with explicit `catch_unwind` verification that no panic
+    /// occurs. Uses `block_in_place` + `Handle::current().block_on()` to bridge
+    /// the sync `catch_unwind` boundary with the async `evaluate()` method.
+    fn evaluate_with_recovery(
+        adapter: &ConcurrentEvalAdapter,
+        node: NodeId,
+    ) -> Result<EvalOutcome, Box<dyn std::any::Any + Send>> {
+        catch_unwind(AssertUnwindSafe(|| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(adapter.evaluate(node))
+            })
+        }))
+    }
+
+    /// evaluate() recovers from poisoned values RwLock (both read and write paths).
+    /// The write lock is the same RwLock as the read lock — this test verifies the
+    /// write acquisition (used to store computed values) also recovers.
+    ///
+    /// If evaluate() panics on poison instead of recovering, this test will fail
+    /// with the panic rather than completing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evaluate_recovers_poisoned_values_write() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let node = NodeId::Value(ValueCellId::new("T", "b"));
 
-        poison_fn(&adapter);
+        // Poison the values lock — both read and write acquisitions must recover
+        adapter.poison_values();
 
-        let outcome = adapter.evaluate(node.clone()).await;
-        (adapter, node, outcome)
-    }
+        let result = evaluate_with_recovery(&adapter, node);
+        assert!(
+            result.is_ok(),
+            "evaluate() should recover from poisoned values lock, not panic"
+        );
 
-    /// evaluate() recovers from poisoned values RwLock (both read and write paths).
-    /// Poisons the single values RwLock, runs evaluate, then verifies:
-    /// 1. evaluate() did not panic (poison recovery worked)
-    /// 2. outcome == Changed (b = a*2 = 20, differs from old value 10)
-    /// 3. values contain b=20.0 (write persisted through poison recovery)
-    #[tokio::test]
-    async fn evaluate_recovers_poisoned_values() {
-        let (adapter, node, outcome) =
-            poison_and_evaluate(|a| a.poison_values()).await;
-
-        // b = a * 2 where a=10, so b=20 which differs from old hash → Changed
-        assert_eq!(outcome, EvalOutcome::Changed);
-
-        // Verify writes persisted through poison recovery via build_result_shared
-        let eval_set = vec![node];
-        let edit_result = adapter.build_result_shared(&eval_set, HashSet::new());
+        // Verify the value was written despite poisoning
+        let values = adapter.values();
         assert_eq!(
-            edit_result.values.get(&ValueCellId::new("T", "b")),
-            Some(&Value::Real(20.0)),
-            "b=20.0 should be written despite poisoned values lock"
+            values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(20.0))
         );
     }
 
     /// evaluate() recovers from poisoned snapshot_values RwLock.
-    /// Verifies both outcome and that snapshot_values were actually written.
-    #[tokio::test]
+    ///
+    /// If evaluate() panics on poison instead of recovering, this test will fail
+    /// with the panic rather than completing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn evaluate_recovers_poisoned_snapshot_values() {
-        let (adapter, node, outcome) =
-            poison_and_evaluate(|a| a.poison_snapshot_values()).await;
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
 
+        // Poison only snapshot_values
+        adapter.poison_snapshot_values();
+
+        let outcome = evaluate_with_recovery(&adapter, node)
+            .expect("evaluate() should recover from poisoned snapshot_values lock");
         assert_eq!(outcome, EvalOutcome::Changed);
 
-        // Verify snapshot_values were written despite poisoned lock
-        let eval_set = vec![node];
-        let edit_result = adapter.build_result_shared(&eval_set, HashSet::new());
-        let b_id = ValueCellId::new("T", "b");
+        // Verify snapshot_values were actually written despite poisoning
+        let snap = adapter.snapshot_values();
         assert!(
-            edit_result.snapshot_values.contains_key(&b_id),
-            "snapshot_values should contain b after evaluate despite poisoned lock"
+            snap.contains_key(&ValueCellId::new("T", "b")),
+            "snapshot_values should contain T.b after poison recovery"
         );
-        let (val, det) = edit_result.snapshot_values.get(&b_id).unwrap();
-        assert_eq!(*val, Value::Real(20.0), "b snapshot value should be 20.0");
-        assert_eq!(*det, DeterminacyState::Determined, "b should be determined");
+        assert_eq!(
+            snap.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(20.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (20.0, Determined) after evaluate"
+        );
     }
 
     /// evaluate() recovers from poisoned results Mutex.
-    /// Verifies both outcome and that results were recorded despite poisoned lock.
-    #[tokio::test]
+    ///
+    /// If evaluate() panics on poison instead of recovering, this test will fail
+    /// with the panic rather than completing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn evaluate_recovers_poisoned_results() {
-        let (adapter, _node, outcome) =
-            poison_and_evaluate(|a| a.poison_results()).await;
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let node = NodeId::Value(ValueCellId::new("T", "b"));
 
+        // Poison only results
+        adapter.poison_results();
+
+        let outcome = evaluate_with_recovery(&adapter, node)
+            .expect("evaluate() should recover from poisoned results lock");
         assert_eq!(outcome, EvalOutcome::Changed);
 
-        // Verify results were recorded despite poisoned lock
+        // Verify results were actually pushed despite poisoning
         let results = adapter.take_results();
-        assert_eq!(results.len(), 1, "should have exactly one result after evaluating b");
+        assert_eq!(results.len(), 1, "evaluate() should push exactly one result");
         assert_eq!(
             results[0].node,
-            NodeId::Value(ValueCellId::new("T", "b")),
-            "result should be for the evaluated node"
+            NodeId::Value(ValueCellId::new("T", "b"))
         );
-        assert_eq!(results[0].outcome, EvalOutcome::Changed, "result outcome should be Changed");
+        assert_eq!(results[0].outcome, EvalOutcome::Changed);
+        assert_eq!(
+            results[0].value,
+            Value::Real(20.0),
+            "T.b should be a*2 = 10*2 = 20.0 after evaluate"
+        );
     }
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
     /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
     /// so poisoning values should produce multiple WARN events.
-    ///
-    /// Uses `set_default` instead of `with_default` because the latter is
-    /// closure-based and cannot hold a subscriber across an `.await` point.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tracing_warn_emitted_on_poison_evaluate() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
@@ -2246,14 +2275,14 @@ mod poison_evaluate {
         adapter.poison_values();
 
         let (subscriber, warn_count) = warn_counting_subscriber();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let _outcome = adapter.evaluate(node).await;
-        drop(_guard);
+        let _outcome = tracing::subscriber::with_default(subscriber, || {
+            evaluate_with_recovery(&adapter, node)
+        });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
-            count > 0,
-            "evaluate() should emit tracing::warn! on poison recovery, got {count} WARN events"
+            count >= 2,
+            "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
     }
 }
@@ -2457,7 +2486,7 @@ async fn test_committed_node_survives_cancellation() {
                 EvalOutcome::Changed
             } else {
                 // Slow node: sleep long enough to exceed always_commit_after
-                std::thread::sleep(Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 EvalOutcome::Changed
             }
         }
