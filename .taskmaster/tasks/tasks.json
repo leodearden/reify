@@ -15088,7 +15088,7 @@
         "description": "Three missing test scenarios for constraint summary reporting in `crates/reify-cli/src/main.rs` and `crates/reify-cli/tests/cli_check.rs`:\n\n1. **Empty results (unit test)**: Add `summary_message_empty_results` that passes an empty slice and asserts \"All constraints satisfied.\" — documents the vacuous-truth decision explicitly.\n\n2. **All-Indeterminate (unit test)**: Add `summary_message_all_indeterminate` with entries containing only `Satisfaction::Indeterminate` and assert \"No constraint violations (some indeterminate).\" — makes the pure-indeterminate branch explicit (current tests only cover mixed Satisfied+Indeterminate).\n\n3. **Negative assertions in `check_valid_bracket_exits_success` (integration test)**: Add `assert!(!stdout.contains(\"No constraint violations\"))` and `assert!(!stdout.contains(\"Some constraints violated\"))` to the happy-path integration test, mirroring the pattern already used in `check_indeterminate_constraint_exits_success`.\n\nMemory hints: search \"constraint_summary_message tests\" for existing test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15102,7 +15102,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-31T21:21:32.404Z"
+        "updatedAt": "2026-03-31T21:24:09.541Z"
       },
       {
         "id": "726",
@@ -16796,9 +16796,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:22:32.371Z",
+      "lastModified": "2026-03-31T21:24:09.541Z",
       "taskCount": 815,
-      "completedCount": 468,
+      "completedCount": 469,
       "tags": [
         "master"
       ]
