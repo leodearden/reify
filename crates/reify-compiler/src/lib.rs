@@ -1076,6 +1076,192 @@ fn resolve_type_alias_expr_to_dimension(
     }
 }
 
+/// Resolve a full TypeExpr at a use site, handling parameterized aliases.
+///
+/// Falls through: builtins → type params → non-parameterized aliases → parameterized aliases.
+/// Returns None if the type cannot be resolved (caller handles "unresolved" error).
+fn resolve_type_expr_with_aliases(
+    type_expr: &reify_syntax::TypeExpr,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    // Simple name resolution (builtins, type params, non-parameterized aliases)
+    if let Some(ty) = resolve_type_with_aliases(&type_expr.name, type_param_names, alias_registry) {
+        return Some(ty);
+    }
+
+    // Check parameterized alias instantiation
+    if let Some(alias_entry) = alias_registry.lookup(&type_expr.name) {
+        if !alias_entry.type_params.is_empty() {
+            return resolve_parameterized_alias(
+                alias_entry,
+                &type_expr.type_args,
+                type_param_names,
+                alias_registry,
+                diagnostics,
+            );
+        }
+    }
+
+    None
+}
+
+/// Instantiate a parameterized alias by substituting type arguments.
+///
+/// Builds a substitution map from param names to concrete types, then
+/// resolves the alias body with those substitutions applied.
+fn resolve_parameterized_alias(
+    alias_entry: &TypeAliasEntry,
+    type_args: &[reify_syntax::TypeExpr],
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    let expected = alias_entry.type_params.len();
+    let got = type_args.len();
+    if got != expected {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' expects {} type argument(s), got {}",
+                alias_entry.name, expected, got
+            ))
+            .with_label(DiagnosticLabel::new(alias_entry.span, "defined here")),
+        );
+        return None;
+    }
+
+    // Resolve each type argument to a concrete Type
+    let mut subst: HashMap<String, Type> = HashMap::new();
+    for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args) {
+        let resolved = resolve_type_with_aliases(&arg_expr.name, type_param_names, alias_registry);
+        if let Some(ty) = resolved {
+            subst.insert(param.name.clone(), ty);
+        } else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved type argument '{}' for alias '{}'",
+                    arg_expr.name, alias_entry.name
+                ))
+                .with_label(DiagnosticLabel::new(arg_expr.span, "unknown type")),
+            );
+            return None;
+        }
+    }
+
+    // Apply substitution to alias body
+    let body = alias_entry.type_expr.as_ref()?;
+    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics)
+}
+
+/// Resolve a type alias body TypeExpr with parameter substitutions applied.
+///
+/// Like `resolve_type_alias_expr`, but checks the substitution map first so
+/// type parameters in the alias body get replaced with concrete types.
+fn resolve_type_alias_expr_with_subst(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let result_dim = if type_expr.name == "*" {
+                left_dim.mul(&right_dim)
+            } else {
+                left_dim.div(&right_dim)
+            };
+            Some(Type::Scalar {
+                dimension: result_dim,
+            })
+        }
+        name => {
+            // Check substitution map first (type parameters)
+            if let Some(ty) = subst.get(name) {
+                return Some(ty.clone());
+            }
+            // Then builtins + alias registry
+            let empty = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry)
+        }
+    }
+}
+
+/// Helper: resolve a TypeExpr to a DimensionVector with parameter substitutions.
+fn resolve_type_alias_expr_to_dim_with_subst(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DimensionVector> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(if type_expr.name == "*" {
+                left.mul(&right)
+            } else {
+                left.div(&right)
+            })
+        }
+        name => {
+            // Check substitution map (type param → concrete Type → extract dimension)
+            if let Some(ty) = subst.get(name) {
+                if let Type::Scalar { dimension } = ty {
+                    return Some(*dimension);
+                }
+            }
+            // Try resolve_dimension_type for known dimension names
+            let mut tmp_diags = Vec::new();
+            if let Some(dim) = resolve_dimension_type(type_expr, &mut tmp_diags) {
+                return Some(dim);
+            }
+            // Check alias registry
+            if let Some(entry) = alias_registry.lookup(name) {
+                if let Some(Type::Scalar { dimension }) = &entry.resolved_type {
+                    return Some(*dimension);
+                }
+            }
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot resolve '{}' to a dimension type in alias expression",
+                    name
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "not a dimension type")),
+            );
+            None
+        }
+    }
+}
+
 /// Collect all leaf type names referenced in a TypeExpr tree.
 /// For binary ops (`*`, `/`), recurses into operands. Otherwise returns the name.
 fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
@@ -4024,7 +4210,7 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_with_aliases(&type_expr.name, &type_param_names, alias_registry) {
+                    match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
