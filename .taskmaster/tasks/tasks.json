@@ -14312,7 +14312,7 @@
         "description": "McpConfig in claude_bridge.rs names its event callback field `event_sink`, while the same concept is consistently called `event_emitter` throughout mcp_context.rs (field name, type alias EventEmitter, builder method with_event_emitter). Additionally, all McpConfig fields are `pub` but only need `pub(crate)` since the struct is only constructed/consumed within the crate.\n\n## Changes\n1. Rename `McpConfig.event_sink` → `McpConfig.event_emitter` in claude_bridge.rs (lines ~142, 201, 209, 220, 261, 505, 540)\n2. Change all McpConfig field visibility from `pub` to `pub(crate)`\n3. Update all references and tests\n\n## Files to modify\n- gui/src-tauri/src/claude_bridge.rs\n- gui/src-tauri/src/tests/claude_bridge_tests.rs\n- gui/src-tauri/src/tests/mcp_context_tests.rs (McpConfig test)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14327,7 +14327,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-03-31T03:14:59.530Z"
+        "updatedAt": "2026-03-31T03:23:36.464Z"
       },
       {
         "id": "690",
@@ -15996,9 +15996,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:22:36.084Z",
+      "lastModified": "2026-03-31T03:23:36.464Z",
       "taskCount": 777,
-      "completedCount": 435,
+      "completedCount": 436,
       "tags": [
         "master"
       ]
