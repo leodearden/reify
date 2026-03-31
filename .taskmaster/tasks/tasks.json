@@ -16758,6 +16758,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 813,
+        "title": "Add reject to deferred<T>() helper and migrate failure-path tests",
+        "description": "Extend `gui/src/__tests__/test-utils.ts` `deferred<T>()` to return `{ promise, resolve, reject }` by capturing the rejection callback: `let reject!: (reason?: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; })`. Then migrate `App.test.tsx` lines ~1213-1222 which use a `rejectGear` pattern that cannot currently use the helper.\n\nMemory hints:\n- Search: \"deferred helper reject promise test-utils\"\n- Entities: test-utils.ts, App.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16770,7 +16781,7 @@
       ],
       "created": "2026-03-31T21:22:06.674Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:22:06.682Z"
+      "updated": "2026-03-31T21:22:10.613Z"
     }
   }
 }
