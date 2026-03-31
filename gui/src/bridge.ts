@@ -179,7 +179,9 @@ export function mapContextToWire(ctx: MessageContext): WireMessageContext {
 export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
   return invoke('claude_send_message', {
     text,
-    context: context ? mapContextToWire(context) : undefined,
+    context: context && Object.values(context).some(v => v !== undefined)
+      ? mapContextToWire(context)
+      : undefined,
   });
 }
 

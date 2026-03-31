@@ -125,6 +125,51 @@ describe('claude invoke wrappers', () => {
     });
   });
 
+  it('claudeSendMessage normalizes empty context {} to undefined', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeSendMessage('hello', {});
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'hello',
+      context: undefined,
+    });
+  });
+
+  it('claudeSendMessage normalizes all-undefined-fields context to undefined', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeSendMessage('hello', {
+      selectedEntity: undefined,
+      diagnostics: undefined,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'hello',
+      context: undefined,
+    });
+  });
+
+  it('claudeSendMessage preserves context when at least one field is defined', async () => {
+    mockInvoke.mockResolvedValue(undefined);
+
+    await claudeSendMessage('fix this', {
+      selectedEntity: undefined,
+      diagnostics: ['error: type mismatch'],
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+      text: 'fix this',
+      context: {
+        selected_entity: undefined,
+        diagnostics: ['error: type mismatch'],
+        constraints: undefined,
+        current_file: undefined,
+        attached_contexts: undefined,
+      },
+    });
+  });
+
   it('claudeAbort calls invoke with correct command', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
