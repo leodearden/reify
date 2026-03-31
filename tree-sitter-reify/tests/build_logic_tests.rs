@@ -689,6 +689,40 @@ impl Drop for ReadonlyGuard {
 }
 
 #[test]
+fn test_readonly_guard_drop_logs_error() {
+    // Source-level regression guard: ReadonlyGuard::drop must log errors from
+    // set_permissions via eprintln! rather than silently discarding with `let _ =`.
+    // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    // Extract the Drop impl for ReadonlyGuard
+    let drop_start = source
+        .find("impl Drop for ReadonlyGuard")
+        .expect("source should contain Drop impl for ReadonlyGuard");
+    let drop_section = &source[drop_start..];
+    // Find the closing brace of the impl block (next unindented '}')
+    let drop_end = drop_section
+        .find("\n}\n")
+        .expect("Drop impl should have a closing brace");
+    let drop_impl = &drop_section[..drop_end];
+
+    assert!(
+        !drop_impl.contains("let _ = std::fs::set_permissions"),
+        "ReadonlyGuard::drop must NOT silently discard set_permissions errors with `let _ =`. \
+         Use `if let Err(e) = ... {{ eprintln!(...) }}` instead. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+    assert!(
+        drop_impl.contains("eprintln!"),
+        "ReadonlyGuard::drop must log set_permissions errors via eprintln!. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+}
+
+#[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
              // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
