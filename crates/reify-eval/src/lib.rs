@@ -2963,11 +2963,13 @@ impl Engine {
                             Err(e) => {
                                 diagnostics
                                     .push(Diagnostic::error(format!("geometry error: {}", e)));
+                                break;
                             }
                         },
                         None => {
                             diagnostics
                                 .push(Diagnostic::error("failed to compile geometry operation"));
+                            break;
                         }
                     }
                 }
