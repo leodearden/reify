@@ -565,6 +565,175 @@ fn gradient_wrong_arg_count_returns_undef() {
     );
 }
 
+/// Undef propagation during gradient perturbation.
+///
+/// Build a 2D field f(x, y) = x*x when y >= 0, Undef when y < 0.
+/// Gradient at (1.0, 0.0): perturbation along y produces y-h < 0,
+/// which triggers Undef from the lambda. Gradient must propagate
+/// this Undef rather than returning a partial result.
+#[test]
+fn gradient_undef_propagation_during_perturbation() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+
+    // Lambda: |x, y| if y < 0 then Undef else x*x
+    let body = make_conditional(
+        // condition: y < 0
+        CompiledExpr::binop(
+            BinOp::Lt,
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            Type::Bool,
+        ),
+        // then: Undef (y is negative → outside domain)
+        CompiledExpr::literal(Value::Undef, Type::Real),
+        // else: x*x (normal evaluation)
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
+
+    let domain_type = Type::Point { n: 2, quantity: Box::new(Type::Real) };
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample gradient at (1.0, 0.0) — y=0 means perturbation y-h < 0 → lambda returns Undef
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(0.0)]);
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::Point { n: 2, quantity: Box::new(Type::Real) }),
+        codomain: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::Point { n: 2, quantity: Box::new(Type::Real) }),
+        ],
+        Type::Vector { n: 2, quantity: Box::new(Type::Real) },
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient at boundary where perturbation hits Undef must return Undef, got {:?}",
+        sample_result
+    );
+}
+
+/// Gradient of a 1D field with dimensionless Real domain (not Point type).
+///
+/// f: Field<Real, Real> with lambda |x| x*x*x.
+/// Gradient at x=2.0 should be ≈ 12.0 (3*x^2 at x=2).
+/// This tests that gradient handles non-Point scalar domains (1D case).
+#[test]
+fn gradient_1d_real_domain_cubic() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x * x * x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 1D cubic field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at x=2.0
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // The derivative of x^3 is 3*x^2. At x=2: 3*4 = 12.0
+    let result_f64 = sample_result
+        .as_f64()
+        .expect("gradient sample should return a numeric value");
+    assert!(
+        (result_f64 - 12.0).abs() < 1e-4,
+        "gradient of x^3 at x=2.0 should be ~12.0, got {}",
+        result_f64
+    );
+}
+
 /// Gradient of a dimensioned 3D field with domain Point3<Scalar[m]> and codomain Scalar[kg].
 ///
 /// f(x,y,z) = 2*x + 3*y + 4*z (all in kg, with x,y,z in metres).
@@ -743,6 +912,130 @@ fn gradient_dimensioned_field() {
                         i, comp
                     ),
                 }
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, got {:?}",
+            sample_result
+        ),
+    }
+}
+
+/// Gradient at the origin (all coordinates = 0).
+///
+/// f(x,y,z) = x^2 + y^2 + z^2
+/// Gradient: (2x, 2y, 2z). At (0,0,0): (0, 0, 0).
+/// Tests the step-size formula h = 1e-6 * max(|coord|, 1e-3) where
+/// |coord|=0 triggers the 1e-3 floor.
+#[test]
+fn gradient_at_origin() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x*x
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            // y*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // z*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample gradient at origin (0, 0, 0)
+    let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::point3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3(0.0, 0.0, 0.0) — gradient of x^2+y^2+z^2 at origin is zero
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            for (i, comp) in components.iter().enumerate() {
+                let val = comp.as_f64().unwrap_or_else(|| {
+                    panic!("component {} should be numeric, got {:?}", i, comp)
+                });
+                assert!(
+                    val.abs() < 1e-4,
+                    "gradient component {} at origin should be ~0.0, got {}",
+                    i,
+                    val
+                );
             }
         }
         _ => panic!(
