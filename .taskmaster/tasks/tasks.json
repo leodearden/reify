@@ -16244,7 +16244,7 @@
         "description": "Align test stamp_write eprintln format with build.rs line 170 exactly (currently diverged: build.rs uses \"warning: failed to write stamp file: {}\" while test uses \"cargo:warning=Failed to write stamp file {}: {}\"). Add comments to content_hash, needs_generate, and stamp_write in build_logic_tests.rs pinning the build.rs line numbers they mirror.",
         "details": "Source: escalation esc-740-139 (task 740 review). File: tree-sitter-reify/tests/build_logic_tests.rs. Three independent reviewers confirmed the drift is real.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -16257,7 +16257,7 @@
             "tree-sitter-reify"
           ]
         },
-        "updatedAt": "2026-03-31T20:40:22.061Z"
+        "updatedAt": "2026-03-31T20:47:06.356Z"
       },
       {
         "id": "783",
@@ -16544,9 +16544,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:45:34.226Z",
+      "lastModified": "2026-03-31T20:47:06.356Z",
       "taskCount": 796,
-      "completedCount": 453,
+      "completedCount": 454,
       "tags": [
         "master"
       ]
