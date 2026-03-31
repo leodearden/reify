@@ -66,6 +66,9 @@ pub struct ServerState {
     last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
     /// Workspace root path, populated from `InitializeParams.root_uri`.
     pub workspace_root: Option<PathBuf>,
+    /// Explicit stdlib path from `initializationOptions.stdlibPath`.
+    /// When `None`, goto_definition falls back to the dev-mode heuristic.
+    pub stdlib_path: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -104,6 +107,7 @@ impl ReifyLanguageServer {
                 documents: DocumentStore::new(),
                 last_published_diagnostics: HashMap::new(),
                 workspace_root: None,
+                stdlib_path: None,
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
@@ -130,9 +134,17 @@ impl LanguageServer for ReifyLanguageServer {
             .root_uri
             .as_ref()
             .and_then(|uri| uri.to_file_path().ok());
+        // Parse optional stdlibPath from initializationOptions.
+        let stdlib_path = params
+            .initialization_options
+            .as_ref()
+            .and_then(|opts| opts.get("stdlibPath"))
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
         {
             let mut state = self.state.write().await;
             state.workspace_root = workspace_root;
+            state.stdlib_path = stdlib_path;
         }
 
         Ok(InitializeResult {
@@ -948,6 +960,46 @@ mod tests {
         assert!(
             state.documents.get(&uri).is_none(),
             "document should be removed after did_close"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_stores_stdlib_path_from_initialization_options() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        server
+            .initialize(InitializeParams {
+                initialization_options: Some(serde_json::json!({"stdlibPath": "/custom/stdlib"})),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let state = server.state().read().await;
+        assert_eq!(
+            state.stdlib_path,
+            Some(PathBuf::from("/custom/stdlib")),
+            "stdlib_path should be parsed from initialization_options"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_without_options_has_no_stdlib_path() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        server
+            .initialize(InitializeParams {
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let state = server.state().read().await;
+        assert!(
+            state.stdlib_path.is_none(),
+            "stdlib_path should be None when initialization_options are absent"
         );
     }
 
