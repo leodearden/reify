@@ -577,6 +577,20 @@ mod tests {
         assert_eq!(format!("{:?}", EntityKind::Structure), "Structure");
     }
 
+    #[test]
+    fn entity_names_returns_bracket() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let entities = ctx.entity_names();
+        assert_eq!(entities.len(), 1);
+        let e = &entities[0];
+        assert_eq!(e.name, "Bracket");
+        assert_eq!(e.params, 5);
+        assert_eq!(e.lets, 2); // volume + body
+        assert_eq!(e.constraints, 3);
+        assert_eq!(e.kind, EntityKind::Structure);
+    }
+
     // --- structure_names tests ---
 
     #[test]
