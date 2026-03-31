@@ -16392,7 +16392,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ],
+          "modules": [
+            "crates/reify-eval",
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 792,
@@ -16403,7 +16413,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-runtime/tests/concurrent_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-runtime/tests"
+          ]
+        }
       },
       {
         "id": 793,
@@ -16414,7 +16432,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/lib_portable.sh",
+            "scripts/tree-sitter-generate.sh",
+            "tests/infra/test_tree_sitter_pipeline.sh"
+          ],
+          "modules": [
+            "scripts",
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 794,
