@@ -639,3 +639,97 @@ fn tessellate_aborts_cascading_compile_failures() {
         "expected no meshes when all ops fail to compile"
     );
 }
+
+/// The exact scenario from the task description: a mid-sequence compile failure
+/// prevents downstream dependent ops from running. op0 (Box) succeeds, op1
+/// (Boolean referencing non-existent steps) fails to compile, and op2 (Fillet
+/// on Step(1)) would also fail but should never execute because the loop aborted.
+#[test]
+fn mixed_failure_then_dependent_ops_aborted() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box (succeeds)
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Boolean union referencing non-existent Step(5) and Step(6) → compile failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(6),
+    };
+
+    // Op 2: Fillet on Step(1) — depends on the boolean result, should never run
+    let fillet_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Fillet,
+        target: GeomRef::Step(1),
+        args: vec![("radius".into(), mm_literal(2.0))],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, union_op, fillet_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_mixed_abort"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) kernel received exactly 1 execute call (the Box from op0)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 kernel execute call (Box from op0), got {}",
+        ops.len()
+    );
+
+    // (b) exactly 1 compile-failure diagnostic (from op1)
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected exactly 1 compile-failure diagnostic, got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) op2 never ran — no second compile-failure diagnostic
+    // (already verified by count == 1 above, but also verify no kernel errors)
+    let kernel_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("geometry error"))
+        .collect();
+    assert_eq!(
+        kernel_errors.len(),
+        0,
+        "expected no geometry error diagnostics (op2 should not have run)"
+    );
+}
