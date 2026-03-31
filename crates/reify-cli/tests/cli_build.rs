@@ -1,18 +1,59 @@
 mod common;
 
-use std::process::Command;
+#[test]
+fn build_parse_error_exits_failure() {
+    let result = common::run_build("bracket_parse_error.ri");
 
-fn fixture_path(name: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/fixtures/{}", manifest_dir, name)
+    assert!(
+        !result.status.success(),
+        "reify build should exit non-zero for file with parse errors.\nstderr: {}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("Parse error"),
+        "stderr should contain 'Parse error', got: {}",
+        result.stderr
+    );
+    assert!(
+        !result.output_path.exists(),
+        "no output file should be written on parse error"
+    );
 }
 
 #[test]
-fn test_run_build_helper_returns_output() {
+fn build_violating_bracket_exits_failure() {
+    let result = common::run_build("bracket_violating.ri");
+
+    assert!(
+        !result.status.success(),
+        "reify build should exit non-zero when constraints are violated.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("Some constraints violated."),
+        "stdout should contain summary message, got: {}",
+        result.stdout
+    );
+    // Geometry file should still be written even when constraints are violated
+    assert!(
+        result.output_path.exists(),
+        "geometry file should still be written even with constraint violations"
+    );
+}
+
+#[test]
+fn build_valid_bracket_exits_success() {
     let result = common::run_build("bracket.ri");
+
     assert!(
         result.status.success(),
-        "run_build should succeed for valid bracket.\nstdout: {}\nstderr: {}",
+        "reify build should exit 0 for valid bracket.\nstdout: {}\nstderr: {}",
         result.stdout,
         result.stderr
     );
@@ -22,305 +63,161 @@ fn test_run_build_helper_returns_output() {
         result.stdout
     );
     assert!(
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED' for valid bracket, got: {}",
+        result.stdout
+    );
+    assert!(
         result.output_path.exists(),
-        "output_path should exist after successful build"
-    );
-}
-
-#[test]
-fn build_parse_error_exits_failure() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_parse_error.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "reify build should exit non-zero for file with parse errors.\nstderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Parse error"),
-        "stderr should contain 'Parse error', got: {stderr}"
-    );
-    assert!(
-        !output_path.exists(),
-        "no output file should be written on parse error"
-    );
-}
-
-#[test]
-fn build_violating_bracket_exits_failure() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_violating.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "reify build should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("VIOLATED"),
-        "stdout should contain 'VIOLATED', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("Some constraints violated."),
-        "stdout should contain summary message, got: {stdout}"
-    );
-    // Geometry file should still be written even when constraints are violated
-    assert!(
-        output_path.exists(),
-        "geometry file should still be written even with constraint violations"
-    );
-}
-
-#[test]
-fn build_valid_bracket_exits_success() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "reify build should exit 0 for valid bracket.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("Wrote"),
-        "stdout should contain 'Wrote', got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("VIOLATED"),
-        "stdout should NOT contain 'VIOLATED' for valid bracket, got: {stdout}"
-    );
-    assert!(
-        output_path.exists(),
         "geometry file should be written on success"
     );
 }
 
 #[test]
 fn build_compile_error_exits_failure() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_compile_error.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_compile_error.ri");
 
     assert!(
-        !output.status.success(),
-        "reify build should exit non-zero for file with compiler errors.\nstderr: {stderr}"
+        !result.status.success(),
+        "reify build should exit non-zero for file with compiler errors.\nstderr: {}",
+        result.stderr
     );
     assert!(
-        stderr.contains("error:"),
-        "stderr should contain 'error:', got: {stderr}"
+        result.stderr.contains("error:"),
+        "stderr should contain 'error:', got: {}",
+        result.stderr
     );
     assert!(
-        !output_path.exists(),
+        !result.output_path.exists(),
         "no output file should be written on compile error"
     );
 }
 
 #[test]
 fn build_indeterminate_constraint_exits_success() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_indeterminate.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_indeterminate.ri");
 
     assert!(
-        output.status.success(),
-        "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
+        result.status.success(),
+        "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
     );
     assert!(
-        stdout.contains("OK"),
-        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {stdout}"
+        result.stdout.contains("OK"),
+        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("Wrote"),
-        "stdout should contain 'Wrote', got: {stdout}"
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
     );
     assert!(
-        !stdout.contains("VIOLATED"),
-        "stdout should NOT contain 'VIOLATED', got: {stdout}"
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {}",
+        result.stdout
     );
     assert!(
-        !stdout.contains("Some constraints violated"),
-        "stdout should NOT contain violation summary, got: {stdout}"
+        !result.stdout.contains("Some constraints violated"),
+        "stdout should NOT contain violation summary, got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("No constraints violated"),
-        "stdout should contain 'No constraints violated', got: {stdout}"
+        result.stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("indeterminate"),
-        "stdout should contain 'indeterminate', got: {stdout}"
+        result.stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {}",
+        result.stdout
     );
     assert!(
-        output_path.exists(),
+        result.output_path.exists(),
         "geometry file should be written when constraints are only indeterminate"
     );
 }
 
 #[test]
 fn build_violated_with_indeterminate_exits_failure() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_violated_with_indeterminate.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_violated_with_indeterminate.ri");
 
     assert!(
-        !output.status.success(),
-        "reify build should exit non-zero when constraints are violated.\nstdout: {stdout}\nstderr: {stderr}"
+        !result.status.success(),
+        "reify build should exit non-zero when constraints are violated.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
     );
     assert!(
-        stdout.contains("VIOLATED"),
-        "stdout should contain 'VIOLATED', got: {stdout}"
+        result.stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("Some constraints violated."),
-        "stdout should contain violation summary, got: {stdout}"
+        result.stdout.contains("Some constraints violated."),
+        "stdout should contain violation summary, got: {}",
+        result.stdout
     );
     // Geometry file should still be written even with violations
     assert!(
-        output_path.exists(),
+        result.output_path.exists(),
         "geometry file should still be written even with constraint violations"
     );
 }
 
 #[test]
 fn build_all_indeterminate_exits_success() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let output_path = dir.path().join("out.step");
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_all_indeterminate.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_all_indeterminate.ri");
 
     assert!(
-        output.status.success(),
-        "reify build should exit 0 when all constraints are indeterminate.\nstdout: {stdout}\nstderr: {stderr}"
+        result.status.success(),
+        "reify build should exit 0 when all constraints are indeterminate.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
     );
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
     );
     assert!(
-        !stdout.contains("OK"),
-        "stdout should NOT contain 'OK' (no satisfied constraints), got: {stdout}"
+        !result.stdout.contains("OK"),
+        "stdout should NOT contain 'OK' (no satisfied constraints), got: {}",
+        result.stdout
     );
     assert!(
-        !stdout.contains("VIOLATED"),
-        "stdout should NOT contain 'VIOLATED', got: {stdout}"
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("No constraints violated"),
-        "stdout should contain 'No constraints violated', got: {stdout}"
+        result.stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("indeterminate"),
-        "stdout should contain 'indeterminate', got: {stdout}"
+        result.stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {}",
+        result.stdout
     );
     assert!(
-        stdout.contains("Wrote"),
-        "stdout should contain 'Wrote', got: {stdout}"
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
     );
     assert!(
-        output_path.exists(),
+        result.output_path.exists(),
         "geometry file should be written when constraints are only indeterminate"
     );
 }
