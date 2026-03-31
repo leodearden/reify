@@ -16,6 +16,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
 
+# Maximum seconds to wait for lock acquisition (used by both flock and mkdir paths).
+MAX_WAIT_SECS=120
+
 if ! command -v tree-sitter >/dev/null 2>&1; then
     echo "ERROR: tree-sitter CLI not found on PATH." >&2
     echo "Install via: cargo install tree-sitter-cli" >&2
@@ -68,8 +71,8 @@ LOCK_DIR="src/.generate.lock.d"
 
 if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    if ! flock -x -w 120 9; then
-        echo "ERROR: could not acquire flock within 120s" >&2
+    if ! flock -x -w $MAX_WAIT_SECS 9; then
+        echo "ERROR: could not acquire flock within ${MAX_WAIT_SECS}s" >&2
         exit 1
     fi
 else
@@ -78,8 +81,8 @@ else
     _lock_attempts=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         _lock_attempts=$((_lock_attempts + 1))
-        if [ "$_lock_attempts" -ge 75 ]; then
-            # Stale lock detection: if lock dir is older than 120s, remove it.
+        if [ "$_lock_attempts" -ge $MAX_WAIT_SECS ]; then
+            # Stale lock detection: if lock dir is older than MAX_WAIT_SECS, remove it.
             # Use empty sentinel when stat fails — refuse to remove a lock
             # we cannot verify as stale (avoids unconditional removal on
             # platforms where neither GNU nor BSD stat is available).
@@ -87,7 +90,7 @@ else
                 _lock_mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo '')
                 if [ -n "$_lock_mtime" ]; then
                     _lock_age=$(( $(date +%s) - _lock_mtime ))
-                    if [ "$_lock_age" -gt 120 ]; then
+                    if [ "$_lock_age" -gt $MAX_WAIT_SECS ]; then
                         echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
                         if rmdir "$LOCK_DIR" 2>/dev/null; then
                             _lock_attempts=0
@@ -100,7 +103,7 @@ else
                     fi
                 fi
             fi
-            echo "ERROR: could not acquire generation lock after 75 attempts" >&2
+            echo "ERROR: could not acquire generation lock after $MAX_WAIT_SECS attempts" >&2
             exit 1
         fi
         sleep 1
