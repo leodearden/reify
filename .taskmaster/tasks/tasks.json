@@ -16629,6 +16629,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 804,
+        "title": "Add three-way Satisfied+Violated+Indeterminate constraint unit test",
+        "description": "No unit test covers the three-way combination of Satisfied + Violated + Indeterminate entries in report_constraint_results (crates/reify-cli/src/main.rs ~line 397+). The existing tests cover: all-satisfied, satisfied+violated, indeterminate-only, and violated+indeterminate, but not the most likely real-world scenario where all three states coexist.\n\nAdd a unit test with three entries covering all three Satisfaction states:\n- Assert result == ConstraintOutcome::SomeViolated\n- Assert output contains \"OK <label>\" for the satisfied entry\n- Assert output contains \"VIOLATED <label>\" for the violated entry\n- Assert output contains \"INDETERMINATE <label>\" for the indeterminate entry",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16641,7 +16652,7 @@
       ],
       "created": "2026-03-31T21:06:01.063Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:06:05.970Z"
+      "updated": "2026-03-31T21:06:10.393Z"
     }
   }
 }
