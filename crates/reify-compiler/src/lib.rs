@@ -974,6 +974,108 @@ fn resolve_type_with_aliases(
     None
 }
 
+/// Resolve a type alias's RHS `TypeExpr` to a `Type`.
+///
+/// Handles three cases:
+/// 1. Simple name → resolved via builtins then alias registry
+/// 2. Dimensional binary op (`*`, `/`) → recursively resolve operands to
+///    DimensionVectors, combine with mul/div, return `Type::Scalar { dimension }`
+/// 3. Unknown → returns None
+fn resolve_type_alias_expr(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            // Dimensional binary operator: left OP right
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left_dim = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[1],
+                alias_registry,
+                diagnostics,
+            )?;
+            let result_dim = if type_expr.name == "*" {
+                left_dim.mul(&right_dim)
+            } else {
+                left_dim.div(&right_dim)
+            };
+            Some(Type::Scalar {
+                dimension: result_dim,
+            })
+        }
+        name => {
+            // Simple name: check builtins, then alias registry
+            let empty = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry)
+        }
+    }
+}
+
+/// Helper: resolve a TypeExpr to a DimensionVector (for dimensional algebra).
+/// Returns None if the type cannot be resolved to a dimension.
+fn resolve_type_alias_expr_to_dimension(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DimensionVector> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            let right = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[1],
+                alias_registry,
+                diagnostics,
+            )?;
+            Some(if type_expr.name == "*" {
+                left.mul(&right)
+            } else {
+                left.div(&right)
+            })
+        }
+        _ => {
+            // Try resolve_dimension_type for known dimension names
+            // Use a temporary diagnostics vec to avoid polluting the main one
+            let mut tmp_diags = Vec::new();
+            if let Some(dim) = resolve_dimension_type(type_expr, &mut tmp_diags) {
+                return Some(dim);
+            }
+            // Check alias registry: if the alias resolves to Scalar{dim}, use that dimension
+            if let Some(entry) = alias_registry.lookup(&type_expr.name) {
+                if let Some(Type::Scalar { dimension }) = &entry.resolved_type {
+                    return Some(*dimension);
+                }
+            }
+            // Fall through to error
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot resolve '{}' to a dimension type in alias expression",
+                    type_expr.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "not a dimension type",
+                )),
+            );
+            None
+        }
+    }
+}
+
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
 fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
     decls
