@@ -260,14 +260,6 @@ type Energy = Force * Length
     assert_eq!(names, vec!["Pressure", "Velocity", "Energy"]);
 }
 
-// ── Helper exercise test (temporary — removed once callers switch) ──
-
-#[test]
-fn test_assert_no_valid_binop_recovery_helper() {
-    let (decls, _errors) = parse_decls("type Foo = Force /");
-    assert_no_valid_binop_recovery(&decls);
-}
-
 // ── Malformed dimensional type expressions (should not panic) ────
 
 #[test]
@@ -277,23 +269,7 @@ fn parse_dimensional_type_missing_right_operand_no_panic() {
     let source = "type Foo = Force /";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
-
-    // If parser recovers a TypeAlias, validate the recovery shape
-    if let Some(ta) = decls.iter().find_map(|d| match d {
-        Declaration::TypeAlias(ta) => Some(ta),
-        _ => None,
-    }) {
-        assert_eq!(ta.name, "Foo");
-        // Recovery should NOT produce a well-formed binary dimensional op
-        // (which would have name="/" or "*" with exactly 2 type_args)
-        let looks_like_valid_binop =
-            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
-        assert!(
-            !looks_like_valid_binop,
-            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
-            ta.type_expr.name, ta.type_expr.type_args,
-        );
-    }
+    assert_no_valid_binop_recovery(&decls);
 }
 
 #[test]
@@ -303,23 +279,7 @@ fn parse_dimensional_type_missing_left_operand_no_panic() {
     let source = "type Foo = / Area";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
-
-    // If parser recovers a TypeAlias, validate the recovery shape
-    if let Some(ta) = decls.iter().find_map(|d| match d {
-        Declaration::TypeAlias(ta) => Some(ta),
-        _ => None,
-    }) {
-        assert_eq!(ta.name, "Foo");
-        // Recovery should NOT produce a well-formed binary dimensional op
-        // (which would have name="/" or "*" with exactly 2 type_args)
-        let looks_like_valid_binop =
-            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
-        assert!(
-            !looks_like_valid_binop,
-            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
-            ta.type_expr.name, ta.type_expr.type_args,
-        );
-    }
+    assert_no_valid_binop_recovery(&decls);
 }
 
 #[test]
@@ -329,23 +289,7 @@ fn parse_dimensional_type_missing_both_operands_no_panic() {
     let source = "type Foo = /";
     let (decls, errors) = parse_decls(source);
     assert_malformed_recovers(&decls, &errors);
-
-    // If parser recovers a TypeAlias, validate the recovery shape
-    if let Some(ta) = decls.iter().find_map(|d| match d {
-        Declaration::TypeAlias(ta) => Some(ta),
-        _ => None,
-    }) {
-        assert_eq!(ta.name, "Foo");
-        // Recovery should NOT produce a well-formed binary dimensional op
-        // (which would have name="/" or "*" with exactly 2 type_args)
-        let looks_like_valid_binop =
-            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
-        assert!(
-            !looks_like_valid_binop,
-            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
-            ta.type_expr.name, ta.type_expr.type_args,
-        );
-    }
+    assert_no_valid_binop_recovery(&decls);
 }
 
 // ── Error case: missing name ─────────────────────────────────────
