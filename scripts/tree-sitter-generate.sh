@@ -16,6 +16,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
 
+# Maximum seconds to wait for lock acquisition (used by both flock and mkdir paths).
+MAX_WAIT_SECS=120
+
 if ! command -v tree-sitter >/dev/null 2>&1; then
     echo "ERROR: tree-sitter CLI not found on PATH." >&2
     echo "Install via: cargo install tree-sitter-cli" >&2
@@ -27,17 +30,8 @@ if [ ! -f "$TS_DIR/grammar.js" ]; then
     exit 1
 fi
 
-# Portable SHA-256: prefer sha256sum (GNU coreutils), fall back to shasum (macOS).
-compute_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1"
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1"
-    else
-        echo "ERROR: neither sha256sum nor shasum found on PATH." >&2
-        exit 1
-    fi
-}
+# Shared utilities (compute_sha256, etc.)
+source "$SCRIPT_DIR/lib.sh"
 
 cd "$TS_DIR"
 
@@ -77,8 +71,8 @@ LOCK_DIR="src/.generate.lock.d"
 
 if command -v flock >/dev/null 2>&1; then
     exec 9>"$LOCK_FILE"
-    if ! flock -x -w 120 9; then
-        echo "ERROR: could not acquire flock within 120s" >&2
+    if ! flock -x -w $MAX_WAIT_SECS 9; then
+        echo "ERROR: could not acquire flock within ${MAX_WAIT_SECS}s" >&2
         exit 1
     fi
 else
@@ -87,8 +81,8 @@ else
     _lock_attempts=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         _lock_attempts=$((_lock_attempts + 1))
-        if [ "$_lock_attempts" -ge 75 ]; then
-            # Stale lock detection: if lock dir is older than 120s, remove it.
+        if [ "$_lock_attempts" -ge $MAX_WAIT_SECS ]; then
+            # Stale lock detection: if lock dir is older than MAX_WAIT_SECS, remove it.
             # Use empty sentinel when stat fails — refuse to remove a lock
             # we cannot verify as stale (avoids unconditional removal on
             # platforms where neither GNU nor BSD stat is available).
@@ -96,7 +90,7 @@ else
                 _lock_mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo '')
                 if [ -n "$_lock_mtime" ]; then
                     _lock_age=$(( $(date +%s) - _lock_mtime ))
-                    if [ "$_lock_age" -gt 120 ]; then
+                    if [ "$_lock_age" -gt $MAX_WAIT_SECS ]; then
                         echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
                         if rmdir "$LOCK_DIR" 2>/dev/null; then
                             _lock_attempts=0
@@ -109,7 +103,7 @@ else
                     fi
                 fi
             fi
-            echo "ERROR: could not acquire generation lock after 75 attempts" >&2
+            echo "ERROR: could not acquire generation lock after $MAX_WAIT_SECS attempts" >&2
             exit 1
         fi
         sleep 1
@@ -144,14 +138,25 @@ fi
 
 GEN_EXIT=0
 # Portable timeout: prefer GNU timeout, then gtimeout (Homebrew coreutils on macOS),
-# then fall back to running without a timeout.
+# then fall back to a background-process + sleep + kill pattern (POSIX-portable).
 if command -v timeout >/dev/null 2>&1; then
     timeout 60 tree-sitter generate || GEN_EXIT=$?
 elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout 60 tree-sitter generate || GEN_EXIT=$?
 else
-    echo "WARNING: timeout/gtimeout not found; running tree-sitter generate without timeout guard" >&2
-    tree-sitter generate || GEN_EXIT=$?
+    echo "WARNING: timeout/gtimeout not found; using kill-based timeout fallback" >&2
+    tree-sitter generate &
+    _gen_pid=$!
+    ( sleep 60 && kill $_gen_pid 2>/dev/null ) &
+    _timer_pid=$!
+    wait $_gen_pid 2>/dev/null || GEN_EXIT=$?
+    # Clean up timer — if generate finished before timeout, kill the sleep+kill subshell.
+    kill $_timer_pid 2>/dev/null || true
+    wait $_timer_pid 2>/dev/null || true
+    # Exit code 143 = 128+15 (SIGTERM from kill) — treat as timeout, same as 124.
+    if [ "$GEN_EXIT" -eq 143 ]; then
+        GEN_EXIT=124
+    fi
 fi
 if [ "$GEN_EXIT" -eq 124 ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
