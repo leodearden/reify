@@ -15912,13 +15912,21 @@
         "description": "SolveResult::NoProgress currently carries only a free-form `reason: String`. Tests that need to distinguish code paths (fallback-point-undefined vs solution-point-undefined vs iteration-limit) must match on substrings like `reason.contains(\"solution point\")`. This couples test correctness to internal prose — any rewording silently breaks path discrimination.\n\nAdd a `NoProgressKind` enum (e.g., `FallbackUndef`, `SolutionUndef`, `IterationLimit`, `TooManyUnknowns`, `DidntConverge`) to `SolveResult::NoProgress { kind: NoProgressKind, reason: String }`. Update all construction sites in solver.rs and all test assertions to match on `kind` instead of string fragments. Keep the human-readable `reason` for diagnostics but make `kind` the machine-readable discriminator.\n\nThis affects constraint.rs (SolveResult definition) and solver.rs (all NoProgress construction + tests).\n\nMemory hints: search \"SolveResult NoProgress\", search \"solver fallback objective validation\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "625"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:08:56.367Z"
+        "updatedAt": "2026-03-31T03:14:57.958Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints",
+            "crates/reify-eval",
+            "crates/reify-test-support",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": "773",
@@ -15970,7 +15978,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:14:47.199Z",
+      "lastModified": "2026-03-31T03:14:57.960Z",
       "taskCount": 776,
       "completedCount": 434,
       "tags": [
