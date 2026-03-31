@@ -16454,7 +16454,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/tree-sitter-generate.sh"
+          ],
+          "modules": [
+            "scripts"
+          ]
+        }
       },
       {
         "id": 795,
@@ -16465,7 +16473,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/mocks.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 796,
@@ -16476,7 +16492,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/mocks.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support"
+          ]
+        }
       }
     ],
     "metadata": {
