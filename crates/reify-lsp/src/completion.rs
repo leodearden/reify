@@ -134,7 +134,7 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
             push_keywords(&mut items, TOP_LEVEL_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
-            push_structure_names(&mut items, &ctx);
+            push_entity_names(&mut items, &ctx);
         }
         CursorContext::StructureBody { ref structure_name } => {
             push_keywords(&mut items, BODY_KEYWORDS);
@@ -142,7 +142,7 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
             push_builtins(&mut items);
             push_type_names(&mut items);
             push_scoped_members(&mut items, &ctx, structure_name);
-            push_structure_names(&mut items, &ctx);
+            push_entity_names(&mut items, &ctx);
         }
         CursorContext::Expression {
             ref structure_name, ..
@@ -155,14 +155,14 @@ pub fn compute_completions(source: &str, uri: &Url, position: Position) -> Vec<C
             } else {
                 push_all_members(&mut items, &ctx);
             }
-            push_structure_names(&mut items, &ctx);
+            push_entity_names(&mut items, &ctx);
         }
         CursorContext::DotAccess => {
             push_all_members(&mut items, &ctx);
         }
         CursorContext::TypePosition => {
             push_type_names(&mut items);
-            push_structure_names(&mut items, &ctx);
+            push_entity_names(&mut items, &ctx);
         }
     }
 
@@ -221,10 +221,10 @@ fn push_scoped_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext, s
     }
 }
 
-fn push_structure_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
-    for (name, _params, _lets, _constraints, _kind) in ctx.structure_names() {
+fn push_entity_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
+    for entity in ctx.entity_names() {
         items.push(CompletionItem {
-            label: name.to_string(),
+            label: entity.name.to_string(),
             kind: Some(CompletionItemKind::STRUCT),
             ..Default::default()
         });
