@@ -645,13 +645,21 @@ fn compute_numerical_gradient_at_point(
     }
 
     // Determine if domain is dimensioned (for constructing perturbed args)
-    let _domain_dim = match domain_type {
+    let domain_dim = match domain_type {
         Type::Scalar { dimension } => Some(*dimension),
         Type::Point { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => Some(*dimension),
             _ => None,
         },
         _ => None,
+    };
+
+    // Detect calling convention: single-Point param vs decomposed params.
+    // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
+    // If lambda has n params, pass individual scalar values (current behavior).
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
     };
 
     let mut gradient_components = Vec::with_capacity(n);
@@ -666,9 +674,32 @@ fn compute_numerical_gradient_at_point(
         let mut minus_coords = coords.clone();
         minus_coords[i] -= h;
 
-        // Construct args for apply_lambda (individual Real values)
-        let plus_args: Vec<Value> = plus_coords.into_iter().map(Value::Real).collect();
-        let minus_args: Vec<Value> = minus_coords.into_iter().map(Value::Real).collect();
+        // Construct args for apply_lambda: use Scalar with domain dimension
+        // when the domain is dimensioned, otherwise use Real.
+        let make_arg = |val: f64| -> Value {
+            match domain_dim {
+                Some(dim) => Value::Scalar {
+                    si_value: val,
+                    dimension: dim,
+                },
+                None => Value::Real(val),
+            }
+        };
+
+        // Build the argument list based on calling convention
+        let plus_args: Vec<Value>;
+        let minus_args: Vec<Value>;
+        if single_point_param {
+            // Single-Point convention: wrap coords in a Value::Point
+            let plus_point = Value::Point(plus_coords.into_iter().map(&make_arg).collect());
+            let minus_point = Value::Point(minus_coords.into_iter().map(&make_arg).collect());
+            plus_args = vec![plus_point];
+            minus_args = vec![minus_point];
+        } else {
+            // Decomposed convention: pass individual scalar/real values
+            plus_args = plus_coords.into_iter().map(&make_arg).collect();
+            minus_args = minus_coords.into_iter().map(&make_arg).collect();
+        }
 
         let f_plus = apply_lambda(lambda, &plus_args, ctx);
         let f_minus = apply_lambda(lambda, &minus_args, ctx);
@@ -685,14 +716,17 @@ fn compute_numerical_gradient_at_point(
 
         let deriv = (fp - fm) / (2.0 * h);
 
-        // Preserve dimension from the lambda output.
-        // If the lambda returns a dimensioned Scalar, the gradient component
-        // carries the same dimension (h is dimensionless in the SI coordinate space).
+        // Compute gradient component dimension: result_dim / domain_dim.
+        // The gradient is df/dx, so its dimension is [codomain] / [domain].
         let result_dim = f_plus.dimension();
-        if result_dim != DimensionVector::DIMENSIONLESS {
+        let grad_dim = match domain_dim {
+            Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
+            _ => result_dim,
+        };
+        if grad_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
-                dimension: result_dim,
+                dimension: grad_dim,
             });
         } else {
             gradient_components.push(Value::Real(deriv));
