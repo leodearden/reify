@@ -212,13 +212,79 @@ fn test_all_three_outputs_verified() {
 #[test]
 fn test_no_redundant_rerun_if_changed() {
     // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
-    let build_rs = std::fs::read_to_string("build.rs")
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
+        .expect("should be able to read build.rs");
     assert!(
         !build_rs.contains("rerun-if-changed=src/parser.c"),
         "build.rs must NOT contain 'rerun-if-changed=src/parser.c' — \
          src/parser.c is a generated output managed by build.rs itself. \
          Watching it causes double execution."
+    );
+}
+
+#[test]
+fn test_stamp_shared_across_simulated_profiles() {
+    // Integration test: validates the core invariant that two separate callers
+    // (simulating different cargo profiles) writing/reading the same stamp path
+    // see each other's results — no redundant generation across profiles.
+    let dir = tempfile::tempdir().unwrap();
+
+    // Set up a shared src/ directory (simulating the real crate layout).
+    let src_dir = dir.path().join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    for name in EXPECTED_OUTPUTS {
+        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    }
+
+    // The shared stamp path — profile-independent, in src/.
+    let stamp_path = src_dir.join(".grammar_hash.stamp");
+
+    // Create a grammar file and compute its hash.
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
+    let hash = content_hash(&grammar);
+
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    // "Profile A" sees no stamp → needs_generate is true.
+    assert!(
+        needs_generate(&hash, &stamp_path, &output_refs),
+        "profile A should need generation (no stamp yet)"
+    );
+
+    // "Profile A" writes the stamp after generation.
+    std::fs::write(&stamp_path, &hash).unwrap();
+
+    // "Profile B" reads the same stamp → needs_generate is false.
+    assert!(
+        !needs_generate(&hash, &stamp_path, &output_refs),
+        "profile B must NOT need generation — stamp was written by profile A \
+         to the shared src/ location"
+    );
+}
+
+#[test]
+fn test_stamp_path_is_profile_independent() {
+    // Source-level regression guard: build.rs must NOT use OUT_DIR for the stamp path
+    // (OUT_DIR is per-profile, causing redundant tree-sitter generate calls when switching
+    // between `cargo test`, `cargo build`, and `cargo clippy`).
+    // Instead it must use `.grammar_hash.stamp` in src/ — matching the shell script convention.
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
+        .expect("should be able to read build.rs");
+
+    // Must NOT use OUT_DIR for the stamp path.
+    assert!(
+        !build_rs.contains(r#"env::var("OUT_DIR")"#),
+        "build.rs must NOT read OUT_DIR — the stamp file must be stored in src/ \
+         so it is shared across all cargo profiles (debug, release, clippy, test)."
+    );
+
+    // Must reference the correct stamp filename.
+    assert!(
+        build_rs.contains(".grammar_hash.stamp"),
+        "build.rs must reference '.grammar_hash.stamp' as the stamp filename, \
+         consistent with scripts/tree-sitter-generate.sh."
     );
 }
 
@@ -317,8 +383,8 @@ fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), S
 fn test_try_wait_error_path_kills_child() {
     // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
     // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string("build.rs")
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
+        .expect("should be able to read build.rs");
 
     // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
     // This precisely captures the arm body without the fragility of a fixed-size window.
@@ -449,29 +515,18 @@ fn test_find_err_arm_braced_skips_format_braces() {
 }
 
 #[test]
-fn test_out_dir_no_silent_fallback() {
-    // Source-level regression guard: build.rs must NOT silently fall back to "." when
-    // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
-    // means something is fundamentally wrong — we should panic, not pollute the source tree.
-    let build_rs = std::fs::read_to_string("build.rs")
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-
-    // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
-    let out_dir_line = build_rs
-        .lines()
-        .find(|line| line.contains("env::var(\"OUT_DIR\")") || line.contains("env::var( \"OUT_DIR\")"))
-        .expect("build.rs should contain a line reading env::var(\"OUT_DIR\")");
+fn test_out_dir_not_used_for_stamp() {
+    // Source-level regression guard: build.rs must NOT use OUT_DIR for the stamp file.
+    // OUT_DIR is per-cargo-profile, so using it causes redundant tree-sitter generate
+    // calls when switching between `cargo test`, `cargo build`, and `cargo clippy`.
+    // The stamp must live in src/ where it's shared across all profiles.
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
+        .expect("should be able to read build.rs");
 
     assert!(
-        !out_dir_line.contains("unwrap_or_else"),
-        "OUT_DIR line must NOT use unwrap_or_else (silent fallback). \
-         Cargo always sets OUT_DIR; a missing value should panic. Line: {}",
-        out_dir_line
-    );
-    assert!(
-        out_dir_line.contains("expect"),
-        "OUT_DIR line must use .expect() for a clear panic message. Line: {}",
-        out_dir_line
+        !build_rs.contains("env::var(\"OUT_DIR\")"),
+        "build.rs must NOT read OUT_DIR — the stamp file must be stored in src/ \
+         so it is shared across all cargo profiles (debug, release, clippy, test)."
     );
 }
 
@@ -526,104 +581,6 @@ fn test_stamp_write_failure_no_panic() {
     assert!(
         !stamp_path.exists(),
         "stamp should not exist in a read-only directory"
-    );
-}
-
-#[test]
-fn test_stamp_path_is_profile_independent() {
-    // Prove that staleness detection is purely hash-driven and works identically
-    // across different OUT_DIR paths (simulating debug vs release profiles).
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'test'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    // Simulate two different cargo profile OUT_DIR paths
-    let debug_out = dir.path().join("target/debug/build/out");
-    let release_out = dir.path().join("target/release/build/out");
-    std::fs::create_dir_all(&debug_out).unwrap();
-    std::fs::create_dir_all(&release_out).unwrap();
-
-    let hash = content_hash(&grammar);
-
-    // Write matching stamp to both profiles
-    let debug_stamp = debug_out.join("grammar_hash.stamp");
-    let release_stamp = release_out.join("grammar_hash.stamp");
-    stamp_write(&debug_stamp, &hash);
-    stamp_write(&release_stamp, &hash);
-
-    // Both profiles report no regeneration needed
-    assert!(
-        !needs_generate(&hash, &debug_stamp, &output_refs),
-        "debug profile: must NOT regenerate when stamp matches"
-    );
-    assert!(
-        !needs_generate(&hash, &release_stamp, &output_refs),
-        "release profile: must NOT regenerate when stamp matches"
-    );
-
-    // Mutate grammar content — both profiles must now detect staleness
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'changed'});").unwrap();
-    let new_hash = content_hash(&grammar);
-    assert!(
-        needs_generate(&new_hash, &debug_stamp, &output_refs),
-        "debug profile: must regenerate after grammar change"
-    );
-    assert!(
-        needs_generate(&new_hash, &release_stamp, &output_refs),
-        "release profile: must regenerate after grammar change"
-    );
-}
-
-#[test]
-fn test_stamp_shared_across_simulated_profiles() {
-    // Prove that identical hash content at any stamp location yields identical
-    // staleness decisions, and that stamp presence is per-location.
-    let dir = tempfile::tempdir().unwrap();
-    let grammar = dir.path().join("grammar.js");
-    std::fs::write(&grammar, b"module.exports = grammar({name: 'shared'});").unwrap();
-    let src_dir = make_populated_src_dir(dir.path());
-    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
-    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-
-    let hash = content_hash(&grammar);
-
-    // Two separate OUT_DIR-like paths
-    let out_dir_1 = dir.path().join("target/debug/build/out");
-    let out_dir_2 = dir.path().join("target/release/build/out");
-    std::fs::create_dir_all(&out_dir_1).unwrap();
-    std::fs::create_dir_all(&out_dir_2).unwrap();
-
-    let stamp_1 = out_dir_1.join("grammar_hash.stamp");
-    let stamp_2 = out_dir_2.join("grammar_hash.stamp");
-
-    // Write stamp to only OUT_DIR_1
-    stamp_write(&stamp_1, &hash);
-
-    // OUT_DIR_1 has matching stamp — no regeneration needed
-    assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs),
-        "OUT_DIR_1: must NOT regenerate when stamp matches"
-    );
-    // OUT_DIR_2 has no stamp — regeneration needed
-    assert!(
-        needs_generate(&hash, &stamp_2, &output_refs),
-        "OUT_DIR_2: must regenerate when stamp is absent"
-    );
-
-    // Now write the same stamp to OUT_DIR_2
-    stamp_write(&stamp_2, &hash);
-
-    // Both locations now report no regeneration needed
-    assert!(
-        !needs_generate(&hash, &stamp_1, &output_refs),
-        "OUT_DIR_1: still must NOT regenerate"
-    );
-    assert!(
-        !needs_generate(&hash, &stamp_2, &output_refs),
-        "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
     );
 }
 
