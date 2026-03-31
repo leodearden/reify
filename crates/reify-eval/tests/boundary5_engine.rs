@@ -841,3 +841,61 @@ fn root_level_cyclic_let_bindings_emit_diagnostic() {
         result.diagnostics
     );
 }
+
+/// Non-cyclic forward-referencing lets must NOT trigger the cycle-detection diagnostic.
+///
+/// Template S: let a = b + 1, let b = 3. Forward reference (a → b) but no cycle.
+/// Expected: b = 3, a = 4, no error diagnostics.
+#[test]
+fn root_level_non_cyclic_lets_no_false_positive() {
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
+    use reify_types::{BinOp, CompiledExpr, ModulePath, Severity, Type, Value, ValueCellId};
+
+    let a_expr = binop(
+        BinOp::Add,
+        value_ref_typed("S", "b", Type::Int),
+        literal(Value::Int(1)),
+    );
+    let b_expr = CompiledExpr::literal(Value::Int(3), Type::Int);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .let_binding("S", "a", Type::Int, a_expr)
+        .let_binding("S", "b", Type::Int, b_expr)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // No error diagnostics about circular dependencies.
+    let cycle_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.message.contains("circular") || d.message.contains("cycle"))
+        })
+        .collect();
+    assert!(
+        cycle_errors.is_empty(),
+        "No circular-dependency errors expected for non-cyclic lets, got: {:?}",
+        cycle_errors
+    );
+
+    // Values should be correctly computed.
+    let b_val = result
+        .values
+        .get(&ValueCellId::new("S", "b"))
+        .expect("S.b should exist");
+    assert_eq!(*b_val, Value::Int(3), "b should be 3");
+
+    let a_val = result
+        .values
+        .get(&ValueCellId::new("S", "a"))
+        .expect("S.a should exist");
+    assert_eq!(*a_val, Value::Int(4), "a should be b+1 = 4");
+}
