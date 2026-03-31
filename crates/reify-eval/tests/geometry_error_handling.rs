@@ -418,3 +418,73 @@ fn cascading_compile_failures_aborted_after_first() {
             .collect::<Vec<_>>()
     );
 }
+
+/// When a realization contains multiple ops and kernel.execute fails for all,
+/// only the first kernel error diagnostic should be emitted. The loop should
+/// abort after the first Err from kernel.execute, preventing cascading errors.
+#[test]
+fn cascading_kernel_failures_aborted_after_first() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Three Box primitives — all will compile successfully but fail at kernel.execute
+    let box_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(10.0)),
+            ("height".into(), mm_literal(20.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+    let box_op_1 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(30.0)),
+            ("height".into(), mm_literal(40.0)),
+            ("depth".into(), mm_literal(15.0)),
+        ],
+    };
+    let box_op_2 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(50.0)),
+            ("height".into(), mm_literal(60.0)),
+            ("depth".into(), mm_literal(25.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(10.0)))
+        .realization(e, 0, vec![box_op_0, box_op_1, box_op_2])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let kernel_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("geometry error"))
+        .collect();
+
+    assert_eq!(
+        kernel_errors.len(),
+        1,
+        "expected exactly 1 geometry error diagnostic (abort after first), got {}: {:?}",
+        kernel_errors.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
