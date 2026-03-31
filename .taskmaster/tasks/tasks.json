@@ -16179,7 +16179,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-cli/src/main.rs"
+          ],
+          "modules": [
+            "crates/reify-cli"
+          ]
+        }
       },
       {
         "id": 781,
@@ -16190,7 +16198,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib"
+          ]
+        }
       },
       {
         "id": 782,
@@ -16201,7 +16217,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs",
+            "tree-sitter-reify/build.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify"
+          ]
+        }
       },
       {
         "id": 783,
