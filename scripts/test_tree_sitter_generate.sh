@@ -172,6 +172,18 @@ assert "no bare 'tree-sitter generate' without timeout guard" \
 assert "fallback uses kill-based timeout pattern" \
     grep -q 'kill.*_gen_pid\|kill.*\$_gen_pid' "$GENERATE_SCRIPT"
 
+# ── Test 11: portability gate — no grep -P in tests ──────────────
+echo ""
+echo "--- Test 11: test file uses only POSIX-compatible grep ---"
+
+# grep -P (Perl regex) is unavailable on macOS BSD grep and silently fails
+# (exit 2), causing negated assertions to false-positive. All grep patterns
+# in this test file must use POSIX-ERE (grep -E) or basic grep instead.
+# Note: uses [P] character class so grep doesn't match this assertion itself.
+_TEST_FILE="${BASH_SOURCE[0]}"
+assert "test file does NOT use grep -P (non-portable Perl regex)" \
+    bash -c '[ -z "$(grep "grep -[P]" "$1")" ]' _ "$_TEST_FILE"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
