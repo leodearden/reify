@@ -1776,6 +1776,11 @@ impl Engine {
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
 
+            // Snapshot current values BEFORE the loop so each group's solver
+            // receives the same baseline — preventing cross-group contamination
+            // where one group's resolved values leak into another group's input.
+            let snapshot_values = values.clone();
+
             // Solve each entity group independently
             for (scope_name, (auto_param_list, auto_ids)) in &entity_groups {
                 // Find constraints referencing this group's auto params
@@ -1806,7 +1811,7 @@ impl Engine {
                 let problem = ResolutionProblem {
                     auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
-                    current_values: values.clone(),
+                    current_values: snapshot_values.clone(),
                     objective,
                     functions: functions.clone(),
                 };
