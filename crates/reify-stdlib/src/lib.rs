@@ -1519,6 +1519,39 @@ mod tests {
         )
     }
 
+    /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
+    /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
+    fn assert_complex_builtin_undef(
+        builtin: &str,
+        re: f64,
+        im: f64,
+        dimension: DimensionVector,
+    ) {
+        let z = Value::Complex {
+            re,
+            im,
+            dimension,
+        };
+        assert!(
+            eval_builtin(builtin, &[z]).is_undef(),
+            "{builtin} with Complex{{re={re}, im={im}}} must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_overflow_returns_undef_both_builtins() {
+        // Both `magnitude` and `complex_magnitude` delegate to complex_abs for Complex
+        // inputs; f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
+    }
+
     #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
