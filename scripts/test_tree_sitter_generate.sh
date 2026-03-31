@@ -162,19 +162,19 @@ assert "flock uses \$MAX_WAIT_SECS (not hardcoded 120)" \
 assert "mkdir attempt limit uses \$MAX_WAIT_SECS (not hardcoded 75)" \
     grep -q '\-ge \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
 
-# ── Test 10: timeout fallback uses kill-based pattern ─────────────
+# ── Test 10: timeout guard via portable_timeout ──────────────────
 echo ""
-echo "--- Test 10: no bare tree-sitter generate; kill-based fallback ---"
+echo "--- Test 10: no bare tree-sitter generate; portable_timeout guard ---"
 
-# Every 'tree-sitter generate' invocation must be guarded by timeout/gtimeout
-# or backgrounded for kill-based fallback. No unguarded invocations should exist.
-# Allowed forms: 'timeout 60 tree-sitter generate', 'gtimeout 60 tree-sitter generate',
-# 'tree-sitter generate &' (backgrounded for kill). Bare 'tree-sitter generate || ...' is not.
+# Every 'tree-sitter generate' invocation must be guarded by portable_timeout.
+# No unguarded invocations should exist.
 assert "no bare 'tree-sitter generate' without timeout guard" \
-    bash -c '[ -z "$(grep -E "^[[:space:]]+tree-sitter generate" "$1" | grep -vE "(timeout|gtimeout|&)")" ]' _ "$GENERATE_SCRIPT"
+    bash -c '[ -z "$(grep -E "^[[:space:]]+tree-sitter generate" "$1" | grep -vE "(timeout|portable_timeout|&)")" ]' _ "$GENERATE_SCRIPT"
 
-assert "fallback uses kill-based timeout pattern" \
-    grep -q 'kill.*_gen_pid\|kill.*\$_gen_pid' "$GENERATE_SCRIPT"
+# The kill-based fallback now lives in lib_portable.sh (portable_timeout function),
+# not inline in tree-sitter-generate.sh.
+assert "kill-based fallback lives in lib_portable.sh" \
+    grep -q 'kill.*cmd_pid\|kill.*\$cmd_pid' "$SCRIPT_DIR/lib_portable.sh"
 
 # ── Test 11: portability gate — no Perl-mode grep in tests ───────
 echo ""

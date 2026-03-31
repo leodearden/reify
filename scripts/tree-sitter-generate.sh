@@ -137,27 +137,8 @@ if [ "$FORCE" = false ]; then
 fi
 
 GEN_EXIT=0
-# Portable timeout: prefer GNU timeout, then gtimeout (Homebrew coreutils on macOS),
-# then fall back to a background-process + sleep + kill pattern (POSIX-portable).
-if command -v timeout >/dev/null 2>&1; then
-    timeout 60 tree-sitter generate || GEN_EXIT=$?
-elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout 60 tree-sitter generate || GEN_EXIT=$?
-else
-    echo "WARNING: timeout/gtimeout not found; using kill-based timeout fallback" >&2
-    tree-sitter generate &
-    _gen_pid=$!
-    ( sleep 60 && kill $_gen_pid 2>/dev/null ) &
-    _timer_pid=$!
-    wait $_gen_pid 2>/dev/null || GEN_EXIT=$?
-    # Clean up timer — if generate finished before timeout, kill the sleep+kill subshell.
-    kill $_timer_pid 2>/dev/null || true
-    wait $_timer_pid 2>/dev/null || true
-    # Exit code 143 = 128+15 (SIGTERM from kill) — treat as timeout, same as 124.
-    if [ "$GEN_EXIT" -eq 143 ]; then
-        GEN_EXIT=124
-    fi
-fi
+# Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
+portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     exit 1
