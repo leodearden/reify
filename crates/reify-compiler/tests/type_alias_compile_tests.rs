@@ -275,3 +275,38 @@ fn duplicate_alias_name_produces_error() {
         dup_err.labels
     );
 }
+
+// ─── step-13: parameterized alias ───────────────────────────────────────────
+
+#[test]
+fn parameterized_alias_substitution() {
+    // type Measure<Q> = Q
+    // When instantiated as Measure<Force>, Q is substituted with Force,
+    // so param p should have type Scalar{FORCE}.
+    let source = r#"
+        type Measure<Q> = Q
+        structure S {
+            param p : Measure<Force> = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for parameterized alias; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "Measure<Force> alias should resolve to Scalar{{FORCE}}"
+    );
+}
