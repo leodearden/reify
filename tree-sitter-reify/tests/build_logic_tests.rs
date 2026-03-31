@@ -503,6 +503,10 @@ fn test_subprocess_timeout_kills_hung_process() {
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
              // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_stamp_write_failure_no_panic() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
     // Verify that stamp_write does not panic when the destination is read-only.
     // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
     let dir = tempfile::tempdir().unwrap();
@@ -530,6 +534,27 @@ fn test_stamp_write_failure_no_panic() {
 }
 
 #[test]
+fn test_stamp_write_exact_content() {
+    // Validates that stamp_write produces exact hash bytes with no trailing
+    // whitespace, newline, or other content corruption. Since needs_generate
+    // uses .trim() when reading, corruption would be silently masked without
+    // this direct content assertion.
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = dir.path().join("grammar_hash.stamp");
+    let hash = "a1b2c3d4e5f60708";
+
+    stamp_write(&stamp_path, hash);
+
+    let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
+    assert_eq!(
+        raw_content, hash,
+        "stamp_write must produce exact hash bytes — no trailing newline, whitespace, or BOM. \
+         Got {:?}, expected {:?}",
+        raw_content, hash
+    );
+}
+
+#[test]
 fn test_stamp_path_is_profile_independent() {
     // Prove that staleness detection is purely hash-driven and works identically
     // across different OUT_DIR paths (simulating debug vs release profiles).
@@ -552,7 +577,9 @@ fn test_stamp_path_is_profile_independent() {
     let debug_stamp = debug_out.join("grammar_hash.stamp");
     let release_stamp = release_out.join("grammar_hash.stamp");
     stamp_write(&debug_stamp, &hash);
+    assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
     stamp_write(&release_stamp, &hash);
+    assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
 
     // Both profiles report no regeneration needed
     assert!(
@@ -601,6 +628,7 @@ fn test_stamp_shared_across_simulated_profiles() {
 
     // Write stamp to only OUT_DIR_1
     stamp_write(&stamp_1, &hash);
+    assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
 
     // OUT_DIR_1 has matching stamp — no regeneration needed
     assert!(
@@ -615,6 +643,7 @@ fn test_stamp_shared_across_simulated_profiles() {
 
     // Now write the same stamp to OUT_DIR_2
     stamp_write(&stamp_2, &hash);
+    assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
 
     // Both locations now report no regeneration needed
     assert!(
@@ -625,6 +654,18 @@ fn test_stamp_shared_across_simulated_profiles() {
         !needs_generate(&hash, &stamp_2, &output_refs),
         "OUT_DIR_2: must NOT regenerate after stamp written with matching hash"
     );
+}
+
+/// Returns true when running as root (UID 0). Used to skip tests that rely on
+/// DAC permission enforcement, which root/CAP_DAC_OVERRIDE bypasses.
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: getuid() is a trivial POSIX syscall with a stable ABI.
+    // uid_t is u32 on all major Unix platforms (Linux, macOS, BSD).
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    unsafe { getuid() == 0 }
 }
 
 /// RAII guard that unconditionally restores write permissions on drop.
@@ -646,15 +687,94 @@ impl Drop for ReadonlyGuard {
             let mut perms = meta.permissions();
             #[allow(clippy::permissions_set_readonly_false)]
             perms.set_readonly(false);
-            let _ = std::fs::set_permissions(&self.path, perms);
+            if let Err(e) = std::fs::set_permissions(&self.path, perms) {
+                eprintln!(
+                    "warning: ReadonlyGuard failed to restore permissions on {}: {}",
+                    self.path.display(),
+                    e
+                );
+            }
         }
     }
+}
+
+#[test]
+fn test_unix_permission_tests_have_root_guard() {
+    // Source-level regression guard: both #[cfg(unix)] tests that rely on
+    // DAC permission enforcement must contain an is_root() skip guard.
+    // Without it, tests produce misleading failures under root/CAP_DAC_OVERRIDE.
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    let unix_test_fns = [
+        "fn test_stamp_write_failure_no_panic()",
+        "fn test_readonly_guard_restores_on_drop()",
+    ];
+
+    for fn_sig in &unix_test_fns {
+        let fn_start = source
+            .find(fn_sig)
+            .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
+        // Extract enough of the function body to check for the guard
+        let fn_section = &source[fn_start..];
+        // Find the next test function or end of file as boundary
+        let fn_end = fn_section[1..]
+            .find("\n#[test]")
+            .unwrap_or(fn_section.len() - 1);
+        let fn_body = &fn_section[..fn_end];
+
+        assert!(
+            fn_body.contains("is_root()"),
+            "{} must contain an is_root() skip guard to prevent misleading failures \
+             when running as root. Function body:\n{}",
+            fn_sig,
+            fn_body
+        );
+    }
+}
+
+#[test]
+fn test_readonly_guard_drop_logs_error() {
+    // Source-level regression guard: ReadonlyGuard::drop must log errors from
+    // set_permissions via eprintln! rather than silently discarding with `let _ =`.
+    // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    // Extract the Drop impl for ReadonlyGuard
+    let drop_start = source
+        .find("impl Drop for ReadonlyGuard")
+        .expect("source should contain Drop impl for ReadonlyGuard");
+    let drop_section = &source[drop_start..];
+    // Find the closing brace of the impl block (next unindented '}')
+    let drop_end = drop_section
+        .find("\n}\n")
+        .expect("Drop impl should have a closing brace");
+    let drop_impl = &drop_section[..drop_end];
+
+    assert!(
+        !drop_impl.contains("let _ = std::fs::set_permissions"),
+        "ReadonlyGuard::drop must NOT silently discard set_permissions errors with `let _ =`. \
+         Use `if let Err(e) = ... {{ eprintln!(...) }}` instead. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+    assert!(
+        drop_impl.contains("eprintln!"),
+        "ReadonlyGuard::drop must log set_permissions errors via eprintln!. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
 }
 
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
              // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
+    if is_root() {
+        eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
+        return;
+    }
     // Verify that ReadonlyGuard's Drop impl restores write permissions.
     let dir = tempfile::tempdir().unwrap();
     let subdir = dir.path().join("guarded");
