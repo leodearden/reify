@@ -9210,11 +9210,11 @@
         "description": "From task 421 review (4 reviewers flagged independently): Phase 2 in unfold_recursive_sub (crates/reify-eval/src/lib.rs ~line 3432) filters child_recursive_subs on guard_expr.is_some() but does NOT check child_template.is_recursive — unlike the entry point guard at ~line 1202. This creates a logical gap where a non-recursive child template with guarded subs could be incorrectly unfolded recursively. Fix: add && child_template.is_recursive to the filter, or gate Phase 2 with if child_template.is_recursive {}. Also: (1) Change Diagnostic::warning to Diagnostic::error at ~line 3449 for missing template lookup — this is an invariant violation, not a recoverable warning. (2) Move *node_budget -= 1 at ~line 3345 to after successful template lookup so budget isn't consumed for failed lookups. Modules: crates/reify-eval. Reviewers: architect, performance, robustness, test_analyst.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T20:44:34.390Z",
+        "updatedAt": "2026-03-31T20:49:30.877Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -12663,7 +12663,7 @@
         "description": "The stamp file is written to OUT_DIR which is unique per cargo profile (test/build/clippy). Switching profiles triggers redundant regeneration even when grammar.js hasn't changed. Store the stamp alongside the generated files in tree-sitter-reify/src/ (already gitignored) or at a fixed path in target/, so all cargo invocations share one stamp.",
         "details": "File: tree-sitter-reify/build.rs:138-139. This multiplies unnecessary tree-sitter generate calls in the orchestrator's multi-command verification pipeline. Memory hint: search for \"task 563 stamp file\" for context.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12685,7 +12685,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T20:39:16.337Z"
+        "updatedAt": "2026-03-31T20:49:30.921Z"
       },
       {
         "id": "610",
@@ -16546,7 +16546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:49:30.842Z",
+      "lastModified": "2026-03-31T20:49:30.921Z",
       "taskCount": 796,
       "completedCount": 454,
       "tags": [
