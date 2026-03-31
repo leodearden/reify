@@ -16191,6 +16191,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 796,
+        "title": "Extract empty_problem() helper in mocks.rs",
+        "description": "Add fn empty_problem() -> ResolutionProblem helper and use it in the 3 new tests plus retrofit existing ~10 occurrences of empty ResolutionProblem literals in the file.",
+        "details": "Source: escalation esc-617-249 (task 617 review). File: crates/reify-test-support/src/mocks.rs.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16203,7 +16214,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:15:23.333Z"
+      "updated": "2026-03-31T15:15:25.057Z"
     }
   }
 }
