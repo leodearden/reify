@@ -1746,3 +1746,155 @@ fn edit_param_no_cross_group_value_contamination() {
             .collect::<Vec<_>>(),
     );
 }
+
+#[test]
+fn resolve_concurrent_edit_no_cross_group_contamination() {
+    // Same invariant as edit_param_no_cross_group_value_contamination but
+    // exercised through the resolve_concurrent_edit path, which uses
+    // result.values instead of a local values map.
+    use std::collections::HashSet;
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_clearance = ValueCellId::new("Bracket", "clearance");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+
+    // eval() results
+    let mut bracket_eval_solved = HashMap::new();
+    bracket_eval_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_eval_solved = HashMap::new();
+    bolt_eval_solved.insert(bolt_diameter.clone(), mm(10.0));
+
+    // resolve_concurrent_edit() re-resolution results (both groups dirty).
+    // Use values DIFFERENT from eval so contamination is detectable.
+    let mut edit_resolved_a = HashMap::new();
+    edit_resolved_a.insert(bracket_thickness.clone(), mm(7.0));
+    let mut edit_resolved_b = HashMap::new();
+    edit_resolved_b.insert(bolt_diameter.clone(), mm(14.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        // eval() call 1 (either group)
+        SolveResult::Solved {
+            values: bracket_eval_solved,
+        },
+        // eval() call 2 (either group)
+        SolveResult::Solved {
+            values: bolt_eval_solved,
+        },
+        // resolve_concurrent_edit() call 3 (first dirty group)
+        SolveResult::Solved {
+            values: edit_resolved_a,
+        },
+        // resolve_concurrent_edit() call 4 (second dirty group)
+        SolveResult::Solved {
+            values: edit_resolved_b,
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    // Bracket: auto thickness, param clearance (default 2mm), constraint thickness > clearance
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param(
+            "Bracket",
+            "clearance",
+            Type::length(),
+            Some(literal(mm(2.0))),
+        )
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "clearance"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    // Bolt: auto diameter, constraint diameter > Bracket.clearance (cross-entity ref)
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(
+                value_ref("Bolt", "diameter"),
+                value_ref("Bracket", "clearance"),
+            ),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    engine.eval(&module);
+
+    // prepare_concurrent_edit + resolve_concurrent_edit
+    let setup = engine
+        .prepare_concurrent_edit(bracket_clearance.clone(), mm(3.0))
+        .unwrap();
+
+    let mut result = ConcurrentEditResult {
+        values: setup.values.clone(),
+        snapshot_values: setup.snapshot_values.clone(),
+        node_results: Vec::new(),
+        actual_eval_set: Vec::new(),
+        skipped: HashSet::new(),
+        resolved_params: HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    engine.resolve_concurrent_edit(&setup, &mut result);
+
+    let problems = captured.lock().unwrap();
+
+    // (1) 4 total calls: 2 from eval + 2 from resolve_concurrent_edit (both groups dirty)
+    assert_eq!(
+        problems.len(),
+        4,
+        "expected 4 solver calls (2 from eval + 2 from resolve_concurrent_edit), got {}",
+        problems.len()
+    );
+
+    // (2) The two resolve_concurrent_edit calls (indices 2 and 3) must have
+    //     identical current_values — proving no cross-group contamination.
+    let cv_a: HashMap<ValueCellId, Value> = problems[2]
+        .current_values
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let cv_b: HashMap<ValueCellId, Value> = problems[3]
+        .current_values
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    assert_eq!(
+        cv_a, cv_b,
+        "cross-group contamination: resolve_concurrent_edit solver calls received different \
+         current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
+        problems[2]
+            .auto_params
+            .iter()
+            .map(|p| &p.id)
+            .collect::<Vec<_>>(),
+        problems[3]
+            .auto_params
+            .iter()
+            .map(|p| &p.id)
+            .collect::<Vec<_>>(),
+    );
+}
