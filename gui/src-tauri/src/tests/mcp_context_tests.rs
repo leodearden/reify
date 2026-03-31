@@ -465,7 +465,7 @@ fn mcp_config_struct_stores_fields() {
 
     let config = McpConfig {
         engine: engine.clone(),
-        event_sink: move |_name: String, _payload: serde_json::Value| {
+        event_emitter: move |_name: String, _payload: serde_json::Value| {
             *sink_clone.lock().unwrap() = true;
         },
         selection: selection.clone(),
@@ -474,7 +474,7 @@ fn mcp_config_struct_stores_fields() {
     // Assert all three fields are accessible and hold the right values
     assert!(Arc::ptr_eq(&config.engine, &engine));
     assert!(Arc::ptr_eq(&config.selection, &selection));
-    (config.event_sink)("test".to_string(), serde_json::json!({}));
+    (config.event_emitter)("test".to_string(), serde_json::json!({}));
     assert!(*sink_called.lock().unwrap());
 }
 
