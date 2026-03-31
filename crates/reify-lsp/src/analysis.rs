@@ -519,6 +519,18 @@ mod tests {
         assert_eq!(*when_false.2, Type::length(), "when_false should have length type");
     }
 
+    // --- EntityKind / EntitySummary tests ---
+
+    #[test]
+    fn entity_kind_display() {
+        assert_eq!(EntityKind::Structure.to_string(), "structure");
+        assert_eq!(EntityKind::Occurrence.to_string(), "occurrence");
+        // Verify Debug and PartialEq derives work
+        assert_eq!(EntityKind::Structure, EntityKind::Structure);
+        assert_ne!(EntityKind::Structure, EntityKind::Occurrence);
+        assert_eq!(format!("{:?}", EntityKind::Structure), "Structure");
+    }
+
     // --- structure_names tests ---
 
     #[test]
