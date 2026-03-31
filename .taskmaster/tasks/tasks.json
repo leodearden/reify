@@ -13280,7 +13280,7 @@
         "description": "The `Value::Scalar { si_value: val, dimension: dimension_of(&param.param_type) }` construction is duplicated verbatim between `build_trial_values` and `params_to_value_map` in solver.rs. Extract a private `#[inline] fn param_to_scalar(param: &AutoParam, val: f64) -> Value` helper to eliminate the duplication while keeping the collection strategies separate. Memory hints: search \"build_trial_values params_to_value_map Value::Scalar\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13291,7 +13291,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T20:32:25.543Z"
       },
       {
         "id": "639",
@@ -16537,7 +16538,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:32:25.408Z",
+      "lastModified": "2026-03-31T20:32:25.543Z",
       "taskCount": 796,
       "completedCount": 443,
       "tags": [
