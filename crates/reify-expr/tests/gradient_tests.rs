@@ -1855,3 +1855,221 @@ fn gradient_nan_in_dimensioned_scalar_returns_undef() {
         sample_result
     );
 }
+
+/// Lambda producing NaN must cause gradient to return Undef.
+///
+/// Build a 1D field whose lambda always returns Value::Real(NaN).
+/// The gradient evaluates f(x+h) = NaN and f(x-h) = NaN. Without
+/// the is_finite guard on fp/fm, as_f64() returns Some(NaN), the
+/// match passes, and deriv = (NaN - NaN)/(2h) = NaN, yielding
+/// Value::Real(NaN) instead of Undef.
+///
+/// Note: We use a literal NaN rather than 0.0/0.0 because the
+/// evaluator's div-by-zero handler returns Undef (not NaN), which
+/// is already caught by the existing None guard.
+#[test]
+fn gradient_lambda_produces_nan_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| NaN (literal NaN, bypasses div-by-zero → Undef path)
+    let body = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at x=1.0 (finite input, NaN output from lambda)
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient of NaN-producing lambda must return Undef, got {:?}",
+        sample_result
+    );
+}
+
+/// Lambda producing Inf must cause gradient to return Undef.
+///
+/// Build a 1D field whose lambda always returns Value::Real(+Inf).
+/// The gradient evaluates f(x+h) = Inf and f(x-h) = Inf. Without
+/// the is_finite guard, as_f64() returns Some(Inf), the match passes,
+/// and deriv = (Inf - Inf)/(2h) = NaN, yielding Value::Real(NaN).
+///
+/// Note: We use a literal Inf rather than 1.0/0.0 because the
+/// evaluator's div-by-zero handler returns Undef (not Inf).
+#[test]
+fn gradient_lambda_produces_inf_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| +Inf (literal Inf, bypasses div-by-zero → Undef path)
+    let body = CompiledExpr::literal(Value::Real(f64::INFINITY), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at x=2.0 (finite input, Inf output from lambda)
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient of Inf-producing lambda must return Undef, got {:?}",
+        sample_result
+    );
+}
+
+/// Derivative overflow (f64::MAX - (-f64::MAX))/(2h) must return Undef.
+///
+/// Build a 1D field with a conditional lambda:
+///   |x| if x > 0.0 then f64::MAX else -f64::MAX
+/// At x=0.0, perturbation evaluates f(0+h) = MAX and f(0-h) = -MAX.
+/// deriv = (MAX - (-MAX))/(2h) = 2*MAX/(2h) → Inf (overflow).
+/// Without the deriv is_finite guard, this silently produces Value::Real(Inf).
+#[test]
+fn gradient_deriv_overflow_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| if x > 0.0 then f64::MAX else -f64::MAX
+    let body = make_conditional(
+        // condition: x > 0.0
+        CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            Type::Bool,
+        ),
+        // then: f64::MAX
+        CompiledExpr::literal(Value::Real(f64::MAX), Type::Real),
+        // else: -f64::MAX
+        CompiledExpr::literal(Value::Real(-f64::MAX), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient at x=0.0, where perturbation crosses the
+    // discontinuity and produces deriv overflow (MAX - (-MAX)) / (2h) → Inf
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, field_type),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient with deriv overflow must return Undef, got {:?}",
+        sample_result
+    );
+}
