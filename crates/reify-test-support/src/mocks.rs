@@ -5,8 +5,19 @@ use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
     ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
     GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId, ValueMap,
 };
+
+/// Create an empty `ResolutionProblem` with all fields set to empty/default values.
+pub fn empty_problem() -> ResolutionProblem {
+    ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    }
+}
 
 /// Mock constraint checker that returns predetermined results.
 pub struct MockConstraintChecker {
