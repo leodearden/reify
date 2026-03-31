@@ -16183,7 +16183,7 @@
         "description": "The check path (cmd_check, line 100) calls `println!(\"{}\", constraint_summary_message(...))` which prints \"No constraint violations (some indeterminate).\" or \"All constraints satisfied.\" But the build path (cmd_build, lines 157-173) never calls constraint_summary_message — it only prints \"Some constraints violated.\" on failure. On success, no constraint status is printed. Add the same constraint_summary_message call to the build path so users see constraint status in both commands.",
         "details": "Source: escalation esc-701-49 (task 701 design concern). File: crates/reify-cli/src/main.rs, cmd_build function around lines 157-173.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -16201,7 +16201,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T20:19:22.781Z"
+        "updatedAt": "2026-03-31T20:23:07.031Z"
       },
       {
         "id": "781",
@@ -16526,7 +16526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:23:06.956Z",
+      "lastModified": "2026-03-31T20:23:07.032Z",
       "taskCount": 796,
       "completedCount": 439,
       "tags": [
