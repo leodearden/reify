@@ -16114,6 +16114,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 789,
+        "title": "Add visited-set to elaborate_child_lets_only BFS to prevent infinite loops",
+        "description": "Add HashSet<String> of visited entity paths before the while-loop at lib.rs:3904; skip enqueueing any depth_entity already in the set. This prevents mutual cycles between zero-value-cell wrapper templates from looping forever.",
+        "details": "Source: escalation esc-550-13 (task 550 review). File: crates/reify-eval/src/lib.rs:3904-3936. Confirmed: the BFS loop has no visited-set or depth limit guard.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16126,7 +16137,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:49.356Z"
+      "updated": "2026-03-31T15:14:52.021Z"
     }
   }
 }
