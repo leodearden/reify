@@ -68,6 +68,7 @@ pub enum MemberDecl {
     Param(ParamDecl),
     Let(LetDecl),
     Constraint(ConstraintDecl),
+    ConstraintInst(ConstraintInstDecl),
     Sub(SubDecl),
     Minimize(MinimizeDecl),
     Maximize(MaximizeDecl),
@@ -126,6 +127,21 @@ pub struct LetDecl {
 pub struct ConstraintDecl {
     pub label: Option<String>,
     pub expr: Expr,
+    pub where_clause: Option<WhereClause>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
+/// `constraint MinWall(wall: thickness)` inside a structure body.
+///
+/// Instantiates a named constraint definition, binding named arguments to
+/// the constraint def's parameters. During compilation each predicate from
+/// the constraint def is substituted with the bound arguments and compiled
+/// in the calling entity's scope.
+#[derive(Debug, Clone)]
+pub struct ConstraintInstDecl {
+    pub name: String,
+    pub args: Vec<(String, Expr)>,
     pub where_clause: Option<WhereClause>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,

@@ -2675,6 +2675,17 @@ fn compile_purpose(
                     )),
                 );
             }
+            reify_syntax::MemberDecl::ConstraintInst(ci) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "constraint instantiations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        ci.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
         }
     }
 
@@ -3009,6 +3020,19 @@ pub fn compile_with_prelude(
     let field_registry: HashMap<String, &CompiledField> =
         fields.iter().map(|f| (f.name.clone(), f)).collect();
 
+    // Build a constraint def registry so entity scopes can resolve constraint instantiations.
+    let constraint_def_registry: HashMap<String, &reify_syntax::ConstraintDef> = parsed
+        .declarations
+        .iter()
+        .filter_map(|d| {
+            if let reify_syntax::Declaration::Constraint(c) = d {
+                Some((c.name.clone(), c))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let mut pending_bound_checks: Vec<PendingBoundCheck> = Vec::new();
 
     for decl in &parsed.declarations {
@@ -3028,6 +3052,7 @@ pub fn compile_with_prelude(
                         &functions,
                         &trait_registry,
                         &field_registry,
+                        &constraint_def_registry,
                         &unit_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
@@ -3075,6 +3100,7 @@ pub fn compile_with_prelude(
                         &functions,
                         &trait_registry,
                         &field_registry,
+                        &constraint_def_registry,
                         &unit_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
@@ -3493,6 +3519,131 @@ fn termination_is_modifying(expr: &CompiledExpr, param_id: &ValueCellId) -> bool
     found_mod
 }
 
+/// Substitute constraint parameter references in an AST expression.
+///
+/// Recursively walks `expr` and replaces every `ExprKind::Ident(name)` where
+/// `name` is a key in `bindings` with the corresponding bound expression.
+/// Lambda and quantifier bodies respect lexical shadowing — when a binder
+/// introduces a name that overlaps a constraint param, the inner name takes
+/// precedence and substitution is suppressed for that name inside the body.
+fn substitute_expr(
+    expr: &reify_syntax::Expr,
+    bindings: &HashMap<String, reify_syntax::Expr>,
+) -> reify_syntax::Expr {
+    use reify_syntax::{Expr, ExprKind, MatchArm};
+    let span = expr.span;
+    let new_kind = match &expr.kind {
+        // Leaf variants — no sub-expressions to recurse into.
+        ExprKind::NumberLiteral(n) => ExprKind::NumberLiteral(*n),
+        ExprKind::QuantityLiteral { value, unit } => {
+            ExprKind::QuantityLiteral { value: *value, unit: unit.clone() }
+        }
+        ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
+        ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
+        ExprKind::Auto => ExprKind::Auto,
+        ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
+            type_name: type_name.clone(),
+            variant: variant.clone(),
+        },
+
+        // Identifier — the substitution point.
+        ExprKind::Ident(name) => {
+            if let Some(replacement) = bindings.get(name) {
+                return replacement.clone();
+            }
+            ExprKind::Ident(name.clone())
+        }
+
+        // Compound variants — recurse into sub-expressions.
+        ExprKind::BinOp { op, left, right } => ExprKind::BinOp {
+            op: op.clone(),
+            left: Box::new(substitute_expr(left, bindings)),
+            right: Box::new(substitute_expr(right, bindings)),
+        },
+        ExprKind::UnOp { op, operand } => ExprKind::UnOp {
+            op: op.clone(),
+            operand: Box::new(substitute_expr(operand, bindings)),
+        },
+        ExprKind::FunctionCall { name, args } => ExprKind::FunctionCall {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::MemberAccess { object, member } => ExprKind::MemberAccess {
+            object: Box::new(substitute_expr(object, bindings)),
+            member: member.clone(),
+        },
+        ExprKind::Conditional { condition, then_branch, else_branch } => ExprKind::Conditional {
+            condition: Box::new(substitute_expr(condition, bindings)),
+            then_branch: Box::new(substitute_expr(then_branch, bindings)),
+            else_branch: Box::new(substitute_expr(else_branch, bindings)),
+        },
+        ExprKind::ListLiteral(items) => {
+            ExprKind::ListLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
+        }
+        ExprKind::SetLiteral(items) => {
+            ExprKind::SetLiteral(items.iter().map(|i| substitute_expr(i, bindings)).collect())
+        }
+        ExprKind::MapLiteral(pairs) => ExprKind::MapLiteral(
+            pairs
+                .iter()
+                .map(|(k, v)| (substitute_expr(k, bindings), substitute_expr(v, bindings)))
+                .collect(),
+        ),
+        ExprKind::IndexAccess { object, index } => ExprKind::IndexAccess {
+            object: Box::new(substitute_expr(object, bindings)),
+            index: Box::new(substitute_expr(index, bindings)),
+        },
+        ExprKind::Match { discriminant, arms } => ExprKind::Match {
+            discriminant: Box::new(substitute_expr(discriminant, bindings)),
+            arms: arms
+                .iter()
+                .map(|arm| MatchArm {
+                    patterns: arm.patterns.clone(),
+                    body: substitute_expr(&arm.body, bindings),
+                    span: arm.span,
+                })
+                .collect(),
+        },
+        // Lambda — remove params that shadow constraint param names to respect scoping.
+        ExprKind::Lambda { params, body } => {
+            let shadowed: std::collections::HashSet<&str> =
+                params.iter().map(|p| p.name.as_str()).collect();
+            let inner_bindings: HashMap<String, Expr> = bindings
+                .iter()
+                .filter(|(k, _)| !shadowed.contains(k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            ExprKind::Lambda {
+                params: params.clone(),
+                body: Box::new(substitute_expr(body, &inner_bindings)),
+            }
+        }
+        // Quantifier — the bound variable shadows constraint params in the predicate.
+        ExprKind::Quantifier { kind, variable, collection, predicate } => {
+            // The collection expression is evaluated in the outer scope.
+            let sub_collection = substitute_expr(collection, bindings);
+            // The predicate is evaluated with the variable shadowing any same-named binding.
+            let inner_bindings: HashMap<String, Expr> = bindings
+                .iter()
+                .filter(|(k, _)| k.as_str() != variable.as_str())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            ExprKind::Quantifier {
+                kind: *kind,
+                variable: variable.clone(),
+                collection: Box::new(sub_collection),
+                predicate: Box::new(substitute_expr(predicate, &inner_bindings)),
+            }
+        }
+        ExprKind::AdHocSelector { base, selector, args } => ExprKind::AdHocSelector {
+            base: Box::new(substitute_expr(base, bindings)),
+            selector: selector.clone(),
+            args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        }
+    };
+    Expr { kind: new_kind, span }
+}
+
 /// Compile a single entity definition (structure or occurrence) into a topology template.
 #[allow(clippy::too_many_arguments)]
 fn compile_entity(
@@ -3502,6 +3653,7 @@ fn compile_entity(
     functions: &[CompiledFunction],
     trait_registry: &HashMap<String, &CompiledTrait>,
     field_registry: &HashMap<String, &CompiledField>,
+    constraint_def_registry: &HashMap<String, &reify_syntax::ConstraintDef>,
     unit_registry: &UnitRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4184,6 +4336,106 @@ fn compile_entity(
             }
             reify_syntax::MemberDecl::MetaBlock(_) => {
                 // Meta blocks are collected in the first pass; skip in second pass.
+            }
+            reify_syntax::MemberDecl::ConstraintInst(ci) => {
+                // Look up the constraint definition.
+                let def = match constraint_def_registry.get(&ci.name) {
+                    Some(d) => *d,
+                    None => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unknown constraint definition: {}",
+                                ci.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                ci.span,
+                                format!("no constraint def named '{}'", ci.name),
+                            )),
+                        );
+                        continue;
+                    }
+                };
+
+                // Build name → Expr bindings map from the named args.
+                let arg_map: HashMap<String, reify_syntax::Expr> = ci
+                    .args
+                    .iter()
+                    .map(|(name, expr)| (name.clone(), expr.clone()))
+                    .collect();
+
+                // Validate: check for unknown argument names.
+                let param_names: std::collections::HashSet<&str> =
+                    def.params.iter().map(|p| p.name.as_str()).collect();
+                for (arg_name, _) in &ci.args {
+                    if !param_names.contains(arg_name.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unknown argument '{}' in constraint instantiation of '{}'",
+                                arg_name, ci.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                ci.span,
+                                format!("'{}' is not a parameter of '{}'", arg_name, ci.name),
+                            )),
+                        );
+                    }
+                }
+
+                // Validate: check for missing required arguments.
+                let mut has_validation_error = false;
+                for param in &def.params {
+                    if !arg_map.contains_key(&param.name) && param.default.is_none() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "missing argument '{}' in constraint instantiation of '{}'",
+                                param.name, ci.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                ci.span,
+                                format!("argument '{}' is required", param.name),
+                            )),
+                        );
+                        has_validation_error = true;
+                    }
+                }
+                if has_validation_error {
+                    continue;
+                }
+
+                // For each predicate in the constraint def, substitute params with args
+                // and compile the resulting expression in the calling entity's scope.
+                for predicate in &def.predicates {
+                    let substituted = substitute_expr(predicate, &arg_map);
+                    let compiled_expr =
+                        compile_expr(&substituted, &scope, enum_defs, functions, diagnostics);
+
+                    let id = ConstraintNodeId::new(entity_name, constraint_index);
+                    let cc = CompiledConstraint {
+                        id,
+                        label: None,
+                        expr: compiled_expr,
+                        span: ci.span,
+                        domain: None,
+                    };
+                    constraint_index += 1;
+
+                    if let Some(wc) = &ci.where_clause {
+                        compile_per_decl_constraint_guard(
+                            entity_name,
+                            wc,
+                            cc,
+                            &mut scope,
+                            enum_defs,
+                            functions,
+                            diagnostics,
+                            &mut guarded_groups,
+                            &mut structure_controlling,
+                            &mut guard_index,
+                        );
+                    } else {
+                        constraints.push(cc);
+                    }
+                }
             }
         }
     }

@@ -22,6 +22,7 @@ module.exports = grammar({
     [$.param_declaration],
     [$.let_declaration],
     [$.constraint_declaration],
+    [$.constraint_instantiation],
     [$.minimize_declaration],
     [$.maximize_declaration],
     [$.sub_declaration],
@@ -341,6 +342,7 @@ module.exports = grammar({
     _member: $ => choice(
       $.param_declaration,
       $.let_declaration,
+      $.constraint_instantiation,
       $.constraint_declaration,
       $.sub_declaration,
       $.minimize_declaration,
@@ -364,6 +366,19 @@ module.exports = grammar({
       field('key', $.identifier),
       '=',
       field('value', $.string_literal),
+    ),
+
+    // ── Constraint instantiation (member-level) ──────────────
+    // `constraint ConstraintName(arg: expr, ...)` inside structure bodies.
+    // The required named_argument_list (name: value) disambiguates from
+    // constraint_declaration (which parses an arbitrary expression).
+    constraint_instantiation: $ => seq(
+      'constraint',
+      field('name', $.identifier),
+      '(',
+      $.named_argument_list,
+      ')',
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Where clause (guard) ────────────────────────────────
