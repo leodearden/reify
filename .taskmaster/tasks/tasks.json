@@ -16680,10 +16680,11 @@
         "description": "In crates/reify-lsp/src/server.rs, replace all std::env::temp_dir().join(format!(\"reify-lsp-*-{}\", std::process::id())) patterns with either the tempfile crate's TempDir (preferred — cleans up on drop even on panic) or a random suffix (e.g. subsec_nanos()). This fixes: (a) intra-process thread-level collision when two tests share the same name prefix, (b) leaked directories when assertions panic before remove_dir_all, and (c) cross-process CI matrix collision when two binary invocations share the same PID. Affects at least four tests: goto_definition_uses_custom_stdlib_path, goto_definition_prefers_document_store_over_disk, goto_definition_resolves_imported_symbol_across_files, concurrent_goto_definition_completes_without_stalling.\n\nmemory_hints: search \"tempfile TempDir LSP test cleanup\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-03-31T21:18:51.499Z"
       },
       {
         "id": "808",
@@ -16732,7 +16733,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:18:51.064Z",
+      "lastModified": "2026-03-31T21:18:51.502Z",
       "taskCount": 811,
       "completedCount": 466,
       "tags": [
