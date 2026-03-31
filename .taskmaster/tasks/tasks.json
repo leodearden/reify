@@ -13748,7 +13748,7 @@
         "description": "Move QUANTITY_RE and NUM_RE from inside the PropertyEditor component body to module-level const declarations. Also add a comment on line 102 explaining why both NUM_RE.test() and Number.isFinite() are needed (the regex passes '1e999' which parses to Infinity).",
         "details": "## Problem\n\nQUANTITY_RE and NUM_RE are declared inside the component function body (PropertyEditor.tsx:96-97). While SolidJS component functions run once per mount (not per render), the regexes are still scoped locally and recreated for every PropertyEditor instance. They are pure constants with no dependency on props or state.\n\nAdditionally, the `NUM_RE.test(trimmed) && Number.isFinite(Number(trimmed))` double-check on line 102 is intentional (catches overflow like `1e999` → Infinity) but lacks documentation, confusing future maintainers.\n\n## Fix\n\n1. Move both regex constants above the component:\n```typescript\nconst QUANTITY_RE = /^-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?(mm|cm|deg|rad|m)$/;\nconst NUM_RE = /^-?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?$/;\n\nexport const PropertyEditor: Component<...> = (props) => { ... };\n```\n\n2. Add a comment on the isFinite check:\n```typescript\n// NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)\nif (NUM_RE.test(trimmed) && Number.isFinite(Number(trimmed))) return true;\n```\n\n## Files\n- `gui/src/panels/PropertyEditor.tsx`\n\n## Notes\nSource: review suggestions 1/3/6/12 (hoist) and 2/4/7 (document isFinite guard) from task 652 review.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13766,7 +13766,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T20:17:33.117Z"
+        "updatedAt": "2026-03-31T20:49:31.006Z"
       },
       {
         "id": "662",
@@ -14048,7 +14048,7 @@
         "description": "After the task 660 split of `partial_feasibility_not_treated_as_warm_start` into two focused tests, the scenario where an objective competes with constraint satisfaction from a partially-infeasible starting point is now untested. Add a test `partial_feasibility_solved_with_objective_close_to_boundary` that includes `objective: Some(Minimize(p0+p1))` with p1 starting at 19.5mm (just below the 20mm boundary) and bounds [1mm, 100mm]. This is the real-world failure mode where objective minimization fights constraint satisfaction.\n\nMemory hints: search for \"partial feasibility\", \"solver test coverage\", entity: NelderMeadSolver",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "660"
         ],
@@ -14062,7 +14062,7 @@
             "crates/reify-constraints/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:47:06.444Z"
+        "updatedAt": "2026-03-31T20:49:31.045Z"
       },
       {
         "id": "676",
@@ -16546,7 +16546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:49:30.961Z",
+      "lastModified": "2026-03-31T20:49:31.045Z",
       "taskCount": 796,
       "completedCount": 454,
       "tags": [
