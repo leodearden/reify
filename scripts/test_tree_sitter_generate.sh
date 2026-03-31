@@ -167,21 +167,21 @@ echo "--- Test 10: no bare tree-sitter generate; kill-based fallback ---"
 # Allowed forms: 'timeout 60 tree-sitter generate', 'gtimeout 60 tree-sitter generate',
 # 'tree-sitter generate &' (backgrounded for kill). Bare 'tree-sitter generate || ...' is not.
 assert "no bare 'tree-sitter generate' without timeout guard" \
-    bash -c '! grep -P "^\s+tree-sitter generate\b" '"$GENERATE_SCRIPT"' | grep -vE "(timeout|gtimeout|&)"'
+    bash -c '[ -z "$(grep -E "^[[:space:]]+tree-sitter generate" "$1" | grep -vE "(timeout|gtimeout|&)")" ]' _ "$GENERATE_SCRIPT"
 
 assert "fallback uses kill-based timeout pattern" \
     grep -q 'kill.*_gen_pid\|kill.*\$_gen_pid' "$GENERATE_SCRIPT"
 
-# ── Test 11: portability gate — no grep -P in tests ──────────────
+# ── Test 11: portability gate — no Perl-mode grep in tests ───────
 echo ""
 echo "--- Test 11: test file uses only POSIX-compatible grep ---"
 
-# grep -P (Perl regex) is unavailable on macOS BSD grep and silently fails
+# Perl regex mode is unavailable on macOS BSD grep and silently fails
 # (exit 2), causing negated assertions to false-positive. All grep patterns
 # in this test file must use POSIX-ERE (grep -E) or basic grep instead.
-# Note: uses [P] character class so grep doesn't match this assertion itself.
+# Note: [P] character class self-avoids matching this assertion line itself.
 _TEST_FILE="${BASH_SOURCE[0]}"
-assert "test file does NOT use grep -P (non-portable Perl regex)" \
+assert "test file does not use Perl-mode grep (non-portable)" \
     bash -c '[ -z "$(grep "grep -[P]" "$1")" ]' _ "$_TEST_FILE"
 
 # ── Summary ────────────────────────────────────────────────────────
