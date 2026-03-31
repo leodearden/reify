@@ -8872,11 +8872,11 @@
         "description": "In reify-expr/src/lib.rs, the Vector/Point scalar guards in eval_mul (lines ~920-930) and eval_div (lines ~993-1001) exclude Vector, Point, and Tensor but not Matrix:\n```rust\n!matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_))\n```\n\nValue::Matrix is a live enum variant (value.rs:84) that should be excluded. Currently Matrix falls through to Undef via inner eval_mul, so behavior is correct but the guard is incomplete.\n\nAdditionally, the Tensor scalar guard (line ~915) is narrower — it only excludes `Value::Tensor(_)` — creating an asymmetry with the Vector/Point guards. Either document why Tensor deliberately allows Vector/Point scalars, or widen it to match.\n\nFix: Add `| Value::Matrix(_)` to all exclusion guards. Document or widen Tensor guard.\n\nmemory_hints: search \"Value::Matrix enum variant\" for Matrix usage",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:22:36.084Z",
+        "updatedAt": "2026-03-31T20:14:12.588Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9207,11 +9207,11 @@
         "description": "From task 421 review (4 reviewers flagged independently): Phase 2 in unfold_recursive_sub (crates/reify-eval/src/lib.rs ~line 3432) filters child_recursive_subs on guard_expr.is_some() but does NOT check child_template.is_recursive — unlike the entry point guard at ~line 1202. This creates a logical gap where a non-recursive child template with guarded subs could be incorrectly unfolded recursively. Fix: add && child_template.is_recursive to the filter, or gate Phase 2 with if child_template.is_recursive {}. Also: (1) Change Diagnostic::warning to Diagnostic::error at ~line 3449 for missing template lookup — this is an invariant violation, not a recoverable warning. (2) Move *node_budget -= 1 at ~line 3345 to after successful template lookup so budget isn't consumed for failed lookups. Modules: crates/reify-eval. Reviewers: architect, performance, robustness, test_analyst.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T03:26:29.437Z",
+        "updatedAt": "2026-03-31T20:14:12.630Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -16505,7 +16505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:12.555Z",
+      "lastModified": "2026-03-31T20:14:12.630Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
