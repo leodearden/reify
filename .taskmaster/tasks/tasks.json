@@ -16618,6 +16618,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 803,
+        "title": "Harden OK assertion specificity in CLI constraint check tests",
+        "description": "In both crates/reify-cli/src/main.rs unit tests and crates/reify-cli/tests/cli_check.rs integration tests, `!output.contains(\"OK\")` / `!stdout.contains(\"OK\")` checks for a 2-letter substring that could false-positive on unrelated output. The actual output format is `\"  OK <label>\"`. Replace `contains(\"OK\")` with `contains(\"  OK \")` in negative assertions to match only the status-line prefix produced by `report_constraint_results`. This applies to both the positive assertions (e.g., `stdout.contains(\"OK\")` → `stdout.contains(\"  OK \")`) and negative ones.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16630,7 +16641,7 @@
       ],
       "created": "2026-03-31T21:06:01.063Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:06:01.080Z"
+      "updated": "2026-03-31T21:06:05.970Z"
     }
   }
 }
