@@ -1173,3 +1173,45 @@ structure def TempCheck {
         bodytemp_si
     );
 }
+
+// ─── step-22 (task-706): prelude unit collision diagnostic mentions stdlib ──
+
+/// When a module-local unit shadows a prelude unit, the diagnostic should:
+/// (1) contain 'duplicate' and the unit name,
+/// (2) mention 'stdlib prelude' so the user knows the original is built-in,
+/// (3) NOT include any label with SourceSpan::empty(0) (the misleading
+///     prelude sentinel that points to byte 0 of the user's file).
+#[test]
+fn prelude_unit_collision_diagnostic_mentions_stdlib() {
+    let source = "unit mm : Length = 0.002";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+
+    // (1) At least one error mentions 'duplicate' and 'mm'
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("mm"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate' error mentioning 'mm', got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (2) The error message should mention 'stdlib prelude'
+    assert!(
+        dup_diag.message.contains("stdlib prelude"),
+        "expected diagnostic message to contain 'stdlib prelude', got: {:?}",
+        dup_diag.message
+    );
+
+    // (3) No label should have SourceSpan::empty(0) — the misleading prelude sentinel
+    let empty_span = reify_types::SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
+            label.message
+        );
+    }
+}
