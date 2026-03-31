@@ -1,8 +1,30 @@
+mod common;
+
 use std::process::Command;
 
 fn fixture_path(name: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     format!("{}/tests/fixtures/{}", manifest_dir, name)
+}
+
+#[test]
+fn test_run_build_helper_returns_output() {
+    let result = common::run_build("bracket.ri");
+    assert!(
+        result.status.success(),
+        "run_build should succeed for valid bracket.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "output_path should exist after successful build"
+    );
 }
 
 #[test]
