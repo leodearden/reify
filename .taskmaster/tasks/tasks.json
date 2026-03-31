@@ -13956,7 +13956,13 @@
           ],
           "modules": [
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add error-path integration tests for App.tsx and Editor.tsx errorMessage call sites"
+            ]
+          }
         },
         "updatedAt": "2026-03-31T21:24:31.195Z"
       },
@@ -15851,11 +15857,11 @@
         "description": "The `enclosing_decl_name_at` method (analysis.rs:228) and `compute_goto_definition` (goto_def.rs:28) both use `unreachable!(\"enclosing_decl_at only returns Structure or Occurrence\")` in their match arms. If `Declaration` gains new spanned variants (e.g. Function, Constraint), these will panic and crash the LSP process.\n\nReplace with graceful fallback:\n- In `enclosing_decl_name_at`: change `_ => unreachable!(...)` to `_ => return None`\n- In `compute_goto_definition`: change `_ => unreachable!(...)` to a fall-through (continue to the all-declarations search)\n\nmemory_hints: search \"enclosing_decl_at unreachable LSP\" and get_entity \"enclosing_decl_at\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T21:20:51.962Z",
+        "updatedAt": "2026-03-31T21:24:40.987Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -16797,9 +16803,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:24:31.195Z",
+      "lastModified": "2026-03-31T21:24:40.987Z",
       "taskCount": 815,
-      "completedCount": 471,
+      "completedCount": 472,
       "tags": [
         "master"
       ]
