@@ -138,9 +138,9 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
 /// Replaces the anonymous 3-tuple `(Arc<Mutex<EngineSession>>, F, Arc<RwLock<SelectionInfo>>)`
 /// that previously required `#[allow(clippy::type_complexity)]`.
 pub struct McpConfig<F> {
-    pub engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-    pub event_sink: F,
-    pub selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+    pub(crate) engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    pub(crate) event_emitter: F,
+    pub(crate) selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 }
 
 // --- Sidecar lifecycle management ---
@@ -198,7 +198,7 @@ impl SidecarHandle {
     ///
     /// The reader task will:
     /// - Transition state to Ready on ready message
-    /// - Emit all outbound messages to `event_sink` via [`outbound_to_event`]
+    /// - Emit all outbound messages to `event_emitter` via [`outbound_to_event`]
     /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
     ///   and write the result back to the sidecar as a `tool_result` inbound message
     pub fn from_parts_with_mcp<W, R, F>(
@@ -217,7 +217,7 @@ impl SidecarHandle {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
         let mcp_config = McpConfig {
             engine,
-            event_sink,
+            event_emitter: event_sink,
             selection,
         };
         Self::new_inner(stdin, reader, state, Some(mcp_config))
@@ -258,7 +258,7 @@ impl SidecarHandle {
                     // 2. Event emission and MCP interception
                     if let Some(ref mcp) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
-                        (mcp.event_sink)(event_name, payload);
+                        (mcp.event_emitter)(event_name, payload);
 
                         // 3. MCP tool interception for reify_ prefixed tool calls
                         if let OutboundMessage::ToolCall {
