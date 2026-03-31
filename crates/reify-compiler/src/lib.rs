@@ -1076,6 +1076,86 @@ fn resolve_type_alias_expr_to_dimension(
     }
 }
 
+/// Collect all leaf type names referenced in a TypeExpr tree.
+/// For binary ops (`*`, `/`), recurses into operands. Otherwise returns the name.
+fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
+    match type_expr.name.as_str() {
+        "*" | "/" => type_expr
+            .type_args
+            .iter()
+            .flat_map(collect_type_expr_names)
+            .collect(),
+        name => vec![name.to_string()],
+    }
+}
+
+/// DFS-resolve a type alias, detecting cycles via a resolving-set.
+///
+/// - If already in the registry → skip (already resolved).
+/// - If in the resolving set → emit circular error, register with None.
+/// - Otherwise: resolve dependencies first, then resolve this alias.
+fn resolve_alias_dfs(
+    name: &str,
+    alias_decls: &HashMap<String, &reify_syntax::TypeAliasDecl>,
+    alias_registry: &mut TypeAliasRegistry,
+    resolving: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Already resolved (or registered as cycle-error placeholder)
+    if alias_registry.lookup(name).is_some() {
+        return;
+    }
+    // Not a declared alias
+    let Some(decl) = alias_decls.get(name) else {
+        return;
+    };
+    // Cycle detected: name is already being resolved up the call stack
+    if !resolving.insert(name.to_string()) {
+        diagnostics.push(
+            Diagnostic::error(format!("circular type alias '{}'", name))
+                .with_label(DiagnosticLabel::new(decl.span, "forms a cycle")),
+        );
+        // Register placeholder to prevent re-processing
+        let type_params = convert_type_params(&decl.type_params);
+        let entry = TypeAliasEntry {
+            name: name.to_string(),
+            resolved_type: None,
+            type_params,
+            type_expr: Some(decl.type_expr.clone()),
+            is_pub: decl.is_pub,
+            span: decl.span,
+            content_hash: decl.content_hash,
+        };
+        let _ = alias_registry.register(entry);
+        return;
+    }
+
+    // Resolve dependencies first (only those that are aliases)
+    let dep_names = collect_type_expr_names(&decl.type_expr);
+    for dep in &dep_names {
+        if alias_decls.contains_key(dep.as_str()) {
+            resolve_alias_dfs(dep, alias_decls, alias_registry, resolving, diagnostics);
+        }
+    }
+
+    // Now resolve this alias (dependencies should be in the registry)
+    let resolved = resolve_type_alias_expr(&decl.type_expr, alias_registry, diagnostics);
+    let type_params = convert_type_params(&decl.type_params);
+    let entry = TypeAliasEntry {
+        name: name.to_string(),
+        resolved_type: resolved,
+        type_params,
+        type_expr: Some(decl.type_expr.clone()),
+        is_pub: decl.is_pub,
+        span: decl.span,
+        content_hash: decl.content_hash,
+    };
+    // May fail if cycle detection already registered this name — that's OK
+    let _ = alias_registry.register(entry);
+
+    resolving.remove(name);
+}
+
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
 fn convert_type_params(decls: &[reify_syntax::TypeParamDecl]) -> Vec<reify_types::TypeParam> {
     decls
@@ -3162,43 +3242,41 @@ pub fn compile_with_prelude(
         }
     }
 
-    // Compile type alias declarations in source order.
-    // Aliases are resolved eagerly: each alias's RHS is resolved against builtins
-    // and previously-registered aliases.
-    let mut alias_registry = TypeAliasRegistry::new();
+    // Compile type alias declarations via DFS resolution with cycle detection.
+    // Build a lookup map of all alias declarations, detecting duplicates.
+    let mut alias_decl_map: HashMap<String, &reify_syntax::TypeAliasDecl> = HashMap::new();
     for alias_decl in &alias_refs {
-        let resolved = resolve_type_alias_expr(
-            &alias_decl.type_expr,
-            &alias_registry,
-            &mut diagnostics,
-        );
-        let type_params = convert_type_params(&alias_decl.type_params);
-        let entry = TypeAliasEntry {
-            name: alias_decl.name.clone(),
-            resolved_type: resolved,
-            type_params,
-            type_expr: Some(alias_decl.type_expr.clone()),
-            is_pub: alias_decl.is_pub,
-            span: alias_decl.span,
-            content_hash: alias_decl.content_hash,
-        };
-        if let Err(dup_entry) = alias_registry.register(entry) {
-            let original = alias_registry.lookup(&dup_entry.name).unwrap();
+        if let Some(first) = alias_decl_map.get(&alias_decl.name) {
             diagnostics.push(
                 Diagnostic::error(format!(
                     "duplicate type alias declaration '{}'",
-                    dup_entry.name
+                    alias_decl.name
                 ))
                 .with_label(DiagnosticLabel::new(
-                    dup_entry.span,
+                    alias_decl.span,
                     "duplicate declared here",
                 ))
                 .with_label(DiagnosticLabel::new(
-                    original.span,
+                    first.span,
                     "first declared here",
                 )),
             );
+        } else {
+            alias_decl_map.insert(alias_decl.name.clone(), alias_decl);
         }
+    }
+
+    // DFS-resolve each alias with cycle detection via resolving-set.
+    let mut alias_registry = TypeAliasRegistry::new();
+    let mut resolving = HashSet::new();
+    for alias_decl in &alias_refs {
+        resolve_alias_dfs(
+            &alias_decl.name,
+            &alias_decl_map,
+            &mut alias_registry,
+            &mut resolving,
+            &mut diagnostics,
+        );
     }
 
     // Build resolution_enums: prelude enums + module-local enums.
