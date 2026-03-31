@@ -550,9 +550,11 @@ fn maximize_with_feasible_initial_point() {
                 "maximized x should be near 50mm upper bound, got {} m",
                 si
             );
+            // The solver clamps parameters to their declared bounds during
+            // optimization, so the result cannot exceed the upper bound (0.050 = 50mm).
             assert!(
-                si <= 0.050 + 1e-9,
-                "maximized x should not exceed param bounds (50mm), got {} m",
+                si <= 0.050,
+                "maximized x should not exceed param upper bound (50mm), got {} m",
                 si
             );
         }
