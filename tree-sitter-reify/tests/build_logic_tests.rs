@@ -627,6 +627,18 @@ fn test_stamp_shared_across_simulated_profiles() {
     );
 }
 
+/// Returns true when running as root (UID 0). Used to skip tests that rely on
+/// DAC permission enforcement, which root/CAP_DAC_OVERRIDE bypasses.
+#[cfg(unix)]
+fn is_root() -> bool {
+    // SAFETY: getuid() is a trivial POSIX syscall with a stable ABI.
+    // uid_t is u32 on all major Unix platforms (Linux, macOS, BSD).
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    unsafe { getuid() == 0 }
+}
+
 /// RAII guard that unconditionally restores write permissions on drop.
 /// Prevents temp-directory leaks when assertions panic between
 /// set_readonly(true) and the manual permission restore.
