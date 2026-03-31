@@ -13257,7 +13257,7 @@
         "description": "Add `debug_assert_eq!(params.len(), x.len())` at the top of both `build_trial_values` (solver.rs:~80) and `params_to_value_map` (solver.rs:~55). Both functions use `.zip()` which silently truncates on length mismatch. The Nelder-Mead driver guarantees equal lengths, but a debug assertion makes the contract explicit and catches violations in test builds with zero release-mode cost. Also add the precondition to the doc-comments. Memory hints: search \"build_trial_values params_to_value_map\", entity DimensionalSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13268,7 +13268,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T20:28:22.889Z"
       },
       {
         "id": "638",
@@ -16532,7 +16533,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:28:22.755Z",
+      "lastModified": "2026-03-31T20:28:22.889Z",
       "taskCount": 796,
       "completedCount": 440,
       "tags": [
