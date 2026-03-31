@@ -2048,12 +2048,12 @@ mod tests {
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
 
-    /// Feasibility check should run even when an objective is present.
-    /// A trivially-satisfied constraint with an objective should return Solved
-    /// (not NoProgress or other error), confirming the restructured code path
-    /// evaluates feasibility for optimization problems.
+    /// Verify that the optimizer converges near the lower bound when minimizing.
+    /// With auto param bounds [5mm, 100mm] and a trivially-satisfied constraint
+    /// (x > 1mm), minimizing x should drive it toward the 5mm lower bound,
+    /// confirming convergence quality (result between 4mm and 8mm).
     #[test]
-    fn feasibility_check_runs_with_objective() {
+    fn optimization_converges_near_lower_bound() {
         use crate::DimensionalSolver;
         use reify_test_support::{cnid, gt, literal, mm, value_ref, vcid};
         use reify_types::{AutoParam, OptimizationObjective, Type};
