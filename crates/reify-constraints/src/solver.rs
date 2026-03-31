@@ -53,6 +53,7 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 /// Each param is mapped to a Value::Scalar with the correct SI value
 /// and dimension. Used by early-exit, fallback, and solution construction paths.
 fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+    debug_assert_eq!(params.len(), x.len(), "params and x must have the same length");
     params
         .iter()
         .zip(x.iter())
