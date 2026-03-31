@@ -1505,3 +1505,112 @@ fn gradient_1param_magnitude_field() {
         ),
     }
 }
+
+/// Gradient of a gradient field returns Undef.
+///
+/// Build a 3D analytical field f(x,y,z) = x*x + y*y + z*z with a 3-param lambda.
+/// Call gradient(f) to produce grad_f (a Gradient-sourced field). Assert grad_f is
+/// a Value::Field (first gradient succeeds). Call gradient(grad_f) and assert the
+/// result is Value::Undef — not a silently broken Field.
+///
+/// Gradient-sourced fields are not valid inputs to compute_gradient because their
+/// lambda slot contains a Value::Field rather than a Value::Lambda, making numerical
+/// differentiation impossible without recursive field sampling. The test ensures the
+/// limitation is caught at construction time (source whitelist rejection) rather than
+/// silently at sampling time.
+#[test]
+fn gradient_of_gradient_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x*x
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            // y*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // z*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // First gradient: should succeed and produce a Gradient-sourced field
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "first gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Second gradient (gradient of gradient): should return Undef
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let grad_grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(grad_result, grad_field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let grad_grad_result = eval_expr(&grad_grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_grad_result, Value::Undef),
+        "gradient(gradient(f)) should return Undef, got {:?}",
+        grad_grad_result
+    );
+}
