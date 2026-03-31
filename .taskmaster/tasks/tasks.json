@@ -2410,7 +2410,7 @@
         "dependencies": [
           "149"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-syntax",
@@ -2420,7 +2420,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-31T21:12:21.237Z"
+        "updatedAt": "2026-03-31T21:25:58.367Z"
       },
       {
         "id": "151",
@@ -16804,7 +16804,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:24:41.607Z",
+      "lastModified": "2026-03-31T21:25:58.367Z",
       "taskCount": 815,
       "completedCount": 472,
       "tags": [
