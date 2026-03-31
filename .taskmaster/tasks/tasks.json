@@ -14594,7 +14594,7 @@
         "description": "Reduce boilerplate: 1) Move fixture_path from cli_build.rs and cli_check.rs into shared tests/common/mod.rs. 2) Extract run_build(fixture) helper that handles tempdir, output_path, Command setup. Each of the 5 build tests reduces to calling the helper and asserting on results.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14608,7 +14608,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-31T03:19:33.743Z"
+        "updatedAt": "2026-03-31T20:14:12.810Z"
       },
       {
         "id": "703",
@@ -14677,7 +14677,7 @@
         "description": "In gui/src/__tests__/PropertyEditor.test.tsx: (1) Add input.value assertion to valid-blur quantity test for symmetry with invalid-blur revert assertion. (2) Add test for data-invalid cleanup on blur after invalid Enter (state transition coverage). (3) Add '1e+3mm' to valid it.each list to cover explicit-plus exponent branch of QUANTITY_RE. (4) Add inline comment explaining why '+10mm' is rejected when '+10' is accepted (QUANTITY_RE only permits leading '-').",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -14695,7 +14695,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-30T17:49:29.852Z"
+        "updatedAt": "2026-03-31T20:14:12.850Z"
       },
       {
         "id": "707",
@@ -16505,7 +16505,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:12.776Z",
+      "lastModified": "2026-03-31T20:14:12.850Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
