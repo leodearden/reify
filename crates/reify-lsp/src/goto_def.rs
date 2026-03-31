@@ -22,10 +22,10 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     // falls within a declaration's span. If found, search only that declaration
     // first for scoped resolution.
     if let Some(enclosing) = enclosing_decl_at(&parsed.declarations, offset) {
-        let members = match enclosing {
+        let members: &[_] = match enclosing {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
-            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+            _ => &[],  // Unknown variant; fall through to all-declarations search
         };
         if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {

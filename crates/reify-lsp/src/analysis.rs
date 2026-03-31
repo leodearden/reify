@@ -256,10 +256,10 @@ impl AnalysisContext {
     /// Return the name of the structure/occurrence whose span contains `offset`,
     /// or `None` if the offset is outside all declarations.
     pub fn enclosing_decl_name_at(&self, offset: usize) -> Option<&str> {
-        enclosing_decl_at(&self.parsed.declarations, offset).map(|decl| match decl {
-            Declaration::Structure(s) => s.name.as_str(),
-            Declaration::Occurrence(o) => o.name.as_str(),
-            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+        enclosing_decl_at(&self.parsed.declarations, offset).and_then(|decl| match decl {
+            Declaration::Structure(s) => Some(s.name.as_str()),
+            Declaration::Occurrence(o) => Some(o.name.as_str()),
+            _ => None,
         })
     }
 }
