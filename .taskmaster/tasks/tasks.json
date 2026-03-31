@@ -16180,6 +16180,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 795,
+        "title": "Harden sequenced solver concurrency tests",
+        "description": "Add timeout mechanism to both deadlock tests (sequenced_solver_concurrent_no_deadlock, sequenced_solver_concurrent_last_fallback) so CI fails instead of hanging. Use distinct values per result slot to detect double-consumption races. Fix misleading \"each thread pops its own\" comment. Hoist StdMutex import to module level.",
+        "details": "Source: escalation esc-617-249 (task 617 review). File: crates/reify-test-support/src/mocks.rs.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16192,7 +16203,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:15:20.184Z"
+      "updated": "2026-03-31T15:15:23.333Z"
     }
   }
 }
