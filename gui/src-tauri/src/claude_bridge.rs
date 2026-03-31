@@ -206,7 +206,7 @@ impl SidecarHandle {
         reader: R,
         state: Arc<Mutex<SidecarState>>,
         engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-        event_sink: F,
+        event_emitter: F,
         selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
     ) -> Self
     where
@@ -217,7 +217,7 @@ impl SidecarHandle {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
         let mcp_config = McpConfig {
             engine,
-            event_emitter: event_sink,
+            event_emitter,
             selection,
         };
         Self::new_inner(stdin, reader, state, Some(mcp_config))
@@ -517,7 +517,7 @@ pub async fn claude_clear_session_impl(
 pub async fn spawn_sidecar_impl<F>(
     path: &Path,
     engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-    event_sink: F,
+    event_emitter: F,
     selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 ) -> Result<SidecarHandle, String>
 where
@@ -552,7 +552,7 @@ where
         reader,
         sidecar_state,
         engine,
-        event_sink,
+        event_emitter,
         selection,
     );
     handle.set_child(proc);
