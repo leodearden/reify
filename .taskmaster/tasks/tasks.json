@@ -16700,6 +16700,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 810,
+        "title": "Add stdlib path edge case tests and robustness improvements",
+        "description": "In crates/reify-lsp/src/server.rs and server.rs initialize: (1) Add a negative-control test or assertion in goto_definition_uses_custom_stdlib_path proving Widget is NOT found when stdlibPath is absent/points to the wrong dir. (2) Add test initialize_with_non_string_stdlib_path_is_treated_as_absent passing {\"stdlibPath\": 42} and asserting stdlib_path is None. (3) In the initialize handler (around line 138-143), add a tracing::warn! when initializationOptions contains a stdlibPath key that is not a string. (4) After resolving stdlib_path, add a validation step: filter out paths that fail p.is_dir() with a tracing::warn!, falling back to None so the dev-mode heuristic still applies for misconfigured paths.\n\nmemory_hints: search \"stdlibPath initialize validation edge case\" for prior context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16712,7 +16723,7 @@
       ],
       "created": "2026-03-31T21:14:02.431Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:14:02.438Z"
+      "updated": "2026-03-31T21:14:08.260Z"
     }
   }
 }
