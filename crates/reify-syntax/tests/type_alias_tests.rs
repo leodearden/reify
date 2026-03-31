@@ -35,6 +35,24 @@ fn assert_malformed_recovers(decls: &[Declaration], errors: &[ParseError]) {
     );
 }
 
+/// Helper: if the parser recovers a TypeAlias named "Foo", assert the recovery is NOT
+/// a well-formed binary dimensional op (i.e. name="/" or "*" with exactly 2 type_args).
+fn assert_no_valid_binop_recovery(decls: &[Declaration]) {
+    if let Some(ta) = decls.iter().find_map(|d| match d {
+        Declaration::TypeAlias(ta) => Some(ta),
+        _ => None,
+    }) {
+        assert_eq!(ta.name, "Foo");
+        let looks_like_valid_binop =
+            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        assert!(
+            !looks_like_valid_binop,
+            "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
+            ta.type_expr.name, ta.type_expr.type_args,
+        );
+    }
+}
+
 // ── Simple type alias ─────────────────────────────────────────────
 
 #[test]
@@ -240,6 +258,14 @@ type Energy = Force * Length
         .collect();
 
     assert_eq!(names, vec!["Pressure", "Velocity", "Energy"]);
+}
+
+// ── Helper exercise test (temporary — removed once callers switch) ──
+
+#[test]
+fn test_assert_no_valid_binop_recovery_helper() {
+    let (decls, _errors) = parse_decls("type Foo = Force /");
+    assert_no_valid_binop_recovery(&decls);
 }
 
 // ── Malformed dimensional type expressions (should not panic) ────
