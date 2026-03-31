@@ -9210,11 +9210,11 @@
         "description": "From task 421 review (4 reviewers flagged independently): Phase 2 in unfold_recursive_sub (crates/reify-eval/src/lib.rs ~line 3432) filters child_recursive_subs on guard_expr.is_some() but does NOT check child_template.is_recursive — unlike the entry point guard at ~line 1202. This creates a logical gap where a non-recursive child template with guarded subs could be incorrectly unfolded recursively. Fix: add && child_template.is_recursive to the filter, or gate Phase 2 with if child_template.is_recursive {}. Also: (1) Change Diagnostic::warning to Diagnostic::error at ~line 3449 for missing template lookup — this is an invariant violation, not a recoverable warning. (2) Move *node_budget -= 1 at ~line 3345 to after successful template lookup so budget isn't consumed for failed lookups. Modules: crates/reify-eval. Reviewers: architect, performance, robustness, test_analyst.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-31T20:14:12.630Z",
+        "updatedAt": "2026-03-31T20:44:34.390Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -16544,7 +16544,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:44:34.323Z",
+      "lastModified": "2026-03-31T20:44:34.390Z",
       "taskCount": 796,
       "completedCount": 452,
       "tags": [
