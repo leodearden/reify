@@ -486,6 +486,16 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn empty_problem_has_all_defaults() {
+        let p = empty_problem();
+        assert!(p.auto_params.is_empty());
+        assert!(p.constraints.is_empty());
+        assert!(p.current_values.is_empty());
+        assert!(p.objective.is_none());
+        assert!(p.functions.is_empty());
+    }
+
+    #[test]
     fn mock_constraint_checker_predetermined() {
         let cnid = ConstraintNodeId::new("Bracket", 0);
         let checker =
