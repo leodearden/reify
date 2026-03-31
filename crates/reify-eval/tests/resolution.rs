@@ -1600,3 +1600,149 @@ fn scope_name_deterministic_for_multi_template() {
         bolt_edit.objective
     );
 }
+
+#[test]
+fn edit_param_no_cross_group_value_contamination() {
+    // When editing a param that dirties constraints in BOTH entity groups,
+    // each group's solver call must receive the same pre-loop snapshot of
+    // current_values — not a map contaminated by the other group's resolved values.
+    use reify_types::SolveResult;
+
+    let bracket_thickness = ValueCellId::new("Bracket", "thickness");
+    let bracket_clearance = ValueCellId::new("Bracket", "clearance");
+    let bolt_diameter = ValueCellId::new("Bolt", "diameter");
+
+    // eval() results
+    let mut bracket_eval_solved = HashMap::new();
+    bracket_eval_solved.insert(bracket_thickness.clone(), mm(5.0));
+    let mut bolt_eval_solved = HashMap::new();
+    bolt_eval_solved.insert(bolt_diameter.clone(), mm(10.0));
+
+    // edit_param() re-resolution results (both groups dirty).
+    // Use values DIFFERENT from eval so contamination is detectable.
+    let mut edit_resolved_a = HashMap::new();
+    edit_resolved_a.insert(bracket_thickness.clone(), mm(7.0));
+    let mut edit_resolved_b = HashMap::new();
+    edit_resolved_b.insert(bolt_diameter.clone(), mm(14.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        // eval() call 1 (either group)
+        SolveResult::Solved {
+            values: bracket_eval_solved,
+        },
+        // eval() call 2 (either group)
+        SolveResult::Solved {
+            values: bolt_eval_solved,
+        },
+        // edit_param() call 3 (first dirty group)
+        SolveResult::Solved {
+            values: edit_resolved_a,
+        },
+        // edit_param() call 4 (second dirty group)
+        SolveResult::Solved {
+            values: edit_resolved_b,
+        },
+    ]);
+    let captured = spy.captured_problems();
+
+    // Bracket: auto thickness, param clearance (default 2mm), constraint thickness > clearance
+    let bracket = TopologyTemplateBuilder::new("Bracket")
+        .auto_param("Bracket", "thickness", Type::length())
+        .param(
+            "Bracket",
+            "clearance",
+            Type::length(),
+            Some(literal(mm(2.0))),
+        )
+        .constraint(
+            "Bracket",
+            0,
+            None,
+            gt(
+                value_ref("Bracket", "thickness"),
+                value_ref("Bracket", "clearance"),
+            ),
+        )
+        .objective(OptimizationObjective::Minimize(value_ref(
+            "Bracket",
+            "thickness",
+        )))
+        .build();
+
+    // Bolt: auto diameter, constraint diameter > Bracket.clearance (cross-entity ref).
+    // This makes Bolt's constraint depend on Bracket.clearance, so editing clearance
+    // dirties BOTH groups' constraints.
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .auto_param("Bolt", "diameter", Type::length())
+        .constraint(
+            "Bolt",
+            0,
+            None,
+            gt(
+                value_ref("Bolt", "diameter"),
+                value_ref("Bracket", "clearance"),
+            ),
+        )
+        .objective(OptimizationObjective::Maximize(value_ref(
+            "Bolt", "diameter",
+        )))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(bracket)
+        .template(bolt)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    // Cold eval: two solver calls (one per template)
+    engine.eval(&module);
+
+    // Edit Bracket.clearance to 3mm — dirties BOTH Bracket's and Bolt's constraints
+    // because both reference Bracket.clearance.
+    engine
+        .edit_param(bracket_clearance.clone(), mm(3.0))
+        .unwrap();
+
+    let problems = captured.lock().unwrap();
+
+    // (1) 4 total calls: 2 from eval + 2 from edit_param (both groups dirty)
+    assert_eq!(
+        problems.len(),
+        4,
+        "expected 4 solver calls (2 from eval + 2 from edit_param), got {}",
+        problems.len()
+    );
+
+    // (2) The two edit_param calls (indices 2 and 3) must have identical
+    //     current_values — proving no cross-group contamination.
+    //     HashMap iteration order is non-deterministic, so we don't know which
+    //     group solves first. But the invariant is: both must see the same
+    //     pre-loop snapshot, not a map mutated by the other group's resolve.
+    let cv_a: HashMap<ValueCellId, Value> = problems[2]
+        .current_values
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let cv_b: HashMap<ValueCellId, Value> = problems[3]
+        .current_values
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    assert_eq!(
+        cv_a, cv_b,
+        "cross-group contamination: edit_param solver calls received different \
+         current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
+        problems[2]
+            .auto_params
+            .iter()
+            .map(|p| &p.id)
+            .collect::<Vec<_>>(),
+        problems[3]
+            .auto_params
+            .iter()
+            .map(|p| &p.id)
+            .collect::<Vec<_>>(),
+    );
+}
