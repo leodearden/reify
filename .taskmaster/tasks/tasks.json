@@ -16048,6 +16048,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 783,
+        "title": "Add direct stamp content assertion and harden Unix permission tests",
+        "description": "(a) Add assert_eq!(fs::read_to_string(&stamp_path), hash) after stamp_write calls to catch whitespace/content bugs masked by .trim(). (b) Log error in ReadonlyGuard::drop instead of silently swallowing set_permissions error. (c) Add getuid() == 0 skip guard to both #[cfg(unix)] tests to prevent misleading failures under root/CAP_DAC_OVERRIDE.",
+        "details": "Source: escalation esc-740-139 (task 740 review). File: tree-sitter-reify/tests/build_logic_tests.rs.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16060,7 +16071,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:23.824Z"
+      "updated": "2026-03-31T15:14:26.243Z"
     }
   }
 }
