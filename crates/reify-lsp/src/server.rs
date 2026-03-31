@@ -1386,4 +1386,98 @@ structure Assembly {
             "JoinError should have a displayable message for logging"
         );
     }
+
+    #[tokio::test]
+    async fn goto_definition_prefers_document_store_over_disk() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "reify-lsp-docstore-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // Write parts.ri on disk with ONLY Hole (no Plate)
+        let disk_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), disk_source).unwrap();
+
+        // Initialize with workspace root
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open parts.ri in the editor with MODIFIED content that adds Plate on line 0.
+        // The editor version differs from disk — Plate only exists in the editor buffer.
+        let editor_source =
+            "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let parts_uri = Url::from_file_path(tmp_dir.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: editor_source.to_string(),
+                },
+            })
+            .await;
+
+        // Open main.ri that imports Plate from parts
+        let main_source = "import parts.Plate\nstructure Assembly {\n    sub p = Plate\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Plate' in 'sub p = Plate' (line 2, col 12)
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(2, 12),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Should resolve to parts.ri line 0 (from editor content, not disk).
+        // Disk version doesn't have Plate, so this proves DocumentStore is used.
+        let response = goto_result
+            .expect("goto-def should resolve Plate from DocumentStore content, not disk");
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("parts.ri"),
+                    "should point to parts.ri, got {}",
+                    loc.uri
+                );
+                assert_eq!(
+                    loc.range.start.line, 0,
+                    "should point to structure Plate on line 0 (editor content)"
+                );
+            }
+            other => panic!("expected Scalar location, got {other:?}"),
+        }
+    }
 }
