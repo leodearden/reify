@@ -16354,7 +16354,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": 790,
@@ -16365,7 +16373,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 791,
