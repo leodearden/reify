@@ -4037,7 +4037,7 @@ fn elaborate_child_lets_only<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compiler::{CompiledGeometryOp, GeomRef, SweepKind, TransformKind};
+    use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
     use reify_types::GeometryHandleId;
 
     /// Helper: build a CompiledExpr literal from a constant f64.
@@ -4471,5 +4471,30 @@ mod tests {
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
         assert!(result.is_none(), "missing axis_z should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_missing_spacing_returns_none() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(
+            result.is_none(),
+            "missing spacing should return None, not silently default to Value::Undef"
+        );
     }
 }
