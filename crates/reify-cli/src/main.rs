@@ -458,6 +458,38 @@ mod tests {
     }
 
     #[test]
+    fn violated_with_indeterminate_returns_some_violated() {
+        let entries = vec![
+            make_entry("Bracket", 0, Some("thickness"), Satisfaction::Violated),
+            make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
+        ];
+        let mut buf = Vec::new();
+        let result = report_constraint_results(&entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert_eq!(
+            result,
+            ConstraintOutcome::SomeViolated,
+            "should return SomeViolated when violated + indeterminate coexist"
+        );
+        assert!(
+            output.contains("VIOLATED thickness"),
+            "output should contain 'VIOLATED thickness', got: {}",
+            output
+        );
+        assert!(
+            output.contains("INDETERMINATE tolerance"),
+            "output should contain 'INDETERMINATE tolerance', got: {}",
+            output
+        );
+        assert!(
+            !output.contains("OK"),
+            "output should NOT contain 'OK' when no constraints are satisfied, got: {}",
+            output
+        );
+    }
+
+    #[test]
     fn uses_id_display_as_fallback_when_label_is_none() {
         let entries = vec![
             make_entry("Gear", 2, None, Satisfaction::Satisfied),
