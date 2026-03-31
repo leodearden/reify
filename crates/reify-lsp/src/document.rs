@@ -39,6 +39,10 @@ impl DocumentStore {
     pub fn get(&self, uri: &Url) -> Option<&DocumentState> {
         self.documents.get(uri)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Url, &DocumentState)> {
+        self.documents.iter()
+    }
 }
 
 #[cfg(test)]
@@ -122,5 +126,26 @@ mod tests {
         store.open(uri_b.clone(), "bbb".to_string(), 2);
         assert_eq!(store.get(&uri_a).unwrap().text, "aaa");
         assert_eq!(store.get(&uri_b).unwrap().text, "bbb");
+    }
+
+    #[test]
+    fn iter_returns_all_open_documents() {
+        let mut store = DocumentStore::new();
+        let uri_a = test_uri("alpha");
+        let uri_b = test_uri("beta");
+        let uri_c = test_uri("gamma");
+        store.open(uri_a.clone(), "aaa".to_string(), 1);
+        store.open(uri_b.clone(), "bbb".to_string(), 2);
+        store.open(uri_c.clone(), "ccc".to_string(), 3);
+
+        let items: std::collections::HashMap<Url, String> = store
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), doc.text.clone()))
+            .collect();
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.get(&uri_a).unwrap(), "aaa");
+        assert_eq!(items.get(&uri_b).unwrap(), "bbb");
+        assert_eq!(items.get(&uri_c).unwrap(), "ccc");
     }
 }
