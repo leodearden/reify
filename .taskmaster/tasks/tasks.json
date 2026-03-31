@@ -16136,6 +16136,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 791,
+        "title": "Add missing test coverage for warning-to-error severity upgrade paths",
+        "description": "Add tests exercising all 4 code paths (lib.rs:1219, 3671, 3908, 3950) that were upgraded from warning to error for unknown-structure references. Currently only path 2 (unfold_recursive_sub at 3671) is tested. Add complementary BFS-stops-on-false-guard test. Document the severity change for GUI export behavior (engine.rs:201-205 now aborts on these errors).",
+        "details": "Source: escalation esc-550-13 (task 550 review). Files: crates/reify-eval/src/lib.rs:1219,3671,3908,3950 and crates/reify-eval/tests/recursive_unfold.rs.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16148,7 +16159,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:54.696Z"
+      "updated": "2026-03-31T15:15:03.558Z"
     }
   }
 }
