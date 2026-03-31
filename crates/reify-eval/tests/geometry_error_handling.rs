@@ -488,3 +488,88 @@ fn cascading_kernel_failures_aborted_after_first() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Aborting a failing realization must not prevent subsequent realizations from
+/// executing. Realization 1 has a broken Boolean op (compile failure), while
+/// realization 2 has a valid Box primitive. After the fix, realization 1 emits
+/// exactly 1 compile-failure diagnostic and realization 2 succeeds normally.
+#[test]
+fn realization_abort_is_per_realization() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Realization 0: Boolean union referencing non-existent steps → compile failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+
+    // Realization 1: valid Box primitive → should succeed
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![union_op])
+        .realization(e, 1, vec![box_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_per_realization"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) exactly 1 compile-failure diagnostic from realization 0
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected exactly 1 compile-failure diagnostic, got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (b) MockGeometryKernel received exactly 1 execute call (the Box from realization 1)
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        1,
+        "expected 1 kernel execute call (Box from realization 1), got {}",
+        ops.len()
+    );
+
+    // (c) the 'all geometry operations failed' summary diagnostic is NOT present
+    let has_all_failed = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        !has_all_failed,
+        "should NOT have 'all geometry operations failed' since realization 1 succeeded"
+    );
+}
