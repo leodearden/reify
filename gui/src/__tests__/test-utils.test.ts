@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMicrotasks, deferred } from './test-utils';
+import { flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
 
 describe('flushMicrotasks', () => {
   it('returns a Promise that resolves after yielding to the microtask queue', async () => {
@@ -37,5 +37,57 @@ describe('deferred', () => {
     d.resolve(obj);
     const result = await d.promise;
     expect(result).toEqual({ name: 'test' });
+  });
+});
+
+describe('withSuppressedRejections', () => {
+  it('registers unhandledrejection handler before calling fn', async () => {
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    let handlerRegisteredBeforeCall = false;
+
+    await withSuppressedRejections(async () => {
+      handlerRegisteredBeforeCall = addSpy.mock.calls.some(
+        ([event]) => event === 'unhandledrejection',
+      );
+    });
+
+    expect(handlerRegisteredBeforeCall).toBe(true);
+    addSpy.mockRestore();
+  });
+
+  it('removes handler after fn resolves', async () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await withSuppressedRejections(async () => {
+      // fn completes successfully
+    });
+
+    const removedRejection = removeSpy.mock.calls.some(
+      ([event]) => event === 'unhandledrejection',
+    );
+    expect(removedRejection).toBe(true);
+    removeSpy.mockRestore();
+  });
+
+  it('removes handler after fn rejects', async () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await withSuppressedRejections(async () => {
+      throw new Error('boom');
+    }).catch(() => {}); // swallow so the test doesn't fail
+
+    const removedRejection = removeSpy.mock.calls.some(
+      ([event]) => event === 'unhandledrejection',
+    );
+    expect(removedRejection).toBe(true);
+    removeSpy.mockRestore();
+  });
+
+  it('re-throws the original error from fn', async () => {
+    const original = new Error('original failure');
+
+    await expect(
+      withSuppressedRejections(async () => { throw original; }),
+    ).rejects.toThrow(original);
   });
 });
