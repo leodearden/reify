@@ -14346,7 +14346,7 @@
         "description": "Task 591's builder migration left duplicate and misplaced tests:\n\n1. `builder_with_event_emitter_records_events` is byte-for-byte identical to the pre-existing `focus_entity_with_emitter_records_event` — remove the duplicate\n2. `builder_with_selection_matches_new_with_selection` is functionally identical to `get_selection_returns_selected_entity_from_arc` — remove the duplicate\n3. `mcp_config_struct_stores_fields` tests `claude_bridge::McpConfig` but lives in `mcp_context_tests.rs` — move to `claude_bridge_tests.rs`\n\n## Files to modify\n- gui/src-tauri/src/tests/mcp_context_tests.rs — remove duplicates, move McpConfig test\n- gui/src-tauri/src/tests/claude_bridge_tests.rs — receive McpConfig test",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14359,7 +14359,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:28:26.471Z"
+        "updatedAt": "2026-03-31T20:32:25.408Z"
       },
       {
         "id": "691",
@@ -16537,9 +16537,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:30:41.337Z",
+      "lastModified": "2026-03-31T20:32:25.408Z",
       "taskCount": 796,
-      "completedCount": 442,
+      "completedCount": 443,
       "tags": [
         "master"
       ]
