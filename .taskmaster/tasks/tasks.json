@@ -16103,6 +16103,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 788,
+        "title": "Strengthen m9_trait_conformance assertions: dedup comment, inherited-let coverage, double-eval",
+        "description": "Add explanatory comment on merged_constraints.len()==2 identifying which 2 constraints are expected. Add Component.half_size assertion in refinement_chain_values. Either use check_result.diagnostics for error assertion or restructure to avoid double eval.",
+        "details": "Source: escalation esc-434-29 (task 434 review). File: crates/reify-eval/tests/m9_trait_conformance.rs:245,421.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16115,7 +16126,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:14:46.965Z"
+      "updated": "2026-03-31T15:14:49.356Z"
     }
   }
 }
