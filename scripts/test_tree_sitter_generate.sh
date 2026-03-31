@@ -158,6 +158,18 @@ assert "flock uses \$MAX_WAIT_SECS (not hardcoded 120)" \
 assert "mkdir attempt limit uses \$MAX_WAIT_SECS (not hardcoded 75)" \
     grep -q '\-ge \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
 
+# ── Test 10: timeout fallback uses kill-based pattern ─────────────
+echo ""
+echo "--- Test 10: no bare tree-sitter generate; kill-based fallback ---"
+
+# Every 'tree-sitter generate' invocation must be guarded by timeout/gtimeout
+# or the kill-based fallback. No bare/unguarded invocations should exist.
+assert "no bare 'tree-sitter generate' without timeout guard" \
+    bash -c '! grep -E "^\s+tree-sitter generate" '"$GENERATE_SCRIPT"
+
+assert "fallback uses kill-based timeout pattern" \
+    grep -q 'kill.*_gen_pid\|kill.*\$_gen_pid' "$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
