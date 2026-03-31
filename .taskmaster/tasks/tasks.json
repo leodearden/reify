@@ -16769,6 +16769,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 814,
+        "title": "Adopt flushMacrotasks and deferred helpers across all remaining test files",
+        "description": "Migrate all remaining raw inline patterns to the shared helpers:\n- `gui/src/__tests__/diagnostics.test.ts:108` — replace `await new Promise((r) => setTimeout(r, 0))` with `await flushMacrotasks()`\n- `gui/src/__tests__/diagnostics.test.ts:82-84` — replace manual `let resolveListenPromise / new Promise` split with `deferred<() => void>()`\n- `gui/src/__tests__/gotoDefinition.test.ts:70,86,124,163` — replace `await new Promise((r) => setTimeout(r, 10))` with `await flushMacrotasks()` (verify 0ms is sufficient, or add optional `ms` param to helper)\n- `gui/src/__tests__/Editor.test.tsx:715-718` — replace manual `let resolveOpenFile / new Promise` with `deferred<FileData>()`\n- `gui/src/__tests__/App.test.tsx:1167-1176,1213-1222` — migrate remaining inline deferred constructs in the 'concurrent file-change during reload' tests\n\nMemory hints:\n- Search: \"flushMacrotasks deferred test helper adoption inline pattern\"\n- Entities: test-utils.ts, diagnostics.test.ts, gotoDefinition.test.ts, Editor.test.tsx, App.test.tsx",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16781,7 +16792,7 @@
       ],
       "created": "2026-03-31T21:22:06.674Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:22:10.613Z"
+      "updated": "2026-03-31T21:22:17.812Z"
     }
   }
 }
