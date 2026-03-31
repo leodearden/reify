@@ -14611,7 +14611,7 @@
         "description": "Reduce boilerplate: 1) Move fixture_path from cli_build.rs and cli_check.rs into shared tests/common/mod.rs. 2) Extract run_build(fixture) helper that handles tempdir, output_path, Command setup. Each of the 5 build tests reduces to calling the helper and asserting on results.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14625,7 +14625,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-03-31T20:14:12.810Z"
+        "updatedAt": "2026-03-31T20:45:34.225Z"
       },
       {
         "id": "703",
@@ -16544,7 +16544,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:45:34.085Z",
+      "lastModified": "2026-03-31T20:45:34.226Z",
       "taskCount": 796,
       "completedCount": 453,
       "tags": [
