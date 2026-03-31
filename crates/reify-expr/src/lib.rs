@@ -625,17 +625,21 @@ fn compute_numerical_gradient_at_point(
     domain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
-    // Decompose point into f64 coordinates
+    // Decompose point into f64 coordinates.
+    // Guard every extracted value with is_finite() — NaN/Inf coordinates
+    // would produce NaN step sizes and silently corrupt gradient results.
     let coords: Vec<f64> = match point {
-        Value::Real(r) => vec![*r],
-        Value::Int(i) => vec![*i as f64],
-        Value::Scalar { si_value, .. } => vec![*si_value],
+        Value::Real(r) if r.is_finite() => vec![*r],
+        Value::Real(_) => return Value::Undef, // NaN or Inf
+        Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
+        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
+        Value::Scalar { .. } => return Value::Undef, // NaN or Inf
         Value::Point(items) | Value::Tensor(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
-                    Some(f) => v.push(f),
-                    None => return Value::Undef,
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef, // None (non-numeric) or NaN/Inf
                 }
             }
             v
