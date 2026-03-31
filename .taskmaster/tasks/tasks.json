@@ -16655,6 +16655,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 806,
+        "title": "Reduce goto_definition allocation cost: Arc<String> + move instead of clone",
+        "description": "In crates/reify-lsp/src/document.rs, change DocumentState::text from String to Arc<String> (or Arc<str>). Update all sites that assign or read .text in server.rs and document.rs accordingly. In server.rs goto_definition (line 314-316), replace open_docs.get(&path).cloned() with open_docs.remove(&path) to move instead of clone (requires mut open_docs). This eliminates O(bytes) snapshot cost on every goto_def call and avoids a redundant clone in the resolve_import closure.\n\nmemory_hints: search \"DocumentState text Arc performance\" for prior context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16667,7 +16678,7 @@
       ],
       "created": "2026-03-31T21:13:43.686Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T21:13:43.690Z"
+      "updated": "2026-03-31T21:13:48.624Z"
     }
   }
 }
