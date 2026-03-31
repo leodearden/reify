@@ -7150,13 +7150,13 @@
         "description": "Fix qualified_access at prec.left(2) — same as &&, producing confusing AST for `a && Foo::bar`. Raise :: precedence to 7-8. Validate that lower_instance_qualified_access result is actually QualifiedAccess (tree-sitter error recovery can violate grammar invariant).\n\nMissing tests:\n- `Foo::bar && Baz::qux` parse test (potential ambiguity at same precedence)\n- Error on invalid `obj.(42)` syntax\n- Regression test that `a.b` still parses as MemberAccess (guards against syntax shadowing)\n\nMemory hints: search \"qualified_access precedence grammar prec.left\", entities: grammar.js, lower_instance_qualified_access",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "191"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:21:14.126Z",
+        "updatedAt": "2026-03-31T20:34:40.560Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -16539,7 +16539,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:34:40.480Z",
+      "lastModified": "2026-03-31T20:34:40.560Z",
       "taskCount": 796,
       "completedCount": 446,
       "tags": [
