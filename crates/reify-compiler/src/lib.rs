@@ -1118,20 +1118,33 @@ fn resolve_parameterized_alias(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    let expected = alias_entry.type_params.len();
+    let total_params = alias_entry.type_params.len();
     let got = type_args.len();
-    if got != expected {
+    let required_params = alias_entry
+        .type_params
+        .iter()
+        .take_while(|p| p.default.is_none())
+        .count();
+
+    if got < required_params || got > total_params {
         diagnostics.push(
             Diagnostic::error(format!(
-                "type alias '{}' expects {} type argument(s), got {}",
-                alias_entry.name, expected, got
+                "type alias '{}' expects {}{} type argument(s), got {}",
+                alias_entry.name,
+                if required_params < total_params {
+                    format!("{}-", required_params)
+                } else {
+                    String::new()
+                },
+                total_params,
+                got
             ))
             .with_label(DiagnosticLabel::new(alias_entry.span, "defined here")),
         );
         return None;
     }
 
-    // Resolve each type argument to a concrete Type
+    // Resolve each explicit type argument to a concrete Type
     let mut subst: HashMap<String, Type> = HashMap::new();
     for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args) {
         let resolved = resolve_type_with_aliases(&arg_expr.name, type_param_names, alias_registry);
@@ -1146,6 +1159,12 @@ fn resolve_parameterized_alias(
                 .with_label(DiagnosticLabel::new(arg_expr.span, "unknown type")),
             );
             return None;
+        }
+    }
+    // Fill in defaults for remaining params
+    for param in alias_entry.type_params.iter().skip(got) {
+        if let Some(ref default_ty) = param.default {
+            subst.insert(param.name.clone(), default_ty.clone());
         }
     }
 
