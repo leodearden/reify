@@ -14832,7 +14832,7 @@
         "description": "All 7 test functions in crates/reify-cli/tests/cli_check.rs repeat an identical 8-line Command boilerplate (Command::new, .args, .stdin, .stdout, .stderr, .output, .expect, plus two String::from_utf8_lossy calls).\n\nExtract a shared helper:\n```rust\nfn run_check(fixture: &str) -> (std::process::Output, String, String) {\n    let output = Command::new(env!(\"CARGO_BIN_EXE_reify\"))\n        .args([\"check\", fixture])\n        .stdin(std::process::Stdio::null())\n        .stdout(std::process::Stdio::piped())\n        .stderr(std::process::Stdio::piped())\n        .output()\n        .expect(\"failed to execute reify binary\");\n    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();\n    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();\n    (output, stdout, stderr)\n}\n```\n\nThen refactor each test to use `let (output, stdout, stderr) = run_check(&fixture_path(\"...\"));`.\n\nNote: cli_build.rs likely has the same pattern and could benefit from a similar helper.\n\nmemory_hints: search \"cli_check.rs test boilerplate\" and \"cli_build.rs test helper\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "692"
         ],
@@ -14846,7 +14846,8 @@
           "modules": [
             "crates/reify-cli/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T21:06:20.878Z"
       },
       {
         "id": "713",
@@ -16644,7 +16645,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T21:06:20.738Z",
+      "lastModified": "2026-03-31T21:06:20.878Z",
       "taskCount": 804,
       "completedCount": 459,
       "tags": [
