@@ -15891,6 +15891,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 772,
+        "title": "Add structured NoProgressKind enum to SolveResult::NoProgress",
+        "description": "SolveResult::NoProgress currently carries only a free-form `reason: String`. Tests that need to distinguish code paths (fallback-point-undefined vs solution-point-undefined vs iteration-limit) must match on substrings like `reason.contains(\"solution point\")`. This couples test correctness to internal prose — any rewording silently breaks path discrimination.\n\nAdd a `NoProgressKind` enum (e.g., `FallbackUndef`, `SolutionUndef`, `IterationLimit`, `TooManyUnknowns`, `DidntConverge`) to `SolveResult::NoProgress { kind: NoProgressKind, reason: String }`. Update all construction sites in solver.rs and all test assertions to match on `kind` instead of string fragments. Keep the human-readable `reason` for diagnostics but make `kind` the machine-readable discriminator.\n\nThis affects constraint.rs (SolveResult definition) and solver.rs (all NoProgress construction + tests).\n\nMemory hints: search \"SolveResult NoProgress\", search \"solver fallback objective validation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          625
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -15903,7 +15916,7 @@
       ],
       "created": "2026-03-31T03:05:32.270Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T03:05:32.275Z"
+      "updated": "2026-03-31T03:05:39.277Z"
     }
   }
 }
