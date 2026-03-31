@@ -4521,4 +4521,42 @@ mod tests {
             "missing angle should return None, not silently default to Value::Undef"
         );
     }
+
+    #[test]
+    fn compile_geometry_op_linear_pattern_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::LinearPattern {
+                target,
+                direction,
+                count,
+                spacing,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(direction, [10.0, 0.0, 0.0]);
+                assert_eq!(count, 3);
+                // spacing should be a Scalar value, not Undef
+                assert!(
+                    !matches!(spacing, reify_types::Value::Undef),
+                    "spacing should not be Undef when arg is present"
+                );
+            }
+            other => panic!("expected Some(LinearPattern), got {:?}", other),
+        }
+    }
 }
