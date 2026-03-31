@@ -115,3 +115,68 @@ fn simple_alias_compiles_without_errors() {
         errs
     );
 }
+
+// ─── step-5: dimensional alias ───────────────────────────────────────────────
+
+#[test]
+fn dimensional_alias_force_div_area() {
+    let source = r#"
+        type Pressure = Force / Area
+        structure S {
+            param p : Pressure = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for dimensional alias; got: {:?}",
+        errs
+    );
+    // Verify the param type is Scalar with FORCE/AREA dimension
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    let expected_dim = reify_types::dimension::FORCE.div(&reify_types::DimensionVector::AREA);
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+        "Pressure alias should resolve to Scalar{{FORCE/AREA}}"
+    );
+}
+
+#[test]
+fn dimensional_alias_force_mul_length() {
+    let source = r#"
+        type Energy = Force * Length
+        structure S {
+            param e : Energy = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for dimensional alias; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let e_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "e")
+        .expect("e not found");
+    let expected_dim = reify_types::dimension::FORCE.mul(&reify_types::DimensionVector::LENGTH);
+    assert_eq!(
+        e_cell.cell_type,
+        Type::Scalar {
+            dimension: expected_dim,
+        },
+        "Energy alias should resolve to Scalar{{FORCE*LENGTH}}"
+    );
+}
