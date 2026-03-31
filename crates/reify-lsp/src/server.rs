@@ -66,6 +66,9 @@ pub struct ServerState {
     last_published_diagnostics: HashMap<Url, Vec<Diagnostic>>,
     /// Workspace root path, populated from `InitializeParams.root_uri`.
     pub workspace_root: Option<PathBuf>,
+    /// Explicit stdlib path from `initializationOptions.stdlibPath`.
+    /// When `None`, goto_definition falls back to the dev-mode heuristic.
+    pub stdlib_path: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -104,6 +107,7 @@ impl ReifyLanguageServer {
                 documents: DocumentStore::new(),
                 last_published_diagnostics: HashMap::new(),
                 workspace_root: None,
+                stdlib_path: None,
             })),
             eval_state: Arc::new(Mutex::new(EvalState::new())),
             sink,
@@ -130,9 +134,17 @@ impl LanguageServer for ReifyLanguageServer {
             .root_uri
             .as_ref()
             .and_then(|uri| uri.to_file_path().ok());
+        // Parse optional stdlibPath from initializationOptions.
+        let stdlib_path = params
+            .initialization_options
+            .as_ref()
+            .and_then(|opts| opts.get("stdlibPath"))
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
         {
             let mut state = self.state.write().await;
             state.workspace_root = workspace_root;
+            state.stdlib_path = stdlib_path;
         }
 
         Ok(InitializeResult {
@@ -269,6 +281,17 @@ impl LanguageServer for ReifyLanguageServer {
             None => return Ok(None),
         };
         let workspace_root = state.workspace_root.clone();
+        let stdlib_path = state.stdlib_path.clone();
+        // Snapshot all open documents so the blocking closure can check editor
+        // buffers before falling back to disk. This avoids unnecessary I/O and
+        // ensures unsaved changes are reflected in goto-def results.
+        let open_docs: HashMap<PathBuf, String> = state
+            .documents
+            .iter()
+            .filter_map(|(doc_uri, doc)| {
+                doc_uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
+            })
+            .collect();
         drop(state);
 
         // Move all CPU-bound parsing and blocking filesystem I/O
@@ -278,14 +301,20 @@ impl LanguageServer for ReifyLanguageServer {
         let location = match tokio::task::spawn_blocking(move || {
             if let Some(root) = workspace_root {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
-                // For stdlib_root, try the dev-mode path relative to workspace; fall back to
-                // a non-existent path (resolve_import_path will return Err, resolver returns None).
-                let stdlib_root = root.join("crates/reify-compiler/stdlib");
+                // Use explicit stdlib_path if configured; fall back to the dev-mode path
+                // relative to workspace root.
+                let stdlib_root = stdlib_path
+                    .unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
                 let resolver =
                     reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
                     let path = resolver.resolve_import_path(import_path).ok()?;
-                    let source = std::fs::read_to_string(&path).ok()?;
+                    // Prefer editor buffer content over disk for open documents,
+                    // so unsaved changes are reflected immediately.
+                    let source = open_docs
+                        .get(&path)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&path).ok())?;
                     let target_uri = Url::from_file_path(&path).ok()?;
                     Some((target_uri, source))
                 };
@@ -952,6 +981,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_stores_stdlib_path_from_initialization_options() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        server
+            .initialize(InitializeParams {
+                initialization_options: Some(serde_json::json!({"stdlibPath": "/custom/stdlib"})),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let state = server.state().read().await;
+        assert_eq!(
+            state.stdlib_path,
+            Some(PathBuf::from("/custom/stdlib")),
+            "stdlib_path should be parsed from initialization_options"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_without_options_has_no_stdlib_path() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        server
+            .initialize(InitializeParams {
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let state = server.state().read().await;
+        assert!(
+            state.stdlib_path.is_none(),
+            "stdlib_path should be None when initialization_options are absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_uses_custom_stdlib_path() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace with a custom stdlib directory
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "reify-lsp-stdlib-{}",
+            std::process::id()
+        ));
+        let custom_stdlib = tmp_dir.join("custom-stdlib");
+        std::fs::create_dir_all(&custom_stdlib).unwrap();
+
+        // Write a module in the custom stdlib
+        std::fs::write(
+            custom_stdlib.join("mymod.ri"),
+            "structure Widget {\n    param size: Scalar = 5mm\n}",
+        )
+        .unwrap();
+
+        // Initialize with stdlibPath pointing to the custom stdlib
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                initialization_options: Some(serde_json::json!({
+                    "stdlibPath": custom_stdlib.to_str().unwrap()
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open main.ri that imports from std.mymod
+        let main_source = "import std.mymod.Widget\nstructure S {\n    sub w = Widget\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Widget' in 'sub w = Widget' (line 2, col 12)
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(2, 12),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Should resolve to custom-stdlib/mymod.ri
+        let response = goto_result
+            .expect("goto-def should resolve Widget from custom stdlib");
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("mymod.ri"),
+                    "should point to mymod.ri, got {}",
+                    loc.uri
+                );
+                assert_eq!(
+                    loc.range.start.line, 0,
+                    "should point to structure Widget on line 0"
+                );
+            }
+            other => panic!("expected Scalar location, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn goto_definition_resolves_imported_symbol_across_files() {
         let (service, _socket) = test_service();
         let server = service.inner();
@@ -1247,5 +1400,99 @@ structure Assembly {
             !err_msg.is_empty(),
             "JoinError should have a displayable message for logging"
         );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_prefers_document_store_over_disk() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+
+        // Create a temporary workspace
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "reify-lsp-docstore-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        // Write parts.ri on disk with ONLY Hole (no Plate)
+        let disk_source = "structure Hole {\n    param diameter: Scalar = 10mm\n}";
+        std::fs::write(tmp_dir.join("parts.ri"), disk_source).unwrap();
+
+        // Initialize with workspace root
+        let root_uri = Url::from_file_path(&tmp_dir).unwrap();
+        server
+            .initialize(InitializeParams {
+                root_uri: Some(root_uri),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Open parts.ri in the editor with MODIFIED content that adds Plate on line 0.
+        // The editor version differs from disk — Plate only exists in the editor buffer.
+        let editor_source =
+            "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let parts_uri = Url::from_file_path(tmp_dir.join("parts.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: parts_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: editor_source.to_string(),
+                },
+            })
+            .await;
+
+        // Open main.ri that imports Plate from parts
+        let main_source = "import parts.Plate\nstructure Assembly {\n    sub p = Plate\n}";
+        let main_uri = Url::from_file_path(tmp_dir.join("main.ri")).unwrap();
+        server
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: main_uri.clone(),
+                    language_id: "reify".to_string(),
+                    version: 1,
+                    text: main_source.to_string(),
+                },
+            })
+            .await;
+
+        // Goto definition on 'Plate' in 'sub p = Plate' (line 2, col 12)
+        let goto_result = server
+            .goto_definition(GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: main_uri.clone(),
+                    },
+                    position: Position::new(2, 12),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // Should resolve to parts.ri line 0 (from editor content, not disk).
+        // Disk version doesn't have Plate, so this proves DocumentStore is used.
+        let response = goto_result
+            .expect("goto-def should resolve Plate from DocumentStore content, not disk");
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => {
+                assert!(
+                    loc.uri.path().ends_with("parts.ri"),
+                    "should point to parts.ri, got {}",
+                    loc.uri
+                );
+                assert_eq!(
+                    loc.range.start.line, 0,
+                    "should point to structure Plate on line 0 (editor content)"
+                );
+            }
+            other => panic!("expected Scalar location, got {other:?}"),
+        }
     }
 }
