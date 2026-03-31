@@ -137,7 +137,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                     lambda: inner_lambda,
                                     ..
                                 },
-                                FieldSourceKind::Composed,
+                                FieldSourceKind::Gradient,
                             ) => compute_numerical_gradient_at_point(
                                 inner_lambda,
                                 &evaluated_args[1],
@@ -535,7 +535,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 
 /// Compute the gradient of a field value.
 ///
-/// Returns a new Field with `FieldSourceKind::Composed` whose lambda slot stores the
+/// Returns a new Field with `FieldSourceKind::Gradient` whose lambda slot stores the
 /// original field. The sample handler detects this pattern and dispatches to
 /// `compute_numerical_gradient_at_point` for central-difference evaluation.
 ///
@@ -561,8 +561,8 @@ fn compute_gradient(field_val: &Value) -> Value {
         }
     };
 
-    // Only Analytical and Composed fields support gradient
-    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
+    // Only Analytical, Composed, and Gradient fields support gradient
+    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed | FieldSourceKind::Gradient) {
         return Value::Undef;
     }
 
@@ -601,7 +601,7 @@ fn compute_gradient(field_val: &Value) -> Value {
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
-        source: FieldSourceKind::Composed,
+        source: FieldSourceKind::Gradient,
         lambda: Box::new(field_val.clone()),
     }
 }

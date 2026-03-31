@@ -13,6 +13,9 @@ pub enum FieldSourceKind {
     Sampled,
     Composed,
     Imported,
+    /// A field produced by `gradient()` — its lambda slot stores the original
+    /// field and the sample handler dispatches to central-difference evaluation.
+    Gradient,
 }
 
 /// Runtime values in Reify (M1 subset).
