@@ -1,9 +1,6 @@
-use std::process::Command;
+mod common;
 
-fn fixture_path(name: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/fixtures/{}", manifest_dir, name)
-}
+use std::process::Command;
 
 fn run_check(fixture: &str) -> (std::process::ExitStatus, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_reify"))
@@ -21,7 +18,7 @@ fn run_check(fixture: &str) -> (std::process::ExitStatus, String, String) {
 
 #[test]
 fn check_valid_bracket_exits_success() {
-    let (status, stdout, stderr) = run_check(&fixture_path("bracket.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket.ri"));
 
     assert!(
         status.success(),
@@ -39,7 +36,7 @@ fn check_valid_bracket_exits_success() {
 
 #[test]
 fn check_violating_bracket_exits_failure() {
-    let (status, stdout, stderr) = run_check(&fixture_path("bracket_violating.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket_violating.ri"));
 
     assert!(
         !status.success(),
@@ -57,7 +54,7 @@ fn check_violating_bracket_exits_failure() {
 
 #[test]
 fn check_parse_error_exits_failure() {
-    let (status, _stdout, stderr) = run_check(&fixture_path("bracket_parse_error.ri"));
+    let (status, _stdout, stderr) = run_check(&common::fixture_path("bracket_parse_error.ri"));
 
     assert!(
         !status.success(),
@@ -71,7 +68,7 @@ fn check_parse_error_exits_failure() {
 
 #[test]
 fn check_compile_error_exits_failure() {
-    let (status, _stdout, stderr) = run_check(&fixture_path("bracket_compile_error.ri"));
+    let (status, _stdout, stderr) = run_check(&common::fixture_path("bracket_compile_error.ri"));
 
     assert!(
         !status.success(),
@@ -85,7 +82,7 @@ fn check_compile_error_exits_failure() {
 
 #[test]
 fn check_indeterminate_constraint_exits_success() {
-    let (status, stdout, stderr) = run_check(&fixture_path("bracket_indeterminate.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket_indeterminate.ri"));
 
     assert!(
         status.success(),
@@ -125,7 +122,7 @@ fn check_indeterminate_constraint_exits_success() {
 
 #[test]
 fn check_violated_with_indeterminate_exits_failure() {
-    let (status, stdout, stderr) = run_check(&fixture_path("bracket_violated_with_indeterminate.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket_violated_with_indeterminate.ri"));
 
     assert!(
         !status.success(),
@@ -147,7 +144,7 @@ fn check_violated_with_indeterminate_exits_failure() {
 
 #[test]
 fn check_all_indeterminate_exits_success() {
-    let (status, stdout, stderr) = run_check(&fixture_path("bracket_all_indeterminate.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket_all_indeterminate.ri"));
 
     assert!(
         status.success(),
