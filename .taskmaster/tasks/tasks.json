@@ -16147,6 +16147,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 792,
+        "title": "Harden poison_evaluate test assertions",
+        "description": "Add EvalOutcome::Changed assertion to evaluate_recovers_poisoned_values_write (currently only checks is_ok()). Assert _outcome.is_ok() in tracing test. Tighten WARN count to >= 2 per test's docstring. Add comment or restore test for read-path lock recovery coverage.",
+        "details": "Source: escalation esc-610-194 (task 610 review). File: crates/reify-runtime/tests/concurrent_eval.rs:2189-2285.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -16159,7 +16170,7 @@
       ],
       "created": "2026-03-31T15:12:24.410Z",
       "description": "Tasks for master context",
-      "updated": "2026-03-31T15:15:03.558Z"
+      "updated": "2026-03-31T15:15:15.619Z"
     }
   }
 }
