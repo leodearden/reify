@@ -1607,3 +1607,102 @@ fn cyclic_let_binding_diagnostic_includes_template_name() {
         result.diagnostics
     );
 }
+
+// ─── BFS termination: cyclic structural intermediaries ─────────────────────
+
+/// Two structural intermediaries (zero value_cells) forming a cycle: W1→W2→W1.
+/// Without a termination check for structural intermediaries in the BFS at
+/// `elaborate_child_lets_only`, the BFS generates ever-longer entity paths
+/// (S.w1.next.next.next...) without bound, hanging the engine.
+///
+/// Setup:
+///   Template S: param n: Int = 1,
+///               sub w1 = W1() where n > 0
+///   Template W1: zero value_cells,
+///               sub next = W2() where true
+///   Template W2: zero value_cells,
+///               sub next = W1() where true
+///
+/// Entity tree from S(n=1):
+///   S (n=1)
+///   └── S.w1 = W1()
+///       └── S.w1.next = W2()
+///           └── S.w1.next.next = W1()
+///               └── ... (infinite cycle)
+///
+/// The BFS in elaborate_child_lets_only descends unconditionally through
+/// structural intermediaries (value_cells.is_empty() ⇒ found_any irrelevant).
+/// With W1↔W2 cycling, the queue grows without bound.
+///
+/// Detection: spawn eval in a thread with a 5-second timeout. If eval hangs,
+/// recv_timeout returns Err and the test fails.
+#[test]
+fn bfs_terminates_for_cyclic_structural_intermediaries() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        // Template S: param n: Int = 1, sub w1 = W1() where n > 0
+        let guard_w1 = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+
+        let template_s = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .is_recursive(true)
+            .sub_component_with_guard("w1", "W1", vec![], guard_w1)
+            .build();
+
+        // Template W1: zero value_cells, sub next = W2() where true
+        let template_w1 = TopologyTemplateBuilder::new("W1")
+            .is_recursive(true)
+            .sub_component_with_guard(
+                "next",
+                "W2",
+                vec![],
+                literal(Value::Bool(true)),
+            )
+            .build();
+
+        // Template W2: zero value_cells, sub next = W1() where true
+        let template_w2 = TopologyTemplateBuilder::new("W2")
+            .is_recursive(true)
+            .sub_component_with_guard(
+                "next",
+                "W1",
+                vec![],
+                literal(Value::Bool(true)),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template_s)
+            .template(template_w1)
+            .template(template_w2)
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let result = engine.eval(&module);
+        let _ = tx.send(result);
+    });
+
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("BFS hung: elaborate_child_lets_only did not terminate within 5 seconds \
+                 for cyclic structural intermediaries W1↔W2. The BFS gate \
+                 `found_any || value_cells.is_empty()` unconditionally descends through \
+                 structural intermediaries without checking if the entity was actually unfolded.");
+
+    // S.n=1 should exist
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S", "n")),
+        Some(&Value::Int(1)),
+        "S.n should be 1"
+    );
+}
