@@ -310,3 +310,69 @@ fn parameterized_alias_substitution() {
         "Measure<Force> alias should resolve to Scalar{{FORCE}}"
     );
 }
+
+// ─── step-15: parameterized alias with default ──────────────────────────────
+
+#[test]
+fn parameterized_alias_with_default() {
+    // type Measure<Q = Force> = Q
+    // When used as bare `Measure` (zero type args), Q should default to Force.
+    let source = r#"
+        type Measure<Q = Force> = Q
+        structure S {
+            param p : Measure = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for alias with default type param; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "Measure (defaulting Q=Force) should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn multi_param_alias_with_partial_defaults() {
+    // type BiMeasure<A, B = Length> = A
+    // When used as `BiMeasure<Mass>`, A=Mass and B=Length (default).
+    let source = r#"
+        type BiMeasure<A, B = Length> = A
+        structure S {
+            param p : BiMeasure<Mass> = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for multi-param alias with partial default; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: reify_types::DimensionVector::MASS,
+        },
+        "BiMeasure<Mass> (A=Mass, B=Length default) should resolve to Scalar{{MASS}}"
+    );
+}
