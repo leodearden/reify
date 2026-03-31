@@ -184,6 +184,15 @@ _TEST_FILE="${BASH_SOURCE[0]}"
 assert "test file does not use Perl-mode grep (non-portable)" \
     bash -c '[ -z "$(grep "grep -[P]" "$1")" ]' _ "$_TEST_FILE"
 
+# ── Test 12: lock file excluded from version control ─────────────
+echo ""
+echo "--- Test 12: .generate.lock in .gitignore ---"
+
+# The lock file is a runtime artifact created by flock (exec 9>"$LOCK_FILE").
+# It should not be tracked in version control.
+assert ".generate.lock pattern appears in root .gitignore" \
+    grep -q '\.generate\.lock' "$ROOT/.gitignore"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
