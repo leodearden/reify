@@ -1208,3 +1208,108 @@ fn gradient_dimensioned_scalar_lambda_args() {
         ),
     }
 }
+
+/// Gradient of a 1D dimensioned field: f: Field<Scalar[m], Scalar[m²]> with lambda |x| x*x.
+///
+/// At x=3.0m, the derivative of x² is 2x = 6.0, and the dimension should be m²/m = m.
+/// This tests that the 1D scalar branch of domain_dim handling works correctly.
+#[test]
+fn gradient_1d_dimensioned_field() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let dim_m = DimensionVector::LENGTH;
+    let dim_m2 = dim_m.mul(&dim_m);
+    let scalar_m = Type::Scalar { dimension: dim_m };
+    let scalar_m2 = Type::Scalar { dimension: dim_m2 };
+
+    // Lambda: |x| x * x
+    // x is Scalar[m], so x*x = Scalar[m²] via eval_mul's Scalar*Scalar arm.
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+        CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+        scalar_m2.clone(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = scalar_m.clone();
+    let codomain_type = scalar_m2.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(scalar_m.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 1D dimensioned field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at x = 3.0m
+    let grad_field_type = Type::Field {
+        domain: Box::new(scalar_m.clone()),
+        codomain: Box::new(scalar_m.clone()),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 3.0,
+                    dimension: dim_m,
+                },
+                scalar_m,
+            ),
+        ],
+        Type::Scalar { dimension: dim_m },
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // The derivative of x² is 2x. At x=3.0: 2*3 = 6.0.
+    // Dimension should be m²/m = m.
+    match &sample_result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 6.0).abs() < 1e-4,
+                "gradient of x² at x=3.0 should be ~6.0, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension, dim_m,
+                "gradient dimension should be LENGTH (m²/m = m), got {:?}",
+                dimension
+            );
+        }
+        _ => panic!(
+            "gradient sample should return a Scalar with dimension, got {:?}",
+            sample_result
+        ),
+    }
+}
