@@ -683,7 +683,13 @@ impl Drop for ReadonlyGuard {
             let mut perms = meta.permissions();
             #[allow(clippy::permissions_set_readonly_false)]
             perms.set_readonly(false);
-            let _ = std::fs::set_permissions(&self.path, perms);
+            if let Err(e) = std::fs::set_permissions(&self.path, perms) {
+                eprintln!(
+                    "warning: ReadonlyGuard failed to restore permissions on {}: {}",
+                    self.path.display(),
+                    e
+                );
+            }
         }
     }
 }
