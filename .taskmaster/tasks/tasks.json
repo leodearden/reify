@@ -16139,7 +16139,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-syntax/src/ts_parser.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src"
+          ]
+        }
       },
       {
         "id": 779,
@@ -16150,7 +16158,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/__tests__/claudeBridge.test.ts"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 780,
