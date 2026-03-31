@@ -3359,6 +3359,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "should parse without errors")]
+    fn lower_node_directly_rejects_source_with_parse_errors() {
+        // Deliberately broken source: `{ >= }` produces parse errors.
+        // lower_node_directly should panic because root.has_error() is true.
+        lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+        );
+    }
+
+    #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
