@@ -3336,16 +3336,12 @@ fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let eval_arg = |name: &str| -> Option<reify_types::Value> {
+                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
+                Some(reify_expr::eval_expr(
+                    expr,
+                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                ))
             };
             let eval_arg_f64 = |name: &str| -> Option<f64> {
                 let (_, expr) = args.iter().find(|(n, _)| n == name)?;
@@ -3371,7 +3367,7 @@ fn compile_geometry_op(
                             eval_arg_f64("dz")?,
                         ],
                         count: eval_arg_f64("count")? as usize,
-                        spacing: eval_arg("spacing"),
+                        spacing: eval_arg("spacing")?,
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
@@ -3388,7 +3384,7 @@ fn compile_geometry_op(
                             eval_arg_f64("az")?,
                         ],
                         count: eval_arg_f64("count")? as usize,
-                        angle: eval_arg("angle"),
+                        angle: eval_arg("angle")?,
                     })
                 }
                 reify_compiler::PatternKind::Mirror => Some(reify_types::GeometryOp::Mirror {
