@@ -16000,7 +16000,17 @@
           "625"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-types/src/expr.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": 772,
@@ -16052,7 +16062,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/tests/field_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": 775,
