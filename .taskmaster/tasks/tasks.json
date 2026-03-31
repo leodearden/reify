@@ -13038,7 +13038,7 @@
         "description": "params_to_value_map (solver.rs:55) uses Iterator::zip which silently truncates to the shorter slice if params.len() != x.len(). Add debug_assert_eq!(params.len(), x.len()) as the first line to catch caller bugs in tests at zero release cost. Also add a test for the empty-params case (params=[], x=[]) asserting result.is_empty().\n\nMemory hints: search \"params_to_value_map\", entity DimensionalSolver",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "589"
         ],
@@ -13051,7 +13051,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-03-31T03:11:56.330Z"
       },
       {
         "id": "627",
@@ -15958,7 +15959,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T03:11:54.786Z",
+      "lastModified": "2026-03-31T03:11:56.330Z",
       "taskCount": 775,
       "completedCount": 433,
       "tags": [
