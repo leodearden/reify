@@ -163,9 +163,11 @@ echo ""
 echo "--- Test 10: no bare tree-sitter generate; kill-based fallback ---"
 
 # Every 'tree-sitter generate' invocation must be guarded by timeout/gtimeout
-# or the kill-based fallback. No bare/unguarded invocations should exist.
+# or backgrounded for kill-based fallback. No unguarded invocations should exist.
+# Allowed forms: 'timeout 60 tree-sitter generate', 'gtimeout 60 tree-sitter generate',
+# 'tree-sitter generate &' (backgrounded for kill). Bare 'tree-sitter generate || ...' is not.
 assert "no bare 'tree-sitter generate' without timeout guard" \
-    bash -c '! grep -E "^\s+tree-sitter generate" '"$GENERATE_SCRIPT"
+    bash -c '! grep -P "^\s+tree-sitter generate\b" '"$GENERATE_SCRIPT"' | grep -vE "(timeout|gtimeout|&)"'
 
 assert "fallback uses kill-based timeout pattern" \
     grep -q 'kill.*_gen_pid\|kill.*\$_gen_pid' "$GENERATE_SCRIPT"
