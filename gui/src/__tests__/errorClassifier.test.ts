@@ -102,6 +102,10 @@ describe('errorClassifier', () => {
       expect(errorMessage('plain string error')).toBe('plain string error');
     });
 
+    it('returns empty string for Error with empty message', () => {
+      expect(errorMessage(new Error(''))).toBe('');
+    });
+
     it('coerces non-Error, non-string values via String()', () => {
       expect(errorMessage(42)).toBe('42');
       expect(errorMessage(null)).toBe('null');

@@ -1309,6 +1309,7 @@ describe('App handleSetParameter error handling', () => {
         expect(toast).toBeTruthy();
         expect(toast.dataset.type).toBe('error');
         expect(toast.textContent).toContain('Parameter update failed');
+        expect(toast.textContent).toContain('backend unavailable');
       });
 
       // console.error should NOT be called (replaced with toast)
@@ -2156,5 +2157,66 @@ describe('App onSend context forwarding', () => {
     expect(contextArg).toBeDefined();
     expect(contextArg!.currentFile).toBe('bracket.ri');
     expect(contextArg!.attachedContexts).toContain('file');
+  });
+});
+
+describe('App error-path integration: errorMessage propagation', () => {
+  async function triggerExportDialog() {
+    // Wait for app to reach ready state
+    await waitFor(() => expect(screen.getByTestId('app-layout')).toBeTruthy());
+    // Open export dialog via toolbar Export button
+    fireEvent.click(screen.getByText('Export'));
+    await waitFor(() => expect(screen.getByTestId('export-dialog')).toBeTruthy());
+    // Click the Export button inside the dialog
+    const dialog = screen.getByTestId('export-dialog');
+    const btns = dialog.querySelectorAll('button');
+    for (const b of btns) {
+      if (b.textContent === 'Export') {
+        fireEvent.click(b);
+        break;
+      }
+    }
+  }
+
+  it('export failure toast contains the original error message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.exportGeometry).mockRejectedValueOnce(new Error('geometry kernel crashed'));
+      render(() => <App />);
+      await triggerExportDialog();
+
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.dataset.type === 'error');
+        expect(errorToast).toBeTruthy();
+        expect(errorToast!.textContent).toContain('Export failed');
+        expect(errorToast!.textContent).toContain('geometry kernel crashed');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
+  });
+
+  it('pickSavePath failure toast contains the original error message', async () => {
+    const rejectHandler = (e: any) => e.preventDefault();
+    window.addEventListener('unhandledrejection', rejectHandler);
+
+    try {
+      vi.mocked(bridge.pickSavePath).mockRejectedValueOnce(new Error('dialog permission denied'));
+      render(() => <App />);
+      await triggerExportDialog();
+
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.dataset.type === 'error');
+        expect(errorToast).toBeTruthy();
+        expect(errorToast!.textContent).toContain('Could not open save dialog');
+        expect(errorToast!.textContent).toContain('dialog permission denied');
+      });
+    } finally {
+      window.removeEventListener('unhandledrejection', rejectHandler);
+    }
   });
 });
