@@ -13610,7 +13610,7 @@
         "description": "Follow-up improvements to the bridge.ts payload validation added in task 540.\n\n**Code fixes (gui/src/bridge.ts):**\n1. Add `Array.isArray(payload)` check in `validatePayload` (line ~158) so array payloads get a clear \"not a plain object\" warning instead of misleading \"missing required field\" messages.\n2. Hoist the 6 required-key arrays (`['id', 'content']`, `['id', 'tool_name']`, etc.) to module-level constants. These fire on every streamed token (hundreds/sec for text-delta/thinking-delta) — avoid per-call array allocations.\n\n**Test fixes (gui/src/__tests__/claudeBridge.test.ts):**\n3. Replace manual `warnSpy.mockRestore()` at end of each test body with `afterEach(() => vi.restoreAllMocks())` at describe scope. Current pattern leaks the spy if an assertion throws (~20 occurrences).\n4. Add edge case test: `tool_input` key entirely absent (undefined) → should normalize to `{}`.\n5. Add edge case test: primitive payload (e.g. `42`) → should warn and not call handler.\n\nMemory hints:\n- Search: \"validatePayload bridge.ts runtime guards\"\n- Entities: bridge.ts, validatePayload, subscribeToClaudeEvents",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13630,7 +13630,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T20:14:12.776Z"
+        "updatedAt": "2026-03-31T20:14:15.135Z"
       },
       {
         "id": "656",
@@ -16507,7 +16507,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-03-31T20:14:15.025Z",
+      "lastModified": "2026-03-31T20:14:15.135Z",
       "taskCount": 796,
       "completedCount": 438,
       "tags": [
