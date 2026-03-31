@@ -4602,4 +4602,37 @@ mod tests {
             other => panic!("expected Some(CircularPattern), got {:?}", other),
         }
     }
+
+    #[test]
+    fn compile_geometry_op_mirror_valid_args() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        match result {
+            Some(reify_types::GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Some(Mirror), got {:?}", other),
+        }
+    }
 }
