@@ -712,17 +712,25 @@ fn compute_numerical_gradient_at_point(
         let f_plus = apply_lambda(lambda, &plus_args, ctx);
         let f_minus = apply_lambda(lambda, &minus_args, ctx);
 
-        // Extract numeric values, propagate Undef
+        // Extract numeric values, propagate Undef.
+        // Guard with is_finite() — as_f64() returns Some(NaN) for
+        // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
+        // the None check alone doesn't catch degenerate values.
         let fp = match f_plus.as_f64() {
-            Some(v) => v,
-            None => return Value::Undef,
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
         };
         let fm = match f_minus.as_f64() {
-            Some(v) => v,
-            None => return Value::Undef,
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
         };
 
         let deriv = (fp - fm) / (2.0 * h);
+        // Guard the derivative: even finite fp/fm can produce
+        // Inf via overflow (e.g., (MAX - (-MAX)) / small_h).
+        if !deriv.is_finite() {
+            return Value::Undef;
+        }
 
         // Compute gradient component dimension: result_dim / domain_dim.
         // The gradient is df/dx, so its dimension is [codomain] / [domain].
