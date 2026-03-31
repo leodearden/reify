@@ -540,7 +540,8 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// `compute_numerical_gradient_at_point` for central-difference evaluation.
 ///
 /// Validation:
-/// - Argument must be a Field with Analytical or Composed source
+/// - Argument must be a Field with Analytical or Composed source (Gradient fields
+///   are excluded: their lambda slot contains a Value::Field, not a callable Lambda)
 /// - Lambda must be a Lambda (not Undef)
 /// - Domain must have scalar quantity components (Real, Int, Scalar, or Point{n, scalar})
 fn compute_gradient(field_val: &Value) -> Value {
@@ -561,8 +562,11 @@ fn compute_gradient(field_val: &Value) -> Value {
         }
     };
 
-    // Only Analytical, Composed, and Gradient fields support gradient
-    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed | FieldSourceKind::Gradient) {
+    // Only Analytical and Composed fields support gradient.
+    // Gradient fields are excluded: their lambda slot contains a Value::Field (the
+    // original field), not a callable Value::Lambda, so numerical differentiation
+    // via apply_lambda is not possible.
+    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
         return Value::Undef;
     }
 
