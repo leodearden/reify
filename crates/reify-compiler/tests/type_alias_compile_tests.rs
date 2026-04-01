@@ -755,6 +755,101 @@ fn alias_chain_parameterized_pair_concrete_args() {
     );
 }
 
+// ─── step-31: structured type args in parameterized alias instantiation ────
+
+#[test]
+fn parameterized_alias_with_list_type_arg() {
+    // Wrapped<T> = Option<T>, instantiated as Wrapped<List<Force>>.
+    // The structured type arg List<Force> must be resolved via full expression
+    // resolver, not just the simple name resolver.
+    let source = r#"
+        type Wrapped<T> = Option<T>
+        fn take_wrapped(w: Wrapped<List<Force>>) -> Real { 0.0 }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "parameterized alias with structured type arg should compile; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "take_wrapped")
+        .expect("take_wrapped function not found");
+    let expected = Type::Option(Box::new(Type::List(Box::new(Type::Scalar {
+        dimension: reify_types::dimension::FORCE,
+    }))));
+    assert_eq!(
+        func.params[0].1, expected,
+        "Wrapped<List<Force>> should resolve to Option<List<Scalar{{FORCE}}>>"
+    );
+}
+
+#[test]
+fn parameterized_alias_with_map_type_arg() {
+    // Boxed<T> = List<T>, instantiated as Boxed<Map<String, Int>>.
+    let source = r#"
+        type Boxed<T> = List<T>
+        fn identity(m: Boxed<Map<String, Int>>) -> Boxed<Map<String, Int>> { m }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "parameterized alias with Map type arg should compile; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "identity")
+        .expect("identity function not found");
+    let expected = Type::List(Box::new(Type::Map(
+        Box::new(Type::String),
+        Box::new(Type::Int),
+    )));
+    assert_eq!(
+        func.params[0].1, expected,
+        "Boxed<Map<String, Int>> should resolve to List<Map<String, Int>>"
+    );
+}
+
+#[test]
+fn parameterized_alias_chain_with_type_param_forwarding() {
+    // Wrapped<T> = Container<T> where Container<T> = List<T>.
+    // Tests that when Wrapped<Int> is instantiated at a use site,
+    // the type param T flows through to Container correctly.
+    // This requires resolve_parameterized_alias to use the full
+    // expression resolver for type args (not just simple names).
+    let source = r#"
+        type Container<T> = List<T>
+        type Wrapped<T> = Container<T>
+        structure S {
+            param p : Wrapped<Int> = [1]
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "chained parameterized alias with type param forwarding should compile; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::List(Box::new(Type::Int)),
+        "Wrapped<Int> should resolve to List<Int>"
+    );
+}
+
 // ─── step-25: content hash determinism ───────────────────────────────────────
 
 // NOTE: steps 25-26 already committed (hash determinism fix)
