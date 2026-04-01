@@ -580,3 +580,113 @@ fn parameterized_alias_map_instantiation() {
         "IntMap<String> alias should resolve to Map<Int, String>"
     );
 }
+
+// ─── step-23: alias interop with existing declarations ─────────────────────
+
+#[test]
+fn alias_interop_mixed_declarations() {
+    // Type alias coexists with structure, function, and enum declarations.
+    // Alias is used as param type in structure and function params.
+    let source = r#"
+        type Pressure = Force
+        enum Mode { Active Passive }
+        structure Tank {
+            param pressure : Pressure = 1mm
+        }
+        fn measure(p: Pressure) -> Real { p }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias interop with mixed declarations should compile cleanly; got: {:?}",
+        errs
+    );
+    // Verify structure param type
+    let template = module.templates.iter().find(|t| t.name == "Tank").expect("Tank not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "pressure")
+        .expect("pressure not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "Tank.pressure should resolve to Scalar{{FORCE}}"
+    );
+    // Verify function param type
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "measure")
+        .expect("measure function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "function param typed as Pressure should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn alias_declared_after_use_forward_reference() {
+    // Alias declared after its first use in a structure.
+    // Since aliases are collected in pre-pass, declaration order shouldn't matter.
+    let source = r#"
+        structure S {
+            param p : Pressure = 1mm
+        }
+        type Pressure = Force
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "forward-referenced alias should compile cleanly; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "forward-referenced Pressure alias should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn alias_forward_ref_function() {
+    // Function uses alias that is declared later in the source.
+    let source = r#"
+        fn compute(x: Velocity) -> Real { x }
+        type Velocity = Length
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "forward-referenced alias in function should compile cleanly; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "compute")
+        .expect("compute function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Scalar {
+            dimension: reify_types::DimensionVector::LENGTH,
+        },
+        "forward-referenced Velocity alias should resolve to Scalar{{LENGTH}}"
+    );
+}
