@@ -718,18 +718,68 @@ fn extract_test_fn_body<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
     Some(&fn_section[..fn_end])
 }
 
+/// Scans `source` for test functions annotated with `#[cfg(unix)]` and returns
+/// their signatures (e.g. `"fn test_foo()"`).
+///
+/// Uses a line-by-line state machine: once `#[cfg(unix)]` is seen, the flag
+/// `saw_cfg_unix` is set. Intermediate attribute/comment lines keep the flag
+/// alive. When a line starting with `fn test_` is reached with the flag set,
+/// the signature up to and including `()` is collected. Non-test `fn` lines or
+/// a blank line clears the flag, preventing false positives from isolated
+/// `#[cfg(unix)]` helper functions.
+fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut saw_cfg_unix = false;
+    let mut saw_test = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[cfg(unix)]") {
+            saw_cfg_unix = true;
+        } else if trimmed == "#[test]" {
+            saw_test = true;
+        } else if trimmed.starts_with("fn test_") && saw_cfg_unix && saw_test {
+            // Extract "fn name()" — everything up to and including the first ')'
+            if let Some(end) = trimmed.find(')') {
+                result.push(trimmed[..=end].to_string());
+            }
+            saw_cfg_unix = false;
+            saw_test = false;
+        } else if trimmed.starts_with('#') {
+            // Another attribute — keep flags alive (e.g. #[allow(...)])
+        } else if trimmed.starts_with("//") || trimmed.is_empty() {
+            // Comment or blank line — keep flags alive
+        } else {
+            // Any other line (fn without test, let, etc.) resets the flags
+            saw_cfg_unix = false;
+            saw_test = false;
+        }
+    }
+    result
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
-    // Source-level regression guard: both #[cfg(unix)] tests that rely on
-    // DAC permission enforcement must contain an is_root() skip guard.
+    // Source-level regression guard: every #[cfg(unix)] test function that
+    // relies on DAC permission enforcement must contain an is_root() skip guard.
     // Without it, tests produce misleading failures under root/CAP_DAC_OVERRIDE.
+    //
+    // The set of unix test functions is discovered dynamically by
+    // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
+    // automatically checked without updating a hardcoded list.
     let source = std::fs::read_to_string("tests/build_logic_tests.rs")
         .expect("should be able to read this test file");
 
-    let unix_test_fns = [
-        "fn test_stamp_write_failure_no_panic()",
-        "fn test_readonly_guard_restores_on_drop()",
-    ];
+    let unix_test_fns = find_cfg_unix_test_fns(&source);
+
+    // Sanity-check: the scanner must find at least 2 unix tests (the ones we
+    // know about). This catches a broken scanner that silently returns empty.
+    assert!(
+        unix_test_fns.len() >= 2,
+        "find_cfg_unix_test_fns should discover at least 2 #[cfg(unix)] test functions, \
+         but found {:?}",
+        unix_test_fns
+    );
 
     for fn_sig in &unix_test_fns {
         let fn_body = extract_test_fn_body(&source, fn_sig)
