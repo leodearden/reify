@@ -13,4 +13,17 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== npm ci hardening tests ==="
 
+# -- Test 1: check-pm-standardization.sh location ----------------------------
+echo ""
+echo "--- Test 1: script lives in scripts/, not tests/ ---"
+
+assert "scripts/check-pm-standardization.sh exists" \
+    test -f "$REPO_ROOT/scripts/check-pm-standardization.sh"
+
+assert "scripts/check-pm-standardization.sh is executable" \
+    test -x "$REPO_ROOT/scripts/check-pm-standardization.sh"
+
+assert "tests/check-pm-standardization.sh does NOT exist" \
+    bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
+
 test_summary
