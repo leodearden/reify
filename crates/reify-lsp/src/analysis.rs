@@ -1478,4 +1478,56 @@ mod tests {
             "param at 33 levels of nesting should NOT be counted (depth limit exceeded)"
         );
     }
+
+    /// Build a GuardedGroup whose `else_members` contain a nested GuardedGroup
+    /// with a single Param at the innermost level (for testing the else-path).
+    fn build_nested_else_guarded_members(target: &str) -> Vec<reify_syntax::MemberDecl> {
+        use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
+        use reify_types::{ContentHash, SourceSpan};
+
+        let dummy_span = SourceSpan::new(0, 1);
+        let dummy_hash = ContentHash(0);
+        let dummy_expr = Expr {
+            kind: ExprKind::BoolLiteral(true),
+            span: dummy_span,
+        };
+
+        // Inner GuardedGroup with a param in its members
+        let inner = MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr.clone(),
+            members: vec![MemberDecl::Param(ParamDecl {
+                name: target.to_string(),
+                doc: None,
+                type_expr: None,
+                default: None,
+                where_clause: None,
+                span: dummy_span,
+                content_hash: dummy_hash,
+            })],
+            else_members: vec![],
+            span: dummy_span,
+            content_hash: dummy_hash,
+        });
+
+        // Outer GuardedGroup with the inner one in else_members
+        vec![MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr,
+            members: vec![],
+            else_members: vec![inner],
+            span: dummy_span,
+            content_hash: dummy_hash,
+        })]
+    }
+
+    #[test]
+    fn count_members_recursive_counts_else_members_nested_guarded() {
+        // A GuardedGroup with a nested GuardedGroup in else_members containing a param
+        let members = build_nested_else_guarded_members("else_param");
+        let (p, l, c) = count_members_recursive(&members);
+        assert_eq!(
+            (p, l, c),
+            (1, 0, 0),
+            "param nested in else_members of a GuardedGroup should be counted"
+        );
+    }
 }
