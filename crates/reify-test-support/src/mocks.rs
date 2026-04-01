@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
@@ -487,6 +488,44 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     }
 }
 
+/// Run a closure on a background thread with a 10-second deadlock timeout.
+///
+/// Wraps `f` in [`std::panic::catch_unwind`] so that a panic inside the closure
+/// is forwarded to the caller thread (via [`std::panic::resume_unwind`]) rather
+/// than being swallowed or misreported as a timeout.  If the closure completes
+/// normally its return value is forwarded to the caller.
+///
+/// # Panics
+///
+/// * Panics with the original payload if the closure panics.
+/// * Panics with a "timed out" message if the closure does not complete within
+///   10 seconds (note: the background thread cannot be cancelled and will leak).
+/// * Panics with "unexpected disconnect" if the background thread terminates
+///   without sending (should not happen in practice).
+pub fn run_with_deadlock_timeout<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<
+        Result<T, Box<dyn std::any::Any + Send>>,
+    >(1);
+    std::thread::spawn(move || {
+        let result = catch_unwind(AssertUnwindSafe(f));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(payload)) => resume_unwind(payload),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // The background thread is still running and cannot be joined.
+            // It will be leaked when the test process exits.
+            panic!("test timed out after 10s — possible deadlock");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("unexpected thread termination without sending result");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,7 +533,6 @@ mod tests {
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
     use std::sync::Barrier;
-    use std::time::Duration;
 
     #[test]
     fn empty_problem_has_all_defaults() {
@@ -1792,8 +1830,7 @@ mod tests {
 
         // Run inside a spawned thread so we can apply a timeout — a real
         // deadlock would hang CI forever without this.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<SolveResult>>(1);
-        std::thread::spawn(move || {
+        let results = run_with_deadlock_timeout(move || {
             let collected = Mutex::new(Vec::new());
             // 4 threads each calling solve() once — threads race to pop
             // the next available result (order is non-deterministic).
@@ -1805,12 +1842,8 @@ mod tests {
                     });
                 }
             });
-            let _ = tx.send(collected.into_inner().unwrap());
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
         });
-
-        let results = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("test timed out after 10s — possible deadlock");
 
         assert_eq!(results.len(), 4, "all 4 threads should complete");
 
@@ -1853,9 +1886,10 @@ mod tests {
         );
 
         let expected_clone = expected_values.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(SolveResult, Vec<SolveResult>)>(1);
 
-        std::thread::spawn(move || {
+        // Run inside a spawned thread so we can apply a timeout — a real
+        // deadlock would hang CI forever without this.
+        let (phase1_result, results) = run_with_deadlock_timeout(move || {
             let solver = SequencedMockConstraintSolver::new(vec![
                 SolveResult::Solved {
                     values: expected_clone.clone(),
@@ -1884,12 +1918,8 @@ mod tests {
                 }
             });
 
-            let _ = tx.send((phase1_result, collected.into_inner().unwrap()));
+            (phase1_result, collected.into_inner().unwrap_or_else(|e| e.into_inner()))
         });
-
-        let (phase1_result, results) = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("test timed out after 10s — possible deadlock");
 
         match &phase1_result {
             SolveResult::Solved { values } => {
@@ -1994,5 +2024,41 @@ mod tests {
         assert_eq!(problems.len(), 2);
         assert_eq!(problems[0].auto_params[0].id, ValueCellId::new("A", "x"));
         assert_eq!(problems[1].auto_params[0].id, ValueCellId::new("B", "y"));
+    }
+
+    // --- run_with_deadlock_timeout helper tests ---
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_value() {
+        let result = run_with_deadlock_timeout(|| 42i32);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "deliberate test panic")]
+    fn run_with_deadlock_timeout_forwards_panic() {
+        run_with_deadlock_timeout(|| {
+            panic!("deliberate test panic");
+        });
+    }
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_from_scoped_threads() {
+        // Validates the exact pattern used by the refactored concurrent tests:
+        // thread::scope + Mutex<Vec<i32>>, recovering the Vec with
+        // unwrap_or_else(|e| e.into_inner()) in case of mutex poisoning.
+        let result: Vec<i32> = run_with_deadlock_timeout(|| {
+            let collected = Mutex::new(Vec::new());
+            std::thread::scope(|s| {
+                for i in 0..4i32 {
+                    let collected_ref = &collected;
+                    s.spawn(move || {
+                        collected_ref.lock().unwrap().push(i);
+                    });
+                }
+            });
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
+        });
+        assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
     }
 }
