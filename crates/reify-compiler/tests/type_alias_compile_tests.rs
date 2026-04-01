@@ -4,7 +4,7 @@
 //! dimensional aliases, transitive resolution, cycle detection, parameterized aliases,
 //! and integration with existing type resolution paths.
 
-use reify_compiler::{compile, CompiledModule, TypeAliasEntry, TypeAliasRegistry};
+use reify_compiler::{compile, CompiledModule, CompiledTypeAlias, TypeAliasEntry, TypeAliasRegistry};
 use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type, Diagnostic};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -1004,5 +1004,87 @@ fn self_recursive_parameterized_alias_does_not_stack_overflow() {
         }),
         "expected circular/recursive alias error for self-reference; got: {:?}",
         errs
+    );
+}
+
+// ─── step-33: module boundary separation — CompiledTypeAlias ───────────────
+
+#[test]
+fn compiled_type_alias_in_module_output() {
+    // CompiledTypeAlias should appear in module.type_aliases with only semantic
+    // fields (no type_expr from reify_syntax). Verify a pub alias compiles and
+    // the CompiledTypeAlias has the correct fields.
+    let source = r#"
+        pub type Pressure = Force
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(errs.is_empty(), "pub alias should compile cleanly; got: {:?}", errs);
+
+    let alias: &CompiledTypeAlias = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Pressure")
+        .expect("Pressure alias not found in compiled module type_aliases");
+
+    // Verify semantic fields
+    assert_eq!(alias.name, "Pressure");
+    assert!(alias.is_pub, "pub type alias should have is_pub=true");
+    assert!(alias.type_params.is_empty(), "non-parameterized alias should have empty type_params");
+    assert!(
+        matches!(alias.resolved_type, Some(Type::Scalar { .. })),
+        "Pressure should resolve to a Scalar type; got: {:?}",
+        alias.resolved_type
+    );
+
+    // Verify content_hash is valid (non-zero)
+    let zero_hash = ContentHash::of_str("");
+    assert_ne!(alias.content_hash, zero_hash, "content_hash should be meaningful");
+}
+
+#[test]
+fn compiled_type_alias_has_no_type_expr_field() {
+    // CompiledTypeAlias must NOT have a type_expr field — this is the key module
+    // boundary invariant. The struct should only contain semantic data.
+    // This test verifies indirectly: we construct a CompiledTypeAlias directly
+    // and confirm it compiles without a type_expr field.
+    let alias = CompiledTypeAlias {
+        name: "TestAlias".to_string(),
+        resolved_type: Some(Type::Real),
+        type_params: vec![],
+        is_pub: false,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("TestAlias"),
+    };
+    assert_eq!(alias.name, "TestAlias");
+    assert!(!alias.is_pub);
+}
+
+#[test]
+fn compiled_type_alias_parameterized_in_module_output() {
+    // Parameterized aliases should also appear as CompiledTypeAlias in module output,
+    // with type_params populated and resolved_type=None.
+    let source = r#"
+        pub type Container<T> = List<T>
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(errs.is_empty(), "parameterized alias should compile cleanly; got: {:?}", errs);
+
+    let alias: &CompiledTypeAlias = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Container")
+        .expect("Container alias not found in compiled module type_aliases");
+
+    assert_eq!(alias.name, "Container");
+    assert!(alias.is_pub);
+    assert_eq!(alias.type_params.len(), 1, "should have 1 type param");
+    assert_eq!(alias.type_params[0].name, "T");
+    // Parameterized aliases have None for resolved_type (need instantiation)
+    assert!(
+        alias.resolved_type.is_none(),
+        "parameterized alias should have resolved_type=None; got: {:?}",
+        alias.resolved_type
     );
 }
