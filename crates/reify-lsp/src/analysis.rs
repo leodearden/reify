@@ -1,4 +1,4 @@
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_syntax::{Declaration, ParsedModule};
@@ -31,22 +31,6 @@ pub struct MemberInfo<'a> {
     pub doc: Option<&'a str>,
     /// The name of the owning structure/occurrence declaration.
     pub decl_name: &'a str,
-}
-
-/// Classification of a top-level entity declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityKind {
-    Structure,
-    Occurrence,
-}
-
-impl std::fmt::Display for EntityKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EntityKind::Structure => f.write_str("structure"),
-            EntityKind::Occurrence => f.write_str("occurrence"),
-        }
-    }
 }
 
 /// Summary of a top-level entity declaration (structure or occurrence) with member counts.
