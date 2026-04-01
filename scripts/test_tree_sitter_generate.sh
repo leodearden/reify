@@ -207,6 +207,13 @@ assert "script calls portable_timeout for tree-sitter generate" \
 assert "script does NOT have inline gtimeout fallback (replaced by portable_timeout)" \
     bash -c '! grep -q "gtimeout 60 tree-sitter generate" '"$GENERATE_SCRIPT"
 
+# ── Test 14: timeout check uses _PORTABLE_TIMEOUT_TIMED_OUT ─────
+echo ""
+echo "--- Test 14: timeout check uses _PORTABLE_TIMEOUT_TIMED_OUT ---"
+
+assert "script checks _PORTABLE_TIMEOUT_TIMED_OUT alongside exit code 124" \
+    grep -q '_PORTABLE_TIMEOUT_TIMED_OUT' "$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

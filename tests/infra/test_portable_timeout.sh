@@ -69,6 +69,125 @@ echo "--- Test 6: command output is passed through ---"
 assert "portable_timeout passes through stdout" \
     bash -c "source '$LIB_PORTABLE' && out=\$(portable_timeout 5 echo hello) && [ \"\$out\" = 'hello' ]"
 
+# -- Test 7: _PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout --------
+echo ""
+echo "--- Test 7: _PORTABLE_TIMEOUT_TIMED_OUT set to true on genuine timeout ---"
+
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout" \
+    bash -c "source '$LIB_PORTABLE' && portable_timeout 1 sleep 10 || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'true' ]"
+
+# -- Test 8: _PORTABLE_TIMEOUT_TIMED_OUT is false for natural exit 124 --------
+echo ""
+echo "--- Test 8: _PORTABLE_TIMEOUT_TIMED_OUT false on natural exit 124 ---"
+
+# Force POSIX fallback by creating a temp dir with only essential binaries,
+# excluding timeout/gtimeout. This is the path where the core misdiagnosis
+# occurs (GNU timeout has the same ambiguity, documented limitation).
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command exits 124 naturally (POSIX fallback)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        # Build a PATH that excludes timeout and gtimeout.
+        # Remove each directory that contains these binaries.
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+        portable_timeout 5 bash -c "exit 124" || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
+
+# -- Test 9: _PORTABLE_TIMEOUT_TIMED_OUT is false for success and failure -----
+echo ""
+echo "--- Test 9: _PORTABLE_TIMEOUT_TIMED_OUT false on success and normal failure ---"
+
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command succeeds" \
+    bash -c "source '$LIB_PORTABLE' && portable_timeout 5 true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'false' ]"
+
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command fails normally" \
+    bash -c "source '$LIB_PORTABLE' && portable_timeout 5 false || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'false' ]"
+
+# -- Test 10: mktemp failure + genuine timeout still enforced -----------------
+echo ""
+echo "--- Test 10: mktemp failure + genuine timeout still enforced ---"
+
+# Force POSIX fallback (exclude timeout/gtimeout from PATH) AND force mktemp
+# failure (TMPDIR=/dev/null/nope). The timeout should still fire, kill the
+# command, and report _PORTABLE_TIMEOUT_TIMED_OUT=true.
+#
+# Since timeout and sleep may live in the same directory (/usr/bin), we create
+# a rescue directory with symlinks to essential commands before excluding
+# directories that contain timeout/gtimeout. Set TMPDIR only AFTER creating
+# the rescue dir (so mktemp -d still works for test setup).
+
+# Helper: set up POSIX fallback + broken mktemp environment.
+# Exports: PATH (no timeout/gtimeout, with rescue), TMPDIR (broken), LIB_PORTABLE.
+# Usage: eval "$MKTEMP_FAIL_SETUP"
+MKTEMP_FAIL_SETUP='
+    rescue_dir=$(mktemp -d)
+    for cmd in sleep kill grep rm mktemp ln; do
+        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+    done
+    trap "rm -rf $rescue_dir" EXIT
+    new_path="$rescue_dir"
+    IFS=: read -ra dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+            continue
+        fi
+        new_path="${new_path:+$new_path:}$d"
+    done
+    export PATH="$new_path"
+    export TMPDIR=/dev/null/nope
+    hash -r
+    source "$LIB_PORTABLE"
+'
+
+assert "mktemp failure: timeout still enforced (exit 124)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        rc=0; portable_timeout 1 sleep 10 || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is true" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ]
+    '
+
+assert "mktemp failure: stderr contains warning" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        err=$(portable_timeout 1 sleep 10 2>&1 >/dev/null || true)
+        echo "$err" | grep -q "mktemp failed"
+    '
+
+# -- Test 11: mktemp failure + command succeeds before timeout ----------------
+echo ""
+echo "--- Test 11: mktemp failure + command succeeds normally ---"
+
+# Force POSIX fallback + mktemp failure. Run a fast command that succeeds.
+# Exit code should be 0 and _PORTABLE_TIMEOUT_TIMED_OUT should be false.
+assert "mktemp failure: fast command exit code preserved (0)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        portable_timeout 5 true
+    '
+
+assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is false on success" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        portable_timeout 5 true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
