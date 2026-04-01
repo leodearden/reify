@@ -598,7 +598,7 @@ module.exports = grammar({
     //   5: +, - (additive)
     //   6: *, / (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix index access ([])
+    //   8: postfix index access ([]), qualified access (::)
     //   9: postfix ad-hoc selector (@)
     //  10: postfix member access (.), function call
 
@@ -612,6 +612,8 @@ module.exports = grammar({
       $.quantifier_expression,
       $.ad_hoc_selector,
       $.index_access,
+      $.qualified_access,
+      $.instance_qualified_access,
       $._primary_expression,
     ),
 
@@ -776,6 +778,24 @@ module.exports = grammar({
       '[',
       field('index', $._expression),
       ']',
+    )),
+
+    // ── Qualified access ─────────────────────────────────────
+    // Foo::bar — qualified name access (e.g. module/type member lookup)
+    qualified_access: $ => prec.left(8, seq(
+      field('qualifier', $._expression),
+      '::',
+      field('member', $.identifier),
+    )),
+
+    // obj.(Foo::bar) — instance-qualified access (e.g. trait-qualified method call)
+    // Inner 'qualified' field is constrained to $.qualified_access, preventing obj.(42)
+    instance_qualified_access: $ => prec.left(8, seq(
+      field('object', $._expression),
+      '.',
+      '(',
+      field('qualified', $.qualified_access),
+      ')',
     )),
 
     // ── Literals ────────────────────────────────────────────
