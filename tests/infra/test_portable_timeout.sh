@@ -173,6 +173,47 @@ assert "mktemp failure: stderr contains warning" \
         echo "$err" | grep -q "mktemp failed"
     '
 
+# -- Test 11: mktemp failure + command succeeds before timeout ----------------
+echo ""
+echo "--- Test 11: mktemp failure + command succeeds normally ---"
+
+# Force POSIX fallback + mktemp failure. Run a fast command that succeeds.
+# Exit code should be 0 and _PORTABLE_TIMEOUT_TIMED_OUT should be false.
+assert "mktemp failure: fast command exit code preserved (0)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        export TMPDIR=/dev/null/nope
+        hash -r
+        source "$LIB_PORTABLE"
+        portable_timeout 5 true
+    '
+
+assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is false on success" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        export TMPDIR=/dev/null/nope
+        hash -r
+        source "$LIB_PORTABLE"
+        portable_timeout 5 true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
