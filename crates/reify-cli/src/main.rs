@@ -507,6 +507,37 @@ mod tests {
     }
 
     #[test]
+    fn three_way_satisfied_violated_indeterminate_returns_some_violated() {
+        let entries = vec![
+            make_entry("Assembly", 0, Some("weight_limit"), Satisfaction::Satisfied),
+            make_entry("Assembly", 1, Some("clearance"), Satisfaction::Violated),
+            make_entry("Assembly", 2, Some("thermal"), Satisfaction::Indeterminate),
+        ];
+        let (result, output) = capture_report_output(&entries);
+
+        assert_eq!(
+            result,
+            ConstraintOutcome::SomeViolated,
+            "violated takes priority over indeterminate: should return SomeViolated"
+        );
+        assert!(
+            output.contains("OK weight_limit"),
+            "output should contain 'OK weight_limit', got: {}",
+            output
+        );
+        assert!(
+            output.contains("VIOLATED clearance"),
+            "output should contain 'VIOLATED clearance', got: {}",
+            output
+        );
+        assert!(
+            output.contains("INDETERMINATE thermal"),
+            "output should contain 'INDETERMINATE thermal', got: {}",
+            output
+        );
+    }
+
+    #[test]
     fn uses_id_display_as_fallback_when_label_is_none() {
         let entries = vec![
             make_entry("Gear", 2, None, Satisfaction::Satisfied),
