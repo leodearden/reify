@@ -70,3 +70,43 @@ fn parse_chained_qualified_access() {
         other => panic!("expected QualifiedAccess, got {:?}", other),
     }
 }
+
+// ── Step 5: precedence over && ──────────────────────────────────────────────
+
+#[test]
+fn parse_qualified_access_precedence_over_and() {
+    let (decls, errors) = parse_decls("structure S { constraint Foo::bar && Baz::qux }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let constraint = match &structure.members[0] {
+        MemberDecl::Constraint(c) => c,
+        other => panic!("expected Constraint, got {:?}", other),
+    };
+
+    // Top-level should be BinOp { && } with QualifiedAccess on both sides
+    match &constraint.expr.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "&&");
+            match &left.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert!(matches!(&qualifier.kind, ExprKind::Ident(n) if n == "Foo"));
+                    assert_eq!(member, "bar");
+                }
+                other => panic!("expected left QualifiedAccess, got {:?}", other),
+            }
+            match &right.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert!(matches!(&qualifier.kind, ExprKind::Ident(n) if n == "Baz"));
+                    assert_eq!(member, "qux");
+                }
+                other => panic!("expected right QualifiedAccess, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp, got {:?}", other),
+    }
+}
