@@ -1237,10 +1237,90 @@ fn resolve_type_alias_expr_with_subst(
             if let Some(ty) = subst.get(name) {
                 return Some(ty.clone());
             }
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            if !type_expr.type_args.is_empty() {
+                if let Some(ty) = resolve_parameterized_builtin_type_with_subst(
+                    name,
+                    &type_expr.type_args,
+                    alias_registry,
+                    subst,
+                    diagnostics,
+                ) {
+                    return Some(ty);
+                }
+            }
             // Then builtins + alias registry
             let empty = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry)
         }
+    }
+}
+
+/// Resolve a parameterized builtin type constructor (List, Set, Map, Option)
+/// within a type alias RHS expression.
+///
+/// Each type argument is resolved recursively via `resolve_type_alias_expr`.
+fn resolve_parameterized_builtin_type(
+    name: &str,
+    type_args: &[reify_syntax::TypeExpr],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match name {
+        "List" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::List(Box::new(inner)))
+        }
+        "Set" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::Set(Box::new(inner)))
+        }
+        "Map" if type_args.len() == 2 => {
+            let key = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            let val = resolve_type_alias_expr(&type_args[1], alias_registry, diagnostics)?;
+            Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Option" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::Option(Box::new(inner)))
+        }
+        _ => None,
+    }
+}
+
+/// Like `resolve_parameterized_builtin_type`, but applies parameter substitutions
+/// when resolving type arguments.
+fn resolve_parameterized_builtin_type_with_subst(
+    name: &str,
+    type_args: &[reify_syntax::TypeExpr],
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match name {
+        "List" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+            Some(Type::List(Box::new(inner)))
+        }
+        "Set" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+            Some(Type::Set(Box::new(inner)))
+        }
+        "Map" if type_args.len() == 2 => {
+            let key =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+            let val =
+                resolve_type_alias_expr_with_subst(&type_args[1], alias_registry, subst, diagnostics)?;
+            Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Option" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+            Some(Type::Option(Box::new(inner)))
+        }
+        _ => None,
     }
 }
 
@@ -6657,7 +6737,7 @@ fn compile_function(
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_with_aliases(&p.type_expr.name, &empty_params, alias_registry) {
+        let ty = match resolve_type_expr_with_aliases(&p.type_expr, &empty_params, alias_registry, diagnostics) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6672,7 +6752,7 @@ fn compile_function(
 
     // Resolve return type
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_with_aliases(&te.name, &empty_params, alias_registry) {
+        Some(te) => match resolve_type_expr_with_aliases(te, &empty_params, alias_registry, diagnostics) {
             Some(t) => t,
             None => {
                 diagnostics.push(
