@@ -422,6 +422,22 @@ mod tests {
         assert!(output.contains("VIOLATED weight_limit"), "expected VIOLATED line, got: {}", output);
     }
 
+    #[test]
+    fn empty_entries_returns_all_satisfied_with_no_output() {
+        let (result, output) = run_report(&[]);
+
+        assert_eq!(
+            result,
+            ConstraintOutcome::AllSatisfied,
+            "empty entries should return AllSatisfied (vacuous truth)"
+        );
+        assert!(
+            output.is_empty(),
+            "empty entries should produce no output, got: {:?}",
+            output
+        );
+    }
+
     fn make_entry(
         entity: &str,
         index: u32,
