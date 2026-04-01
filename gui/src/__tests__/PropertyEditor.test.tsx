@@ -357,6 +357,7 @@ describe('PropertyEditor blur-commit', () => {
     ['.5mm', '.5mm', 'leading-dot quantity'],
     ['1e3mm', '1e3mm', 'sci-notation quantity'],
     ['-10mm', '-10mm', 'negative quantity'],
+    ['1e+3mm', '1e+3mm', 'explicit-plus exponent quantity'],
   ])("blur '%s' (%s) calls onSetParameter with '%s' and no data-invalid", (input, expected) => {
     const onSetParam = vi.fn();
     render(() => (
