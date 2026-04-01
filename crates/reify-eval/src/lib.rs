@@ -2806,6 +2806,10 @@ impl Engine {
                             }
                         }
                     }
+                    // Discard intermediate handles from partially-failed realizations
+                    if step_handles.len() - handle_start < realization.operations.len() {
+                        step_handles.truncate(handle_start);
+                    }
                 }
             }
 
@@ -2880,6 +2884,10 @@ impl Engine {
                                 break;
                             }
                         }
+                    }
+                    // Discard intermediate handles from partially-failed realizations
+                    if step_handles.len() - handle_start < realization.operations.len() {
+                        step_handles.truncate(handle_start);
                     }
                 }
             }
@@ -2995,6 +3003,11 @@ impl Engine {
                             break;
                         }
                     }
+                }
+
+                // Discard intermediate handles from partially-failed realizations
+                if step_handles.len() - handle_start < realization.operations.len() {
+                    step_handles.truncate(handle_start);
                 }
 
                 // Tessellate this realization's final handle (if any new handles were produced)

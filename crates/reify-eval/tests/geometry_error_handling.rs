@@ -747,7 +747,6 @@ fn mixed_failure_then_dependent_ops_aborted() {
 /// tessellated and added to meshes — callers receive an incorrect partial mesh.
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
-    use reify_compiler::ModifyKind;
     use reify_types::Type;
 
     let e = "TestShape";
