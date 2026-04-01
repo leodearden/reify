@@ -403,7 +403,10 @@ mod tests {
     /// Helper: run `report_constraint_results` into an in-memory buffer and
     /// return the outcome plus the formatted output as a `String`.
     fn run_report(entries: &[ConstraintCheckEntry]) -> (ConstraintOutcome, String) {
-        todo!("step-2: implement run_report helper")
+        let mut buf = Vec::new();
+        let result = report_constraint_results(entries, &mut buf);
+        let output = String::from_utf8(buf).unwrap();
+        (result, output)
     }
 
     #[test]
