@@ -912,3 +912,66 @@ fn test_extract_test_fn_body_no_off_by_one() {
     let none = extract_test_fn_body(src_last, "fn test_nonexistent()");
     assert!(none.is_none(), "should return None for missing function");
 }
+
+#[test]
+fn test_find_cfg_unix_test_fns_discovers_dynamically() {
+    // Tests for the find_cfg_unix_test_fns() helper.
+    // The helper should find all test functions annotated with #[cfg(unix)],
+    // regardless of ordering of attributes.
+
+    let synthetic_source = concat!(
+        // A plain test — no #[cfg(unix)] — should be ignored.
+        "#[test]\n",
+        "fn test_plain_no_unix() {\n",
+        "    let _ = 1;\n",
+        "}\n\n",
+        // A #[cfg(unix)] test — should be collected.
+        "#[cfg(unix)]\n",
+        "#[test]\n",
+        "fn test_unix_one() {\n",
+        "    if is_root() { return; }\n",
+        "}\n\n",
+        // A non-test #[cfg(unix)] function — should be ignored.
+        "#[cfg(unix)]\n",
+        "fn helper_unix_not_a_test() {\n",
+        "    let _ = 2;\n",
+        "}\n\n",
+        // A #[test] before #[cfg(unix)] — should also be collected.
+        "#[test]\n",
+        "#[cfg(unix)]\n",
+        "fn test_unix_two() {\n",
+        "    if is_root() { return; }\n",
+        "}\n\n",
+        // A #[cfg(unix)] followed by a non-test fn — should be ignored.
+        "#[cfg(unix)]\n",
+        "fn not_a_test_fn() {}\n",
+    );
+
+    let fns = find_cfg_unix_test_fns(synthetic_source);
+
+    assert!(
+        fns.contains(&"fn test_unix_one()".to_string()),
+        "should discover test_unix_one; got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_unix_two()".to_string()),
+        "should discover test_unix_two; got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_plain_no_unix()".to_string()),
+        "should NOT include test_plain_no_unix (no #[cfg(unix)]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("helper_unix_not_a_test")),
+        "should NOT include helper_unix_not_a_test (not a #[test]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("not_a_test_fn")),
+        "should NOT include not_a_test_fn (not a #[test]); got: {:?}",
+        fns
+    );
+}
