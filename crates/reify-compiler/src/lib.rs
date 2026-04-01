@@ -1035,20 +1035,27 @@ fn resolve_type_alias_expr(
             {
                 return Some(ty);
             }
-            // Check for user-defined parameterized alias instantiation
-            if !type_expr.type_args.is_empty() {
-                if let Some(alias_entry) = alias_registry.lookup(name) {
-                    if !alias_entry.type_params.is_empty() {
-                        let empty = HashSet::new();
-                        return resolve_parameterized_alias(
-                            alias_entry,
-                            &type_expr.type_args,
-                            &empty,
-                            alias_registry,
-                            diagnostics,
-                        );
-                    }
+            // Check for user-defined parameterized alias instantiation.
+            // Use temporary diagnostics: during DFS pre-pass, type args may
+            // contain unresolved type params (e.g. Container<T>) — we must not
+            // emit errors for those; the alias body will be fully resolved at
+            // instantiation time via resolve_type_alias_expr_with_subst.
+            if !type_expr.type_args.is_empty()
+                && let Some(alias_entry) = alias_registry.lookup(name)
+                && !alias_entry.type_params.is_empty()
+            {
+                let empty = HashSet::new();
+                let mut tmp_diags = Vec::new();
+                if let Some(ty) = resolve_parameterized_alias(
+                    alias_entry,
+                    &type_expr.type_args,
+                    &empty,
+                    alias_registry,
+                    &mut tmp_diags,
+                ) {
+                    return Some(ty);
                 }
+                // Silently return None — deferred to instantiation time
             }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
@@ -1124,6 +1131,18 @@ fn resolve_type_expr_with_aliases(
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
+    // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
+    if !type_expr.type_args.is_empty()
+        && let Some(ty) = resolve_parameterized_builtin_type(
+            &type_expr.name,
+            &type_expr.type_args,
+            alias_registry,
+            diagnostics,
+        )
+    {
+        return Some(ty);
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases)
     if let Some(ty) = resolve_type_with_aliases(&type_expr.name, type_param_names, alias_registry) {
         return Some(ty);
@@ -1185,7 +1204,8 @@ fn resolve_parameterized_alias(
     // Resolve each explicit type argument to a concrete Type
     let mut subst: HashMap<String, Type> = HashMap::new();
     for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args) {
-        let resolved = resolve_type_with_aliases(&arg_expr.name, type_param_names, alias_registry);
+        let resolved =
+            resolve_type_expr_with_aliases(arg_expr, type_param_names, alias_registry, diagnostics);
         if let Some(ty) = resolved {
             subst.insert(param.name.clone(), ty);
         } else {
@@ -1265,20 +1285,46 @@ fn resolve_type_alias_expr_with_subst(
                 return Some(ty);
             }
             // Check for user-defined parameterized alias instantiation
-            if !type_expr.type_args.is_empty() {
-                if let Some(alias_entry) = alias_registry.lookup(name) {
-                    if !alias_entry.type_params.is_empty() {
-                        // Resolve type args with substitutions applied
-                        let subst_keys: HashSet<String> = subst.keys().cloned().collect();
-                        return resolve_parameterized_alias(
-                            alias_entry,
-                            &type_expr.type_args,
-                            &subst_keys,
-                            alias_registry,
-                            diagnostics,
-                        );
+            if !type_expr.type_args.is_empty()
+                && let Some(alias_entry) = alias_registry.lookup(name)
+                && !alias_entry.type_params.is_empty()
+            {
+                // Resolve type args with current substitutions applied,
+                // then build inner substitution for the target alias body
+                let total_params = alias_entry.type_params.len();
+                let got = type_expr.type_args.len();
+                let required_params = alias_entry
+                    .type_params
+                    .iter()
+                    .take_while(|p| p.default.is_none())
+                    .count();
+                if got < required_params || got > total_params {
+                    return None;
+                }
+                let mut inner_subst: HashMap<String, Type> = HashMap::new();
+                for (param, arg_expr) in
+                    alias_entry.type_params.iter().zip(type_expr.type_args.iter())
+                {
+                    let resolved = resolve_type_alias_expr_with_subst(
+                        arg_expr,
+                        alias_registry,
+                        subst,
+                        diagnostics,
+                    )?;
+                    inner_subst.insert(param.name.clone(), resolved);
+                }
+                for param in alias_entry.type_params.iter().skip(got) {
+                    if let Some(ref default_ty) = param.default {
+                        inner_subst.insert(param.name.clone(), default_ty.clone());
                     }
                 }
+                let body = alias_entry.type_expr.as_ref()?;
+                return resolve_type_alias_expr_with_subst(
+                    body,
+                    alias_registry,
+                    &inner_subst,
+                    diagnostics,
+                );
             }
             // Then builtins + alias registry
             let empty = HashSet::new();
