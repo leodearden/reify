@@ -20,4 +20,5 @@ test-utils = []
 [dev-dependencies]
 reify-test-support.workspace = true
 reify-constraints.workspace = true
+# time feature intentionally dev-only: tests need sleep/timeout, production code should not
 tokio = { workspace = true, features = ["time"] }
