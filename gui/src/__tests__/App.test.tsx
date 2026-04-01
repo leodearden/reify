@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
-import { flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections } from './test-utils';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -362,7 +362,7 @@ describe('App async mount/cleanup race conditions', () => {
     const { unmount } = render(() => <App />);
 
     // Wait for getInitialState to resolve and subscribeToEvents to start
-    await flushMicrotasks();
+    await flushMacrotasks();
 
     // Unmount while subscribeToEvents is still pending (waiting for deferred onMeshUpdate)
     unmount();
@@ -371,7 +371,7 @@ describe('App async mount/cleanup race conditions', () => {
     resolveMeshListen(meshUnlisten);
 
     // Flush microtasks so subscribeToEvents' await resolves
-    await flushMicrotasks();
+    await flushMacrotasks();
 
     // After fix: the alive guard calls the composite unsub immediately,
     // which calls all individual unlisten functions.
@@ -412,7 +412,7 @@ describe('App async mount/cleanup race conditions', () => {
     });
 
     // Flush microtasks
-    await flushMicrotasks();
+    await flushMacrotasks();
 
     // After fix: alive guard returns before reaching subscribeToEvents
     // With current code: initFromState runs, then subscribeToEvents runs → onMeshUpdate called
@@ -447,7 +447,7 @@ describe('App async mount/cleanup race conditions', () => {
     const { unmount } = render(() => <App />);
 
     // Wait for getInitialState to resolve and initApp to reach subscribeToClaudeEvents
-    await flushMicrotasks();
+    await flushMacrotasks();
 
     // Unmount while subscribeToClaudeEvents is still pending
     unmount();
@@ -456,7 +456,7 @@ describe('App async mount/cleanup race conditions', () => {
     resolveClaudeSub(unlistenClaude);
 
     // Flush microtasks so the await in initApp resolves
-    await flushMicrotasks();
+    await flushMacrotasks();
 
     // The alive guard (lines 260-263) calls unlistenClaude() and returns early,
     // never assigning claudeEventUnsub. So onCleanup's claudeEventUnsub?.() is a no-op.

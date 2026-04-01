@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
 
-describe('flushMicrotasks', () => {
-  it('returns a Promise that resolves after yielding to the microtask queue', async () => {
-    const result = flushMicrotasks();
+describe('flushMacrotasks', () => {
+  it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
+    const result = flushMacrotasks();
     expect(result).toBeInstanceOf(Promise);
     await result;
   });
@@ -12,8 +12,24 @@ describe('flushMicrotasks', () => {
     let flag = false;
     setTimeout(() => { flag = true; }, 0);
     expect(flag).toBe(false);
-    await flushMicrotasks();
+    await flushMacrotasks();
     expect(flag).toBe(true);
+  });
+});
+
+describe('flushMicrotasks', () => {
+  it('returns a Promise', async () => {
+    const result = flushMicrotasks();
+    expect(result).toBeInstanceOf(Promise);
+    await result;
+  });
+
+  it('does not yield to the macrotask queue (setTimeout callbacks not yet fired)', async () => {
+    let flag = false;
+    setTimeout(() => { flag = true; }, 0);
+    await flushMicrotasks();
+    // setTimeout(0) callback has NOT fired — only microtasks were flushed
+    expect(flag).toBe(false);
   });
 });
 
