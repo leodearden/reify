@@ -3639,6 +3639,12 @@ fn substitute_expr(
             base: Box::new(substitute_expr(base, bindings)),
             selector: selector.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
+        },
+        ExprKind::Range { lower, upper, lower_inclusive, upper_inclusive } => ExprKind::Range {
+            lower: lower.as_ref().map(|e| Box::new(substitute_expr(e, bindings))),
+            upper: upper.as_ref().map(|e| Box::new(substitute_expr(e, bindings))),
+            lower_inclusive: *lower_inclusive,
+            upper_inclusive: *upper_inclusive,
         }
     };
     Expr { kind: new_kind, span }
