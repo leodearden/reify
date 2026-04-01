@@ -174,6 +174,79 @@ pub struct PortDecl {
     pub content_hash: ContentHash,
 }
 
+/// Information about a named member's source span and doc comment.
+///
+/// Returned by [`find_named_member_span`] — a named alternative to a bare tuple.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberSpanInfo<'a> {
+    pub span: SourceSpan,
+    pub doc: Option<&'a str>,
+}
+
+/// Maximum nesting depth for recursive member lookups. Prevents stack
+/// overflow on pathological input with deeply nested guarded groups or ports.
+/// 32 is generous for any realistic Reify source (typical nesting is 2-3 levels).
+pub const MAX_MEMBER_NESTING_DEPTH: usize = 32;
+
+/// Recursively search a member list for a named param or let declaration.
+///
+/// Returns [`MemberSpanInfo`] for the first match. Recurses into
+/// `GuardedGroup.members`, `GuardedGroup.else_members`, and `Port.members`
+/// so that declarations inside `where cond { ... } else { ... }` blocks
+/// and port bodies are found. Recursion is bounded by
+/// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological input.
+pub fn find_named_member_span<'a>(
+    members: &'a [MemberDecl],
+    name: &str,
+) -> Option<MemberSpanInfo<'a>> {
+    find_named_member_span_depth(members, name, 0)
+}
+
+fn find_named_member_span_depth<'a>(
+    members: &'a [MemberDecl],
+    name: &str,
+    depth: usize,
+) -> Option<MemberSpanInfo<'a>> {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return None;
+    }
+    for member in members {
+        match member {
+            MemberDecl::Param(p) if p.name == name => {
+                return Some(MemberSpanInfo {
+                    span: p.span,
+                    doc: p.doc.as_deref(),
+                });
+            }
+            MemberDecl::Let(l) if l.name == name => {
+                return Some(MemberSpanInfo {
+                    span: l.span,
+                    doc: l.doc.as_deref(),
+                });
+            }
+            MemberDecl::GuardedGroup(g) => {
+                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
+                    return Some(result);
+                }
+                if let Some(result) =
+                    find_named_member_span_depth(&g.else_members, name, depth + 1)
+                {
+                    return Some(result);
+                }
+            }
+            MemberDecl::Port(port) => {
+                if let Some(result) =
+                    find_named_member_span_depth(&port.members, name, depth + 1)
+                {
+                    return Some(result);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
 #[derive(Debug, Clone)]
 pub struct ConnectDecl {
