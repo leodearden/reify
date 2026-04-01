@@ -146,6 +146,28 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_as_path_map_skips_non_file_uris() {
+        let mut store = DocumentStore::new();
+        let file_uri = test_uri("real");
+        let non_file_uri = Url::parse("untitled:Untitled-1").unwrap();
+        store.open(file_uri.clone(), "file_content".to_string(), 1);
+        store.open(non_file_uri, "untitled_content".to_string(), 2);
+
+        let map = store.snapshot_as_path_map();
+
+        assert_eq!(map.len(), 1);
+        let path = file_uri.to_file_path().unwrap();
+        assert_eq!(map.get(&path).unwrap(), "file_content");
+    }
+
+    #[test]
+    fn snapshot_as_path_map_empty_store_returns_empty() {
+        let store = DocumentStore::new();
+        let map = store.snapshot_as_path_map();
+        assert!(map.is_empty());
+    }
+
+    #[test]
     fn iter_returns_all_open_documents() {
         let mut store = DocumentStore::new();
         let uri_a = test_uri("alpha");
