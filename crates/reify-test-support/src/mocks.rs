@@ -5,8 +5,19 @@ use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
     ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
     GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId, ValueMap,
 };
+
+/// Create an empty `ResolutionProblem` with all fields set to empty/default values.
+pub fn empty_problem() -> ResolutionProblem {
+    ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    }
+}
 
 /// Mock constraint checker that returns predetermined results.
 pub struct MockConstraintChecker {
@@ -486,6 +497,16 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn empty_problem_has_all_defaults() {
+        let p = empty_problem();
+        assert!(p.auto_params.is_empty());
+        assert!(p.constraints.is_empty());
+        assert!(p.current_values.is_empty());
+        assert!(p.objective.is_none());
+        assert!(p.functions.is_empty());
+    }
+
+    #[test]
     fn mock_constraint_checker_predetermined() {
         let cnid = ConstraintNodeId::new("Bracket", 0);
         let checker =
@@ -537,13 +558,7 @@ mod tests {
         values.insert(ValueCellId::new("S", "x"), Value::length(0.005));
 
         let solver = MockConstraintSolver::new_solved(values.clone());
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::Solved { values: v } => {
@@ -559,13 +574,7 @@ mod tests {
         let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
             "constraints are infeasible",
         )]);
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::Infeasible { diagnostics } => {
@@ -579,13 +588,7 @@ mod tests {
     #[test]
     fn mock_constraint_solver_no_progress() {
         let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::NoProgress { reason } => {
@@ -1624,13 +1627,7 @@ mod tests {
             },
         ]);
 
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         // Each call returns the next result in sequence
         match solver.solve(&problem) {
@@ -1663,13 +1660,7 @@ mod tests {
             },
         ]);
 
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         // Consume both results
         match solver.solve(&problem) {
@@ -1797,13 +1788,7 @@ mod tests {
                 .collect(),
         );
 
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         // Run inside a spawned thread so we can apply a timeout — a real
         // deadlock would hang CI forever without this.
@@ -1877,13 +1862,7 @@ mod tests {
                 },
             ]);
 
-            let problem = ResolutionProblem {
-                auto_params: vec![],
-                constraints: vec![],
-                current_values: ValueMap::new(),
-                objective: None,
-                functions: vec![],
-            };
+            let problem = empty_problem();
 
             // Phase 1: consume the queued result, populating `self.last`.
             let phase1_result = solver.solve(&problem);
@@ -1940,13 +1919,7 @@ mod tests {
     #[should_panic(expected = "no results configured")]
     fn sequenced_solver_panics_on_empty_vec() {
         let solver = SequencedMockConstraintSolver::new(vec![]);
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
         // Should panic with "no results configured"
         solver.solve(&problem);
     }
