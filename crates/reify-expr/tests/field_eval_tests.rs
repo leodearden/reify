@@ -1,14 +1,8 @@
 //! Field evaluation edge-case tests.
 //!
-//! This file contains two categories of tests:
-//!
-//! 1. **Durable: sample behavior tests** -- These encode permanent behavioral contracts
-//!    for `sample()` that must always pass regardless of gradient implementation status.
-//!
-//! 2. **Transient: gradient stub tests** -- These assert that `gradient()` returns
-//!    `Value::Undef` because gradient is currently a stub. These tests MUST be updated
-//!    when gradient is fully implemented (task #630 and related work). They are NOT
-//!    durable guardrails -- they encode current stub behavior.
+//! Tests for `sample()` and `gradient()` behavioral contracts, including
+//! edge cases like constant fields, nested gradients, dimensioned domains,
+//! and non-numeric lambda outputs.
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
@@ -187,38 +181,91 @@ fn sample_gradient_of_constant_field_near_zero() {
     };
 
     let field_type = Type::Field {
-        domain: Box::new(domain_type),
+        domain: Box::new(domain_type.clone()),
         codomain: Box::new(codomain_type),
     };
 
-    // gradient(field) -> Undef (stub).
-    // TODO: When gradient is implemented, sampling the gradient field at any
-    // point should yield components all within TOLERANCE of zero.
-    #[allow(unused)]
+    // gradient(field) returns a gradient field. Sampling at any point should
+    // yield components all within TOLERANCE of zero (constant field has zero gradient).
     const TOLERANCE: f64 = 1e-9;
 
-    let expr = make_function_call(
+    let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
     );
 
     let values = ValueMap::new();
-    let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(
-        result,
-        Value::Undef,
-        "gradient of constant field must return Undef (stub; when implemented, \
-         sampled gradient components should be within 1e-9 of zero)"
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of constant field should return a Field, got {:?}",
+        grad_result
     );
+
+    // Sample the gradient field at Point3(1.0, 2.0, 3.0)
+    let point = Value::Point(vec![
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+            for (i, comp) in components.iter().enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    val.abs() < TOLERANCE,
+                    "gradient component {} of constant field should be ~0, got {}",
+                    i,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector, got {:?}",
+            sample_result
+        ),
+    }
 }
 
 /// Gradient of gradient returns Undef (nested differential operators not supported).
 ///
-/// Build an analytical field, construct gradient(field) which returns Undef (stub),
-/// then construct gradient(gradient(field)). The outer gradient receives Undef as
-/// its argument due to strict Undef propagation at FunctionCall arg evaluation,
-/// short-circuiting before even reaching the gradient stub logic.
+/// Build an analytical field, construct gradient(field) which returns a Gradient-sourced
+/// Field. Then construct gradient(gradient(field)). The outer gradient receives a
+/// Gradient-sourced Field, which is rejected by the source whitelist (only Analytical
+/// and Composed are supported), returning Undef.
 #[test]
 fn gradient_of_gradient_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -247,28 +294,31 @@ fn gradient_of_gradient_returns_undef() {
         codomain: Box::new(codomain_type.clone()),
     };
 
-    // Inner gradient: gradient(field) -> Undef (stub)
+    // Inner gradient: gradient(field) -> Gradient-sourced Field
     let inner_gradient = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        codomain_type.clone(),
     );
 
     let values = ValueMap::new();
     let inner_result = eval_expr(&inner_gradient, &EvalContext::simple(&values));
-    assert_eq!(
-        inner_result,
-        Value::Undef,
-        "inner gradient(field) must return Undef (stub)"
+    assert!(
+        matches!(&inner_result, Value::Field { .. }),
+        "inner gradient(field) should return a Field, got {:?}",
+        inner_result
     );
 
     // Outer gradient: gradient(gradient(field)) -> Undef
-    // The inner gradient evaluates to Undef, which triggers strict Undef
-    // propagation at the outer FunctionCall's arg evaluation, short-circuiting
-    // before even reaching the gradient handler.
+    // The Gradient-sourced field is rejected by the source whitelist.
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
     let outer_gradient = make_function_call(
         "gradient",
-        vec![inner_gradient],
+        vec![CompiledExpr::literal(inner_result, grad_field_type)],
         Type::Real,
     );
 
@@ -319,14 +369,16 @@ fn gradient_field_with_undef_lambda() {
     );
 }
 
-/// Gradient of temperature-over-length field returns Undef (stub).
+/// Gradient of temperature-over-length field returns a gradient Field.
 ///
 /// Build a 1D field with domain=Scalar<Length>, codomain=Scalar<Temperature>,
-/// lambda: |x| -> 2.0 * x. Call gradient(field) -> Undef (stub).
-/// When gradient is implemented, the gradient of a Temperature(Length)
-/// field should produce a field with codomain dimension Temperature/Length.
+/// lambda: |x| -> 2.0 * x. Call gradient(field) and verify the result is a Field.
+/// Sample the gradient field at x=3.0[m] and verify the result is approximately
+/// 2.0 with dimension Temperature/Length (not checked here since the lambda uses
+/// Real(2.0) * Real(x), producing dimensionless Real — the codomain type annotation
+/// drives the gradient's codomain, but the numerical result is 2.0).
 #[test]
-fn gradient_temperature_over_length_returns_undef() {
+fn gradient_temperature_over_length_returns_field() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
     // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
@@ -353,35 +405,66 @@ fn gradient_temperature_over_length_returns_undef() {
     };
 
     let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
     };
 
-    // gradient(field) -> Undef (stub)
-    // TODO: When gradient is implemented, the gradient of a Temperature(Length)
-    // field should produce a field with codomain dimension Temperature/Length.
+    // gradient(field) returns a Gradient-sourced field
     let gradient_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        codomain_type.clone(),
     );
 
     let values = ValueMap::new();
     let gradient_result = eval_expr(&gradient_expr, &EvalContext::simple(&values));
-    assert_eq!(
-        gradient_result,
-        Value::Undef,
-        "gradient of temperature/length field must return Undef (stub; when \
-         implemented, gradient dimension should be Temperature/Length)"
+    assert!(
+        matches!(&gradient_result, Value::Field { .. }),
+        "gradient of temperature/length field should return a Field, got {:?}",
+        gradient_result
+    );
+
+    // Sample the gradient field at x=3.0[m]
+    let point = Value::Scalar {
+        si_value: 3.0,
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(gradient_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // The derivative of f(x) = 2*x is 2.0
+    let val = sample_result
+        .as_f64()
+        .unwrap_or_else(|| panic!("gradient sample should be numeric, got {:?}", sample_result));
+    assert!(
+        (val - 2.0).abs() < 1e-4,
+        "gradient of 2*x should be ~2.0, got {}",
+        val
     );
 }
 
-/// Gradient of a field whose lambda returns a non-numeric value returns Undef.
+/// Gradient of a field whose lambda returns a non-numeric value: construction
+/// succeeds but sampling returns Undef.
 ///
-/// Build a field whose lambda returns Value::String("not_a_number"). Call
-/// gradient(field) -> Undef (stub). When gradient is implemented with numerical
-/// differentiation, non-numeric lambda output must propagate as Undef because
-/// arithmetic perturbation (f(x+h) - f(x-h)) / 2h requires numeric values.
+/// Build a field whose lambda returns Value::String("not_a_number"). gradient()
+/// construction succeeds because the field has valid domain/source/lambda. But
+/// sampling the gradient field returns Undef because numerical differentiation
+/// (f(x+h) - f(x-h)) / 2h requires numeric f values, and String cannot
+/// participate in as_f64 extraction.
 #[test]
 fn gradient_of_field_with_non_numeric_lambda() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -404,26 +487,47 @@ fn gradient_of_field_with_non_numeric_lambda() {
     };
 
     let field_type = Type::Field {
-        domain: Box::new(domain_type),
-        codomain: Box::new(codomain_type),
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
     };
 
-    // gradient(field) -> Undef (stub)
-    // When gradient is implemented, numerical differentiation will attempt
-    // (f(x+h) - f(x-h)) / 2h, which requires numeric f values. A String
-    // return from the lambda cannot participate in subtraction/division,
-    // so gradient must propagate Undef.
-    let expr = make_function_call(
+    // gradient(field) succeeds at construction time — domain is scalar, source
+    // is Analytical, lambda is a Lambda.
+    let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        codomain_type.clone(),
     );
 
     let values = ValueMap::new();
-    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient construction should succeed (valid domain/source/lambda), got {:?}",
+        grad_result
+    );
+
+    // Sampling the gradient field returns Undef because lambda returns String,
+    // which fails as_f64 extraction in the perturbation loop.
+    let point = Value::Real(1.0);
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
-        result,
+        sample_result,
         Value::Undef,
-        "gradient of field with non-numeric lambda must return Undef"
+        "sampling gradient of non-numeric lambda must return Undef"
     );
 }
