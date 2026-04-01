@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use reify_eval::Engine;
-use reify_eval::cache::NodeId;
+use reify_eval::cache::{CachedResult, NodeId};
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::builders::{binop, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::{
@@ -15,8 +15,8 @@ use reify_test_support::mocks::{
 };
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness, ModulePath,
-    SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyState,
+    Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId, VersionId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -2335,5 +2335,43 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     assert!(
         eval_set.contains(&NodeId::Value(x_id.clone())),
         "x should be in eval set — it was re-evaluated (though value unchanged)"
+    );
+}
+
+/// After edit_param, the param's own cache entry must hold the new value/determinacy,
+/// not the old default that was stored during initial eval().
+///
+/// Bug: edit_param updates the snapshot but never calls record_evaluation for the
+/// param itself, so the cache retains CachedResult::Value(old_default, Determined).
+#[test]
+fn edit_param_updates_param_cache_entry() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    // Edit width from 80mm (0.08m) to 100mm (0.1m)
+    let width_id = ValueCellId::new(e, "width");
+    engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+
+    // The cache entry for the param itself must reflect the edited value
+    let cache = engine.cache_store();
+    let width_node = NodeId::Value(width_id);
+    let entry = cache
+        .get(&width_node)
+        .expect("width should be in cache after edit_param");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(v, DeterminacyState::Determined)
+            if (v.as_f64().unwrap() - 0.1).abs() < 1e-12
+        ),
+        "cache entry for edited param should hold new value 0.1m, got {:?}",
+        entry.result
     );
 }
