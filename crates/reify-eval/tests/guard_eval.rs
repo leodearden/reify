@@ -819,3 +819,122 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
         "Step 3: DeterminacyState should be Determined after re-activation"
     );
 }
+
+/// Round-trip test for else_members: guard false→true→false preserves Auto param value.
+///
+/// Mirror of guard_round_trip_true_false_true but with Auto param in else_members.
+/// The solver is invoked once during initial eval (5mm). On else-branch re-activation,
+/// the preserved value keeps constraints out of the dirty cone, so the solver is NOT
+/// re-invoked. Asserts the value and DeterminacyState::Determined at every step.
+#[test]
+fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            Some("thickness_gt_2mm"),
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],               // members
+            vec![],               // constraints
+            vec![thickness_decl], // else_members (active when false)
+            vec![],               // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Sequenced solver: first solve → 5mm, second solve → 8mm
+    let mut solved1 = HashMap::new();
+    solved1.insert(thickness_id.clone(), mm(5.0));
+    let mut solved2 = HashMap::new();
+    solved2.insert(thickness_id.clone(), mm(8.0));
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
+
+    // Step 1: eval() with guard=false — else branch active, solver resolves thickness to 5mm
+    let initial_result = engine.eval(&module);
+    let thickness_val = initial_result.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_val, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Step 1: thickness should be 5mm (0.005 SI) after initial eval, got {:?}",
+        thickness_val
+    );
+    let snap1 = engine.snapshot().expect("snapshot after eval");
+    let (_, det1) = snap1.values.get(&thickness_id).expect("thickness in snap1");
+    assert_eq!(
+        *det1,
+        DeterminacyState::Determined,
+        "Step 1: DeterminacyState should be Determined after solver resolution"
+    );
+
+    // Step 2: edit_param(active, true) — else branch deactivates, thickness preserved at 5mm
+    let edit_result1 = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param to true should succeed");
+    let thickness_deact = edit_result1.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_deact, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Step 2: thickness should remain 5mm after else deactivation, got {:?}",
+        thickness_deact
+    );
+    let snap2 = engine.snapshot().expect("snapshot after else deactivation");
+    let (_, det2) = snap2.values.get(&thickness_id).expect("thickness in snap2");
+    assert_eq!(
+        *det2,
+        DeterminacyState::Determined,
+        "Step 2: DeterminacyState should remain Determined after else deactivation"
+    );
+
+    // Step 3: edit_param(active, false) — else branch re-activates.
+    // The solver is NOT re-invoked because the preserved value keeps
+    // constraints out of the dirty cone. Value stays at 5mm.
+    let edit_result2 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param to false should succeed");
+    let thickness_react = edit_result2.values.get(&thickness_id);
+    assert!(
+        matches!(thickness_react, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Step 3: thickness should retain preserved value (5mm / 0.005 SI) after else re-activation, got {:?}",
+        thickness_react
+    );
+    let snap3 = engine.snapshot().expect("snapshot after else re-activation");
+    let (_, det3) = snap3.values.get(&thickness_id).expect("thickness in snap3");
+    assert_eq!(
+        *det3,
+        DeterminacyState::Determined,
+        "Step 3: DeterminacyState should be Determined after else re-activation"
+    );
+}
