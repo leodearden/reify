@@ -2042,4 +2042,12 @@ mod tests {
         let result = run_with_deadlock_timeout(|| 42i32);
         assert_eq!(result, 42);
     }
+
+    #[test]
+    #[should_panic(expected = "deliberate test panic")]
+    fn run_with_deadlock_timeout_forwards_panic() {
+        run_with_deadlock_timeout(|| {
+            panic!("deliberate test panic");
+        });
+    }
 }
