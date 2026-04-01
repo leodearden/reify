@@ -3031,3 +3031,74 @@ async fn test_always_cancel_when_stale_drops_result() {
         "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
     );
 }
+
+/// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
+/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns false
+/// for all nodes (all inputs are final). node_b should proceed normally:
+/// it should be in result.changed and NOT in result.skipped.
+#[tokio::test]
+async fn test_only_run_on_final_inputs_runs_when_final() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::NodeCommitmentOverride;
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    let e = "FINAL";
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    // node_b has OnlyRunOnFinalInputs override
+    let mut node_overrides = HashMap::new();
+    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+
+    // has_intermediate_inputs returns false for all nodes (all inputs are final)
+    let config = SchedulerConfig {
+        node_overrides,
+        has_intermediate_inputs: Arc::new(|_| false),
+        ..SchedulerConfig::default()
+    };
+
+    let cancel = CancellationToken::new();
+    let scheduler = ConcurrentScheduler;
+    let evaluator = Arc::new(AllChangedAsync);
+    let eval_set = vec![node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // node_b should be evaluated (not skipped) because inputs are final
+    assert!(
+        result.changed.contains(&node_b),
+        "node_b should be in changed (OnlyRunOnFinalInputs with final inputs → runs normally)"
+    );
+    assert!(
+        !result.skipped.contains(&node_b),
+        "node_b should NOT be in skipped (inputs are final, not intermediate)"
+    );
+
+    // node_a should also be evaluated
+    assert!(
+        result.changed.contains(&node_a),
+        "node_a should be in changed (default CommitIfSlow)"
+    );
+}
