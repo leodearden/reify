@@ -69,6 +69,11 @@ fn eval_mul_expr(
 // ── step-1: Transform * Vector tests ─────────────────────────────────────────
 
 /// Identity transform * vector returns the same vector.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn identity_transform_mul_vector() {
     let v = Value::Vector(vec![
@@ -116,6 +121,11 @@ fn transform_90z_mul_vector() {
 }
 
 /// Translation component is ignored when multiplying Transform * Vector.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn transform_translation_ignored_for_vector() {
     let v = Value::Vector(vec![
@@ -249,6 +259,11 @@ fn transform_mul_dimensionless_vector_preserves_real() {
 // ── step-3: Transform * Point tests ──────────────────────────────────────────
 
 /// Identity transform * point returns the same point.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn identity_transform_mul_point() {
     let p = Value::Point(vec![
