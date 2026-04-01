@@ -89,8 +89,8 @@ fn check_indeterminate_constraint_exits_success() {
         "reify check should exit 0 when constraints are indeterminate (not violated).\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("OK"),
-        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {stdout}"
+        stdout.contains("  OK "),
+        "stdout should contain '  OK ' for the satisfied constraint (thickness > 2mm), got: {stdout}"
     );
     assert!(
         stdout.contains("INDETERMINATE"),
@@ -143,8 +143,8 @@ fn check_violated_with_indeterminate_exits_failure() {
     // Negative assertions: the fixture has zero satisfied constraints
     // (thickness=1mm violates thickness>2mm, tolerance=auto makes tolerance>0.1mm indeterminate).
     assert!(
-        !stdout.contains("OK"),
-        "stdout should NOT contain 'OK' (no satisfied constraints in fixture), got: {stdout}"
+        !stdout.contains("  OK "),
+        "stdout should NOT contain '  OK ' (no satisfied constraints in fixture), got: {stdout}"
     );
     assert!(
         !stdout.contains("All constraints satisfied"),
@@ -169,8 +169,8 @@ fn check_all_indeterminate_exits_success() {
         "stdout should contain 'INDETERMINATE', got: {stdout}"
     );
     assert!(
-        !stdout.contains("OK"),
-        "stdout should NOT contain 'OK' (no satisfied constraints), got: {stdout}"
+        !stdout.contains("  OK "),
+        "stdout should NOT contain '  OK ' (no satisfied constraints), got: {stdout}"
     );
     assert!(
         !stdout.contains("VIOLATED"),
