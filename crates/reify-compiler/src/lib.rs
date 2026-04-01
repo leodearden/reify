@@ -1035,6 +1035,21 @@ fn resolve_type_alias_expr(
             {
                 return Some(ty);
             }
+            // Check for user-defined parameterized alias instantiation
+            if !type_expr.type_args.is_empty() {
+                if let Some(alias_entry) = alias_registry.lookup(name) {
+                    if !alias_entry.type_params.is_empty() {
+                        let empty = HashSet::new();
+                        return resolve_parameterized_alias(
+                            alias_entry,
+                            &type_expr.type_args,
+                            &empty,
+                            alias_registry,
+                            diagnostics,
+                        );
+                    }
+                }
+            }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry)
@@ -1248,6 +1263,22 @@ fn resolve_type_alias_expr_with_subst(
                 )
             {
                 return Some(ty);
+            }
+            // Check for user-defined parameterized alias instantiation
+            if !type_expr.type_args.is_empty() {
+                if let Some(alias_entry) = alias_registry.lookup(name) {
+                    if !alias_entry.type_params.is_empty() {
+                        // Resolve type args with substitutions applied
+                        let subst_keys: HashSet<String> = subst.keys().cloned().collect();
+                        return resolve_parameterized_alias(
+                            alias_entry,
+                            &type_expr.type_args,
+                            &subst_keys,
+                            alias_registry,
+                            diagnostics,
+                        );
+                    }
+                }
             }
             // Then builtins + alias registry
             let empty = HashSet::new();
