@@ -322,7 +322,8 @@ fn parse_type_alias_empty_rhs_no_panic() {
     // Should NOT panic. Tree-sitter error recovery produces a zero-width node
     // that gets lowered to a TypeAlias with an empty-name type_expr.
     let source = "type Foo =";
-    let (decls, _errors) = parse_decls(source);
+    let (decls, errors) = parse_decls(source);
+    assert!(!errors.is_empty(), "expected at least one parse error for empty RHS");
 
     // Tree-sitter recovery produces a TypeAlias — extract it unconditionally.
     let ta = decls
