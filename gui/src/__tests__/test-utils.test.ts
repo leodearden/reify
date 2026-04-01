@@ -15,6 +15,13 @@ describe('flushMacrotasks', () => {
     await flushMacrotasks();
     expect(flag).toBe(true);
   });
+
+  it('Promise.resolve() microtask work is visible after awaiting', async () => {
+    let flag = false;
+    Promise.resolve().then(() => { flag = true; });
+    await flushMacrotasks();
+    expect(flag).toBe(true);
+  });
 });
 
 describe('flushMicrotasks', () => {
