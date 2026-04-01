@@ -402,6 +402,7 @@ fn all_spans_valid() {
             MemberDecl::Connect(c) => c.span,
             MemberDecl::Chain(c) => c.span,
             MemberDecl::MetaBlock(m) => m.span,
+            MemberDecl::ConstraintInst(ci) => ci.span,
         };
         assert!(span.start < span.end, "span should be non-empty");
     }

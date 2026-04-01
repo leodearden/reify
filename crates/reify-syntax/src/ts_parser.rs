@@ -1021,6 +1021,12 @@ impl<'a> Lowering<'a> {
                 "chain",
                 self.lower_chain(child).map(MemberDecl::Chain)
             ),
+            "constraint_instantiation" => check_and_lower!(
+                self,
+                child,
+                "constraint instantiation",
+                self.lower_constraint_inst(child).map(MemberDecl::ConstraintInst)
+            ),
             "meta_block" => check_and_lower!(
                 self,
                 child,
@@ -1620,6 +1626,36 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    fn lower_constraint_inst(&self, node: tree_sitter::Node) -> Option<ConstraintInstDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "named_argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if arg_child.kind() == "named_argument"
+                        && let Some(pair) = self.lower_named_arg(arg_child)
+                    {
+                        args.push(pair);
+                    }
+                }
+            }
+        }
+
+        let where_clause = self.lower_where_clause(node);
+
+        Some(ConstraintInstDecl {
+            name,
+            args,
+            where_clause,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
     fn lower_meta_block(&self, node: tree_sitter::Node) -> Option<MetaBlockDecl> {
         let mut entries = Vec::new();
         let mut cursor = node.walk();
@@ -2188,6 +2224,7 @@ mod tests {
                 MemberDecl::Param(p) => format!("param:{}", p.name),
                 MemberDecl::Let(l) => format!("let:{}", l.name),
                 MemberDecl::Constraint(_) => "constraint".into(),
+                MemberDecl::ConstraintInst(ci) => format!("constraint_inst:{}", ci.name),
                 MemberDecl::Sub(s) => format!("sub:{}", s.name),
                 MemberDecl::Minimize(_) => "minimize".into(),
                 MemberDecl::Maximize(_) => "maximize".into(),
@@ -2369,6 +2406,7 @@ mod tests {
                 MemberDecl::Param(p) => p.span,
                 MemberDecl::Let(l) => l.span,
                 MemberDecl::Constraint(c) => c.span,
+                MemberDecl::ConstraintInst(ci) => ci.span,
                 MemberDecl::Sub(s) => s.span,
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
@@ -2479,6 +2517,15 @@ mod tests {
                         text
                     );
                 }
+                MemberDecl::ConstraintInst(ci) => {
+                    assert!(
+                        text.starts_with("constraint"),
+                        "constraint_inst member {} text: {:?}",
+                        i,
+                        text
+                    );
+                    assert!(text.contains(&ci.name), "constraint_inst {} name in text", i);
+                }
             }
         }
 
@@ -2524,6 +2571,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.span, p.content_hash),
                 MemberDecl::Let(l) => (l.span, l.content_hash),
                 MemberDecl::Constraint(c) => (c.span, c.content_hash),
+                MemberDecl::ConstraintInst(ci) => (ci.span, ci.content_hash),
                 MemberDecl::Sub(s) => (s.span, s.content_hash),
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
@@ -2632,6 +2680,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
@@ -2646,6 +2695,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
