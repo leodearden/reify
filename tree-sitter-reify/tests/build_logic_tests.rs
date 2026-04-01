@@ -828,3 +828,72 @@ fn test_is_root_uses_libc_not_raw_ffi() {
         fn_body
     );
 }
+
+#[test]
+fn test_extract_test_fn_body_no_off_by_one() {
+    // Tests for the extract_test_fn_body() helper.
+    // This helper extracts the source text of a test function bounded by fn_sig.
+    // Key correctness property: the sub-slice offset arithmetic must add 1 when
+    // converting from `fn_section[1..].find(...)` back to an index in `fn_section`.
+
+    // Case (a): middle function — body must include all content up to (not including)
+    // the "\n#[test]" that introduces the next function.
+    let src_middle = concat!(
+        "#[test]\n",
+        "fn test_first() {\n",
+        "    let x = 1;\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_second() {\n",
+        "    let y = 2;\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_third() {\n",
+        "    let z = 3;\n",
+        "}"
+    );
+    let body = extract_test_fn_body(src_middle, "fn test_second()");
+    let body = body.expect("extract_test_fn_body should find test_second");
+    assert!(
+        body.contains("let y = 2;"),
+        "body should contain function content; got: {:?}",
+        body
+    );
+    // The off-by-one would clip the closing `}` of test_second; verify it's present.
+    assert!(
+        body.contains('}'),
+        "body should include closing brace of test_second; got: {:?}",
+        body
+    );
+    // Body must NOT bleed into the next function.
+    assert!(
+        !body.contains("let z = 3;"),
+        "body must not include content from test_third; got: {:?}",
+        body
+    );
+
+    // Case (b): last function — off-by-one `unwrap_or(len - 1)` would clip the
+    // final character. The corrected version uses `unwrap_or(len)`.
+    let src_last = concat!(
+        "#[test]\n",
+        "fn test_alpha() {\n",
+        "    is_root();\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_omega() {\n",
+        "    let last = true;\n",
+        "}"   // NOTE: no trailing newline — the off-by-one clips this `}`
+    );
+    let body_last = extract_test_fn_body(src_last, "fn test_omega()");
+    let body_last = body_last.expect("extract_test_fn_body should find test_omega");
+    assert!(
+        body_last.ends_with('}'),
+        "body of last function must include the closing brace (off-by-one would clip it); \
+         got: {:?}",
+        body_last
+    );
+
+    // Case (c): function not found returns None.
+    let none = extract_test_fn_body(src_last, "fn test_nonexistent()");
+    assert!(none.is_none(), "should return None for missing function");
+}
