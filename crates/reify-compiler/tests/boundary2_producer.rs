@@ -135,6 +135,16 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         CompiledExprKind::OptionNone => {}
         CompiledExprKind::MetaAccess { .. } => {}
         CompiledExprKind::DeterminacyPredicate { .. } => {}
+        CompiledExprKind::RangeConstructor {
+            lower, upper, ..
+        } => {
+            if let Some(lo) = lower {
+                assert_no_unresolved(lo);
+            }
+            if let Some(hi) = upper {
+                assert_no_unresolved(hi);
+            }
+        }
     }
 }
 

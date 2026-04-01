@@ -320,6 +320,23 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Option(Some(Box::new(val)))
         }
 
+        CompiledExprKind::RangeConstructor {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            let lo = lower.as_ref().map(|e| eval_expr(e, ctx));
+            let hi = upper.as_ref().map(|e| eval_expr(e, ctx));
+            // Undef propagation: if any present bound is Undef, the range is Undef
+            if lo.as_ref().is_some_and(|v| v.is_undef())
+                || hi.as_ref().is_some_and(|v| v.is_undef())
+            {
+                return Value::Undef;
+            }
+            Value::range(lo, hi, *lower_inclusive, *upper_inclusive)
+        }
+
         // DeterminacyPredicate: resolve using snapshot determinacy states if available.
         // When no determinacy context is provided (eval layer without engine), returns Undef.
         CompiledExprKind::DeterminacyPredicate { kind, cell } => {

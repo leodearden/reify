@@ -581,6 +581,28 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             };
             format!("{}({})", fn_name, cell.member)
         }
+        CompiledExprKind::RangeConstructor {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            match (lower, upper) {
+                (Some(lo), Some(hi)) => {
+                    let op = if *upper_inclusive { ".." } else { "..<" };
+                    format!("{}{}{}", format_expr(lo), op, format_expr(hi))
+                }
+                (Some(bound), None) => {
+                    let op = if *lower_inclusive { ">=" } else { ">" };
+                    format!("{}{}", op, format_expr(bound))
+                }
+                (None, Some(bound)) => {
+                    let op = if *upper_inclusive { "<=" } else { "<" };
+                    format!("{}{}", op, format_expr(bound))
+                }
+                (None, None) => "..".to_string(),
+            }
+        }
     }
 }
 

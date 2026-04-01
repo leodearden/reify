@@ -1661,6 +1661,7 @@ impl<'a> Lowering<'a> {
         match node.kind() {
             "binary_expression" => self.lower_binary_expr(node),
             "unary_expression" => self.lower_unary_expr(node),
+            "range_expression" => self.lower_range_expr(node),
             "conditional_expression" => self.lower_conditional(node),
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
@@ -1722,6 +1723,31 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::UnOp {
                 op,
                 operand: Box::new(operand),
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_range_expr(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let lower_node = node.child_by_field_name("lower")?;
+        let upper_node = node.child_by_field_name("upper")?;
+        let lower = self.lower_expr(lower_node)?;
+        let upper = self.lower_expr(upper_node)?;
+        // Determine inclusive/exclusive by checking for "..<" token
+        let mut exclusive_upper = false;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "..<" {
+                exclusive_upper = true;
+                break;
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::Range {
+                lower: Some(Box::new(lower)),
+                upper: Some(Box::new(upper)),
+                lower_inclusive: true,
+                upper_inclusive: !exclusive_upper,
             },
             span: self.span(node),
         })
