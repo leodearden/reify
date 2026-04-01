@@ -4,6 +4,13 @@
 #
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/test_helpers.sh"
 #   or:   source "$REPO_ROOT/tests/infra/test_helpers.sh"
+#
+# Note: scripts/test_tree_sitter_pipeline.sh intentionally uses its own richer
+# assert API (assert_cmd_success/assert_cmd_fails with output capture to temp
+# files, PASS_COUNT/FAIL_COUNT, colored terminal output, test auto-discovery
+# via declare -F, trap-based cleanup arrays) and is excluded from this shared
+# module. The pipeline's needs are architecturally different from the simple
+# boolean assert pattern provided here.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_TEST_HELPERS_SH_SOURCED:-}" = "1" ]; then

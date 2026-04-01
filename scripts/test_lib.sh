@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_FILE="$SCRIPT_DIR/lib.sh"
 
+# This is a test script, not a build script — source shared test helpers from tests/infra/.
+[ -f "$SCRIPT_DIR/../tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 echo "=== lib.sh unit tests ==="

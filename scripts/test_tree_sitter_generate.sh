@@ -13,6 +13,8 @@ STAMP_FILE="$TS_DIR/src/.grammar_hash.stamp"
 # Shared utilities (compute_sha256, etc.)
 source "$SCRIPT_DIR/lib.sh"
 
+# This is a test script, not a build script — source shared test helpers from tests/infra/.
+[ -f "$ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$ROOT/tests/infra/test_helpers.sh"
 
 # Ensure parser.c + stamp are restored on exit.

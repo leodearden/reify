@@ -225,7 +225,42 @@ for consumer in "${CONSUMERS[@]}"; do
     else
         check "$cname does NOT have inline summary block" "true"
     fi
+
+    # (e) scripts/ consumers must have a comment explaining cross-directory
+    #     sourcing from tests/infra/ (gated to scripts/ consumers only)
+    case "$consumer" in scripts/*)
+        if grep -B3 -E '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null \
+             | grep -qi 'test script.*not.*build'; then
+            check "$cname has cross-directory sourcing comment" "true"
+        else
+            check "$cname has cross-directory sourcing comment" "false"
+        fi
+        ;;
+    esac
+
+    # (f) all consumers must have a pre-source existence guard for test_helpers.sh
+    #     matching pattern: [ -f ... ] || or test -f ... ||
+    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then
+        check "$cname has pre-source existence guard" "true"
+    else
+        check "$cname has pre-source existence guard" "false"
+    fi
 done
+
+# ==============================================================================
+# Pipeline divergence documentation check
+# test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
+# richer assert API and is intentionally excluded from this shared module.
+# ==============================================================================
+
+echo ""
+echo "--- Pipeline divergence documented in test_helpers.sh ---"
+
+if grep -q 'test_tree_sitter_pipeline' "$HELPER_FILE" 2>/dev/null; then
+    check "test_helpers.sh documents pipeline divergence" "true"
+else
+    check "test_helpers.sh documents pipeline divergence" "false"
+fi
 
 # -- Summary -------------------------------------------------------------------
 echo ""
