@@ -38,25 +38,41 @@ portable_timeout() {
     local seconds="$1"
     shift
 
+    _PORTABLE_TIMEOUT_TIMED_OUT=false
     local cmd_exit=0
     if command -v timeout >/dev/null 2>&1; then
         timeout "$seconds" "$@" || cmd_exit=$?
+        if [ "$cmd_exit" -eq 124 ]; then
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+        fi
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@" || cmd_exit=$?
+        if [ "$cmd_exit" -eq 124 ]; then
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+        fi
     else
         # POSIX fallback: background the command, sleep, kill if still running.
+        # Use a temp file flag so we can distinguish the timer's kill from
+        # a coincidental exit code 143 or 124.
+        local timeout_flag
+        timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX")
+        rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+
         "$@" &
         local cmd_pid=$!
-        ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+        ( sleep "$seconds" && touch "$timeout_flag" && kill "$cmd_pid" 2>/dev/null ) &
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
         # Clean up timer — if command finished before timeout, kill the sleep+kill subshell.
         kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
-        # Exit code 143 = 128+15 (SIGTERM from kill) — treat as timeout, same as 124.
-        if [ "$cmd_exit" -eq 143 ]; then
+
+        if [ -f "$timeout_flag" ]; then
+            # Timer fired and killed the process — genuine timeout.
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
         fi
+        rm -f "$timeout_flag"
     fi
 
     return "$cmd_exit"

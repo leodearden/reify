@@ -80,8 +80,27 @@ assert "_PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout" \
 echo ""
 echo "--- Test 8: _PORTABLE_TIMEOUT_TIMED_OUT false on natural exit 124 ---"
 
-assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command exits 124 naturally" \
-    bash -c "source '$LIB_PORTABLE' && portable_timeout 5 bash -c 'exit 124' || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'false' ]"
+# Force POSIX fallback by creating a temp dir with only essential binaries,
+# excluding timeout/gtimeout. This is the path where the core misdiagnosis
+# occurs (GNU timeout has the same ambiguity, documented limitation).
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command exits 124 naturally (POSIX fallback)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        # Build a PATH that excludes timeout and gtimeout.
+        # Remove each directory that contains these binaries.
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+        portable_timeout 5 bash -c "exit 124" || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
 
 # -- Test 9: _PORTABLE_TIMEOUT_TIMED_OUT is false for success and failure -----
 echo ""
