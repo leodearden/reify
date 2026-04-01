@@ -97,6 +97,14 @@ pub enum CompiledExprKind {
         kind: DeterminacyPredicateKind,
         cell: ValueCellId,
     },
+    /// Range constructor: builds a `Value::Range` from optional lower/upper bounds.
+    /// Both bounds (when present) must have the same dimension (checked at compile time).
+    RangeConstructor {
+        lower: Option<Box<CompiledExpr>>,
+        upper: Option<Box<CompiledExpr>>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    },
 }
 
 /// Determinacy predicate kinds.
@@ -297,6 +305,16 @@ impl CompiledExpr {
             CompiledExprKind::OptionNone => {}
             CompiledExprKind::MetaAccess { .. } => {}
             CompiledExprKind::DeterminacyPredicate { .. } => {}
+            CompiledExprKind::RangeConstructor {
+                lower, upper, ..
+            } => {
+                if let Some(lo) = lower {
+                    lo.walk(f);
+                }
+                if let Some(hi) = upper {
+                    hi.walk(f);
+                }
+            }
         }
     }
 
@@ -415,6 +433,16 @@ impl CompiledExpr {
             CompiledExprKind::MetaAccess { .. } => {}
             CompiledExprKind::DeterminacyPredicate { cell, .. } => {
                 refs.push(cell.clone());
+            }
+            CompiledExprKind::RangeConstructor {
+                lower, upper, ..
+            } => {
+                if let Some(lo) = lower {
+                    lo.collect_value_refs_inner(refs);
+                }
+                if let Some(hi) = upper {
+                    hi.collect_value_refs_inner(refs);
+                }
             }
         }
     }
@@ -674,6 +702,16 @@ impl CompiledExpr {
                     cell.entity = to_entity.to_string();
                 }
             }
+            CompiledExprKind::RangeConstructor {
+                lower, upper, ..
+            } => {
+                if let Some(lo) = lower {
+                    lo.remap_entity(from_entity, to_entity);
+                }
+                if let Some(hi) = upper {
+                    hi.remap_entity(from_entity, to_entity);
+                }
+            }
         }
     }
 
@@ -709,6 +747,37 @@ impl CompiledExpr {
         CompiledExpr {
             kind: CompiledExprKind::MetaAccess { entity, key },
             result_type: Type::String,
+            content_hash,
+        }
+    }
+
+    /// Create a range constructor expression.
+    pub fn range_constructor(
+        lower: Option<CompiledExpr>,
+        upper: Option<CompiledExpr>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+        result_type: Type,
+    ) -> Self {
+        let mut content_hash = ContentHash::of(&[
+            18,
+            lower_inclusive as u8,
+            upper_inclusive as u8,
+        ]);
+        if let Some(lo) = &lower {
+            content_hash = content_hash.combine(lo.content_hash);
+        }
+        if let Some(hi) = &upper {
+            content_hash = content_hash.combine(hi.content_hash);
+        }
+        CompiledExpr {
+            kind: CompiledExprKind::RangeConstructor {
+                lower: lower.map(Box::new),
+                upper: upper.map(Box::new),
+                lower_inclusive,
+                upper_inclusive,
+            },
+            result_type,
             content_hash,
         }
     }

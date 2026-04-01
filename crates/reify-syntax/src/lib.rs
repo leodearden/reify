@@ -565,6 +565,13 @@ pub enum ExprKind {
         selector: String,
         args: Vec<Expr>,
     },
+    /// Range expression: `1..10`, `1..<10`, `>2mm`, `>=2mm`, `<10mm`, `<=10mm`
+    Range {
+        lower: Option<Box<Expr>>,
+        upper: Option<Box<Expr>>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+    },
 }
 
 /// A match arm: `Pattern1 | Pattern2 => body`

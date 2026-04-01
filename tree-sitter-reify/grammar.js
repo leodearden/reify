@@ -588,6 +588,7 @@ module.exports = grammar({
     //  10: postfix member access (.), function call
 
     _expression: $ => choice(
+      $.range_expression,
       $.binary_expression,
       $.unary_expression,
       $.conditional_expression,
@@ -658,6 +659,16 @@ module.exports = grammar({
       prec.left(5, seq(field('left', $._expression), field('op', '-'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '*'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '/'), field('right', $._expression))),
+    ),
+
+    // ── Range expressions ───────────────────────────────────
+    // Precedence 0: lower than all other binary operators so that
+    // `2mm + 1mm .. 10mm - 1mm` parses as `(2mm+1mm) .. (10mm-1mm)`.
+    range_expression: $ => choice(
+      // Two-sided inclusive: lower..upper
+      prec.left(0, seq(field('lower', $._expression), '..', field('upper', $._expression))),
+      // Two-sided exclusive upper: lower..<upper
+      prec.left(0, seq(field('lower', $._expression), '..<', field('upper', $._expression))),
     ),
 
     unary_expression: $ => choice(

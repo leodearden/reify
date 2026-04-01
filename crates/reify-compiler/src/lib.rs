@@ -1554,6 +1554,84 @@ fn compile_expr_guarded(
                 }
             }
         }
+        reify_syntax::ExprKind::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            let compiled_lower = lower.as_ref().map(|e| {
+                compile_expr_guarded(
+                    e,
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                )
+            });
+            let compiled_upper = upper.as_ref().map(|e| {
+                compile_expr_guarded(
+                    e,
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                )
+            });
+            // Dimensional checking: both bounds must have the same dimension
+            if let (Some(lo), Some(hi)) = (&compiled_lower, &compiled_upper) {
+                match (&lo.result_type, &hi.result_type) {
+                    (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
+                        if ld != rd =>
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "dimension mismatch in range: {} vs {}",
+                                lo.result_type, hi.result_type,
+                            ))
+                            .with_label(
+                                DiagnosticLabel::new(expr.span, "incompatible dimensions"),
+                            ),
+                        );
+                    }
+                    (Type::Scalar { .. }, Type::Int | Type::Real)
+                    | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "incompatible types in range: {} vs {}",
+                                lo.result_type, hi.result_type,
+                            ))
+                            .with_label(
+                                DiagnosticLabel::new(
+                                    expr.span,
+                                    "dimensioned + dimensionless",
+                                ),
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            // Infer the element type from whichever bound is present
+            let element_type = compiled_lower
+                .as_ref()
+                .map(|e| &e.result_type)
+                .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
+                .cloned()
+                .unwrap_or(Type::Real);
+            let result_type = Type::range(element_type);
+            CompiledExpr::range_constructor(
+                compiled_lower,
+                compiled_upper,
+                *lower_inclusive,
+                *upper_inclusive,
+                result_type,
+            )
+        }
         reify_syntax::ExprKind::FunctionCall { name, args } => {
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
@@ -5050,6 +5128,16 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         CompiledExprKind::MetaAccess { .. } => {}
         CompiledExprKind::DeterminacyPredicate { cell, .. } => {
             refs.push(cell.clone());
+        }
+        CompiledExprKind::RangeConstructor {
+            lower, upper, ..
+        } => {
+            if let Some(lo) = lower {
+                collect_body_refs_inner(lo, refs);
+            }
+            if let Some(hi) = upper {
+                collect_body_refs_inner(hi, refs);
+            }
         }
     }
 }
