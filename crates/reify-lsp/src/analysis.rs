@@ -437,6 +437,7 @@ mod tests {
             .expect("diameter should exist in occurrence");
         assert_eq!(info.name, "diameter");
         assert_eq!(info.kind, ValueCellKind::Param);
+        assert!(matches!(info.cell_type, Type::Scalar { .. }));
     }
 
     #[test]
