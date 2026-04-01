@@ -146,6 +146,8 @@ impl AnalysisContext {
             let (members, decl_name) = match decl {
                 reify_syntax::Declaration::Structure(s) => (&s.members, s.name.as_str()),
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
+                reify_syntax::Declaration::Trait(t) => (&t.members, t.name.as_str()),
+                reify_syntax::Declaration::Purpose(p) => (&p.members, p.name.as_str()),
                 _ => continue,
             };
             if let Some(target) = enclosing_decl
