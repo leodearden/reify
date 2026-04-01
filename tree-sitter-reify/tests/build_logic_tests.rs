@@ -660,12 +660,9 @@ fn test_stamp_shared_across_simulated_profiles() {
 /// DAC permission enforcement, which root/CAP_DAC_OVERRIDE bypasses.
 #[cfg(unix)]
 fn is_root() -> bool {
-    // SAFETY: getuid() is a trivial POSIX syscall with a stable ABI.
-    // uid_t is u32 on all major Unix platforms (Linux, macOS, BSD).
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    unsafe { getuid() == 0 }
+    // SAFETY: libc::getuid() is a trivial POSIX syscall. libc provides a
+    // well-audited, platform-tested binding — uid_t maps to u32 on Linux/macOS/BSD.
+    unsafe { libc::getuid() == 0 }
 }
 
 /// RAII guard that unconditionally restores write permissions on drop.
