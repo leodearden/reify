@@ -1802,3 +1802,23 @@ fn value_vector_div_int_zero_returns_undef() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
+
+/// Value::Point / Int(0) → Undef (division-by-zero with integer zero for Point).
+/// Mirrors value_point_div_zero_returns_undef but uses Int(0) instead of Real(0.0)
+/// to confirm the as_f64() == 0.0 guard in eval_div catches integer zero for Points.
+#[test]
+fn value_point_div_int_zero_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
