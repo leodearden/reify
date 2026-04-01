@@ -110,6 +110,16 @@ fn build_module(template: reify_compiler::TopologyTemplate) -> reify_compiler::C
         .build()
 }
 
+/// Test helper: evaluator that panics on any node.
+/// Used by rollback_on_task_panicked, repeated_error_then_success_cycle,
+/// test_cleanup_on_task_panic, and test_cleanup_on_task_cancelled.
+struct PanickingEvaluator;
+impl AsyncNodeEvaluator for PanickingEvaluator {
+    async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+        panic!("intentional panic in evaluator");
+    }
+}
+
 /// step-3: ConcurrentEvalAdapter correctly evaluates a single value node.
 #[tokio::test]
 async fn adapter_evaluates_single_value_node() {
@@ -634,14 +644,6 @@ async fn rollback_on_task_panicked_restores_engine_state() {
         "b should be Pending after prepare"
     );
 
-    // Create a panicking evaluator
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
-
     let panicking = Arc::new(PanickingEvaluator);
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
@@ -736,13 +738,6 @@ async fn repeated_error_then_success_cycle() {
     let setup1 = engine
         .prepare_concurrent_edit(a_id.clone(), Value::Real(20.0))
         .unwrap();
-
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
 
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
@@ -2303,26 +2298,31 @@ mod poison_evaluate {
 }
 
 
-// --- Tests for execute_with_config: priority, commitment, overrides ---
+mod execute_with_config_tests {
+    //! Tests for execute_with_config: priority, commitment, overrides.
+    use super::*;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
+    use reify_runtime::concurrent::{SchedulerConfig, SchedulerError};
+    use reify_runtime::priority_promotion::SharedPriorityPromoter;
+    use reify_runtime::Priority;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
-/// Test that nodes within a level are spawned in priority order.
+    /// Test helper: evaluator that returns EvalOutcome::Changed for all nodes.
+    struct AllChangedAsync;
+    impl AsyncNodeEvaluator for AllChangedAsync {
+        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+            EvalOutcome::Changed
+        }
+    }
+
+    /// Test that nodes within a level are spawned in priority order.
 /// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
 /// Uses TrackingAsyncEvaluator to record evaluation order.
 /// With #[tokio::test] (current_thread runtime), spawn order == eval order for
 /// synchronous evaluators.
 #[tokio::test]
 async fn test_priority_ordering_within_level() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-
     // TrackingAsyncEvaluator: records NodeId on each evaluate call
     struct TrackingAsyncEvaluator {
         eval_order: Arc<Mutex<Vec<NodeId>>>,
@@ -2393,23 +2393,6 @@ async fn test_priority_ordering_within_level() {
 /// node_a should be in result.changed.
 #[tokio::test]
 async fn test_only_run_on_final_inputs_skipped() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::NodeCommitmentOverride;
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Arc;
-
-    struct AllChangedAsync;
-    impl AsyncNodeEvaluator for AllChangedAsync {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            EvalOutcome::Changed
-        }
-    }
-
     let e = "SKIP";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2466,17 +2449,6 @@ async fn test_only_run_on_final_inputs_skipped() {
 /// - fast_node NOT in result.changed (uncommitted, cancelled)
 #[tokio::test]
 async fn test_committed_node_survives_cancellation() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
     let e = "CMT";
     let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
     let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
@@ -2550,17 +2522,6 @@ async fn test_committed_node_survives_cancellation() {
 /// Assert neither node is in result.changed (both uncommitted when cancel fires).
 #[tokio::test]
 async fn test_uncommitted_in_dirty_cone_cancelled() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
     let e = "UNC";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2627,25 +2588,6 @@ async fn test_uncommitted_in_dirty_cone_cancelled() {
 /// tracker.task_count() == 0 and promoter.count() == 0.
 #[tokio::test]
 async fn test_cleanup_on_completion() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-
-    struct AllChangedAsync;
-    impl AsyncNodeEvaluator for AllChangedAsync {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            EvalOutcome::Changed
-        }
-    }
-
     let e = "CLN";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2700,26 +2642,6 @@ async fn test_cleanup_on_completion() {
 /// should FAIL until the cleanup-on-error-path fix is implemented.
 #[tokio::test]
 async fn test_cleanup_on_task_panic() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-        SchedulerError,
-    };
-    use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
-
     let e = "PNC";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2788,26 +2710,6 @@ async fn test_cleanup_on_task_panic() {
 /// leaving stale entries in both structures.
 #[tokio::test]
 async fn test_cleanup_on_task_cancelled() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-        SchedulerError,
-    };
-    use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic to trigger error path");
-        }
-    }
-
     let e = "CXL";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2877,17 +2779,6 @@ async fn test_cleanup_on_task_cancelled() {
 /// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
 #[tokio::test]
 async fn test_node_override_threaded_to_commitment_tracker() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
     let e = "THREAD";
     let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
@@ -2970,17 +2861,6 @@ async fn test_node_override_threaded_to_commitment_tracker() {
 /// return NeverCommit, so slow_node should NOT appear in result.changed.
 #[tokio::test]
 async fn test_always_cancel_when_stale_drops_result() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
     let e = "ACWS";
     let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
     let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
@@ -3069,23 +2949,6 @@ async fn test_always_cancel_when_stale_drops_result() {
 /// it should be in result.changed and NOT in result.skipped.
 #[tokio::test]
 async fn test_only_run_on_final_inputs_runs_when_final() {
-    use reify_eval::cache::{EvalOutcome, NodeId};
-    use reify_eval::deps::DependencyTrace;
-    use reify_runtime::commitment::NodeCommitmentOverride;
-    use reify_runtime::concurrent::{
-        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
-    };
-    use reify_types::ValueCellId;
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Arc;
-
-    struct AllChangedAsync;
-    impl AsyncNodeEvaluator for AllChangedAsync {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            EvalOutcome::Changed
-        }
-    }
-
     let e = "FINAL";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -3136,3 +2999,4 @@ async fn test_only_run_on_final_inputs_runs_when_final() {
         "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
     );
 }
+} // mod execute_with_config_tests
