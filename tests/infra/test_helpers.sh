@@ -5,7 +5,7 @@
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/test_helpers.sh"
 #   or:   source "$REPO_ROOT/tests/infra/test_helpers.sh"
 #
-# Note: scripts/test_tree_sitter_pipeline.sh intentionally uses its own richer
+# Note: tests/infra/test_tree_sitter_pipeline.sh intentionally uses its own richer
 # assert API (assert_cmd_success/assert_cmd_fails with output capture to temp
 # files, PASS_COUNT/FAIL_COUNT, colored terminal output, test auto-discovery
 # via declare -F, trap-based cleanup arrays) and is excluded from this shared
