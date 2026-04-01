@@ -581,6 +581,16 @@ pub enum ExprKind {
         selector: String,
         args: Vec<Expr>,
     },
+    /// Qualified access: `Foo::bar` — access a member through a qualified path
+    QualifiedAccess {
+        qualifier: Box<Expr>,
+        member: String,
+    },
+    /// Instance qualified access: `obj.(Foo::bar)` — trait-qualified member access on an instance
+    InstanceQualifiedAccess {
+        object: Box<Expr>,
+        qualified: Box<Expr>,
+    },
     /// Range expression: `1..10`, `1..<10`, `>2mm`, `>=2mm`, `<10mm`, `<=10mm`
     Range {
         lower: Option<Box<Expr>>,
