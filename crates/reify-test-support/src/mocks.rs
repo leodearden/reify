@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
@@ -484,6 +485,44 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.captured.lock().unwrap().push(problem.clone());
         self.inner.solve(problem)
+    }
+}
+
+/// Run a closure on a background thread with a 10-second deadlock timeout.
+///
+/// Wraps `f` in [`std::panic::catch_unwind`] so that a panic inside the closure
+/// is forwarded to the caller thread (via [`std::panic::resume_unwind`]) rather
+/// than being swallowed or misreported as a timeout.  If the closure completes
+/// normally its return value is forwarded to the caller.
+///
+/// # Panics
+///
+/// * Panics with the original payload if the closure panics.
+/// * Panics with a "timed out" message if the closure does not complete within
+///   10 seconds (note: the background thread cannot be cancelled and will leak).
+/// * Panics with "unexpected disconnect" if the background thread terminates
+///   without sending (should not happen in practice).
+pub fn run_with_deadlock_timeout<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<
+        Result<T, Box<dyn std::any::Any + Send>>,
+    >(1);
+    std::thread::spawn(move || {
+        let result = catch_unwind(AssertUnwindSafe(f));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(payload)) => resume_unwind(payload),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // The background thread is still running and cannot be joined.
+            // It will be leaked when the test process exits.
+            panic!("test timed out after 10s — possible deadlock");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("unexpected thread termination without sending result");
+        }
     }
 }
 
