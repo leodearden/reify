@@ -693,6 +693,92 @@ fn alias_forward_ref_function() {
 
 // ─── step-25: content hash determinism ───────────────────────────────────────
 
+// NOTE: steps 25-26 already committed (hash determinism fix)
+
+// ─── step-27: incomplete dependency collection in collect_type_expr_names ────
+
+#[test]
+fn alias_dependency_via_type_arg_reverse_order() {
+    // B depends on A via type arg (not dimensional op).
+    // Declared in reverse order (B before A) to test that DFS dependency
+    // tracking collects type arg names — not just dimensional operator operands.
+    // Currently fails because collect_type_expr_names returns ["List"] for B's
+    // body, missing "A", so resolve_alias_dfs won't pre-resolve A before B.
+    let source = r#"
+        type B = List<A>
+        type A = Int
+        structure S {
+            param p : B = [1]
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias with type arg dependency (reverse order) should compile without errors; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::List(Box::new(Type::Int)),
+        "B should resolve to List<Int>"
+    );
+}
+
+#[test]
+fn alias_dependency_map_via_type_args_reverse_order() {
+    // Outer depends on Inner via type arg in Map<Inner, String>.
+    // Inner declared after Outer to trigger the bug.
+    let source = r#"
+        type Outer = Map<Inner, String>
+        type Inner = Real
+        fn identity(m: Outer) -> Outer { m }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "Map alias with type arg dependency should compile without errors; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "identity")
+        .expect("identity function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Map(Box::new(Type::Real), Box::new(Type::String)),
+        "Outer should resolve to Map<Real, String>"
+    );
+}
+
+#[test]
+fn alias_dependency_option_via_type_arg_reverse_order() {
+    // Wrapped depends on Base via Option<Base>.
+    // Base declared after Wrapped to trigger the bug.
+    let source = r#"
+        type Wrapped = Option<Base>
+        type Base = Force
+        structure S {
+            param w : Wrapped = 1mm
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "Option alias with type arg dependency should compile without errors; got: {:?}",
+        errs
+    );
+}
+
 #[test]
 fn alias_content_hash_deterministic() {
     // Compile a source with 3+ aliases multiple times.
