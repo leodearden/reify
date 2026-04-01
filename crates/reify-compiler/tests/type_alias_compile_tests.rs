@@ -486,3 +486,38 @@ fn alias_as_trait_member_type() {
         errs
     );
 }
+
+// ─── step-19: pub alias visibility ─────────────────────────────────────────
+
+#[test]
+fn pub_alias_has_is_pub_true() {
+    let source = r#"
+        pub type Pressure = Force
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(errs.is_empty(), "pub alias should compile cleanly; got: {:?}", errs);
+    // Verify via compiled module output
+    let alias = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Pressure")
+        .expect("Pressure alias not found in compiled module type_aliases");
+    assert!(alias.is_pub, "pub type alias should have is_pub=true");
+}
+
+#[test]
+fn non_pub_alias_has_is_pub_false() {
+    let source = r#"
+        type Velocity = Length
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(errs.is_empty(), "non-pub alias should compile cleanly; got: {:?}", errs);
+    let alias = module
+        .type_aliases
+        .iter()
+        .find(|a| a.name == "Velocity")
+        .expect("Velocity alias not found in compiled module type_aliases");
+    assert!(!alias.is_pub, "non-pub type alias should have is_pub=false");
+}
