@@ -1,4 +1,6 @@
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
+use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind, Position, Url,
+};
 
 use crate::analysis::AnalysisContext;
 use crate::convert::position_to_offset;
@@ -180,10 +182,16 @@ fn push_keywords(items: &mut Vec<CompletionItem>, keywords: &[&str]) {
 }
 
 fn push_builtins(items: &mut Vec<CompletionItem>) {
-    for func in BUILTIN_FUNCTIONS {
+    for info in BUILTIN_FUNCTIONS {
         items.push(CompletionItem {
-            label: func.to_string(),
+            label: info.name.to_string(),
             kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(info.signature.to_string()),
+            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: info.doc.to_string(),
+            })),
+            sort_text: Some(format!("{}-{}", info.sort_group, info.name)),
             ..Default::default()
         });
     }
@@ -261,22 +269,488 @@ const EXPR_KEYWORDS: &[&str] = &[
     "if", "then", "else", "and", "or", "not", "true", "false",
 ];
 
-/// Built-in geometry and math functions.
-const BUILTIN_FUNCTIONS: &[&str] = &[
-    "box",
-    "cylinder",
-    "sphere",
-    "sin",
-    "cos",
-    "tan",
-    "sqrt",
-    "abs",
-    "min",
-    "max",
-    "dot",
-    "cross",
-    "normalize",
-    "magnitude",
+/// Metadata for a single built-in function exposed in LSP completions.
+struct BuiltinFunctionInfo {
+    name: &'static str,
+    signature: &'static str,
+    doc: &'static str,
+    /// Category prefix used for sort_text grouping (e.g. "03-trig").
+    sort_group: &'static str,
+}
+
+/// All built-in functions, organized by category.
+///
+/// Each entry provides: name, signature (shown in detail), brief doc
+/// (shown in documentation popup), and sort_group (for grouping in
+/// the completion list).
+const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
+    // --- 01-geometry: solid geometry primitives ---
+    BuiltinFunctionInfo {
+        name: "box",
+        signature: "box(width: Real, height: Real, depth: Real) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "cylinder",
+        signature: "cylinder(radius: Real, height: Real) -> Solid",
+        doc: "Creates a cylinder solid along the Z axis.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "sphere",
+        signature: "sphere(radius: Real) -> Solid",
+        doc: "Creates a sphere solid centred at the origin.",
+        sort_group: "01-geometry",
+    },
+    // --- 02-numeric: numeric / scalar math ---
+    BuiltinFunctionInfo {
+        name: "abs",
+        signature: "abs(x) -> Real",
+        doc: "Absolute value of `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "sqrt",
+        signature: "sqrt(x: Real) -> Real",
+        doc: "Square root of `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "floor",
+        signature: "floor(x: Real) -> Int",
+        doc: "Largest integer ≤ `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "ceil",
+        signature: "ceil(x: Real) -> Int",
+        doc: "Smallest integer ≥ `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "round",
+        signature: "round(x: Real) -> Int",
+        doc: "Round `x` to the nearest integer.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "sign",
+        signature: "sign(x: Real) -> Real",
+        doc: "Sign of `x`: +1, −1, or 0.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "log",
+        signature: "log(x: Real) -> Real",
+        doc: "Natural logarithm of `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "log10",
+        signature: "log10(x: Real) -> Real",
+        doc: "Base-10 logarithm of `x`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "exp",
+        signature: "exp(x: Real) -> Real",
+        doc: "Euler's number raised to the power `x` (eˣ).",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "min",
+        signature: "min(a, b) -> Real",
+        doc: "Returns the smaller of `a` and `b`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "max",
+        signature: "max(a, b) -> Real",
+        doc: "Returns the larger of `a` and `b`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "pow",
+        signature: "pow(base: Real, exp: Real) -> Real",
+        doc: "Raises `base` to the power `exp`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "mod",
+        signature: "mod(a, b) -> Real",
+        doc: "Remainder of `a` divided by `b`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "clamp",
+        signature: "clamp(x, lo, hi) -> Real",
+        doc: "Clamps `x` to the range [`lo`, `hi`].",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "lerp",
+        signature: "lerp(a, b, t: Real) -> Real",
+        doc: "Linearly interpolates from `a` to `b` by factor `t`.",
+        sort_group: "02-numeric",
+    },
+    BuiltinFunctionInfo {
+        name: "remap",
+        signature: "remap(x, in_lo, in_hi, out_lo, out_hi) -> Real",
+        doc: "Maps `x` from the input range to the output range.",
+        sort_group: "02-numeric",
+    },
+    // --- 03-trig: trigonometric functions ---
+    BuiltinFunctionInfo {
+        name: "sin",
+        signature: "sin(angle: Angle) -> Real",
+        doc: "Sine of `angle`.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "cos",
+        signature: "cos(angle: Angle) -> Real",
+        doc: "Cosine of `angle`.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "tan",
+        signature: "tan(angle: Angle) -> Real",
+        doc: "Tangent of `angle`.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "asin",
+        signature: "asin(x: Real) -> Angle",
+        doc: "Arc-sine of `x`; returns an angle.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "acos",
+        signature: "acos(x: Real) -> Angle",
+        doc: "Arc-cosine of `x`; returns an angle.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "atan",
+        signature: "atan(x: Real) -> Angle",
+        doc: "Arc-tangent of `x`; returns an angle.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "atan2",
+        signature: "atan2(y: Real, x: Real) -> Angle",
+        doc: "Two-argument arc-tangent; returns the angle of the vector (`x`, `y`).",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "sinh",
+        signature: "sinh(x: Real) -> Real",
+        doc: "Hyperbolic sine of `x`.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "cosh",
+        signature: "cosh(x: Real) -> Real",
+        doc: "Hyperbolic cosine of `x`.",
+        sort_group: "03-trig",
+    },
+    BuiltinFunctionInfo {
+        name: "tanh",
+        signature: "tanh(x: Real) -> Real",
+        doc: "Hyperbolic tangent of `x`.",
+        sort_group: "03-trig",
+    },
+    // --- 04-linalg: linear algebra ---
+    BuiltinFunctionInfo {
+        name: "dot",
+        signature: "dot(a: Vector, b: Vector) -> Real",
+        doc: "Dot product of vectors `a` and `b`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "cross",
+        signature: "cross(a: Vector, b: Vector) -> Vector",
+        doc: "Cross product of 3D vectors `a` and `b`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "normalize",
+        signature: "normalize(v: Vector) -> Vector",
+        doc: "Returns a unit vector in the direction of `v`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "magnitude",
+        signature: "magnitude(v: Vector) -> Real",
+        doc: "Euclidean length of vector `v`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "determinant",
+        signature: "determinant(m: Matrix) -> Real",
+        doc: "Determinant of square matrix `m`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "inverse",
+        signature: "inverse(m: Matrix) -> Matrix",
+        doc: "Inverse of square matrix `m`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "transpose",
+        signature: "transpose(m: Matrix) -> Matrix",
+        doc: "Transpose of matrix `m`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "outer",
+        signature: "outer(a: Vector, b: Vector) -> Matrix",
+        doc: "Outer (tensor) product of vectors `a` and `b`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "trace",
+        signature: "trace(m: Matrix) -> Real",
+        doc: "Trace (sum of diagonal elements) of matrix `m`.",
+        sort_group: "04-linalg",
+    },
+    BuiltinFunctionInfo {
+        name: "eigenvalues",
+        signature: "eigenvalues(m: Matrix) -> Vector",
+        doc: "Eigenvalues of symmetric matrix `m`.",
+        sort_group: "04-linalg",
+    },
+    // --- 05-complex: complex number operations ---
+    BuiltinFunctionInfo {
+        name: "complex",
+        signature: "complex(re: Real, im: Real) -> Complex",
+        doc: "Constructs a complex number with real part `re` and imaginary part `im`.",
+        sort_group: "05-complex",
+    },
+    BuiltinFunctionInfo {
+        name: "conjugate",
+        signature: "conjugate(z: Complex) -> Complex",
+        doc: "Complex conjugate of `z`.",
+        sort_group: "05-complex",
+    },
+    BuiltinFunctionInfo {
+        name: "phase",
+        signature: "phase(z: Complex) -> Angle",
+        doc: "Phase angle of complex number `z`.",
+        sort_group: "05-complex",
+    },
+    BuiltinFunctionInfo {
+        name: "complex_magnitude",
+        signature: "complex_magnitude(z: Complex) -> Real",
+        doc: "Magnitude (absolute value) of complex number `z`.",
+        sort_group: "05-complex",
+    },
+    BuiltinFunctionInfo {
+        name: "complex_add",
+        signature: "complex_add(a: Complex, b: Complex) -> Complex",
+        doc: "Sum of complex numbers `a` and `b`.",
+        sort_group: "05-complex",
+    },
+    BuiltinFunctionInfo {
+        name: "complex_mul",
+        signature: "complex_mul(a: Complex, b: Complex) -> Complex",
+        doc: "Product of complex numbers `a` and `b`.",
+        sort_group: "05-complex",
+    },
+    // --- 06-constructors: geometry value constructors ---
+    BuiltinFunctionInfo {
+        name: "point2",
+        signature: "point2(x: Real, y: Real) -> Point",
+        doc: "Constructs a 2D point.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "point3",
+        signature: "point3(x: Real, y: Real, z: Real) -> Point",
+        doc: "Constructs a 3D point.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "vec2",
+        signature: "vec2(x: Real, y: Real) -> Vector",
+        doc: "Constructs a 2D vector.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "vec3",
+        signature: "vec3(x: Real, y: Real, z: Real) -> Vector",
+        doc: "Constructs a 3D vector.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "frame3",
+        signature: "frame3(origin: Point, basis: Orientation) -> Frame",
+        doc: "Constructs a 3D coordinate frame from an origin and orientation.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "frame3_identity",
+        signature: "frame3_identity() -> Frame",
+        doc: "Returns the identity 3D frame (origin at zero, standard orientation).",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "transform3",
+        signature: "transform3(rotation: Orientation, translation: Vector) -> Transform",
+        doc: "Constructs a 3D rigid-body transform from a rotation and translation.",
+        sort_group: "06-constructors",
+    },
+    BuiltinFunctionInfo {
+        name: "transform3_identity",
+        signature: "transform3_identity() -> Transform",
+        doc: "Returns the identity 3D transform (no rotation, no translation).",
+        sort_group: "06-constructors",
+    },
+    // --- 07-orientation: orientation constructors ---
+    BuiltinFunctionInfo {
+        name: "orient_identity",
+        signature: "orient_identity() -> Orientation",
+        doc: "Returns the identity orientation (no rotation).",
+        sort_group: "07-orientation",
+    },
+    BuiltinFunctionInfo {
+        name: "orient_quaternion",
+        signature: "orient_quaternion(w: Real, x: Real, y: Real, z: Real) -> Orientation",
+        doc: "Constructs an orientation from a unit quaternion (w, x, y, z).",
+        sort_group: "07-orientation",
+    },
+    BuiltinFunctionInfo {
+        name: "orient_euler",
+        signature: "orient_euler(a1: Angle, a2: Angle, a3: Angle, order: String) -> Orientation",
+        doc: "Constructs an orientation from Euler angles and a rotation order string (e.g. `\"xyz\"`).",
+        sort_group: "07-orientation",
+    },
+    BuiltinFunctionInfo {
+        name: "orient_basis",
+        signature: "orient_basis(x_axis: Vector, y_axis: Vector, z_axis: Vector) -> Orientation",
+        doc: "Constructs an orientation from three orthonormal basis vectors.",
+        sort_group: "07-orientation",
+    },
+    BuiltinFunctionInfo {
+        name: "orient_axis_angle",
+        signature: "orient_axis_angle(axis: Vector, angle: Angle) -> Orientation",
+        doc: "Constructs an orientation from an axis vector and a rotation angle.",
+        sort_group: "07-orientation",
+    },
+    // --- 08-coordinate: coordinate frames, planes, axes ---
+    BuiltinFunctionInfo {
+        name: "frame_to_frame",
+        signature: "frame_to_frame(from: Frame, to: Frame) -> Transform",
+        doc: "Computes the transform that maps `from` frame to `to` frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "plane_xy",
+        signature: "plane_xy() -> Frame",
+        doc: "Returns the XY plane as a coordinate frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "plane_xz",
+        signature: "plane_xz() -> Frame",
+        doc: "Returns the XZ plane as a coordinate frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "plane_yz",
+        signature: "plane_yz() -> Frame",
+        doc: "Returns the YZ plane as a coordinate frame.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "axis_x",
+        signature: "axis_x() -> Vector",
+        doc: "Returns the unit X axis vector.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "axis_y",
+        signature: "axis_y() -> Vector",
+        doc: "Returns the unit Y axis vector.",
+        sort_group: "08-coordinate",
+    },
+    BuiltinFunctionInfo {
+        name: "axis_z",
+        signature: "axis_z() -> Vector",
+        doc: "Returns the unit Z axis vector.",
+        sort_group: "08-coordinate",
+    },
+    // --- 09-bbox: bounding box ---
+    BuiltinFunctionInfo {
+        name: "bbox",
+        signature: "bbox(solid) -> BoundingBox",
+        doc: "Returns the axis-aligned bounding box of a solid.",
+        sort_group: "09-bbox",
+    },
+    BuiltinFunctionInfo {
+        name: "bbox_size",
+        signature: "bbox_size(bb: BoundingBox) -> Vector",
+        doc: "Returns the size (width × height × depth) of a bounding box.",
+        sort_group: "09-bbox",
+    },
+    BuiltinFunctionInfo {
+        name: "bbox_center",
+        signature: "bbox_center(bb: BoundingBox) -> Point",
+        doc: "Returns the centre point of a bounding box.",
+        sort_group: "09-bbox",
+    },
+    // --- 10-field: field operations (not yet fully implemented) ---
+    BuiltinFunctionInfo {
+        name: "sample",
+        signature: "sample(field, point: Point) -> Real",
+        doc: "Evaluates a scalar field at the given point. *(Not yet implemented.)*",
+        sort_group: "10-field",
+    },
+    BuiltinFunctionInfo {
+        name: "gradient",
+        signature: "gradient(field, point: Point) -> Vector",
+        doc: "Gradient of a scalar field at the given point. *(Not yet implemented.)*",
+        sort_group: "10-field",
+    },
+    BuiltinFunctionInfo {
+        name: "divergence",
+        signature: "divergence(field, point: Point) -> Real",
+        doc: "Divergence of a vector field at the given point. *(Not yet implemented.)*",
+        sort_group: "10-field",
+    },
+    BuiltinFunctionInfo {
+        name: "curl",
+        signature: "curl(field, point: Point) -> Vector",
+        doc: "Curl of a vector field at the given point. *(Not yet implemented.)*",
+        sort_group: "10-field",
+    },
+    // --- 11-determinacy: constraint-system query functions ---
+    BuiltinFunctionInfo {
+        name: "determined",
+        signature: "determined(x) -> Bool",
+        doc: "Returns `true` if the value `x` is fully determined by the constraint system.",
+        sort_group: "11-determinacy",
+    },
+    BuiltinFunctionInfo {
+        name: "undetermined",
+        signature: "undetermined(x) -> Bool",
+        doc: "Returns `true` if the value `x` is not yet determined.",
+        sort_group: "11-determinacy",
+    },
+    BuiltinFunctionInfo {
+        name: "constrained",
+        signature: "constrained(x) -> Bool",
+        doc: "Returns `true` if the value `x` has at least one active constraint.",
+        sort_group: "11-determinacy",
+    },
+    BuiltinFunctionInfo {
+        name: "partially_determined",
+        signature: "partially_determined(x) -> Bool",
+        doc: "Returns `true` if the value `x` is partially — but not fully — determined.",
+        sort_group: "11-determinacy",
+    },
 ];
 
 /// Built-in type names.
