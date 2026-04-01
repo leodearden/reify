@@ -225,6 +225,18 @@ for consumer in "${CONSUMERS[@]}"; do
     else
         check "$cname does NOT have inline summary block" "true"
     fi
+
+    # (e) scripts/ consumers must have a comment explaining cross-directory
+    #     sourcing from tests/infra/ (gated to scripts/ consumers only)
+    case "$consumer" in scripts/*)
+        if grep -B3 -E '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null \
+             | grep -qi 'test script.*not.*build'; then
+            check "$cname has cross-directory sourcing comment" "true"
+        else
+            check "$cname has cross-directory sourcing comment" "false"
+        fi
+        ;;
+    esac
 done
 
 # -- Summary -------------------------------------------------------------------
