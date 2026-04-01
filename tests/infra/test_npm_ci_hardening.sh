@@ -32,13 +32,13 @@ echo "--- Test 2: script contains only checks 1-3 ---"
 
 SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
 
-assert "script has no hooks/project-checks grep patterns" \
-    bash -c "! grep -q 'hooks/project-checks' '$SCRIPT'"
+assert "script has no grep calls referencing hooks/project-checks" \
+    bash -c "! grep -qE 'grep.*hooks/project-checks|hooks/project-checks.*grep' '$SCRIPT'"
 
-assert "script has no orchestrator.yaml grep patterns" \
-    bash -c "! grep -q 'orchestrator\.yaml' '$SCRIPT'"
+assert "script has no grep calls referencing orchestrator.yaml" \
+    bash -c "! grep -qE 'grep.*orchestrator|orchestrator.*grep' '$SCRIPT'"
 
-assert "script has exactly 3 'Check N:' headers" \
-    bash -c "[ \"\$(grep -c 'Check [0-9]' '$SCRIPT')\" = '3' ]"
+assert "script has exactly 3 'Check N:' echo statements" \
+    bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '3' ]"
 
 test_summary

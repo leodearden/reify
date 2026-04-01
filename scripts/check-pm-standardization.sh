@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Validation script for package manager standardization (task 618).
-# Checks that npm is properly standardized across the project.
+# Checks static repo state: packageManager fields, lockfile gitignore status.
+# Redundant config-file-content checks (4-9) were removed by task 816 — those
+# are validated by actual execution on each commit and CI cycle.
 # Exit code: number of failed checks (0 = all pass).
 
 set -uo pipefail
@@ -42,70 +44,6 @@ if grep -q 'pnpm-lock\.yaml' "$ROOT/.gitignore" 2>/dev/null; then
     fi
 else
     echo "  FAIL: pnpm-lock.yaml not in .gitignore"
-    failures=$((failures + 1))
-fi
-
-# ── Check 4: hooks/project-checks uses 'npm ci' ─────────────────────
-echo "Check 4: hooks/project-checks uses npm ci"
-if grep -q 'npm ci' "$ROOT/hooks/project-checks" 2>/dev/null; then
-    if grep -q 'npm install' "$ROOT/hooks/project-checks" 2>/dev/null; then
-        echo "  FAIL: hooks/project-checks still references 'npm install'"
-        failures=$((failures + 1))
-    else
-        echo "  PASS: hooks/project-checks uses npm ci"
-    fi
-else
-    echo "  FAIL: hooks/project-checks does not use npm ci"
-    failures=$((failures + 1))
-fi
-
-# ── Check 5: orchestrator.yaml uses 'npm ci' ────────────────────────
-echo "Check 5: orchestrator.yaml uses npm ci"
-if grep -q 'npm ci' "$ROOT/orchestrator.yaml" 2>/dev/null; then
-    if grep -q 'npm install' "$ROOT/orchestrator.yaml" 2>/dev/null; then
-        echo "  FAIL: orchestrator.yaml still references 'npm install'"
-        failures=$((failures + 1))
-    else
-        echo "  PASS: orchestrator.yaml uses npm ci"
-    fi
-else
-    echo "  FAIL: orchestrator.yaml does not use npm ci"
-    failures=$((failures + 1))
-fi
-
-# ── Check 6: hooks/project-checks covers gui/sidecar/ ───────────────
-echo "Check 6: hooks/project-checks covers gui/sidecar/"
-if grep -q 'gui/sidecar' "$ROOT/hooks/project-checks" 2>/dev/null && grep -q 'npm ci' "$ROOT/hooks/project-checks" 2>/dev/null; then
-    echo "  PASS: hooks/project-checks covers gui/sidecar/ with npm ci"
-else
-    echo "  FAIL: hooks/project-checks does not cover gui/sidecar/"
-    failures=$((failures + 1))
-fi
-
-# ── Check 7: hooks/project-checks covers tree-sitter-reify/ ─────────
-echo "Check 7: hooks/project-checks covers tree-sitter-reify/"
-if grep -q 'tree-sitter-reify' "$ROOT/hooks/project-checks" 2>/dev/null && grep -q 'npm ci' "$ROOT/hooks/project-checks" 2>/dev/null; then
-    echo "  PASS: hooks/project-checks covers tree-sitter-reify/ with npm ci"
-else
-    echo "  FAIL: hooks/project-checks does not cover tree-sitter-reify/"
-    failures=$((failures + 1))
-fi
-
-# ── Check 8: orchestrator.yaml test_command covers gui/sidecar/ ──────
-echo "Check 8: orchestrator.yaml test_command covers gui/sidecar/"
-if grep 'test_command:' "$ROOT/orchestrator.yaml" 2>/dev/null | grep -q 'gui/sidecar'; then
-    echo "  PASS: orchestrator.yaml test_command covers gui/sidecar/"
-else
-    echo "  FAIL: orchestrator.yaml test_command does not cover gui/sidecar/"
-    failures=$((failures + 1))
-fi
-
-# ── Check 9: orchestrator.yaml lint_command covers gui/sidecar/ ──────
-echo "Check 9: orchestrator.yaml lint_command covers gui/sidecar/"
-if grep 'lint_command:' "$ROOT/orchestrator.yaml" 2>/dev/null | grep -q 'gui/sidecar'; then
-    echo "  PASS: orchestrator.yaml lint_command covers gui/sidecar/"
-else
-    echo "  FAIL: orchestrator.yaml lint_command does not cover gui/sidecar/"
     failures=$((failures + 1))
 fi
 
