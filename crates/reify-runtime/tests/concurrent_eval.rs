@@ -2504,6 +2504,12 @@ async fn test_committed_node_survives_cancellation() {
         .await
         .unwrap();
 
+    // Verify cancellation actually occurred (fast_node fires cancel.cancel())
+    assert!(
+        cancel.is_cancelled(),
+        "cancel token should be fired by fast_node during evaluation"
+    );
+
     // slow_node should survive cancellation because it's committed (elapsed > 10ms)
     assert!(
         result.changed.contains(&slow_node),
