@@ -142,3 +142,25 @@ fn parse_instance_qualified_access() {
         other => panic!("expected InstanceQualifiedAccess, got {:?}", other),
     }
 }
+
+// ── Step 9: invalid instance qualified access ───────────────────────────────
+
+#[test]
+fn parse_invalid_instance_qualified_numeric() {
+    let (decls, errors) = parse_decls("structure S { let x = obj.(42) }");
+    // Grammar constrains inner to $.qualified_access, so obj.(42) should trigger
+    // tree-sitter error recovery and produce parse errors.
+    assert!(
+        !errors.is_empty() || decls.is_empty() || {
+            // Even if structure parses, the let value should be missing (lowering
+            // returns None because the inner isn't a qualified_access CST node)
+            match &decls[0] {
+                Declaration::Structure(s) => s.members.is_empty(),
+                _ => true,
+            }
+        },
+        "obj.(42) should fail: decls={:?}, errors={:?}",
+        decls,
+        errors
+    );
+}
