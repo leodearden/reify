@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { deferred } from './test-utils';
 import { render, screen } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { EditorView } from '@codemirror/view';
@@ -713,12 +714,8 @@ describe('Editor cross-file goto-definition cleanup (B1)', () => {
     });
 
     // Return a deferred promise so we can unmount while it's in-flight
-    let resolveOpenFile: ((v: FileData) => void) | null = null;
-    vi.spyOn(bridge, 'openFile').mockReturnValue(
-      new Promise<FileData>((resolve) => {
-        resolveOpenFile = resolve;
-      }),
-    );
+    const deferredOpen = deferred<FileData>();
+    vi.spyOn(bridge, 'openFile').mockReturnValue(deferredOpen.promise);
 
     const { unmount } = render(() => <Editor store={store} />);
     const container = screen.getByTestId('editor-container');
@@ -734,14 +731,14 @@ describe('Editor cross-file goto-definition cleanup (B1)', () => {
 
     // Wait for bridgeOpenFile to be called
     await vi.waitFor(() => {
-      expect(resolveOpenFile).not.toBeNull();
+      expect(bridge.openFile).toHaveBeenCalled();
     });
 
     // Unmount component — sets destroyed=true, calls view.destroy()
     unmount();
 
     // Now resolve the in-flight bridgeOpenFile
-    resolveOpenFile!(file2);
+    deferredOpen.resolve(file2);
     await vi.advanceTimersByTimeAsync(10);
 
     // view.dispatch should NOT have been called after unmount
@@ -799,7 +796,8 @@ describe('Editor cleanup race condition (RC-05)', () => {
     store.setActiveFile(file1.path);
 
     const lspCalls: string[] = [];
-    let firstSwitchCloseResolver: (() => void) | null = null;
+    const deferredClose = deferred<void>();
+    let closeCaptured = false;
 
     mockInvoke.mockImplementation(async (_cmd: string, args: any) => {
       const method = (args as any)?.method as string;
@@ -817,11 +815,10 @@ describe('Editor cleanup race condition (RC-05)', () => {
       if (
         method === 'textDocument/didClose' &&
         uri.includes('bracket') &&
-        !firstSwitchCloseResolver
+        !closeCaptured
       ) {
-        return new Promise<void>((resolve) => {
-          firstSwitchCloseResolver = resolve;
-        }) as any;
+        closeCaptured = true;
+        return deferredClose.promise as any;
       }
 
       return undefined as any;
@@ -840,12 +837,12 @@ describe('Editor cleanup race condition (RC-05)', () => {
 
     // Wait for didClose(bracket) to be called — it's now pending via deferred
     await vi.waitFor(() => {
-      expect(firstSwitchCloseResolver).not.toBeNull();
+      expect(closeCaptured).toBe(true);
     });
 
     // Resolve didClose(bracket) and IMMEDIATELY unmount before the chain's
     // didOpen microtask gets a chance to run — this creates the race condition
-    firstSwitchCloseResolver!();
+    deferredClose.resolve();
     unmount();
 
     // Flush all microtasks to let pending promise chains settle
