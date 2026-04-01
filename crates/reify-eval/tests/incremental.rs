@@ -2440,3 +2440,56 @@ fn double_edit_param_updates_param_cache_both_times() {
         entry.result
     );
 }
+
+/// A param with no default_expr starts as Undef (not cached during initial eval).
+/// After edit_param sets a concrete value, the cache must contain the new value.
+#[test]
+fn edit_param_on_undef_param_updates_cache() {
+    let e = "T";
+
+    // Build a module with a single param that has no default_expr (None)
+    // and a let binding that reads it: let y = a + 1
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, None)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a has no default, so a=Undef (not cached for params without default_expr)
+    engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+
+    // Edit a → 42
+    engine
+        .edit_param(a_id.clone(), Value::Int(42))
+        .unwrap();
+
+    // The cache entry for a must now hold Value::Int(42)
+    let cache = engine.cache_store();
+    let a_node = NodeId::Value(a_id);
+    let entry = cache
+        .get(&a_node)
+        .expect("param a should be in cache after edit_param (even if it had no default)");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined)
+        ),
+        "cache entry for undef param should hold edited value Int(42), got {:?}",
+        entry.result
+    );
+}
