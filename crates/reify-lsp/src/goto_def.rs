@@ -25,7 +25,9 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
         let members: &[_] = match enclosing {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
-            _ => &[],  // Unknown variant; fall through to all-declarations search
+            reify_syntax::Declaration::Trait(t) => &t.members,
+            reify_syntax::Declaration::Purpose(p) => &p.members,
+            _ => &[],  // Variants without members (Import, Enum, Function, etc.)
         };
         if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {
@@ -43,6 +45,8 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
+            reify_syntax::Declaration::Trait(t) => &t.members,
+            reify_syntax::Declaration::Purpose(p) => &p.members,
             _ => continue,
         };
         if let Some(info) = find_named_member_span(members, word) {
@@ -485,6 +489,43 @@ mod tests {
         assert_eq!(
             loc.range.start.line, 2,
             "expected S's param x (line 2), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_fallback_finds_trait_member() {
+        // Standalone 'mass' outside any declaration. Phase 2 fallback should
+        // find the trait's param mass.
+        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}\nmass";
+        // Line 3: "mass" — standalone word after the trait's closing brace
+        let position = Position::new(3, 0);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for mass outside declarations should find trait's param");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to Rigid's param mass on line 1
+        assert_eq!(
+            loc.range.start.line, 1,
+            "expected trait's param mass (line 1), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_cursor_in_trait_scopes_to_enclosing() {
+        // Structure A and trait T both have param x.
+        // Cursor on 'x' in T's `let y = x` should jump to T's param x, not A's.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\ntrait T {\n    param x: Scalar = 10mm\n    let y = x\n}";
+        // Line 5: "    let y = x"
+        //                      ^ col 12 = 'x' reference
+        let position = Position::new(5, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in trait T should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to T's param x on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected T's param x (line 4), got line {}",
             loc.range.start.line
         );
     }
