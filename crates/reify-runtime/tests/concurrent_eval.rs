@@ -2228,6 +2228,16 @@ mod poison_evaluate {
             Some(&(Value::Real(20.0), DeterminacyState::Determined)),
             "T.b snapshot should be (20.0, Determined) after evaluate"
         );
+
+        // Verify the primary values map was also written (write_values runs before
+        // write_snapshot_values, so it should succeed even when only snapshot_values
+        // was poisoned).
+        let values = adapter.values();
+        assert_eq!(
+            values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(20.0)),
+            "T.b value should be 20.0 after evaluate (values lock was not poisoned)"
+        );
     }
 
     /// evaluate() recovers from poisoned results Mutex.
@@ -2259,6 +2269,11 @@ mod poison_evaluate {
             results[0].value,
             Value::Real(20.0),
             "T.b should be a*2 = 10*2 = 20.0 after evaluate"
+        );
+        assert_eq!(
+            results[0].determinacy,
+            DeterminacyState::Determined,
+            "T.b should be Determined after successful evaluate"
         );
     }
 
