@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tower_lsp::lsp_types::Url;
 
 /// State of a single open document.
@@ -42,6 +43,19 @@ impl DocumentStore {
 
     pub fn iter(&self) -> impl Iterator<Item = (&Url, &DocumentState)> {
         self.documents.iter()
+    }
+
+    /// Return a snapshot of all open documents keyed by filesystem path.
+    ///
+    /// Non-file URIs (e.g. `untitled:`) are silently skipped because they
+    /// have no meaningful [`PathBuf`] representation.
+    pub fn snapshot_as_path_map(&self) -> HashMap<PathBuf, String> {
+        self.documents
+            .iter()
+            .filter_map(|(uri, doc)| {
+                uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
+            })
+            .collect()
     }
 }
 
