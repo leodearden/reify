@@ -369,7 +369,9 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(el, { target: { value: input } });
     fireEvent.blur(el);
     expect(onSetParam).toHaveBeenCalledWith('c1', expected);
-    // After blur-commit, input reverts to prop value (mock doesn't propagate the change)
+    // In tests the mock doesn't update the prop, so after editing ends the input shows
+    // the original prop value '50'. In production the parent would update values and
+    // the input would show '80mm'.
     expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
   });
