@@ -41,4 +41,22 @@ assert "script has no grep calls referencing orchestrator.yaml" \
 assert "script has exactly 3 'Check N:' echo statements" \
     bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '3' ]"
 
+# -- Test 3: orchestrator.yaml uses if/then/fi guards (not || true) ----------
+echo ""
+echo "--- Test 3: orchestrator.yaml if/then/fi guards for npm ci ---"
+
+ORCH="$REPO_ROOT/orchestrator.yaml"
+
+assert "test_command has no '|| true' after npm ci" \
+    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'npm ci.*|| true\||| true.*npm ci'"
+
+assert "lint_command has no '|| true' after npm ci" \
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'npm ci.*|| true\||| true.*npm ci'"
+
+assert "test_command uses 'if test' guard pattern for npm ci" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test'"
+
+assert "lint_command uses 'if test' guard pattern for npm ci" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test'"
+
 test_summary
