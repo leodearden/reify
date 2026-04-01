@@ -158,6 +158,15 @@ pub enum EntityKind {
     Occurrence,
 }
 
+impl std::fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntityKind::Structure => f.write_str("structure"),
+            EntityKind::Occurrence => f.write_str("occurrence"),
+        }
+    }
+}
+
 /// A topology template — compiled from a StructureDef or OccurrenceDef.
 /// Contains all the value cells, constraints, and realizations.
 #[derive(Debug, Clone)]
