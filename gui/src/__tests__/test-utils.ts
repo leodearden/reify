@@ -2,8 +2,8 @@
  * Shared test helpers for async patterns.
  */
 
-/** Yield to the macrotask queue so setTimeout(0) callbacks execute. */
-export const flushMacrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+/** Yield to the macrotask queue so setTimeout callbacks execute. */
+export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Flush the microtask queue only (no setTimeout). Equivalent to Promise.resolve(). */
 export const flushMicrotasks = () => Promise.resolve();
