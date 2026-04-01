@@ -695,6 +695,29 @@ impl Drop for ReadonlyGuard {
     }
 }
 
+/// Extracts the source text of a test function identified by `fn_sig`.
+///
+/// Searches `source` for `fn_sig` and returns the slice from that point up to
+/// (but not including) the next `\n#[test]` annotation, or to the end of
+/// `source` if no subsequent test function exists.
+///
+/// The sub-slice offset arithmetic adds 1 when converting from
+/// `fn_section[1..].find(...)` back to an index in `fn_section`, avoiding the
+/// off-by-one that would clip the character immediately before the next `#[test]`.
+/// Similarly the fallback uses `fn_section.len()` (not `len() - 1`) so that
+/// the last function's closing `}` is always included.
+fn extract_test_fn_body<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
+    let fn_start = source.find(fn_sig)?;
+    let fn_section = &source[fn_start..];
+    // `find` on `fn_section[1..]` returns an offset relative to the sub-slice.
+    // Adding 1 converts it back to an index in `fn_section`.
+    let fn_end = fn_section[1..]
+        .find("\n#[test]")
+        .map(|p| p + 1)
+        .unwrap_or(fn_section.len());
+    Some(&fn_section[..fn_end])
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: both #[cfg(unix)] tests that rely on
@@ -709,16 +732,8 @@ fn test_unix_permission_tests_have_root_guard() {
     ];
 
     for fn_sig in &unix_test_fns {
-        let fn_start = source
-            .find(fn_sig)
+        let fn_body = extract_test_fn_body(&source, fn_sig)
             .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
-        // Extract enough of the function body to check for the guard
-        let fn_section = &source[fn_start..];
-        // Find the next test function or end of file as boundary
-        let fn_end = fn_section[1..]
-            .find("\n#[test]")
-            .unwrap_or(fn_section.len() - 1);
-        let fn_body = &fn_section[..fn_end];
 
         assert!(
             fn_body.contains("is_root()"),
