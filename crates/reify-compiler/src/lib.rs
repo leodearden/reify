@@ -1024,6 +1024,17 @@ fn resolve_type_alias_expr(
             })
         }
         name => {
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            if !type_expr.type_args.is_empty() {
+                if let Some(ty) = resolve_parameterized_builtin_type(
+                    name,
+                    &type_expr.type_args,
+                    alias_registry,
+                    diagnostics,
+                ) {
+                    return Some(ty);
+                }
+            }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
             resolve_type_with_aliases(name, &empty, alias_registry)
