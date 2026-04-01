@@ -2073,3 +2073,128 @@ fn gradient_deriv_overflow_returns_undef() {
         sample_result
     );
 }
+
+/// Gradient of Field<Point3<Scalar[m]>, Scalar[kg]> must have codomain_type
+/// = Vector { n: 3, quantity: Scalar[kg/m] }, not Vector { n: 3, quantity: Scalar[kg] }.
+///
+/// The runtime values are correct (dimension division happens in
+/// compute_numerical_gradient_at_point), but the type metadata on the gradient
+/// field itself currently uses codomain_type.clone() = Scalar[kg] instead of
+/// computing the R/Q dimension.
+#[test]
+fn gradient_3d_codomain_type_is_rq() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let dim_m = DimensionVector::LENGTH;
+    let dim_kg = DimensionVector::MASS;
+    let scalar_m = Type::Scalar { dimension: dim_m };
+    let scalar_kg = Type::Scalar { dimension: dim_kg };
+
+    // Lambda: |x, y, z| 2*x + 3*y + 4*z  (produces Scalar[kg])
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 2.0,
+                        dimension: dim_kg.div(&dim_m),
+                    },
+                    Type::Scalar {
+                        dimension: dim_kg.div(&dim_m),
+                    },
+                ),
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                scalar_kg.clone(),
+            ),
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(
+                    Value::Scalar {
+                        si_value: 3.0,
+                        dimension: dim_kg.div(&dim_m),
+                    },
+                    Type::Scalar {
+                        dimension: dim_kg.div(&dim_m),
+                    },
+                ),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                scalar_kg.clone(),
+            ),
+            scalar_kg.clone(),
+        ),
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 4.0,
+                    dimension: dim_kg.div(&dim_m),
+                },
+                Type::Scalar {
+                    dimension: dim_kg.div(&dim_m),
+                },
+            ),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            scalar_kg.clone(),
+        ),
+        scalar_kg.clone(),
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(scalar_m.clone());
+    let codomain_type = scalar_kg.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(scalar_kg.clone())),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Extract the codomain_type from the gradient field and verify it's kg/m, not kg.
+    let expected_grad_quantity = Type::Scalar {
+        dimension: dim_kg.div(&dim_m),
+    };
+    let expected_codomain = Type::Vector {
+        n: 3,
+        quantity: Box::new(expected_grad_quantity),
+    };
+
+    match &grad_result {
+        Value::Field { codomain_type, .. } => {
+            assert_eq!(
+                *codomain_type, expected_codomain,
+                "gradient codomain_type should be Vector3<Scalar[kg/m]>, got {:?}",
+                codomain_type
+            );
+        }
+        other => panic!("gradient should return a Field, got {:?}", other),
+    }
+}
