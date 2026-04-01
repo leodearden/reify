@@ -486,6 +486,30 @@ mod tests {
     }
 
     #[test]
+    fn shared_batch_remove_drops_count_and_handles_idempotent_removal() {
+        let shared = SharedPriorityPromoter::new();
+        let a = make_node("a");
+        let b = make_node("b");
+        let c = make_node("c");
+
+        shared.register(a.clone(), Priority::P0Interactive);
+        shared.register(b.clone(), Priority::P1Slow);
+        shared.register(c.clone(), Priority::P3Speculative);
+        assert_eq!(shared.count(), 3);
+
+        // Batch remove a and c
+        shared.batch_remove(&[a.clone(), c.clone()]);
+        assert_eq!(shared.count(), 1);
+        assert_eq!(shared.effective_priority(&b), Some(Priority::P1Slow));
+        assert_eq!(shared.effective_priority(&a), None);
+        assert_eq!(shared.effective_priority(&c), None);
+
+        // Idempotent: removing already-removed nodes should not panic or change count
+        shared.batch_remove(&[a.clone(), c.clone()]);
+        assert_eq!(shared.count(), 1);
+    }
+
+    #[test]
     fn shared_promoter_recovers_after_lock_poisoning() {
         use std::sync::Arc;
         use std::thread;
