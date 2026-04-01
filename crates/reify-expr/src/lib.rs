@@ -329,8 +329,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             let lo = lower.as_ref().map(|e| eval_expr(e, ctx));
             let hi = upper.as_ref().map(|e| eval_expr(e, ctx));
             // Undef propagation: if any present bound is Undef, the range is Undef
-            if lo.as_ref().map_or(false, |v| v.is_undef())
-                || hi.as_ref().map_or(false, |v| v.is_undef())
+            if lo.as_ref().is_some_and(|v| v.is_undef())
+                || hi.as_ref().is_some_and(|v| v.is_undef())
             {
                 return Value::Undef;
             }
