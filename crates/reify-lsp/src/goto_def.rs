@@ -270,6 +270,7 @@ mod tests {
         assert_eq!(loc.uri, test_uri());
         // Should point to let declaration on line 2
         assert_eq!(loc.range.start.line, 2);
+        assert_eq!(loc.range.start.character, 4, "let keyword starts after 4-space indent");
     }
 
     #[test]
