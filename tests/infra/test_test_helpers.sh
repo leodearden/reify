@@ -176,6 +176,57 @@ else
     check "test_summary prints results line (got: $summary_output)" "false"
 fi
 
+# ==============================================================================
+# Consumer refactoring verification tests
+# Each consumer file should: source test_helpers.sh, NOT define assert() locally,
+# NOT init PASS=0/FAIL=0 locally, NOT have inline summary block.
+# ==============================================================================
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONSUMERS=(
+    "tests/infra/test_portable_sha256.sh"
+    "tests/infra/test_portable_timeout.sh"
+    "scripts/test_lib.sh"
+    "scripts/test_tree_sitter_generate.sh"
+)
+
+for consumer in "${CONSUMERS[@]}"; do
+    cfile="$REPO_ROOT/$consumer"
+    cname="$(basename "$consumer")"
+
+    echo ""
+    echo "--- Consumer: $cname ---"
+
+    # (a) file contains 'source.*test_helpers.sh'
+    if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$cfile" 2>/dev/null; then
+        check "$cname sources test_helpers.sh" "true"
+    else
+        check "$cname sources test_helpers.sh" "false"
+    fi
+
+    # (b) file does NOT contain assert() function definition
+    if grep -q '^assert()' "$cfile" 2>/dev/null; then
+        check "$cname does NOT define assert() locally" "false"
+    else
+        check "$cname does NOT define assert() locally" "true"
+    fi
+
+    # (c) file does NOT contain PASS=0 or FAIL=0 initialization
+    if grep -qE '^PASS=0|^FAIL=0' "$cfile" 2>/dev/null; then
+        check "$cname does NOT init PASS/FAIL locally" "false"
+    else
+        check "$cname does NOT init PASS/FAIL locally" "true"
+    fi
+
+    # (d) file does NOT contain inline summary block
+    # Look for the echo "Results:..." pattern outside a function definition
+    if grep -q 'echo "Results:.*passed.*failed"' "$cfile" 2>/dev/null; then
+        check "$cname does NOT have inline summary block" "false"
+    else
+        check "$cname does NOT have inline summary block" "true"
+    fi
+done
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
