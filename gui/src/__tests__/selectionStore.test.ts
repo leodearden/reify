@@ -170,31 +170,6 @@ describe('selectionStore', () => {
     });
   });
 
-  describe('initialization', () => {
-    afterEach(() => {
-      vi.useRealTimers();
-      vi.clearAllMocks();
-    });
-
-    it('no invoke is dispatched on store creation (no spurious initial sync)', () => {
-      vi.useFakeTimers();
-      mockInvoke.mockResolvedValue(undefined);
-
-      let dispose!: () => void;
-      createRoot((d) => {
-        dispose = d;
-        createSelectionStore();
-      });
-
-      // Advance past the debounce window — if a spurious dispatch was
-      // scheduled on creation, it would fire here.
-      vi.advanceTimersByTime(100);
-
-      expect(mockInvoke).not.toHaveBeenCalled();
-      dispose();
-    });
-  });
-
   describe('backend sync', () => {
     let dispose!: () => void;
     let selectEntity!: (path: string | null) => void;
@@ -221,6 +196,14 @@ describe('selectionStore', () => {
       dispose();
       vi.useRealTimers();
       vi.clearAllMocks();
+    });
+
+    it('no invoke is dispatched on store creation (no spurious initial sync)', () => {
+      // Advance past the debounce window — if a spurious dispatch was
+      // scheduled on creation, it would fire here.
+      vi.advanceTimersByTime(100);
+
+      expect(mockInvoke).not.toHaveBeenCalled();
     });
 
     it('selection-only change calls invoke immediately (not debounced)', () => {
