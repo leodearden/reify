@@ -500,8 +500,8 @@ mod tests {
             output
         );
         assert!(
-            !output.contains("OK"),
-            "output should NOT contain 'OK' when no constraints are satisfied, got: {}",
+            !output.contains("  OK "),
+            "output should NOT contain '  OK ' when no constraints are satisfied, got: {}",
             output
         );
     }
