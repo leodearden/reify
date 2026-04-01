@@ -1530,4 +1530,15 @@ mod tests {
             "param nested in else_members of a GuardedGroup should be counted"
         );
     }
+
+    #[test]
+    fn find_named_member_span_finds_param_in_nested_else_guarded() {
+        // A param named 'deep_else' nested inside else_members of a GuardedGroup
+        let members = build_nested_else_guarded_members("deep_else");
+        let result = find_named_member_span(&members, "deep_else");
+        assert!(
+            result.is_some(),
+            "param nested in else_members should be found by find_named_member_span"
+        );
+    }
 }
