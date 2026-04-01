@@ -253,12 +253,14 @@ impl AnalysisContext {
         self.check_result.values.get(&id)
     }
 
-    /// Return the name of the structure/occurrence whose span contains `offset`,
+    /// Return the name of the structure/occurrence/trait/purpose whose span contains `offset`,
     /// or `None` if the offset is outside all declarations.
     pub fn enclosing_decl_name_at(&self, offset: usize) -> Option<&str> {
         enclosing_decl_at(&self.parsed.declarations, offset).and_then(|decl| match decl {
             Declaration::Structure(s) => Some(s.name.as_str()),
             Declaration::Occurrence(o) => Some(o.name.as_str()),
+            Declaration::Trait(t) => Some(t.name.as_str()),
+            Declaration::Purpose(p) => Some(p.name.as_str()),
             _ => None,
         })
     }
@@ -918,6 +920,30 @@ mod tests {
             ctx.enclosing_decl_name_at(red_offset),
             None,
             "offset inside enum should return None (graceful degradation, not panic)"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_trait() {
+        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("mass").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Rigid"),
+            "offset inside trait should return Some(\"Rigid\"), not None"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_purpose() {
+        let source = "purpose Assemble(part: Structure) {\n    let total = 42\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("total").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Assemble"),
+            "offset inside purpose should return Some(\"Assemble\"), not None"
         );
     }
 
