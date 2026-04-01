@@ -110,6 +110,16 @@ fn build_module(template: reify_compiler::TopologyTemplate) -> reify_compiler::C
         .build()
 }
 
+/// Test helper: evaluator that panics on any node.
+/// Used by rollback_on_task_panicked, repeated_error_then_success_cycle,
+/// test_cleanup_on_task_panic, and test_cleanup_on_task_cancelled.
+struct PanickingEvaluator;
+impl AsyncNodeEvaluator for PanickingEvaluator {
+    async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+        panic!("intentional panic in evaluator");
+    }
+}
+
 /// step-3: ConcurrentEvalAdapter correctly evaluates a single value node.
 #[tokio::test]
 async fn adapter_evaluates_single_value_node() {
@@ -634,14 +644,6 @@ async fn rollback_on_task_panicked_restores_engine_state() {
         "b should be Pending after prepare"
     );
 
-    // Create a panicking evaluator
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
-
     let panicking = Arc::new(PanickingEvaluator);
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
@@ -736,13 +738,6 @@ async fn repeated_error_then_success_cycle() {
     let setup1 = engine
         .prepare_concurrent_edit(a_id.clone(), Value::Real(20.0))
         .unwrap();
-
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
 
     let cancel = CancellationToken::new();
     let scheduler = ConcurrentScheduler;
@@ -2713,13 +2708,6 @@ async fn test_cleanup_on_task_panic() {
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic in evaluator");
-        }
-    }
-
     let e = "PNC";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
     let node_b = NodeId::Value(ValueCellId::new(e, "b"));
@@ -2800,13 +2788,6 @@ async fn test_cleanup_on_task_cancelled() {
     use reify_types::ValueCellId;
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
-
-    struct PanickingEvaluator;
-    impl AsyncNodeEvaluator for PanickingEvaluator {
-        async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
-            panic!("intentional panic to trigger error path");
-        }
-    }
 
     let e = "CXL";
     let node_a = NodeId::Value(ValueCellId::new(e, "a"));
