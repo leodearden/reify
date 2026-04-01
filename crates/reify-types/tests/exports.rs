@@ -179,17 +179,18 @@ fn all_m5_types_exported() {
     // --- Frame variant ---
 
     // Type::Frame (direct construction)
-    let _tf3 = reify_types::Type::Frame(3);
+    let tf3 = reify_types::Type::Frame(3);
 
     // Type::frame factory method
-    let _tf3_factory = reify_types::Type::frame(3);
+    let tf3_factory = reify_types::Type::frame(3);
+    assert_eq!(tf3, tf3_factory);
 
     // Value::Frame construction
     let _vf = reify_types::Value::Frame {
         origin: Box::new(reify_types::Value::Point(vec![
-            reify_types::Value::Real(0.0),
-            reify_types::Value::Real(0.0),
-            reify_types::Value::Real(0.0),
+            reify_types::Value::length(0.0),
+            reify_types::Value::length(0.0),
+            reify_types::Value::length(0.0),
         ])),
         basis: Box::new(reify_types::Value::Orientation {
             w: 1.0,
