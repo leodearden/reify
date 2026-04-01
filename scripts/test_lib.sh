@@ -53,6 +53,21 @@ echo "--- Test 4: compute_sha256 produces correct output ---"
 assert "compute_sha256 produces a 64-char hex hash" \
     bash -c "source '$LIB_FILE' && hash=\$(compute_sha256 '$LIB_FILE' | awk '{print \$1}') && [[ \"\$hash\" =~ ^[0-9a-f]{64}$ ]]"
 
+# ── Test 5: lib.sh sources lib_portable.sh ───────────────────────
+echo ""
+echo "--- Test 5: lib.sh sources lib_portable.sh ---"
+
+assert "lib.sh sources lib_portable.sh" \
+    grep -qE '(source|\.)\s+.*lib_portable\.sh' "$LIB_FILE"
+
+# ── Test 6: compute_sha256 backward compatibility ────────────────
+echo ""
+echo "--- Test 6: compute_sha256 backward compat (delegates to portable_sha256) ---"
+
+# compute_sha256 should still work — thin wrapper around portable_sha256.
+assert "compute_sha256 still produces a 64-char hex hash" \
+    bash -c "source '$LIB_FILE' && hash=\$(compute_sha256 '$LIB_FILE' | awk '{print \$1}') && [[ \"\$hash\" =~ ^[0-9a-f]{64}$ ]]"
+
 # ── Summary ───────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
