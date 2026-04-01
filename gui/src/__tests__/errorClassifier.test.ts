@@ -120,6 +120,23 @@ describe('errorClassifier', () => {
       expect(errorMessage(undefined)).toBe('undefined');
       expect(errorMessage({ key: 'val' })).toBe('[object Object]');
     });
+
+    it('returns .message for plain object with string .message property', () => {
+      expect(errorMessage({ code: 404, message: 'Not found' })).toBe('Not found');
+      expect(errorMessage({ message: 'structured error' })).toBe('structured error');
+    });
+
+    it('returns "Unknown error" for plain object with empty string .message', () => {
+      expect(errorMessage({ message: '' })).toBe('Unknown error');
+    });
+
+    it('falls through to String() for plain object with non-string .message', () => {
+      expect(errorMessage({ message: 42 })).toBe('[object Object]');
+    });
+
+    it('falls through to String() for plain object without .message', () => {
+      expect(errorMessage({ code: 500 })).toBe('[object Object]');
+    });
   });
 
   describe('unknown errors', () => {
