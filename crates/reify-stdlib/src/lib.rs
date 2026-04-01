@@ -5849,7 +5849,7 @@ mod tests {
         assert!(eval_builtin("imag", &[Value::Real(3.0)]).is_undef());
     }
 
-    // ── consolidated magnitude / complex_magnitude edge-case tests (task 770/820) ──
+    // ── magnitude / complex_magnitude edge-case tests: overflow, NaN, dimensioned ──
 
     /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
     /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
