@@ -102,8 +102,16 @@ describe('errorClassifier', () => {
       expect(errorMessage('plain string error')).toBe('plain string error');
     });
 
-    it('returns empty string for Error with empty message', () => {
-      expect(errorMessage(new Error(''))).toBe('');
+    it('returns "Unknown error" for Error with empty message', () => {
+      expect(errorMessage(new Error(''))).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for empty string input', () => {
+      expect(errorMessage('')).toBe('Unknown error');
+    });
+
+    it('returns whitespace-only string as-is for Error with whitespace message', () => {
+      expect(errorMessage(new Error('   '))).toBe('   ');
     });
 
     it('coerces non-Error, non-string values via String()', () => {
