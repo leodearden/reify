@@ -2375,3 +2375,68 @@ fn edit_param_updates_param_cache_entry() {
         entry.result
     );
 }
+
+/// Consecutive edit_param calls on the SAME param must each update the cache.
+/// This proves no stale carryover between consecutive edits.
+#[test]
+fn double_edit_param_updates_param_cache_both_times() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    let width_id = ValueCellId::new(e, "width");
+
+    // First edit: width → 100mm (0.1m)
+    let result1 = engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+    // volume = 0.1 * 0.1 * 0.005 = 5e-5
+    let vol1 = result1
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(
+        (vol1 - 5e-5).abs() < 1e-10,
+        "volume after first edit should be ~5e-5, got {}",
+        vol1
+    );
+
+    // Second edit: width → 120mm (0.12m)
+    let result2 = engine
+        .edit_param(width_id.clone(), Value::length(0.12))
+        .unwrap();
+    // volume = 0.12 * 0.1 * 0.005 = 6e-5
+    let vol2 = result2
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(
+        (vol2 - 6e-5).abs() < 1e-10,
+        "volume after second edit should be ~6e-5, got {}",
+        vol2
+    );
+
+    // The cache entry for the param must reflect the SECOND edit's value (0.12)
+    let cache = engine.cache_store();
+    let width_node = NodeId::Value(width_id);
+    let entry = cache
+        .get(&width_node)
+        .expect("width should be in cache after double edit");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(v, DeterminacyState::Determined)
+            if (v.as_f64().unwrap() - 0.12).abs() < 1e-12
+        ),
+        "cache entry for param should hold second edit value 0.12m, got {:?}",
+        entry.result
+    );
+}
