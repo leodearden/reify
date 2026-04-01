@@ -798,3 +798,36 @@ fn test_readonly_guard_restores_on_drop() {
     std::fs::File::create(subdir.join("probe_after_drop.txt"))
         .expect("directory should be writable after ReadonlyGuard is dropped");
 }
+
+#[test]
+fn test_is_root_uses_libc_not_raw_ffi() {
+    // Source-level regression guard: is_root() must use libc::getuid() rather than
+    // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
+    // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
+    // a well-audited, platform-tested binding.
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    let fn_start = source
+        .find("fn is_root()")
+        .expect("source should contain is_root() function");
+    let fn_section = &source[fn_start..];
+    // Grab just up to the next function definition to avoid false positives
+    let fn_end = fn_section[1..]
+        .find("\nfn ")
+        .map(|p| p + 1)
+        .unwrap_or(fn_section.len());
+    let fn_body = &fn_section[..fn_end];
+
+    assert!(
+        !fn_body.contains("unsafe extern \"C\""),
+        "is_root() must NOT use a raw `unsafe extern \"C\"` FFI declaration. \
+         Use `libc::getuid()` from the libc crate instead. Found body:\n{}",
+        fn_body
+    );
+    assert!(
+        fn_body.contains("libc::getuid()"),
+        "is_root() must use `libc::getuid()` from the libc crate. Found body:\n{}",
+        fn_body
+    );
+}
