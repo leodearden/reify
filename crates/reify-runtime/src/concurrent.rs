@@ -236,8 +236,11 @@ impl ConcurrentScheduler {
                 break;
             }
 
-            // Pre-compute dirty/skip for this level
-            let mut dirty_nodes = Vec::new();
+            // Pre-compute dirty/skip for this level.
+            // Each dirty node carries its pre-computed NodeCommitmentOverride so the
+            // override is looked up exactly once (here) and threaded through to the
+            // commitment tracker registration below — preventing silent divergence.
+            let mut dirty_nodes: Vec<(NodeId, NodeCommitmentOverride)> = Vec::new();
             for node in level {
                 let is_dirty = if let Some(trace) = traces.get(&node) {
                     if trace.reads.is_empty() {
@@ -253,18 +256,19 @@ impl ConcurrentScheduler {
                 };
 
                 if is_dirty {
-                    // Check OnlyRunOnFinalInputs override before adding to dirty
+                    // Compute override once per dirty node
                     let override_ = config
                         .node_overrides
                         .get(&node)
                         .copied()
                         .unwrap_or_default();
+                    // Check OnlyRunOnFinalInputs override before adding to dirty
                     if override_ == NodeCommitmentOverride::OnlyRunOnFinalInputs
                         && (config.has_intermediate_inputs)(&node)
                     {
                         skipped.insert(node);
                     } else {
-                        dirty_nodes.push(node);
+                        dirty_nodes.push((node, override_));
                     }
                 } else {
                     skipped.insert(node);
@@ -273,7 +277,7 @@ impl ConcurrentScheduler {
 
             // Register dirty nodes in priority promoter and sort by priority
             if let Some(ref promoter) = config.priority_promoter {
-                for node in &dirty_nodes {
+                for (node, _) in &dirty_nodes {
                     let priority = config
                         .node_priorities
                         .get(node)
@@ -287,7 +291,7 @@ impl ConcurrentScheduler {
                 // occurred yet, so effective_priority == config priority.
                 // Sorting directly from config avoids O(N log N) mutex
                 // acquisitions through SharedPriorityPromoter.
-                dirty_nodes.sort_by_key(|node| {
+                dirty_nodes.sort_by_key(|(node, _)| {
                     config
                         .node_priorities
                         .get(node)
@@ -296,16 +300,12 @@ impl ConcurrentScheduler {
                 });
             }
 
-            // Register dirty nodes in commitment tracker before spawning
+            // Register dirty nodes in commitment tracker before spawning,
+            // using the pre-computed override from the dirty/skip block above.
             if let Some(ref tracker) = config.commitment_tracker {
                 let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
-                for node in &dirty_nodes {
-                    let override_ = config
-                        .node_overrides
-                        .get(node)
-                        .copied()
-                        .unwrap_or_default();
-                    guard.register_task(node.clone(), override_);
+                for (node, override_) in &dirty_nodes {
+                    guard.register_task(node.clone(), *override_);
                 }
             }
 
@@ -315,7 +315,7 @@ impl ConcurrentScheduler {
             // paths for clarity.
             // Returns (NodeId, Option<EvalOutcome>) where None = commitment-cancelled
             let mut join_set = tokio::task::JoinSet::new();
-            for node in &dirty_nodes {
+            for (node, _) in &dirty_nodes {
                 let eval = Arc::clone(&evaluator);
                 let n = node.clone();
                 let cancel_clone = cancel.clone();
@@ -348,15 +348,16 @@ impl ConcurrentScheduler {
 
             // Cleanup closure: remove all dirty nodes from tracker and promoter.
             // Called on both normal completion and error paths to prevent stale entries.
-            let cleanup_level = |dirty: &[NodeId]| {
+            let cleanup_level = |dirty: &[(NodeId, NodeCommitmentOverride)]| {
                 if let Some(ref tracker) = config.commitment_tracker {
                     let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
-                    for node in dirty {
+                    for (node, _) in dirty {
                         guard.remove_task(node);
                     }
                 }
                 if let Some(ref promoter) = config.priority_promoter {
-                    promoter.batch_remove(dirty);
+                    let node_ids: Vec<NodeId> = dirty.iter().map(|(n, _)| n.clone()).collect();
+                    promoter.batch_remove(&node_ids);
                 }
             };
 
