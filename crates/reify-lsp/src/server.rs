@@ -285,13 +285,7 @@ impl LanguageServer for ReifyLanguageServer {
         // Snapshot all open documents so the blocking closure can check editor
         // buffers before falling back to disk. This avoids unnecessary I/O and
         // ensures unsaved changes are reflected in goto-def results.
-        let open_docs: HashMap<PathBuf, String> = state
-            .documents
-            .iter()
-            .filter_map(|(doc_uri, doc)| {
-                doc_uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
-            })
-            .collect();
+        let open_docs = state.documents.snapshot_as_path_map();
         drop(state);
 
         // Move all CPU-bound parsing and blocking filesystem I/O
