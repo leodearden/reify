@@ -300,8 +300,20 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
-/// Returns `(param_count, let_count, constraint_count)`.
+/// Returns `(param_count, let_count, constraint_count)`. Recursion is bounded
+/// by [`reify_syntax::MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on
+/// pathological input; subtrees beyond the limit are silently skipped.
 pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
+    count_members_recursive_depth(members, 0)
+}
+
+fn count_members_recursive_depth(
+    members: &[reify_syntax::MemberDecl],
+    depth: usize,
+) -> (usize, usize, usize) {
+    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
+        return (0, 0, 0);
+    }
     let mut params = 0;
     let mut lets = 0;
     let mut constraints = 0;
@@ -311,17 +323,17 @@ pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, 
             reify_syntax::MemberDecl::Let(_) => lets += 1,
             reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                let (p, l, c) = count_members_recursive(&g.members);
+                let (p, l, c) = count_members_recursive_depth(&g.members, depth + 1);
                 params += p;
                 lets += l;
                 constraints += c;
-                let (p, l, c) = count_members_recursive(&g.else_members);
+                let (p, l, c) = count_members_recursive_depth(&g.else_members, depth + 1);
                 params += p;
                 lets += l;
                 constraints += c;
             }
             reify_syntax::MemberDecl::Port(port) => {
-                let (p, l, c) = count_members_recursive(&port.members);
+                let (p, l, c) = count_members_recursive_depth(&port.members, depth + 1);
                 params += p;
                 lets += l;
                 constraints += c;
