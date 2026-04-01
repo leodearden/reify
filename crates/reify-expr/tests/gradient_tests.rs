@@ -2198,3 +2198,70 @@ fn gradient_3d_codomain_type_is_rq() {
         other => panic!("gradient should return a Field, got {:?}", other),
     }
 }
+
+/// Gradient of 1D Field<Scalar[m], Scalar[m²]> must have codomain_type = Scalar[m]
+/// (= m²/m), not Scalar[m²].
+///
+/// The 1D branch in compute_gradient previously returned codomain_type.clone(),
+/// which preserves m² instead of dividing by the domain dimension.
+#[test]
+fn gradient_1d_codomain_type_is_rq() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let dim_m = DimensionVector::LENGTH;
+    let dim_m2 = dim_m.mul(&dim_m);
+    let scalar_m = Type::Scalar { dimension: dim_m };
+    let scalar_m2 = Type::Scalar { dimension: dim_m2 };
+
+    // Lambda: |x| x * x  (produces Scalar[m²])
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+        CompiledExpr::value_ref(x_id.clone(), scalar_m.clone()),
+        scalar_m2.clone(),
+    );
+
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = scalar_m.clone();
+    let codomain_type = scalar_m2.clone();
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(scalar_m2.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // codomain_type should be Scalar[m] (= m²/m), not Scalar[m²].
+    let expected_codomain = Type::Scalar { dimension: dim_m };
+
+    match &grad_result {
+        Value::Field { codomain_type, .. } => {
+            assert_eq!(
+                *codomain_type, expected_codomain,
+                "1D gradient codomain_type should be Scalar[m] (m²/m), got {:?}",
+                codomain_type
+            );
+        }
+        other => panic!("gradient should return a Field, got {:?}", other),
+    }
+}
