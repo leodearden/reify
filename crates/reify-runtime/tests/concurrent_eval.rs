@@ -2946,3 +2946,88 @@ async fn test_node_override_threaded_to_commitment_tracker() {
         "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
     );
 }
+
+/// Test that AlwaysCancelWhenStale drops result even with always_commit_after=0ms.
+/// Two nodes at same level: trigger fires cancel immediately, slow_node has
+/// AlwaysCancelWhenStale override and sleeps 50ms. CommitmentPolicy with
+/// always_commit_after=0ms means any elapsed time would normally auto-commit
+/// under CommitIfSlow — but AlwaysCancelWhenStale should override this and
+/// return NeverCommit, so slow_node should NOT appear in result.changed.
+#[tokio::test]
+async fn test_always_cancel_when_stale_drops_result() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "ACWS";
+    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
+
+    // Both at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(trigger.clone(), DependencyTrace::default());
+    traces.insert(slow_node.clone(), DependencyTrace::default());
+
+    let cancel = CancellationToken::new();
+
+    struct AlwaysCancelEvaluator {
+        cancel: CancellationToken,
+        trigger: NodeId,
+    }
+    impl AsyncNodeEvaluator for AlwaysCancelEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.trigger {
+                // Trigger: fire cancel immediately
+                self.cancel.cancel();
+                EvalOutcome::Changed
+            } else {
+                // Slow node: sleep to accumulate elapsed time past the 0ms threshold
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                EvalOutcome::Changed
+            }
+        }
+    }
+
+    let evaluator = Arc::new(AlwaysCancelEvaluator {
+        cancel: cancel.clone(),
+        trigger: trigger.clone(),
+    });
+
+    // CommitmentPolicy: always_commit_after=0ms — would normally auto-commit instantly
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_millis(0),
+        commit_when_proportion_done: 0.5,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    // slow_node has AlwaysCancelWhenStale override
+    let mut node_overrides = HashMap::new();
+    node_overrides.insert(slow_node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        node_overrides,
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![trigger.clone(), slow_node.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
+    assert!(
+        !result.changed.contains(&slow_node),
+        "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
+    );
+}
