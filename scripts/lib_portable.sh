@@ -63,7 +63,7 @@ portable_timeout() {
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
             rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
-            ( sleep "$seconds" && touch "$timeout_flag" && kill "$cmd_pid" 2>/dev/null ) &
+            ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
