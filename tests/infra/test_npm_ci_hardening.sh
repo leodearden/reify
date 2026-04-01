@@ -26,4 +26,19 @@ assert "scripts/check-pm-standardization.sh is executable" \
 assert "tests/check-pm-standardization.sh does NOT exist" \
     bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
 
+# -- Test 2: script has only checks 1-3 (no 4-9) ----------------------------
+echo ""
+echo "--- Test 2: script contains only checks 1-3 ---"
+
+SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
+
+assert "script has no hooks/project-checks grep patterns" \
+    bash -c "! grep -q 'hooks/project-checks' '$SCRIPT'"
+
+assert "script has no orchestrator.yaml grep patterns" \
+    bash -c "! grep -q 'orchestrator\.yaml' '$SCRIPT'"
+
+assert "script has exactly 3 'Check N:' headers" \
+    bash -c "[ \"\$(grep -c 'Check [0-9]' '$SCRIPT')\" = '3' ]"
+
 test_summary
