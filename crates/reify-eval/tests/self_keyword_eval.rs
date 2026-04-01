@@ -5,8 +5,7 @@
 //! with self-references works correctly, and constraints using self compile
 //! and evaluate without violations.
 
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_types::{ModulePath, Severity, Value, ValueCellId};
+use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 /// Helper: parse, compile, and eval source, return eval result.
 fn eval_source(source: &str) -> reify_eval::EvalResult {
@@ -24,9 +23,30 @@ fn eval_source(source: &str) -> reify_eval::EvalResult {
         .collect();
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
-    let checker = MockConstraintChecker::new();
+    let checker = reify_constraints::SimpleConstraintChecker;
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     engine.eval(&compiled)
+}
+
+/// Helper: parse, compile, and check constraints, return check result.
+fn check_source(source: &str) -> reify_eval::CheckResult {
+    let parsed = reify_syntax::parse(source, ModulePath::single("self_eval_test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.check(&compiled)
 }
 
 // ─── step-9: self.param eval produces correct value ───
@@ -118,23 +138,37 @@ fn self_in_let_arithmetic_eval() {
 
 #[test]
 #[ignore = "requires task 153: self keyword compiler support"]
-fn self_in_constraint_eval() {
-    // `constraint self.x > 2mm` should evaluate without errors.
-    // x = 5mm > 2mm, so the constraint should be satisfied.
-    let result = eval_source(
+fn self_in_constraint_eval_satisfied() {
+    // `constraint self.x > 2mm` with x = 5mm should be satisfied.
+    let result = check_source(
         r#"structure S {
     param x : Scalar = 5mm
     constraint self.x > 2mm
 }"#,
     );
 
+    // Constraint checking should produce at least one entry
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint result, got none"
+    );
+    // All constraints should be satisfied (5mm > 2mm)
+    for entry in &result.constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "constraint {:?} should be satisfied (5mm > 2mm), got {:?}",
+            entry.id,
+            entry.satisfaction
+        );
+    }
+
+    // Also verify x evaluated correctly
     let x_id = ValueCellId::new("S", "x");
     let x_val = result
         .values
         .get(&x_id)
-        .expect("x should be in eval result");
-
-    // x should be 0.005 (5mm in SI meters)
+        .expect("x should be in check result");
     match x_val {
         Value::Real(v) => {
             assert!(
@@ -145,4 +179,35 @@ fn self_in_constraint_eval() {
         }
         _ => panic!("expected Real value for x, got {:?}", x_val),
     }
+}
+
+#[test]
+#[ignore = "requires task 153: self keyword compiler support"]
+fn self_in_constraint_eval_violated() {
+    // `constraint self.x > 2mm` with x = 1mm should be violated.
+    let result = check_source(
+        r#"structure S {
+    param x : Scalar = 1mm
+    constraint self.x > 2mm
+}"#,
+    );
+
+    // Constraint checking should produce at least one entry
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint result, got none"
+    );
+    // The constraint should be violated (1mm is NOT > 2mm)
+    assert!(
+        result
+            .constraint_results
+            .iter()
+            .any(|e| e.satisfaction == Satisfaction::Violated),
+        "expected at least one violated constraint (1mm > 2mm is false), got: {:?}",
+        result
+            .constraint_results
+            .iter()
+            .map(|e| &e.satisfaction)
+            .collect::<Vec<_>>()
+    );
 }
