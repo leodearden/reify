@@ -524,6 +524,23 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
         "Auto param 'thickness' should retain solver-resolved value (0.005 SI) after guard deactivation, got {:?}",
         thickness_after
     );
+
+    // DeterminacyState in snapshot must remain Determined after guard deactivation
+    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness in snapshot after deactivation");
+    assert!(
+        matches!(snap_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should retain 0.005 SI in snapshot after deactivation, got {:?}",
+        snap_val
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Determined,
+        "Auto param DeterminacyState must remain Determined after guard deactivation"
+    );
 }
 
 /// Mirror of the above test but for else_members: Auto param in else branch
@@ -604,101 +621,6 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
         matches!(thickness_after, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
         "Auto param 'thickness' in else_members should retain solver-resolved value (0.005 SI) after else branch deactivation, got {:?}",
         thickness_after
-    );
-}
-
-/// After guard deactivation (true→false), the Auto param's DeterminacyState in the
-/// snapshot must remain Determined (set by the solver), not revert to Auto or Undetermined.
-#[test]
-fn edit_param_guard_false_auto_param_determinacy_in_snapshot() {
-    let active_id = ValueCellId::new("S", "active");
-    let guard_id = ValueCellId::new("S", "__guard_0");
-    let thickness_id = ValueCellId::new("S", "thickness");
-
-    let guard_expr = value_ref_typed("S", "active", Type::Bool);
-
-    let thickness_decl = ValueCellDecl {
-        id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
-        visibility: Visibility::Public,
-        cell_type: Type::length(),
-        default_expr: None,
-        span: SourceSpan::new(0, 0),
-    };
-
-    let template = TopologyTemplateBuilder::new("S")
-        .param(
-            "S",
-            "active",
-            Type::Bool,
-            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
-        )
-        .auto_param("S", "thickness", Type::length())
-        .constraint(
-            "S",
-            0,
-            Some("thickness_gt_2mm"),
-            gt(value_ref("S", "thickness"), literal(mm(2.0))),
-        )
-        .guarded_group(
-            guard_expr,
-            guard_id.clone(),
-            vec![thickness_decl],
-            vec![],
-            vec![],
-            vec![],
-        )
-        .build();
-
-    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-        .template(template)
-        .build();
-
-    let mut solved_values = HashMap::new();
-    solved_values.insert(thickness_id.clone(), mm(5.0));
-    let solver = MockConstraintSolver::new_solved(solved_values);
-
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None).with_solver(Box::new(solver));
-
-    // Initial eval with guard=true; solver resolves thickness
-    let _initial_result = engine.eval(&module);
-
-    // Check DeterminacyState after initial eval — should be Determined from solver
-    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
-    let (val, det) = snapshot.values.get(&thickness_id).expect("thickness in snapshot");
-    assert!(
-        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
-        "thickness should be 0.005 SI in snapshot after eval, got {:?}",
-        val
-    );
-    assert_eq!(
-        *det,
-        DeterminacyState::Determined,
-        "thickness DeterminacyState should be Determined after solver resolution"
-    );
-
-    // Edit 'active' from true to false — guard deactivates
-    let _edit_result = engine
-        .edit_param(active_id.clone(), Value::Bool(false))
-        .expect("edit_param should succeed");
-
-    // After deactivation, snapshot must still show Determined (not Auto/Undetermined)
-    let snapshot_after = engine.snapshot().expect("snapshot should exist after edit_param");
-    let (val_after, det_after) = snapshot_after
-        .values
-        .get(&thickness_id)
-        .expect("thickness in snapshot after edit");
-    assert!(
-        matches!(val_after, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
-        "thickness should retain 0.005 SI in snapshot after deactivation, got {:?}",
-        val_after
-    );
-    assert_eq!(
-        *det_after,
-        DeterminacyState::Determined,
-        "Auto param DeterminacyState must remain Determined after guard deactivation, got {:?}",
-        det_after
     );
 }
 
