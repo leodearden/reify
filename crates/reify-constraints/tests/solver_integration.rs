@@ -550,8 +550,10 @@ fn maximize_with_feasible_initial_point() {
                 "maximized x should be near 50mm upper bound, got {} m",
                 si
             );
-            // The solver clamps parameters to their declared bounds during
-            // optimization, so the result cannot exceed the upper bound (0.050 = 50mm).
+            // AutoParam bounds are hard constraints on output values — the solver
+            // guarantees results stay within [lo, hi].
+            // Clamping logic: solver.rs ~line 617-625 (effective_bounds clamping loop).
+            // Because clamping is exact (val.clamp(lo, hi)), no epsilon tolerance needed.
             assert!(
                 si <= 0.050,
                 "maximized x should not exceed param upper bound (50mm), got {} m",
