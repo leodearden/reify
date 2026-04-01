@@ -3025,10 +3025,25 @@ async fn test_always_cancel_when_stale_drops_result() {
         .await
         .unwrap();
 
+    // Positive control: trigger node should have evaluated and committed
+    assert!(
+        result.changed.contains(&trigger),
+        "trigger should be in changed (positive control: proves the scheduler actually ran)"
+    );
+
     // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
     assert!(
         !result.changed.contains(&slow_node),
         "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
+    );
+    // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
+    // It is neither committed (changed) nor preemptively skipped — it ran but
+    // its result was discarded due to cancellation, so it doesn't appear in
+    // either set. This is distinct from OnlyRunOnFinalInputs which skips
+    // evaluation entirely and places the node in `skipped`.
+    assert!(
+        !result.skipped.contains(&slow_node),
+        "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
     );
 }
 
@@ -3100,5 +3115,9 @@ async fn test_only_run_on_final_inputs_runs_when_final() {
     assert!(
         result.changed.contains(&node_a),
         "node_a should be in changed (default CommitIfSlow)"
+    );
+    assert!(
+        !result.skipped.contains(&node_a),
+        "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
     );
 }
