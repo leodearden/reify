@@ -733,3 +733,163 @@ fn mixed_failure_then_dependent_ops_aborted() {
         "expected no geometry error diagnostics (op2 should not have run)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests: partial-failure handle leakage (step-32)
+// ---------------------------------------------------------------------------
+
+/// When a realization has [Box (succeeds), Boolean union with bad refs (compile
+/// failure)], tessellate_realizations should produce NO meshes — the partial
+/// success should not leak the intermediate Box handle into the output.
+///
+/// BUG: Before the fix, the `break` leaves the Box handle in `step_handles`.
+/// `step_handles.len() > handle_start` is true so the intermediate box gets
+/// tessellated and added to meshes — callers receive an incorrect partial mesh.
+#[test]
+fn partial_failure_tessellate_produces_no_mesh() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box primitive (compiles and executes OK)
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Boolean union referencing non-existent Step(5) and Step(6) → compile failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(6),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, union_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.tessellate_realizations(&module);
+
+    // (a) The failing realization should produce NO mesh — the intermediate
+    //     Box handle must be discarded when the realization partially fails.
+    assert!(
+        result.meshes.is_empty(),
+        "expected no meshes when realization partially fails (Box OK, Union FAIL), \
+         but got {} mesh(es) — intermediate handles leaked",
+        result.meshes.len()
+    );
+
+    // (b) Should have exactly 1 compile-failure diagnostic
+    let compile_failures: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("failed to compile geometry operation"))
+        .collect();
+    assert_eq!(
+        compile_failures.len(),
+        1,
+        "expected exactly 1 compile-failure diagnostic, got {}: {:?}",
+        compile_failures.len(),
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// When a realization has [Box (succeeds), Boolean union with bad refs (compile
+/// failure)], build() should return geometry_output=None — the partial success
+/// should not leak the intermediate Box handle into the export.
+///
+/// BUG: Before the fix, `step_handles.last()` returns the intermediate Box
+/// handle so the partially-complete geometry gets exported.
+#[test]
+fn partial_failure_build_produces_no_geometry() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box primitive (compiles and executes OK)
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Boolean union referencing non-existent Step(5) and Step(6) → compile failure
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(5),
+        right: GeomRef::Step(6),
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, union_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
+            .template(template)
+            .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (a) geometry_output should be None — the intermediate Box handle must
+    //     be discarded when the realization partially fails.
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when realization partially fails \
+         (Box OK, Union FAIL), but got Some({} bytes) — intermediate handles leaked",
+        result.geometry_output.as_ref().map_or(0, |v| v.len())
+    );
+
+    // (b) Should have compile-failure diagnostic
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected compile-failure diagnostic for the Boolean union"
+    );
+
+    // (c) Should have 'all geometry operations failed' summary since partial
+    //     failure means the realization contributed no handles (after fix)
+    let has_summary = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        has_summary,
+        "expected summary diagnostic about all geometry operations failing \
+         (partial failure should discard all intermediate handles)"
+    );
+}
