@@ -2487,4 +2487,124 @@ mod tests {
             ),
         }
     }
+
+    /// Happy path of the fallback mechanism: the optimizer drifts infeasible
+    /// while chasing an attractive objective in the infeasible region, the solver
+    /// falls back to the initial feasible point, the objective IS defined there,
+    /// and the solver returns Solved with the exact initial values.
+    ///
+    /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
+    /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
+    /// branches of the fallback validation logic (solver.rs lines 637-659).
+    #[test]
+    fn defined_objective_at_fallback_returns_solved() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
+            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // Constraint: x <= 0.020 (feasible when x ≤ 20mm)
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let constraint_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.020,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let le_expr = CompiledExpr::binop(
+            BinOp::Le,
+            x_ref.clone(),
+            constraint_threshold,
+            Type::Bool,
+        );
+
+        // Objective: minimize(if x <= 0.022 then 1e8 else x)
+        //
+        // The large constant (1e8) in the feasible region creates cost >> infeasible
+        // cost (~5000), luring the optimizer past x=0.022 into the infeasible region.
+        //
+        // x ≤ 0.022: objective = 1e8 → large defined finite value (covers entire
+        //   feasible region plus a buffer zone 0.020..0.022)
+        // x > 0.022: objective = x → small attractive value (well into infeasible region)
+        //
+        // Initial simplex: vertex 0 at x=0.015 (feasible, cost=1e8),
+        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, cost≈4900).
+        // The enormous cost differential lures the optimizer past x=0.022 into the
+        // infeasible region. The solver detects infeasibility (residual >> 1e-12),
+        // falls back to the initial feasible point x=0.015, validates the objective
+        // (eval_objective returns Some(1e8) → passes), and returns Solved with the
+        // initial values.
+        let cond_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.022,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let condition =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
+        let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
+        let else_branch = x_ref;
+
+        let cond_hash = ContentHash::of(&[5])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let objective_expr = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Real,
+            content_hash: cond_hash,
+        };
+        let objective = OptimizationObjective::Minimize(objective_expr);
+
+        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
+        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
+        // pushing the second vertex to ~0.0249 (past both thresholds).
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.015).abs() < 1e-10,
+                    "fallback path should return initial x = 0.015 m, got {} m",
+                    si
+                );
+            }
+            other => panic!(
+                "feasible initial + region-dependent defined objective should return Solved \
+                 (fallback happy path), got {:?}",
+                other
+            ),
+        }
+    }
 }
