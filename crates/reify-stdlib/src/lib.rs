@@ -1928,10 +1928,18 @@ mod tests {
     fn complex_nan_component_returns_undef_both_builtins() {
         // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
         for builtin in ["magnitude", "complex_magnitude"] {
+            // re=NaN
             assert_complex_builtin_undef(
                 builtin,
                 f64::NAN,
                 1.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            // im=NaN (symmetric case)
+            assert_complex_builtin_undef(
+                builtin,
+                1.0,
+                f64::NAN,
                 DimensionVector::DIMENSIONLESS,
             );
         }
