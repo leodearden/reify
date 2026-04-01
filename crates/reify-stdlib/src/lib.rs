@@ -5918,7 +5918,84 @@ mod tests {
         }
     }
 
-    // ── complex_magnitude() tests (step-5) ───────────────────────────────────
+    #[test]
+    fn complex_nan_dimensioned_returns_undef_both_builtins() {
+        // NaN component with non-dimensionless input exercises the Value::Scalar arm of
+        // sanitize_value (rather than Value::Real). Ensures the Scalar path is covered.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            // re=NaN, im=1.0, LENGTH dimension → hits Scalar arm
+            assert_complex_builtin_undef(builtin, f64::NAN, 1.0, DimensionVector::LENGTH);
+            // im=NaN, re=1.0, LENGTH dimension → symmetric case
+            assert_complex_builtin_undef(builtin, 1.0, f64::NAN, DimensionVector::LENGTH);
+        }
+    }
+
+    #[test]
+    fn complex_both_nan_returns_undef_both_builtins() {
+        // hypot(NaN, NaN) = NaN per IEEE 754; test both dimensionless and dimensioned paths.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NAN,
+                f64::NAN,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(builtin, f64::NAN, f64::NAN, DimensionVector::LENGTH);
+        }
+    }
+
+    #[test]
+    fn complex_direct_infinity_returns_undef_both_builtins() {
+        // Direct ±Infinity inputs (not computed overflow) are also caught by sanitize_value.
+        // hypot(±Inf, x) = +Inf for any finite x per IEEE 754.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                0.0,
+                DimensionVector::LENGTH,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::NEG_INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::NEG_INFINITY,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_both_infinite_returns_undef_both_builtins() {
+        // hypot(Inf, Inf) = +Inf per IEEE 754; sanitize_value must catch it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                f64::INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                f64::INFINITY,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    // ── complex_magnitude() tests ─────────────────────────────────────────────
 
     #[test]
     fn complex_magnitude_3_4_returns_5() {
