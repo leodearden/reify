@@ -840,44 +840,21 @@ describe('subscribeToClaudeEvents', () => {
     });
 
     describe('tool_result passthrough contract', () => {
-      it('passes result=null through to handler (unvalidated-passthrough contract)', async () => {
+      it.each([
+        { label: 'null', id: 'tr-null', payload: { id: 'tr-null', tool_name: 'read_file', result: null }, expected: null },
+        { label: 'undefined (absent key)', id: 'tr-undef', payload: { id: 'tr-undef', tool_name: 'read_file' }, expected: undefined },
+        { label: '{stdout:"ok"} object', id: 'tr-obj', payload: { id: 'tr-obj', tool_name: 'read_file', result: { stdout: 'ok' } }, expected: { stdout: 'ok' } },
+        { label: '["line1","line2"] array', id: 'tr-arr', payload: { id: 'tr-arr', tool_name: 'read_file', result: ['line1', 'line2'] }, expected: ['line1', 'line2'] },
+      ])('passes result=$label through to handler', async ({ id, payload, expected }) => {
         const { setup } = captureListener('claude-tool-result');
         const handler = vi.fn();
         const listener = await setup(handler);
-        listener({ payload: { id: 'tr-null', tool_name: 'read_file', result: null } });
-        expect(handler).toHaveBeenCalledWith({
-          type: 'tool_result', id: 'tr-null', tool_name: 'read_file', result: null,
-        });
-      });
-
-      it('passes result=undefined (absent key) through to handler', async () => {
-        const { setup } = captureListener('claude-tool-result');
-        const handler = vi.fn();
-        const listener = await setup(handler);
-        listener({ payload: { id: 'tr-undef', tool_name: 'read_file' } });
-        expect(handler).toHaveBeenCalledWith({
-          type: 'tool_result', id: 'tr-undef', tool_name: 'read_file', result: undefined,
-        });
-      });
-
-      it('passes result={stdout:"ok"} structured object through to handler', async () => {
-        const { setup } = captureListener('claude-tool-result');
-        const handler = vi.fn();
-        const listener = await setup(handler);
-        listener({ payload: { id: 'tr-obj', tool_name: 'read_file', result: { stdout: 'ok' } } });
-        expect(handler).toHaveBeenCalledWith({
-          type: 'tool_result', id: 'tr-obj', tool_name: 'read_file', result: { stdout: 'ok' },
-        });
-      });
-
-      it('passes result=["line1","line2"] array through to handler', async () => {
-        const { setup } = captureListener('claude-tool-result');
-        const handler = vi.fn();
-        const listener = await setup(handler);
-        listener({ payload: { id: 'tr-arr', tool_name: 'read_file', result: ['line1', 'line2'] } });
-        expect(handler).toHaveBeenCalledWith({
-          type: 'tool_result', id: 'tr-arr', tool_name: 'read_file', result: ['line1', 'line2'],
-        });
+        listener({ payload });
+        const callArg = handler.mock.calls[0][0] as Record<string, unknown>;
+        expect(callArg).toEqual({ type: 'tool_result', id, tool_name: 'read_file', result: expected });
+        if (expected === undefined) {
+          expect('result' in callArg).toBe(true);
+        }
       });
     });
 
