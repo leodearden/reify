@@ -1055,4 +1055,342 @@ mod tests {
             "should include 'magnitude'"
         );
     }
+
+    // --- stdlib completions: trig functions (step-1) ---
+    #[test]
+    fn completions_include_all_trig_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"asin"), "should include 'asin'");
+        assert!(func_labels.contains(&"acos"), "should include 'acos'");
+        assert!(func_labels.contains(&"atan"), "should include 'atan'");
+        assert!(func_labels.contains(&"atan2"), "should include 'atan2'");
+        assert!(func_labels.contains(&"sinh"), "should include 'sinh'");
+        assert!(func_labels.contains(&"cosh"), "should include 'cosh'");
+        assert!(func_labels.contains(&"tanh"), "should include 'tanh'");
+    }
+
+    // --- stdlib completions: numeric functions (step-2) ---
+    #[test]
+    fn completions_include_all_numeric_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"floor"), "should include 'floor'");
+        assert!(func_labels.contains(&"ceil"), "should include 'ceil'");
+        assert!(func_labels.contains(&"round"), "should include 'round'");
+        assert!(func_labels.contains(&"sign"), "should include 'sign'");
+        assert!(func_labels.contains(&"log"), "should include 'log'");
+        assert!(func_labels.contains(&"log10"), "should include 'log10'");
+        assert!(func_labels.contains(&"exp"), "should include 'exp'");
+        assert!(func_labels.contains(&"pow"), "should include 'pow'");
+        assert!(func_labels.contains(&"mod"), "should include 'mod'");
+        assert!(func_labels.contains(&"clamp"), "should include 'clamp'");
+        assert!(func_labels.contains(&"lerp"), "should include 'lerp'");
+        assert!(func_labels.contains(&"remap"), "should include 'remap'");
+    }
+
+    // --- stdlib completions: geometry constructors (step-3) ---
+    #[test]
+    fn completions_include_geometry_constructors() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"point2"), "should include 'point2'");
+        assert!(func_labels.contains(&"point3"), "should include 'point3'");
+        assert!(func_labels.contains(&"vec2"), "should include 'vec2'");
+        assert!(func_labels.contains(&"vec3"), "should include 'vec3'");
+        assert!(func_labels.contains(&"frame3"), "should include 'frame3'");
+        assert!(
+            func_labels.contains(&"frame3_identity"),
+            "should include 'frame3_identity'"
+        );
+        assert!(
+            func_labels.contains(&"transform3"),
+            "should include 'transform3'"
+        );
+        assert!(
+            func_labels.contains(&"transform3_identity"),
+            "should include 'transform3_identity'"
+        );
+        assert!(func_labels.contains(&"bbox"), "should include 'bbox'");
+        assert!(
+            func_labels.contains(&"bbox_size"),
+            "should include 'bbox_size'"
+        );
+        assert!(
+            func_labels.contains(&"bbox_center"),
+            "should include 'bbox_center'"
+        );
+    }
+
+    // --- stdlib completions: orientation functions (step-4) ---
+    #[test]
+    fn completions_include_orientation_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"orient_identity"),
+            "should include 'orient_identity'"
+        );
+        assert!(
+            func_labels.contains(&"orient_quaternion"),
+            "should include 'orient_quaternion'"
+        );
+        assert!(
+            func_labels.contains(&"orient_euler"),
+            "should include 'orient_euler'"
+        );
+        assert!(
+            func_labels.contains(&"orient_basis"),
+            "should include 'orient_basis'"
+        );
+        assert!(
+            func_labels.contains(&"orient_axis_angle"),
+            "should include 'orient_axis_angle'"
+        );
+    }
+
+    // --- stdlib completions: complex functions (step-5) ---
+    #[test]
+    fn completions_include_complex_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"complex"), "should include 'complex'");
+        assert!(
+            func_labels.contains(&"conjugate"),
+            "should include 'conjugate'"
+        );
+        assert!(func_labels.contains(&"phase"), "should include 'phase'");
+        assert!(
+            func_labels.contains(&"complex_magnitude"),
+            "should include 'complex_magnitude'"
+        );
+        assert!(
+            func_labels.contains(&"complex_add"),
+            "should include 'complex_add'"
+        );
+        assert!(
+            func_labels.contains(&"complex_mul"),
+            "should include 'complex_mul'"
+        );
+    }
+
+    // --- stdlib completions: plane/axis functions (step-6) ---
+    #[test]
+    fn completions_include_plane_axis_functions() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"plane_xy"),
+            "should include 'plane_xy'"
+        );
+        assert!(
+            func_labels.contains(&"plane_xz"),
+            "should include 'plane_xz'"
+        );
+        assert!(
+            func_labels.contains(&"plane_yz"),
+            "should include 'plane_yz'"
+        );
+        assert!(func_labels.contains(&"axis_x"), "should include 'axis_x'");
+        assert!(func_labels.contains(&"axis_y"), "should include 'axis_y'");
+        assert!(func_labels.contains(&"axis_z"), "should include 'axis_z'");
+        assert!(
+            func_labels.contains(&"frame_to_frame"),
+            "should include 'frame_to_frame'"
+        );
+    }
+
+    // --- stdlib completions: linalg extended (step-7) ---
+    #[test]
+    fn completions_include_linalg_extended() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            func_labels.contains(&"determinant"),
+            "should include 'determinant'"
+        );
+        assert!(
+            func_labels.contains(&"inverse"),
+            "should include 'inverse'"
+        );
+        assert!(
+            func_labels.contains(&"transpose"),
+            "should include 'transpose'"
+        );
+        assert!(func_labels.contains(&"outer"), "should include 'outer'");
+        assert!(func_labels.contains(&"trace"), "should include 'trace'");
+        assert!(
+            func_labels.contains(&"eigenvalues"),
+            "should include 'eigenvalues'"
+        );
+    }
+
+    // --- stdlib completions: field ops and determinacy (step-8) ---
+    #[test]
+    fn completions_include_field_and_determinacy() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"sample"), "should include 'sample'");
+        assert!(
+            func_labels.contains(&"gradient"),
+            "should include 'gradient'"
+        );
+        assert!(
+            func_labels.contains(&"divergence"),
+            "should include 'divergence'"
+        );
+        assert!(func_labels.contains(&"curl"), "should include 'curl'");
+        assert!(
+            func_labels.contains(&"determined"),
+            "should include 'determined'"
+        );
+        assert!(
+            func_labels.contains(&"undetermined"),
+            "should include 'undetermined'"
+        );
+        assert!(
+            func_labels.contains(&"constrained"),
+            "should include 'constrained'"
+        );
+        assert!(
+            func_labels.contains(&"partially_determined"),
+            "should include 'partially_determined'"
+        );
+    }
+
+    // --- stdlib completions: signatures in detail field (step-9) ---
+    #[test]
+    fn builtin_completions_have_signatures() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let functions: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .collect();
+        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        for f in &functions {
+            assert!(
+                f.detail.as_ref().map(|d| !d.is_empty()).unwrap_or(false),
+                "FUNCTION completion '{}' should have a non-empty detail (signature), got: {:?}",
+                f.label,
+                f.detail
+            );
+        }
+    }
+
+    // --- stdlib completions: markdown documentation (step-10) ---
+    #[test]
+    fn builtin_completions_have_documentation() {
+        use tower_lsp::lsp_types::{Documentation, MarkupKind};
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let functions: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .collect();
+        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        for f in &functions {
+            match &f.documentation {
+                Some(Documentation::MarkupContent(mc)) => {
+                    assert_eq!(
+                        mc.kind,
+                        MarkupKind::Markdown,
+                        "FUNCTION '{}' documentation should be Markdown",
+                        f.label
+                    );
+                    assert!(
+                        !mc.value.is_empty(),
+                        "FUNCTION '{}' documentation should be non-empty",
+                        f.label
+                    );
+                }
+                other => panic!(
+                    "FUNCTION '{}' should have MarkupContent documentation, got: {:?}",
+                    f.label, other
+                ),
+            }
+        }
+    }
+
+    // --- stdlib completions: sort_text by category (step-11) ---
+    #[test]
+    fn builtin_completions_have_sort_text_by_category() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let functions: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .collect();
+        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        // Every FUNCTION completion must have sort_text set
+        for f in &functions {
+            assert!(
+                f.sort_text.is_some(),
+                "FUNCTION '{}' should have sort_text set",
+                f.label
+            );
+        }
+        // Trig functions should share the same sort_text prefix
+        let trig_names = ["sin", "cos", "tan", "asin", "acos", "atan"];
+        let trig_prefixes: Vec<_> = functions
+            .iter()
+            .filter(|f| trig_names.contains(&f.label.as_str()))
+            .filter_map(|f| {
+                f.sort_text.as_ref().and_then(|s| {
+                    // prefix = everything before the last '-'
+                    s.rfind('-').map(|pos| s[..pos].to_string())
+                })
+            })
+            .collect();
+        assert!(
+            !trig_prefixes.is_empty(),
+            "expected trig functions to have sort_text"
+        );
+        let first_prefix = &trig_prefixes[0];
+        assert!(
+            trig_prefixes.iter().all(|p| p == first_prefix),
+            "all trig functions should share the same sort_text prefix, got: {:?}",
+            trig_prefixes
+        );
+    }
 }
