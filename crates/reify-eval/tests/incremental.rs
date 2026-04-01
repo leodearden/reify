@@ -2493,3 +2493,45 @@ fn edit_param_on_undef_param_updates_cache() {
         entry.result
     );
 }
+
+/// After edit_param, the param's cache entry must have a basis_version matching
+/// the edit's version, not the initial eval's version. This proves version
+/// metadata is also fresh.
+#[test]
+fn edit_param_cache_basis_version_updated() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    // After initial eval, width's cache should have basis_version = VersionId(0)
+    let width_id = ValueCellId::new(e, "width");
+    let width_node = NodeId::Value(width_id.clone());
+    let initial_entry = engine
+        .cache_store()
+        .get(&width_node)
+        .expect("width should be in cache after initial eval");
+    assert_eq!(
+        initial_entry.basis_version,
+        VersionId(0),
+        "initial eval should produce basis_version 0"
+    );
+
+    // Edit width → 100mm
+    engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+
+    // After edit, the param's basis_version must be VersionId(1), not VersionId(0)
+    let edited_entry = engine
+        .cache_store()
+        .get(&width_node)
+        .expect("width should be in cache after edit_param");
+    assert_eq!(
+        edited_entry.basis_version,
+        VersionId(1),
+        "edit_param should update param's basis_version to the edit's version (1), not retain initial (0)"
+    );
+}
