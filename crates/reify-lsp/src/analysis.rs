@@ -2,6 +2,7 @@ use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_syntax::{Declaration, ParsedModule};
+pub use reify_syntax::{find_named_member_span, MemberSpanInfo};
 use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
@@ -149,8 +150,8 @@ impl AnalysisContext {
             {
                 continue;
             }
-            if let Some((span, doc)) = find_named_member_span(members, name) {
-                return Some((span, doc, decl_name));
+            if let Some(info) = find_named_member_span(members, name) {
+                return Some((info.span, info.doc, decl_name));
             }
         }
         None
@@ -273,64 +274,6 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
             return Some(decl);
-        }
-    }
-    None
-}
-
-/// Maximum nesting depth for recursive member lookups. Prevents stack
-/// overflow on pathological input with deeply nested guarded groups or ports.
-/// 32 is generous for any realistic Reify source (typical nesting is 2-3 levels).
-const MAX_MEMBER_NESTING_DEPTH: usize = 32;
-
-/// Recursively search a member list for a named param or let declaration.
-///
-/// Returns `(span, doc)` for the first match. Recurses into
-/// `GuardedGroup.members`, `GuardedGroup.else_members`, and `Port.members`
-/// so that declarations inside `where cond { ... } else { ... }` blocks
-/// and port bodies are found. Recursion is bounded by
-/// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological input.
-pub fn find_named_member_span<'a>(
-    members: &'a [reify_syntax::MemberDecl],
-    name: &str,
-) -> Option<(SourceSpan, Option<&'a str>)> {
-    find_named_member_span_depth(members, name, 0)
-}
-
-fn find_named_member_span_depth<'a>(
-    members: &'a [reify_syntax::MemberDecl],
-    name: &str,
-    depth: usize,
-) -> Option<(SourceSpan, Option<&'a str>)> {
-    if depth > MAX_MEMBER_NESTING_DEPTH {
-        return None;
-    }
-    for member in members {
-        match member {
-            reify_syntax::MemberDecl::Param(p) if p.name == name => {
-                return Some((p.span, p.doc.as_deref()));
-            }
-            reify_syntax::MemberDecl::Let(l) if l.name == name => {
-                return Some((l.span, l.doc.as_deref()));
-            }
-            reify_syntax::MemberDecl::GuardedGroup(g) => {
-                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
-                    return Some(result);
-                }
-                if let Some(result) =
-                    find_named_member_span_depth(&g.else_members, name, depth + 1)
-                {
-                    return Some(result);
-                }
-            }
-            reify_syntax::MemberDecl::Port(port) => {
-                if let Some(result) =
-                    find_named_member_span_depth(&port.members, name, depth + 1)
-                {
-                    return Some(result);
-                }
-            }
-            _ => {}
         }
     }
     None
@@ -1220,8 +1163,8 @@ mod tests {
         };
         let result = find_named_member_span(&structure.members, "d");
         assert!(result.is_some(), "d inside port body should be found via find_named_member_span");
-        let (span, _doc) = result.unwrap();
-        let decl_text = &source[span.start as usize..span.end as usize];
+        let info = result.unwrap();
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
             decl_text.contains("d") && decl_text.contains("10mm"),
             "span should cover full param declaration, got: {decl_text:?}"
@@ -1274,8 +1217,8 @@ mod tests {
         };
         let result = find_named_member_span(&structure.members, "ratio");
         assert!(result.is_some(), "ratio inside port body should be found via find_named_member_span");
-        let (span, _doc) = result.unwrap();
-        let decl_text = &source[span.start as usize..span.end as usize];
+        let info = result.unwrap();
+        let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
             decl_text.contains("ratio"),
             "span should cover the let declaration, got: {decl_text:?}"

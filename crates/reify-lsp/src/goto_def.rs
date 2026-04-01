@@ -27,10 +27,10 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
             reify_syntax::Declaration::Occurrence(o) => &o.members,
             _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
         };
-        if let Some((span, _doc)) = find_named_member_span(members, word) {
+        if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {
                 uri: uri.clone(),
-                range: span_to_range(source, span),
+                range: span_to_range(source, info.span),
             });
         }
         // Member not found in enclosing declaration; fall through to
@@ -45,10 +45,10 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
             reify_syntax::Declaration::Occurrence(o) => &o.members,
             _ => continue,
         };
-        if let Some((span, _doc)) = find_named_member_span(members, word) {
+        if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {
                 uri: uri.clone(),
-                range: span_to_range(source, span),
+                range: span_to_range(source, info.span),
             });
         }
     }
