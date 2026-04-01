@@ -1831,8 +1831,7 @@ mod tests {
 
         // Run inside a spawned thread so we can apply a timeout — a real
         // deadlock would hang CI forever without this.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<SolveResult>>(1);
-        std::thread::spawn(move || {
+        let results = run_with_deadlock_timeout(move || {
             let collected = Mutex::new(Vec::new());
             // 4 threads each calling solve() once — threads race to pop
             // the next available result (order is non-deterministic).
@@ -1844,12 +1843,8 @@ mod tests {
                     });
                 }
             });
-            let _ = tx.send(collected.into_inner().unwrap());
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
         });
-
-        let results = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("test timed out after 10s — possible deadlock");
 
         assert_eq!(results.len(), 4, "all 4 threads should complete");
 
