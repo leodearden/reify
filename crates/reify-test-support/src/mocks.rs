@@ -1995,4 +1995,12 @@ mod tests {
         assert_eq!(problems[0].auto_params[0].id, ValueCellId::new("A", "x"));
         assert_eq!(problems[1].auto_params[0].id, ValueCellId::new("B", "y"));
     }
+
+    // --- run_with_deadlock_timeout helper tests ---
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_value() {
+        let result = run_with_deadlock_timeout(|| 42i32);
+        assert_eq!(result, 42);
+    }
 }
