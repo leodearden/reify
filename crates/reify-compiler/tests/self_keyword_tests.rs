@@ -251,12 +251,16 @@ fn self_in_guarded_block() {
     let expected_depth = ValueCellId::new("TreeBracket", "depth");
     let expected_width = ValueCellId::new("TreeBracket", "width");
 
-    // Find child_depth value cell and check it references self.depth
-    let child_depth_cell = template
-        .value_cells
+    // Guarded block members live in guarded_groups[n].members, NOT top-level value_cells.
+    // (See guard_compilation.rs for the canonical pattern.)
+    let group = &template.guarded_groups[0];
+
+    // Find child_depth in guarded group and check it references self.depth
+    let child_depth_cell = group
+        .members
         .iter()
-        .find(|vc| vc.id.member == "child_depth")
-        .expect("child_depth value cell");
+        .find(|m| m.id.member == "child_depth")
+        .expect("child_depth in guarded group");
     let depth_refs = child_depth_cell
         .default_expr
         .as_ref()
@@ -268,11 +272,12 @@ fn self_in_guarded_block() {
         depth_refs
     );
 
-    let child_width_cell = template
-        .value_cells
+    // Find child_width in guarded group and check it references self.width
+    let child_width_cell = group
+        .members
         .iter()
-        .find(|vc| vc.id.member == "child_width")
-        .expect("child_width value cell");
+        .find(|m| m.id.member == "child_width")
+        .expect("child_width in guarded group");
     let width_refs = child_width_cell
         .default_expr
         .as_ref()
@@ -290,27 +295,39 @@ fn self_in_guarded_block() {
 #[test]
 fn self_error_in_fn_body() {
     // `self` inside a function body is invalid — functions have no enclosing entity scope.
+    // The implementation may reject this at parse time or compile time; both are valid.
+    // Use the same branch-on-parse-errors pattern as self_error_at_module_scope.
     let source = r#"fn f(x: Scalar) -> Scalar {
     self.x
 }"#;
-    let compiled = compile_with_diagnostics(source);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
 
-    assert!(
-        !errors.is_empty(),
-        "expected error diagnostic for `self` in fn body"
-    );
-    assert!(
-        errors
+    if parsed.errors.is_empty() {
+        // Parsing succeeded — compiler must reject `self` in fn body
+        let compiled = reify_compiler::compile(&parsed);
+        let errors: Vec<_> = compiled
+            .diagnostics
             .iter()
-            .any(|e| e.message.contains("self")),
-        "error should mention 'self', got errors: {:?}",
-        errors
-    );
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "expected error diagnostic for `self` in fn body"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("self")),
+            "error should mention 'self', got errors: {:?}",
+            errors
+        );
+    } else {
+        // Parser correctly rejects `self` in fn body — verify the error
+        // relates to the self-containing expression
+        assert!(
+            parsed.errors.iter().any(|e| e.message.contains("self")),
+            "parse error should mention 'self', got: {:?}",
+            parsed.errors
+        );
+    }
 }
 
 // ─── step-8: self error at module scope ───
