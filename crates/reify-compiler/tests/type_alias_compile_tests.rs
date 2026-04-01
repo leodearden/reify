@@ -690,3 +690,30 @@ fn alias_forward_ref_function() {
         "forward-referenced Velocity alias should resolve to Scalar{{LENGTH}}"
     );
 }
+
+// ─── step-25: content hash determinism ───────────────────────────────────────
+
+#[test]
+fn alias_content_hash_deterministic() {
+    // Compile a source with 3+ aliases multiple times.
+    // If alias_registry.iter() feeds hashes in non-deterministic HashMap order
+    // into the order-dependent ContentHash::combine_all, the content_hash could
+    // vary between compilations. We run 10 iterations to increase the chance of
+    // catching non-deterministic ordering.
+    let source = r#"
+        type A = Int
+        type B = Real
+        type C = String
+        type D = Bool
+        type E = Length
+    "#;
+    let first_hash = parse_and_compile(source).content_hash;
+    for i in 1..10 {
+        let hash = parse_and_compile(source).content_hash;
+        assert_eq!(
+            first_hash, hash,
+            "content_hash differed on iteration {} — non-deterministic alias hash ordering",
+            i
+        );
+    }
+}
