@@ -634,14 +634,6 @@ impl TypeAliasRegistry {
         }
     }
 
-    /// Seed a prelude type alias into the registry (overwrite semantics).
-    ///
-    /// Used to pre-populate the registry with aliases from prelude modules
-    /// before processing module-local declarations.
-    pub(crate) fn seed_prelude_alias(&mut self, entry: TypeAliasEntry) {
-        self.entries.insert(entry.name.clone(), entry);
-    }
-
     /// Look up a type alias by name.
     pub(crate) fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
         self.entries.get(name)
