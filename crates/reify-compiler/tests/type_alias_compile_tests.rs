@@ -5,7 +5,7 @@
 //! and integration with existing type resolution paths.
 
 use reify_compiler::{compile, CompiledModule, TypeAliasEntry, TypeAliasRegistry};
-use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type};
+use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type, Diagnostic};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -15,11 +15,19 @@ fn parse_and_compile(source: &str) -> CompiledModule {
     compile(&parsed)
 }
 
-fn errors_only(module: &CompiledModule) -> Vec<&reify_types::Diagnostic> {
+fn errors_only(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
         .collect()
 }
 
@@ -374,5 +382,107 @@ fn multi_param_alias_with_partial_defaults() {
             dimension: reify_types::DimensionVector::MASS,
         },
         "BiMeasure<Mass> (A=Mass, B=Length default) should resolve to Scalar{{MASS}}"
+    );
+}
+
+// ─── step-17: alias used in various contexts ───────────────────────────────
+
+#[test]
+fn alias_as_function_param_type() {
+    let source = r#"
+        type Pressure = Force
+        fn measure(p: Pressure) -> Real { p }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias as function param type should not produce errors; got: {:?}",
+        errs
+    );
+    // Verify function param has the correct type
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "measure")
+        .expect("measure function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "function param typed as Pressure alias should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn alias_as_function_return_type() {
+    let source = r#"
+        type Pressure = Force
+        fn compute(x: Real) -> Pressure { x }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias as function return type should not produce errors; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "compute")
+        .expect("compute function not found");
+    assert_eq!(
+        func.return_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "function return type Pressure alias should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn alias_as_field_domain_codomain_type() {
+    let source = r#"
+        type Pressure = Force
+        field def f : Point3 -> Pressure { source = analytical { |p| p } }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias as field codomain type should not produce errors; got: {:?}",
+        errs
+    );
+    // Verify field codomain resolved to the alias target (not StructureRef)
+    let field = module
+        .fields
+        .iter()
+        .find(|f| f.name == "f")
+        .expect("field f not found");
+    assert_eq!(
+        field.codomain_type,
+        Type::Scalar {
+            dimension: reify_types::dimension::FORCE,
+        },
+        "field codomain typed as Pressure alias should resolve to Scalar{{FORCE}}"
+    );
+}
+
+#[test]
+fn alias_as_trait_member_type() {
+    let source = r#"
+        type Pressure = Force
+        trait HasPressure {
+            param p : Pressure
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias as trait member type should not produce errors; got: {:?}",
+        errs
     );
 }
