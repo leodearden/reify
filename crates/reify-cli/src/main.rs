@@ -441,9 +441,7 @@ mod tests {
             make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
             make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
         ];
-        let mut buf = Vec::new();
-        let result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (result, output) = run_report(&entries);
 
         assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
         assert!(output.contains("OK stress_limit"));
@@ -457,9 +455,7 @@ mod tests {
             make_entry("Part", 0, Some("max_force"), Satisfaction::Satisfied),
             make_entry("Part", 1, Some("clearance"), Satisfaction::Violated),
         ];
-        let mut buf = Vec::new();
-        let result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (result, output) = run_report(&entries);
 
         assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
         assert!(output.contains("OK max_force"));
@@ -471,9 +467,7 @@ mod tests {
         let entries = vec![
             make_entry("Beam", 0, Some("load"), Satisfaction::Indeterminate),
         ];
-        let mut buf = Vec::new();
-        let result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (result, output) = run_report(&entries);
 
         assert_eq!(result, ConstraintOutcome::SomeIndeterminate(1), "indeterminate should return SomeIndeterminate with count");
         assert!(output.contains("INDETERMINATE load"));
@@ -485,9 +479,7 @@ mod tests {
             make_entry("Bracket", 0, Some("thickness"), Satisfaction::Violated),
             make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
         ];
-        let mut buf = Vec::new();
-        let result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (result, output) = run_report(&entries);
 
         assert_eq!(
             result,
@@ -516,9 +508,7 @@ mod tests {
         let entries = vec![
             make_entry("Gear", 2, None, Satisfaction::Satisfied),
         ];
-        let mut buf = Vec::new();
-        let _result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (_result, output) = run_report(&entries);
 
         // ConstraintNodeId Display: "Gear#constraint[2]"
         assert!(
@@ -533,9 +523,7 @@ mod tests {
         let entries = vec![
             make_entry("Axle", 0, Some("torque_limit"), Satisfaction::Violated),
         ];
-        let mut buf = Vec::new();
-        let _result = report_constraint_results(&entries, &mut buf);
-        let output = String::from_utf8(buf).unwrap();
+        let (_result, output) = run_report(&entries);
 
         assert!(
             output.contains("VIOLATED torque_limit"),
