@@ -2868,8 +2868,10 @@ fn compile_expr_guarded(
 fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
     enum_defs: &[reify_types::EnumDef],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledTrait {
+    let empty_params = HashSet::new();
     let mut required_members = Vec::new();
     let mut defaults = Vec::new();
 
@@ -2877,7 +2879,7 @@ fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    if let Some(t) = resolve_type_name(&type_expr.name) {
+                    if let Some(t) = resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
                         t
                     } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
                         // Enum type defined in the same module
@@ -2918,7 +2920,7 @@ fn compile_trait(
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Let bindings always have a value expression → default
                 let ty = if let Some(type_expr) = &let_decl.type_expr {
-                    match resolve_type_name(&type_expr.name) {
+                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
@@ -3497,7 +3499,7 @@ pub fn compile_with_prelude(
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
         if let Some(compiled_fn) =
-            compile_function(fn_def, &resolution_enums, &functions, &mut diagnostics)
+            compile_function(fn_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
@@ -3506,7 +3508,7 @@ pub fn compile_with_prelude(
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
-        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &mut diagnostics);
+        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &alias_registry, &mut diagnostics);
         trait_defs.push(compiled_trait);
     }
 
@@ -3527,7 +3529,7 @@ pub fn compile_with_prelude(
 
     // 3. Fields (need all resolution_enums + all compiled functions)
     for field_def in &field_refs {
-        let compiled = compile_field(field_def, &resolution_enums, &functions, &mut diagnostics);
+        let compiled = compile_field(field_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics);
         fields.push(compiled);
     }
 
@@ -6618,12 +6620,14 @@ fn compile_function(
     fn_def: &reify_syntax::FnDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
+    let empty_params = HashSet::new();
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_name(&p.type_expr.name) {
+        let ty = match resolve_type_with_aliases(&p.type_expr.name, &empty_params, alias_registry) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6638,7 +6642,7 @@ fn compile_function(
 
     // Resolve return type
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_name(&te.name) {
+        Some(te) => match resolve_type_with_aliases(&te.name, &empty_params, alias_registry) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6714,9 +6718,11 @@ fn compile_function(
 fn resolve_field_type_name(
     name: &str,
     span: reify_types::SourceSpan,
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
-    resolve_type_name(name).unwrap_or_else(|| {
+    let empty_params = HashSet::new();
+    resolve_type_with_aliases(name, &empty_params, alias_registry).unwrap_or_else(|| {
         diagnostics.push(
             Diagnostic::warning(format!(
                 "unresolved field type '{}', treating as structure reference",
@@ -6733,16 +6739,19 @@ fn compile_field(
     field_def: &reify_syntax::FieldDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
     let domain_type = resolve_field_type_name(
         &field_def.domain_type.name,
         field_def.domain_type.span,
+        alias_registry,
         diagnostics,
     );
     let codomain_type = resolve_field_type_name(
         &field_def.codomain_type.name,
         field_def.codomain_type.span,
+        alias_registry,
         diagnostics,
     );
 
