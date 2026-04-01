@@ -57,6 +57,14 @@ impl PriorityPromoter {
         self.effective.remove(node_id);
     }
 
+    /// Remove multiple nodes in a single call (avoids per-node locking overhead
+    /// when called through [`SharedPriorityPromoter::batch_remove`]).
+    pub fn batch_remove(&mut self, nodes: &[NodeId]) {
+        for node in nodes {
+            self.effective.remove(node);
+        }
+    }
+
     /// Return the number of tracked nodes (for test verification of cleanup).
     pub fn count(&self) -> usize {
         self.effective.len()
@@ -151,6 +159,14 @@ impl SharedPriorityPromoter {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(node_id);
+    }
+
+    /// Remove multiple nodes in a single critical section (one mutex acquisition).
+    pub fn batch_remove(&self, nodes: &[NodeId]) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .batch_remove(nodes);
     }
 
     /// Return the number of tracked nodes (for test verification of cleanup).
@@ -320,6 +336,27 @@ mod tests {
     // --- SharedPriorityPromoter (concurrent wrapper) tests ---
 
     #[test]
+    fn batch_remove_removes_specified_nodes_and_preserves_others() {
+        let mut promoter = PriorityPromoter::new();
+        let a = make_node("a");
+        let b = make_node("b");
+        let c = make_node("c");
+
+        promoter.register(a.clone(), Priority::P0Interactive);
+        promoter.register(b.clone(), Priority::P1Slow);
+        promoter.register(c.clone(), Priority::P3Speculative);
+        assert_eq!(promoter.count(), 3);
+
+        // Batch remove a and c, leaving b
+        promoter.batch_remove(&[a.clone(), c.clone()]);
+
+        assert_eq!(promoter.effective_priority(&a), None);
+        assert_eq!(promoter.effective_priority(&c), None);
+        assert_eq!(promoter.effective_priority(&b), Some(Priority::P1Slow));
+        assert_eq!(promoter.count(), 1);
+    }
+
+    #[test]
     fn shared_promoter_register_and_read() {
         let shared = SharedPriorityPromoter::new();
         let node = make_node("a");
@@ -454,6 +491,30 @@ mod tests {
             !tracker.should_continue(&node_cancel, true),
             "uncommitted node in dirty cone should NOT continue"
         );
+    }
+
+    #[test]
+    fn shared_batch_remove_drops_count_and_handles_idempotent_removal() {
+        let shared = SharedPriorityPromoter::new();
+        let a = make_node("a");
+        let b = make_node("b");
+        let c = make_node("c");
+
+        shared.register(a.clone(), Priority::P0Interactive);
+        shared.register(b.clone(), Priority::P1Slow);
+        shared.register(c.clone(), Priority::P3Speculative);
+        assert_eq!(shared.count(), 3);
+
+        // Batch remove a and c
+        shared.batch_remove(&[a.clone(), c.clone()]);
+        assert_eq!(shared.count(), 1);
+        assert_eq!(shared.effective_priority(&b), Some(Priority::P1Slow));
+        assert_eq!(shared.effective_priority(&a), None);
+        assert_eq!(shared.effective_priority(&c), None);
+
+        // Idempotent: removing already-removed nodes should not panic or change count
+        shared.batch_remove(&[a.clone(), c.clone()]);
+        assert_eq!(shared.count(), 1);
     }
 
     #[test]
