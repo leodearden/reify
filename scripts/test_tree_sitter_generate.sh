@@ -10,23 +10,10 @@ TS_DIR="$ROOT/tree-sitter-reify"
 GENERATE_SCRIPT="$ROOT/scripts/tree-sitter-generate.sh"
 STAMP_FILE="$TS_DIR/src/.grammar_hash.stamp"
 
-PASS=0
-FAIL=0
-
 # Shared utilities (compute_sha256, etc.)
 source "$SCRIPT_DIR/lib.sh"
 
-assert() {
-    local desc="$1"
-    shift
-    if "$@" >/dev/null 2>&1; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        FAIL=$((FAIL + 1))
-    fi
-}
+source "$ROOT/tests/infra/test_helpers.sh"
 
 # Ensure parser.c + stamp are restored on exit.
 trap '"$GENERATE_SCRIPT" --force >/dev/null 2>&1 || true' EXIT
@@ -215,8 +202,4 @@ assert "script checks _PORTABLE_TIMEOUT_TIMED_OUT alongside exit code 124" \
     grep -q '_PORTABLE_TIMEOUT_TIMED_OUT' "$GENERATE_SCRIPT"
 
 # ── Summary ────────────────────────────────────────────────────────
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
+test_summary
