@@ -247,6 +247,21 @@ for consumer in "${CONSUMERS[@]}"; do
     fi
 done
 
+# ==============================================================================
+# Pipeline divergence documentation check
+# test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
+# richer assert API and is intentionally excluded from this shared module.
+# ==============================================================================
+
+echo ""
+echo "--- Pipeline divergence documented in test_helpers.sh ---"
+
+if grep -q 'test_tree_sitter_pipeline' "$HELPER_FILE" 2>/dev/null; then
+    check "test_helpers.sh documents pipeline divergence" "true"
+else
+    check "test_helpers.sh documents pipeline divergence" "false"
+fi
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
