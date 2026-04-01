@@ -782,6 +782,13 @@ mod tests {
     }
 
     #[test]
+    fn find_entity_doc_returns_none_for_undocumented_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Joint"), None);
+    }
+
+    #[test]
     fn member_info_includes_doc_for_documented_param() {
         let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
