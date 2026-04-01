@@ -320,6 +320,27 @@ mod tests {
     // --- SharedPriorityPromoter (concurrent wrapper) tests ---
 
     #[test]
+    fn batch_remove_removes_specified_nodes_and_preserves_others() {
+        let mut promoter = PriorityPromoter::new();
+        let a = make_node("a");
+        let b = make_node("b");
+        let c = make_node("c");
+
+        promoter.register(a.clone(), Priority::P0Interactive);
+        promoter.register(b.clone(), Priority::P1Slow);
+        promoter.register(c.clone(), Priority::P3Speculative);
+        assert_eq!(promoter.count(), 3);
+
+        // Batch remove a and c, leaving b
+        promoter.batch_remove(&[a.clone(), c.clone()]);
+
+        assert_eq!(promoter.effective_priority(&a), None);
+        assert_eq!(promoter.effective_priority(&c), None);
+        assert_eq!(promoter.effective_priority(&b), Some(Priority::P1Slow));
+        assert_eq!(promoter.count(), 1);
+    }
+
+    #[test]
     fn shared_promoter_register_and_read() {
         let shared = SharedPriorityPromoter::new();
         let node = make_node("a");
