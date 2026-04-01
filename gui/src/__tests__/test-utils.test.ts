@@ -54,6 +54,18 @@ describe('deferred', () => {
     expect(result).toBe(42);
   });
 
+  it('returns an object with a reject property (function)', () => {
+    const d = deferred<string>();
+    expect(typeof d.reject).toBe('function');
+  });
+
+  it('calling reject(err) rejects the promise with that error', async () => {
+    const d = deferred<number>();
+    const err = new Error('test rejection');
+    d.reject(err);
+    await expect(d.promise).rejects.toThrow('test rejection');
+  });
+
   it('respects generic type parameter', async () => {
     const d = deferred<{ name: string }>();
     const obj = { name: 'test' };
