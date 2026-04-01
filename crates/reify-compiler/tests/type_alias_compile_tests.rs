@@ -691,6 +691,70 @@ fn alias_forward_ref_function() {
     );
 }
 
+// ─── step-29: user-defined parameterized alias in alias body ────────────────
+
+#[test]
+fn alias_body_references_user_parameterized_alias() {
+    // Container<T> is a user-defined parameterized alias.
+    // StringList uses Container with concrete type args (not type params).
+    // Currently fails because resolve_type_alias_expr's name branch only
+    // tries hardcoded builtins for parameterized types, missing user-defined
+    // parameterized alias instantiation.
+    let source = r#"
+        type Container<T> = List<T>
+        type StringList = Container<String>
+        structure S {
+            param p : StringList = ["hello"]
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "user-defined parameterized alias in alias body should compile; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::List(Box::new(Type::String)),
+        "StringList (= Container<String>) should resolve to List<String>"
+    );
+}
+
+#[test]
+fn alias_chain_parameterized_pair_concrete_args() {
+    // Pair<A, B> = Map<A, B> (user-defined parameterized alias)
+    // StringIntMap uses Pair with concrete type args.
+    let source = r#"
+        type Pair<A, B> = Map<A, B>
+        type StringIntMap = Pair<String, Int>
+        fn identity(m: StringIntMap) -> StringIntMap { m }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "chained parameterized alias with concrete args should compile; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "identity")
+        .expect("identity function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+        "StringIntMap (= Pair<String, Int>) should resolve to Map<String, Int>"
+    );
+}
+
 // ─── step-25: content hash determinism ───────────────────────────────────────
 
 // NOTE: steps 25-26 already committed (hash determinism fix)
