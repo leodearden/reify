@@ -611,9 +611,9 @@ impl TypeAliasRegistry {
     }
 
     /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
-    pub fn register(&mut self, entry: TypeAliasEntry) -> Result<(), TypeAliasEntry> {
+    pub fn register(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
         if self.entries.contains_key(&entry.name) {
-            Err(entry)
+            Err(Box::new(entry))
         } else {
             self.entries.insert(entry.name.clone(), entry);
             Ok(())
@@ -978,10 +978,10 @@ fn resolve_type_with_aliases(
         return Some(ty);
     }
     // Check alias registry for non-parameterized aliases
-    if let Some(alias_entry) = alias_registry.lookup(name) {
-        if let Some(ref resolved) = alias_entry.resolved_type {
-            return Some(resolved.clone());
-        }
+    if let Some(alias_entry) = alias_registry.lookup(name)
+        && let Some(ref resolved) = alias_entry.resolved_type
+    {
+        return Some(resolved.clone());
     }
     None
 }
@@ -1025,15 +1025,15 @@ fn resolve_type_alias_expr(
         }
         name => {
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
-            if !type_expr.type_args.is_empty() {
-                if let Some(ty) = resolve_parameterized_builtin_type(
+            if !type_expr.type_args.is_empty()
+                && let Some(ty) = resolve_parameterized_builtin_type(
                     name,
                     &type_expr.type_args,
                     alias_registry,
                     diagnostics,
-                ) {
-                    return Some(ty);
-                }
+                )
+            {
+                return Some(ty);
             }
             // Simple name: check builtins, then alias registry
             let empty = HashSet::new();
@@ -1078,10 +1078,10 @@ fn resolve_type_alias_expr_to_dimension(
                 return Some(dim);
             }
             // Check alias registry: if the alias resolves to Scalar{dim}, use that dimension
-            if let Some(entry) = alias_registry.lookup(&type_expr.name) {
-                if let Some(Type::Scalar { dimension }) = &entry.resolved_type {
-                    return Some(*dimension);
-                }
+            if let Some(entry) = alias_registry.lookup(&type_expr.name)
+                && let Some(Type::Scalar { dimension }) = &entry.resolved_type
+            {
+                return Some(*dimension);
             }
             // Fall through to error
             diagnostics.push(
@@ -1115,16 +1115,16 @@ fn resolve_type_expr_with_aliases(
     }
 
     // Check parameterized alias instantiation
-    if let Some(alias_entry) = alias_registry.lookup(&type_expr.name) {
-        if !alias_entry.type_params.is_empty() {
-            return resolve_parameterized_alias(
-                alias_entry,
-                &type_expr.type_args,
-                type_param_names,
-                alias_registry,
-                diagnostics,
-            );
-        }
+    if let Some(alias_entry) = alias_registry.lookup(&type_expr.name)
+        && !alias_entry.type_params.is_empty()
+    {
+        return resolve_parameterized_alias(
+            alias_entry,
+            &type_expr.type_args,
+            type_param_names,
+            alias_registry,
+            diagnostics,
+        );
     }
 
     None
@@ -1238,16 +1238,16 @@ fn resolve_type_alias_expr_with_subst(
                 return Some(ty.clone());
             }
             // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
-            if !type_expr.type_args.is_empty() {
-                if let Some(ty) = resolve_parameterized_builtin_type_with_subst(
+            if !type_expr.type_args.is_empty()
+                && let Some(ty) = resolve_parameterized_builtin_type_with_subst(
                     name,
                     &type_expr.type_args,
                     alias_registry,
                     subst,
                     diagnostics,
-                ) {
-                    return Some(ty);
-                }
+                )
+            {
+                return Some(ty);
             }
             // Then builtins + alias registry
             let empty = HashSet::new();
@@ -1356,10 +1356,8 @@ fn resolve_type_alias_expr_to_dim_with_subst(
         }
         name => {
             // Check substitution map (type param → concrete Type → extract dimension)
-            if let Some(ty) = subst.get(name) {
-                if let Type::Scalar { dimension } = ty {
-                    return Some(*dimension);
-                }
+            if let Some(Type::Scalar { dimension }) = subst.get(name) {
+                return Some(*dimension);
             }
             // Try resolve_dimension_type for known dimension names
             let mut tmp_diags = Vec::new();
@@ -1367,10 +1365,10 @@ fn resolve_type_alias_expr_to_dim_with_subst(
                 return Some(dim);
             }
             // Check alias registry
-            if let Some(entry) = alias_registry.lookup(name) {
-                if let Some(Type::Scalar { dimension }) = &entry.resolved_type {
-                    return Some(*dimension);
-                }
+            if let Some(entry) = alias_registry.lookup(name)
+                && let Some(Type::Scalar { dimension }) = &entry.resolved_type
+            {
+                return Some(*dimension);
             }
             diagnostics.push(
                 Diagnostic::error(format!(
