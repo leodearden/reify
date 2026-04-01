@@ -1541,4 +1541,17 @@ mod tests {
             "param nested in else_members should be found by find_named_member_span"
         );
     }
+
+    #[test]
+    fn count_members_recursive_at_boundary() {
+        // Exactly MAX_MEMBER_NESTING_DEPTH (32) levels — should still work
+        let members =
+            build_nested_guarded_members(reify_syntax::MAX_MEMBER_NESTING_DEPTH, "boundary_param");
+        let (p, l, c) = count_members_recursive(&members);
+        assert_eq!(
+            (p, l, c),
+            (1, 0, 0),
+            "param at exactly MAX_MEMBER_NESTING_DEPTH levels should be counted"
+        );
+    }
 }
