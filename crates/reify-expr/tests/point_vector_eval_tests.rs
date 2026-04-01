@@ -1759,3 +1759,26 @@ fn value_vector3_add_vector2_mismatched_length_returns_undef() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
+
+/// Value::Vector with Undef component - Value::Vector → Undef.
+/// Mirrors value_vector_with_undef_component_add_propagates but uses BinOp::Sub
+/// to confirm componentwise_binop Undef propagation in the Sub direction.
+#[test]
+fn value_vector_with_undef_component_sub_propagates() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::Undef, Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
