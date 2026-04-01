@@ -2265,3 +2265,154 @@ fn gradient_1d_codomain_type_is_rq() {
         other => panic!("gradient should return a Field, got {:?}", other),
     }
 }
+
+/// Regression: gradient of Field<Point3<Real>, Real> must have codomain_type
+/// = Vector { n: 3, quantity: Real }, unchanged by the R/Q fix.
+///
+/// When both domain and codomain are dimensionless, no dimension division
+/// should occur.
+#[test]
+fn gradient_dimensionless_codomain_type_unchanged() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    let expected_codomain = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+
+    match &grad_result {
+        Value::Field { codomain_type, .. } => {
+            assert_eq!(
+                *codomain_type, expected_codomain,
+                "dimensionless gradient codomain_type should be Vector3<Real>, got {:?}",
+                codomain_type
+            );
+        }
+        other => panic!("gradient should return a Field, got {:?}", other),
+    }
+}
+
+/// Regression: gradient of Field<Point3<Scalar[m]>, Real> must have codomain_type
+/// = Vector { n: 3, quantity: Real }.
+///
+/// When codomain is dimensionless Real, no R/Q division should occur even if
+/// domain is dimensioned — mirrors the runtime logic which only divides when
+/// result_dim != DIMENSIONLESS.
+#[test]
+fn gradient_mixed_dimensionless_codomain_type() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z  (produces Real even though domain is Scalar[m])
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    let expected_codomain = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+
+    match &grad_result {
+        Value::Field { codomain_type, .. } => {
+            assert_eq!(
+                *codomain_type, expected_codomain,
+                "mixed-dimensionless gradient codomain_type should be Vector3<Real>, got {:?}",
+                codomain_type
+            );
+        }
+        other => panic!("gradient should return a Field, got {:?}", other),
+    }
+}
