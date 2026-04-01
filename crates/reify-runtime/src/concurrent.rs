@@ -281,10 +281,17 @@ impl ConcurrentScheduler {
                         .unwrap_or(Priority::P3Speculative);
                     promoter.register(node.clone(), priority);
                 }
-                // Sort by effective priority: ascending (P0 < P3 in Ord)
+                // Sort by config priority: ascending (P0 < P3 in Ord).
+                // At this point, nodes were just registered (lines above) with
+                // values from config.node_priorities and no promotions have
+                // occurred yet, so effective_priority == config priority.
+                // Sorting directly from config avoids O(N log N) mutex
+                // acquisitions through SharedPriorityPromoter.
                 dirty_nodes.sort_by_key(|node| {
-                    promoter
-                        .effective_priority(node)
+                    config
+                        .node_priorities
+                        .get(node)
+                        .copied()
                         .unwrap_or(Priority::P3Speculative)
                 });
             }
