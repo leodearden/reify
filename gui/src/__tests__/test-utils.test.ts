@@ -1,9 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections } from './test-utils';
 
-describe('flushMicrotasks', () => {
-  it('returns a Promise that resolves after yielding to the microtask queue', async () => {
-    const result = flushMicrotasks();
+describe('flushMacrotasks', () => {
+  it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
+    const result = flushMacrotasks();
     expect(result).toBeInstanceOf(Promise);
     await result;
   });
@@ -12,7 +12,7 @@ describe('flushMicrotasks', () => {
     let flag = false;
     setTimeout(() => { flag = true; }, 0);
     expect(flag).toBe(false);
-    await flushMicrotasks();
+    await flushMacrotasks();
     expect(flag).toBe(true);
   });
 });
