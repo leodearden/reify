@@ -104,8 +104,8 @@ fn build_indeterminate_constraint_exits_success() {
         result.stderr
     );
     assert!(
-        result.stdout.contains("OK"),
-        "stdout should contain 'OK' for the satisfied constraint (thickness > 2mm), got: {}",
+        result.stdout.contains("  OK "),
+        "stdout should contain '  OK ' for the satisfied constraint (thickness > 2mm), got: {}",
         result.stdout
     );
     assert!(
@@ -192,8 +192,8 @@ fn build_all_indeterminate_exits_success() {
         result.stdout
     );
     assert!(
-        !result.stdout.contains("OK"),
-        "stdout should NOT contain 'OK' (no satisfied constraints), got: {}",
+        !result.stdout.contains("  OK "),
+        "stdout should NOT contain '  OK ' (no satisfied constraints), got: {}",
         result.stdout
     );
     assert!(
