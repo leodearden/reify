@@ -106,22 +106,16 @@ describe('claude invoke wrappers', () => {
     });
   });
 
-  it('claudeSendMessage passes undefined fields correctly', async () => {
+  it('claudeSendMessage omits undefined-valued fields from wire context', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudeSendMessage('hello', {
       selectedEntity: 'Bracket.w',
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+    expect(mockInvoke.mock.calls[0][1]).toStrictEqual({
       text: 'hello',
-      context: {
-        selected_entity: 'Bracket.w',
-        diagnostics: undefined,
-        constraints: undefined,
-        current_file: undefined,
-        attached_contexts: undefined,
-      },
+      context: { selected_entity: 'Bracket.w' },
     });
   });
 
@@ -158,15 +152,9 @@ describe('claude invoke wrappers', () => {
       diagnostics: ['error: type mismatch'],
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+    expect(mockInvoke.mock.calls[0][1]).toStrictEqual({
       text: 'fix this',
-      context: {
-        selected_entity: undefined,
-        diagnostics: ['error: type mismatch'],
-        constraints: undefined,
-        current_file: undefined,
-        attached_contexts: undefined,
-      },
+      context: { diagnostics: ['error: type mismatch'] },
     });
   });
 
