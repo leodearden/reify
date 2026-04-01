@@ -147,6 +147,8 @@ pub struct CompiledModule {
     pub templates: Vec<TopologyTemplate>,
     /// Compiled unit declarations from this module.
     pub units: Vec<CompiledUnit>,
+    /// Compiled type alias declarations from this module.
+    pub type_aliases: Vec<CompiledTypeAlias>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -572,6 +574,88 @@ impl Default for UnitRegistry {
     }
 }
 
+// --- Type alias registry ---
+
+/// Internal type alias entry — stored in the registry during compilation.
+///
+/// For non-parameterized aliases, `resolved_type` holds the fully-resolved `Type`.
+/// For parameterized aliases, `type_params` is non-empty and `type_expr` holds the
+/// original `TypeExpr` for deferred substitution at each use site.
+#[derive(Debug, Clone)]
+pub(crate) struct TypeAliasEntry {
+    pub(crate) name: String,
+    /// The resolved type for non-parameterized aliases; `None` for parameterized aliases
+    /// (which require instantiation with concrete type arguments).
+    pub(crate) resolved_type: Option<Type>,
+    /// Type parameters for parameterized aliases (empty for simple aliases).
+    pub(crate) type_params: Vec<reify_types::TypeParam>,
+    /// The original type expression, stored for parameterized alias substitution.
+    pub(crate) type_expr: Option<reify_syntax::TypeExpr>,
+    pub(crate) is_pub: bool,
+    pub(crate) span: SourceSpan,
+    pub(crate) content_hash: ContentHash,
+}
+
+impl TypeAliasEntry {
+    /// Convert to the public `CompiledTypeAlias` representation (no `type_expr`).
+    fn into_compiled(self) -> CompiledTypeAlias {
+        CompiledTypeAlias {
+            name: self.name,
+            resolved_type: self.resolved_type,
+            type_params: self.type_params,
+            is_pub: self.is_pub,
+            span: self.span,
+            content_hash: self.content_hash,
+        }
+    }
+}
+
+/// Registry mapping type alias names to compiled alias entries.
+/// Built during the pre-pass so type resolution can check aliases.
+pub(crate) struct TypeAliasRegistry {
+    entries: HashMap<String, TypeAliasEntry>,
+}
+
+impl TypeAliasRegistry {
+    /// Create an empty registry.
+    pub(crate) fn new() -> Self {
+        TypeAliasRegistry {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
+    pub(crate) fn register(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
+        if self.entries.contains_key(&entry.name) {
+            Err(Box::new(entry))
+        } else {
+            self.entries.insert(entry.name.clone(), entry);
+            Ok(())
+        }
+    }
+
+    /// Look up a type alias by name.
+    pub(crate) fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
+        self.entries.get(name)
+    }
+
+    /// Iterate over all entries in the registry.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
+        self.entries.values()
+    }
+
+    /// Consume the registry, returning all compiled entries.
+    pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
+        self.entries.into_values().map(|e| e.into_compiled()).collect()
+    }
+}
+
+impl Default for TypeAliasRegistry {
+    fn default() -> Self {
+        TypeAliasRegistry::new()
+    }
+}
+
 /// A compiled unit — the public output representation in `CompiledModule`.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
@@ -580,6 +664,23 @@ pub struct CompiledUnit {
     pub dimension: DimensionVector,
     pub factor: f64,
     pub offset: Option<f64>,
+    pub content_hash: ContentHash,
+}
+
+/// A compiled type alias — the public output representation in `CompiledModule`.
+///
+/// Contains only semantic data (no `TypeExpr` from `reify_syntax`), preserving
+/// the module boundary: downstream crates consuming `CompiledModule` do not
+/// transitively depend on `reify_syntax`.
+#[derive(Debug, Clone)]
+pub struct CompiledTypeAlias {
+    pub name: String,
+    /// The resolved type for non-parameterized aliases; `None` for parameterized aliases.
+    pub resolved_type: Option<Type>,
+    /// Type parameters for parameterized aliases (empty for simple aliases).
+    pub type_params: Vec<reify_types::TypeParam>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
 
@@ -885,6 +986,617 @@ fn resolve_type_with_params(name: &str, type_param_names: &HashSet<String>) -> O
         return Some(Type::TypeParam(name.to_string()));
     }
     None
+}
+
+/// Resolve a type name, checking builtins, type parameters, then the alias registry.
+///
+/// This is the primary type resolution function when aliases are available.
+/// Falls through: builtins → type params → alias registry.
+fn resolve_type_with_aliases(
+    name: &str,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+) -> Option<Type> {
+    if let Some(ty) = resolve_type_with_params(name, type_param_names) {
+        return Some(ty);
+    }
+    // Check alias registry for non-parameterized aliases
+    if let Some(alias_entry) = alias_registry.lookup(name)
+        && let Some(ref resolved) = alias_entry.resolved_type
+    {
+        return Some(resolved.clone());
+    }
+    None
+}
+
+/// Resolve a type alias's RHS `TypeExpr` to a `Type`.
+///
+/// Handles three cases:
+/// 1. Simple name → resolved via builtins then alias registry
+/// 2. Dimensional binary op (`*`, `/`) → recursively resolve operands to
+///    DimensionVectors, combine with mul/div, return `Type::Scalar { dimension }`
+/// 3. Unknown → returns None
+fn resolve_type_alias_expr(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            // Dimensional binary operator: left OP right
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left_dim = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[1],
+                alias_registry,
+                diagnostics,
+            )?;
+            let result_dim = if type_expr.name == "*" {
+                left_dim.mul(&right_dim)
+            } else {
+                left_dim.div(&right_dim)
+            };
+            Some(Type::Scalar {
+                dimension: result_dim,
+            })
+        }
+        name => {
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            if !type_expr.type_args.is_empty()
+                && let Some(ty) = resolve_parameterized_builtin_type(
+                    name,
+                    &type_expr.type_args,
+                    alias_registry,
+                    diagnostics,
+                )
+            {
+                return Some(ty);
+            }
+            // Check for user-defined parameterized alias instantiation.
+            // Use temporary diagnostics: during DFS pre-pass, type args may
+            // contain unresolved type params (e.g. Container<T>) — we must not
+            // emit errors for those; the alias body will be fully resolved at
+            // instantiation time via resolve_type_alias_expr_with_subst.
+            if !type_expr.type_args.is_empty()
+                && let Some(alias_entry) = alias_registry.lookup(name)
+                && !alias_entry.type_params.is_empty()
+            {
+                let empty = HashSet::new();
+                let mut tmp_diags = Vec::new();
+                if let Some(ty) = resolve_parameterized_alias(
+                    alias_entry,
+                    &type_expr.type_args,
+                    &empty,
+                    alias_registry,
+                    &mut tmp_diags,
+                    0,
+                ) {
+                    return Some(ty);
+                }
+                // Silently return None — deferred to instantiation time
+            }
+            // Simple name: check builtins, then alias registry
+            let empty = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry)
+        }
+    }
+}
+
+/// Helper: resolve a TypeExpr to a DimensionVector (for dimensional algebra).
+/// Returns None if the type cannot be resolved to a dimension.
+fn resolve_type_alias_expr_to_dimension(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DimensionVector> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[0],
+                alias_registry,
+                diagnostics,
+            )?;
+            let right = resolve_type_alias_expr_to_dimension(
+                &type_expr.type_args[1],
+                alias_registry,
+                diagnostics,
+            )?;
+            Some(if type_expr.name == "*" {
+                left.mul(&right)
+            } else {
+                left.div(&right)
+            })
+        }
+        _ => {
+            // Try resolve_dimension_type for known dimension names
+            // Use a temporary diagnostics vec to avoid polluting the main one
+            let mut tmp_diags = Vec::new();
+            if let Some(dim) = resolve_dimension_type(type_expr, &mut tmp_diags) {
+                return Some(dim);
+            }
+            // Check alias registry: if the alias resolves to Scalar{dim}, use that dimension
+            if let Some(entry) = alias_registry.lookup(&type_expr.name)
+                && let Some(Type::Scalar { dimension }) = &entry.resolved_type
+            {
+                return Some(*dimension);
+            }
+            // Fall through to error
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot resolve '{}' to a dimension type in alias expression",
+                    type_expr.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    type_expr.span,
+                    "not a dimension type",
+                )),
+            );
+            None
+        }
+    }
+}
+
+/// Resolve a full TypeExpr at a use site, handling parameterized aliases.
+///
+/// Falls through: builtins → type params → non-parameterized aliases → parameterized aliases.
+/// Returns None if the type cannot be resolved (caller handles "unresolved" error).
+fn resolve_type_expr_with_aliases(
+    type_expr: &reify_syntax::TypeExpr,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    // Check parameterized builtins (List<T>, Set<T>, Map<K,V>, Option<T>)
+    if !type_expr.type_args.is_empty()
+        && let Some(ty) = resolve_parameterized_builtin_type(
+            &type_expr.name,
+            &type_expr.type_args,
+            alias_registry,
+            diagnostics,
+        )
+    {
+        return Some(ty);
+    }
+
+    // Simple name resolution (builtins, type params, non-parameterized aliases)
+    if let Some(ty) = resolve_type_with_aliases(&type_expr.name, type_param_names, alias_registry) {
+        return Some(ty);
+    }
+
+    // Check parameterized alias instantiation
+    if let Some(alias_entry) = alias_registry.lookup(&type_expr.name)
+        && !alias_entry.type_params.is_empty()
+    {
+        return resolve_parameterized_alias(
+            alias_entry,
+            &type_expr.type_args,
+            type_param_names,
+            alias_registry,
+            diagnostics,
+            0,
+        );
+    }
+
+    None
+}
+
+/// Maximum recursion depth for parameterized alias instantiation.
+/// Prevents stack overflow from recursive type aliases like `type A<T> = List<A<T>>`.
+const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
+
+/// Instantiate a parameterized alias by substituting type arguments.
+///
+/// Builds a substitution map from param names to concrete types, then
+/// resolves the alias body with those substitutions applied.
+fn resolve_parameterized_alias(
+    alias_entry: &TypeAliasEntry,
+    type_args: &[reify_syntax::TypeExpr],
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
+) -> Option<Type> {
+    if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
+                alias_entry.name
+            ))
+            .with_label(DiagnosticLabel::new(alias_entry.span, "recursive expansion")),
+        );
+        return None;
+    }
+    let total_params = alias_entry.type_params.len();
+    let got = type_args.len();
+    let required_params = alias_entry
+        .type_params
+        .iter()
+        .take_while(|p| p.default.is_none())
+        .count();
+
+    if got < required_params || got > total_params {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' expects {}{} type argument(s), got {}",
+                alias_entry.name,
+                if required_params < total_params {
+                    format!("{}-", required_params)
+                } else {
+                    String::new()
+                },
+                total_params,
+                got
+            ))
+            .with_label(DiagnosticLabel::new(alias_entry.span, "defined here")),
+        );
+        return None;
+    }
+
+    // Resolve each explicit type argument to a concrete Type
+    let mut subst: HashMap<String, Type> = HashMap::new();
+    for (param, arg_expr) in alias_entry.type_params.iter().zip(type_args) {
+        let resolved =
+            resolve_type_expr_with_aliases(arg_expr, type_param_names, alias_registry, diagnostics);
+        if let Some(ty) = resolved {
+            subst.insert(param.name.clone(), ty);
+        } else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved type argument '{}' for alias '{}'",
+                    arg_expr.name, alias_entry.name
+                ))
+                .with_label(DiagnosticLabel::new(arg_expr.span, "unknown type")),
+            );
+            return None;
+        }
+    }
+    // Fill in defaults for remaining params
+    for param in alias_entry.type_params.iter().skip(got) {
+        if let Some(ref default_ty) = param.default {
+            subst.insert(param.name.clone(), default_ty.clone());
+        }
+    }
+
+    // Apply substitution to alias body
+    let body = alias_entry.type_expr.as_ref()?;
+    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
+}
+
+/// Resolve a type alias body TypeExpr with parameter substitutions applied.
+///
+/// Like `resolve_type_alias_expr`, but checks the substitution map first so
+/// type parameters in the alias body get replaced with concrete types.
+///
+/// The `depth` parameter tracks alias expansion depth to prevent stack overflow
+/// from recursive parameterized type aliases.
+fn resolve_type_alias_expr_with_subst(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
+) -> Option<Type> {
+    if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
+                type_expr.name
+            ))
+            .with_label(DiagnosticLabel::new(type_expr.span, "recursive expansion")),
+        );
+        return None;
+    }
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left_dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right_dim = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let result_dim = if type_expr.name == "*" {
+                left_dim.mul(&right_dim)
+            } else {
+                left_dim.div(&right_dim)
+            };
+            Some(Type::Scalar {
+                dimension: result_dim,
+            })
+        }
+        name => {
+            // Check substitution map first (type parameters)
+            if let Some(ty) = subst.get(name) {
+                return Some(ty.clone());
+            }
+            // Check for parameterized builtin types (List<T>, Set<T>, Map<K,V>, Option<T>)
+            if !type_expr.type_args.is_empty()
+                && let Some(ty) = resolve_parameterized_builtin_type_with_subst(
+                    name,
+                    &type_expr.type_args,
+                    alias_registry,
+                    subst,
+                    diagnostics,
+                    depth,
+                )
+            {
+                return Some(ty);
+            }
+            // Check for user-defined parameterized alias instantiation
+            if !type_expr.type_args.is_empty()
+                && let Some(alias_entry) = alias_registry.lookup(name)
+                && !alias_entry.type_params.is_empty()
+            {
+                // Resolve type args with current substitutions applied,
+                // then build inner substitution for the target alias body
+                let total_params = alias_entry.type_params.len();
+                let got = type_expr.type_args.len();
+                let required_params = alias_entry
+                    .type_params
+                    .iter()
+                    .take_while(|p| p.default.is_none())
+                    .count();
+                if got < required_params || got > total_params {
+                    return None;
+                }
+                let mut inner_subst: HashMap<String, Type> = HashMap::new();
+                for (param, arg_expr) in
+                    alias_entry.type_params.iter().zip(type_expr.type_args.iter())
+                {
+                    let resolved = resolve_type_alias_expr_with_subst(
+                        arg_expr,
+                        alias_registry,
+                        subst,
+                        diagnostics,
+                        depth,
+                    )?;
+                    inner_subst.insert(param.name.clone(), resolved);
+                }
+                for param in alias_entry.type_params.iter().skip(got) {
+                    if let Some(ref default_ty) = param.default {
+                        inner_subst.insert(param.name.clone(), default_ty.clone());
+                    }
+                }
+                let body = alias_entry.type_expr.as_ref()?;
+                return resolve_type_alias_expr_with_subst(
+                    body,
+                    alias_registry,
+                    &inner_subst,
+                    diagnostics,
+                    depth + 1,
+                );
+            }
+            // Then builtins + alias registry
+            let empty = HashSet::new();
+            resolve_type_with_aliases(name, &empty, alias_registry)
+        }
+    }
+}
+
+/// Resolve a parameterized builtin type constructor (List, Set, Map, Option)
+/// within a type alias RHS expression.
+///
+/// Each type argument is resolved recursively via `resolve_type_alias_expr`.
+fn resolve_parameterized_builtin_type(
+    name: &str,
+    type_args: &[reify_syntax::TypeExpr],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    match name {
+        "List" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::List(Box::new(inner)))
+        }
+        "Set" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::Set(Box::new(inner)))
+        }
+        "Map" if type_args.len() == 2 => {
+            let key = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            let val = resolve_type_alias_expr(&type_args[1], alias_registry, diagnostics)?;
+            Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Option" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr(&type_args[0], alias_registry, diagnostics)?;
+            Some(Type::Option(Box::new(inner)))
+        }
+        _ => None,
+    }
+}
+
+/// Like `resolve_parameterized_builtin_type`, but applies parameter substitutions
+/// when resolving type arguments.
+fn resolve_parameterized_builtin_type_with_subst(
+    name: &str,
+    type_args: &[reify_syntax::TypeExpr],
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
+) -> Option<Type> {
+    match name {
+        "List" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            Some(Type::List(Box::new(inner)))
+        }
+        "Set" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            Some(Type::Set(Box::new(inner)))
+        }
+        "Map" if type_args.len() == 2 => {
+            let key =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            let val =
+                resolve_type_alias_expr_with_subst(&type_args[1], alias_registry, subst, diagnostics, depth)?;
+            Some(Type::Map(Box::new(key), Box::new(val)))
+        }
+        "Option" if type_args.len() == 1 => {
+            let inner =
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            Some(Type::Option(Box::new(inner)))
+        }
+        _ => None,
+    }
+}
+
+/// Helper: resolve a TypeExpr to a DimensionVector with parameter substitutions.
+fn resolve_type_alias_expr_to_dim_with_subst(
+    type_expr: &reify_syntax::TypeExpr,
+    alias_registry: &TypeAliasRegistry,
+    subst: &HashMap<String, Type>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DimensionVector> {
+    match type_expr.name.as_str() {
+        "*" | "/" => {
+            if type_expr.type_args.len() != 2 {
+                return None;
+            }
+            let left = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            let right = resolve_type_alias_expr_to_dim_with_subst(
+                &type_expr.type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+            )?;
+            Some(if type_expr.name == "*" {
+                left.mul(&right)
+            } else {
+                left.div(&right)
+            })
+        }
+        name => {
+            // Check substitution map (type param → concrete Type → extract dimension)
+            if let Some(Type::Scalar { dimension }) = subst.get(name) {
+                return Some(*dimension);
+            }
+            // Try resolve_dimension_type for known dimension names
+            let mut tmp_diags = Vec::new();
+            if let Some(dim) = resolve_dimension_type(type_expr, &mut tmp_diags) {
+                return Some(dim);
+            }
+            // Check alias registry
+            if let Some(entry) = alias_registry.lookup(name)
+                && let Some(Type::Scalar { dimension }) = &entry.resolved_type
+            {
+                return Some(*dimension);
+            }
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "cannot resolve '{}' to a dimension type in alias expression",
+                    name
+                ))
+                .with_label(DiagnosticLabel::new(type_expr.span, "not a dimension type")),
+            );
+            None
+        }
+    }
+}
+
+/// Collect all leaf type names referenced in a TypeExpr tree.
+/// For binary ops (`*`, `/`), recurses into operands. Otherwise returns the name.
+fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
+    match type_expr.name.as_str() {
+        "*" | "/" => type_expr
+            .type_args
+            .iter()
+            .flat_map(collect_type_expr_names)
+            .collect(),
+        name => std::iter::once(name.to_string())
+            .chain(type_expr.type_args.iter().flat_map(collect_type_expr_names))
+            .collect(),
+    }
+}
+
+/// DFS-resolve a type alias, detecting cycles via a resolving-set.
+///
+/// - If already in the registry → skip (already resolved).
+/// - If in the resolving set → emit circular error, register with None.
+/// - Otherwise: resolve dependencies first, then resolve this alias.
+fn resolve_alias_dfs(
+    name: &str,
+    alias_decls: &HashMap<String, &reify_syntax::TypeAliasDecl>,
+    alias_registry: &mut TypeAliasRegistry,
+    resolving: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Already resolved (or registered as cycle-error placeholder)
+    if alias_registry.lookup(name).is_some() {
+        return;
+    }
+    // Not a declared alias
+    let Some(decl) = alias_decls.get(name) else {
+        return;
+    };
+    // Cycle detected: name is already being resolved up the call stack
+    if !resolving.insert(name.to_string()) {
+        diagnostics.push(
+            Diagnostic::error(format!("circular type alias '{}'", name))
+                .with_label(DiagnosticLabel::new(decl.span, "forms a cycle")),
+        );
+        // Register placeholder to prevent re-processing
+        let type_params = convert_type_params(&decl.type_params);
+        let entry = TypeAliasEntry {
+            name: name.to_string(),
+            resolved_type: None,
+            type_params,
+            type_expr: Some(decl.type_expr.clone()),
+            is_pub: decl.is_pub,
+            span: decl.span,
+            content_hash: decl.content_hash,
+        };
+        let _ = alias_registry.register(entry);
+        return;
+    }
+
+    // Resolve dependencies first (only those that are aliases)
+    let dep_names = collect_type_expr_names(&decl.type_expr);
+    for dep in &dep_names {
+        if alias_decls.contains_key(dep.as_str()) {
+            resolve_alias_dfs(dep, alias_decls, alias_registry, resolving, diagnostics);
+        }
+    }
+
+    // Now resolve this alias (dependencies should be in the registry)
+    let resolved = resolve_type_alias_expr(&decl.type_expr, alias_registry, diagnostics);
+    let type_params = convert_type_params(&decl.type_params);
+    let entry = TypeAliasEntry {
+        name: name.to_string(),
+        resolved_type: resolved,
+        type_params,
+        type_expr: Some(decl.type_expr.clone()),
+        is_pub: decl.is_pub,
+        span: decl.span,
+        content_hash: decl.content_hash,
+    };
+    // May fail if cycle detection already registered this name — that's OK
+    let _ = alias_registry.register(entry);
+
+    resolving.remove(name);
 }
 
 /// Convert parsed TypeParamDecl to compiled TypeParam structs.
@@ -2394,8 +3106,10 @@ fn compile_expr_guarded(
 fn compile_trait(
     trait_decl: &reify_syntax::TraitDecl,
     enum_defs: &[reify_types::EnumDef],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledTrait {
+    let empty_params = HashSet::new();
     let mut required_members = Vec::new();
     let mut defaults = Vec::new();
 
@@ -2403,7 +3117,7 @@ fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    if let Some(t) = resolve_type_name(&type_expr.name) {
+                    if let Some(t) = resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
                         t
                     } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
                         // Enum type defined in the same module
@@ -2444,7 +3158,7 @@ fn compile_trait(
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Let bindings always have a value expression → default
                 let ty = if let Some(type_expr) = &let_decl.type_expr {
-                    match resolve_type_name(&type_expr.name) {
+                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
@@ -2779,6 +3493,7 @@ pub fn compile_with_prelude(
     let mut trait_refs: Vec<&reify_syntax::TraitDecl> = Vec::new();
     let mut field_refs: Vec<&reify_syntax::FieldDef> = Vec::new();
     let mut unit_refs: Vec<&reify_syntax::UnitDecl> = Vec::new();
+    let mut alias_refs: Vec<&reify_syntax::TypeAliasDecl> = Vec::new();
     // Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     // constraints, and fields all share the entity name space.
     // Maps name → (first_span, first_kind_label).
@@ -2886,6 +3601,9 @@ pub fn compile_with_prelude(
             reify_syntax::Declaration::Unit(unit_decl) => {
                 unit_refs.push(unit_decl);
             }
+            reify_syntax::Declaration::TypeAlias(alias_decl) => {
+                alias_refs.push(alias_decl);
+            }
             // Import, Purpose handled in pass 2 / purpose pass
             _ => {}
         }
@@ -2969,6 +3687,43 @@ pub fn compile_with_prelude(
         }
     }
 
+    // Compile type alias declarations via DFS resolution with cycle detection.
+    // Build a lookup map of all alias declarations, detecting duplicates.
+    let mut alias_decl_map: HashMap<String, &reify_syntax::TypeAliasDecl> = HashMap::new();
+    for alias_decl in &alias_refs {
+        if let Some(first) = alias_decl_map.get(&alias_decl.name) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "duplicate type alias declaration '{}'",
+                    alias_decl.name
+                ))
+                .with_label(DiagnosticLabel::new(
+                    alias_decl.span,
+                    "duplicate declared here",
+                ))
+                .with_label(DiagnosticLabel::new(
+                    first.span,
+                    "first declared here",
+                )),
+            );
+        } else {
+            alias_decl_map.insert(alias_decl.name.clone(), alias_decl);
+        }
+    }
+
+    // DFS-resolve each alias with cycle detection via resolving-set.
+    let mut alias_registry = TypeAliasRegistry::new();
+    let mut resolving = HashSet::new();
+    for alias_decl in &alias_refs {
+        resolve_alias_dfs(
+            &alias_decl.name,
+            &alias_decl_map,
+            &mut alias_registry,
+            &mut resolving,
+            &mut diagnostics,
+        );
+    }
+
     // Build resolution_enums: prelude enums + module-local enums.
     // resolution_enums is used for type resolution during compilation;
     // only enum_defs (module-local) goes into the output CompiledModule.
@@ -2982,7 +3737,7 @@ pub fn compile_with_prelude(
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
         if let Some(compiled_fn) =
-            compile_function(fn_def, &resolution_enums, &functions, &mut diagnostics)
+            compile_function(fn_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics)
         {
             functions.push(compiled_fn);
         }
@@ -2991,7 +3746,7 @@ pub fn compile_with_prelude(
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
-        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &mut diagnostics);
+        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &alias_registry, &mut diagnostics);
         trait_defs.push(compiled_trait);
     }
 
@@ -3012,7 +3767,7 @@ pub fn compile_with_prelude(
 
     // 3. Fields (need all resolution_enums + all compiled functions)
     for field_def in &field_refs {
-        let compiled = compile_field(field_def, &resolution_enums, &functions, &mut diagnostics);
+        let compiled = compile_field(field_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics);
         fields.push(compiled);
     }
 
@@ -3054,6 +3809,7 @@ pub fn compile_with_prelude(
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
+                        &alias_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -3102,6 +3858,7 @@ pub fn compile_with_prelude(
                         &field_registry,
                         &constraint_def_registry,
                         &unit_registry,
+                        &alias_registry,
                         &mut pending_bound_checks,
                         &mut diagnostics,
                         &templates,
@@ -3122,7 +3879,7 @@ pub fn compile_with_prelude(
                 // Already compiled in unit pre-pass above.
             }
             reify_syntax::Declaration::TypeAlias(_) => {
-                // Type alias declarations: compilation not yet implemented.
+                // Already compiled in type alias pre-pass above.
             }
         }
     }
@@ -3291,6 +4048,14 @@ pub fn compile_with_prelude(
         // Unit content hashes
         let unit_hashes = compiled_units.iter().map(|u| u.content_hash);
 
+        // Type alias content hashes (sorted by name for deterministic ordering)
+        let mut alias_hash_pairs: Vec<_> = alias_registry
+            .iter()
+            .map(|a| (a.name.clone(), a.content_hash))
+            .collect();
+        alias_hash_pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let alias_hashes = alias_hash_pairs.into_iter().map(|(_, h)| h);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
@@ -3299,10 +4064,13 @@ pub fn compile_with_prelude(
             .chain(trait_hashes)
             .chain(field_hashes)
             .chain(purpose_hashes)
-            .chain(unit_hashes);
+            .chain(unit_hashes)
+            .chain(alias_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
+
+    let type_aliases = alias_registry.into_compiled();
 
     CompiledModule {
         path: parsed.path.clone(),
@@ -3314,6 +4082,7 @@ pub fn compile_with_prelude(
         compiled_purposes,
         templates,
         units: compiled_units,
+        type_aliases,
         diagnostics,
         content_hash,
     }
@@ -3661,6 +4430,7 @@ fn compile_entity(
     field_registry: &HashMap<String, &CompiledField>,
     constraint_def_registry: &HashMap<String, &reify_syntax::ConstraintDef>,
     unit_registry: &UnitRegistry,
+    alias_registry: &TypeAliasRegistry,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
@@ -3711,7 +4481,7 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_with_params(&type_expr.name, &type_param_names) {
+                    match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
@@ -6100,12 +6870,14 @@ fn compile_function(
     fn_def: &reify_syntax::FnDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
+    let empty_params = HashSet::new();
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_name(&p.type_expr.name) {
+        let ty = match resolve_type_expr_with_aliases(&p.type_expr, &empty_params, alias_registry, diagnostics) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6120,7 +6892,7 @@ fn compile_function(
 
     // Resolve return type
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_name(&te.name) {
+        Some(te) => match resolve_type_expr_with_aliases(te, &empty_params, alias_registry, diagnostics) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6196,9 +6968,11 @@ fn compile_function(
 fn resolve_field_type_name(
     name: &str,
     span: reify_types::SourceSpan,
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
-    resolve_type_name(name).unwrap_or_else(|| {
+    let empty_params = HashSet::new();
+    resolve_type_with_aliases(name, &empty_params, alias_registry).unwrap_or_else(|| {
         diagnostics.push(
             Diagnostic::warning(format!(
                 "unresolved field type '{}', treating as structure reference",
@@ -6215,16 +6989,19 @@ fn compile_field(
     field_def: &reify_syntax::FieldDef,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
     let domain_type = resolve_field_type_name(
         &field_def.domain_type.name,
         field_def.domain_type.span,
+        alias_registry,
         diagnostics,
     );
     let codomain_type = resolve_field_type_name(
         &field_def.codomain_type.name,
         field_def.codomain_type.span,
+        alias_registry,
         diagnostics,
     );
 
