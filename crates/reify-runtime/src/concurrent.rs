@@ -952,6 +952,65 @@ mod tests {
         );
     }
 
+    /// Cleanup verification: after execute_with_config completes, the priority
+    /// promoter should have count() == 0 — all registered nodes were cleaned up.
+    /// This ensures the batch_remove cleanup path doesn't regress.
+    #[tokio::test]
+    async fn cleanup_removes_all_nodes_from_promoter() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        struct AllChangedEval;
+
+        impl AsyncNodeEvaluator for AllChangedEval {
+            async fn evaluate(&self, _node: NodeId) -> EvalOutcome {
+                EvalOutcome::Changed
+            }
+        }
+
+        let e = "CL";
+        let a = NodeId::Value(ValueCellId::new(e, "a"));
+        let b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(b.clone(), DependencyTrace::default());
+
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(a.clone(), Priority::P1Fast);
+        node_priorities.insert(b.clone(), Priority::P3Speculative);
+
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let config = SchedulerConfig {
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![a.clone(), b.clone()];
+        let changed_cells = HashSet::new();
+        let evaluator = Arc::new(AllChangedEval);
+
+        let result = scheduler
+            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .await
+            .unwrap();
+
+        assert_eq!(result.changed.len(), 2);
+        // All nodes should have been cleaned up from the promoter
+        assert_eq!(
+            promoter.count(),
+            0,
+            "promoter should have 0 tracked nodes after execution completes"
+        );
+    }
+
     /// Pre-computed skip: 3 parents (p1 Changed, p2/p3 Unchanged) fan into
     /// downstream d which reads ONLY p1/p2/p3 (not the changed param a).
     /// d must be evaluated (not skipped) because p1 is Changed.
