@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@solidjs/testing-library';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
 import { flushMacrotasks, deferred, withSuppressedRejections } from './test-utils';
 
@@ -691,13 +691,7 @@ describe('App toast queue (TO-2)', () => {
     await waitFor(() => expect(screen.getByTestId('export-dialog')).toBeTruthy());
     // Click the Export button inside the dialog (not the toolbar one)
     const dialog = screen.getByTestId('export-dialog');
-    const btns = dialog.querySelectorAll('button');
-    for (const b of btns) {
-      if (b.textContent === 'Export') {
-        fireEvent.click(b);
-        break;
-      }
-    }
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Export' }));
   }
 
   it('successful export renders a toast in the queue', async () => {
@@ -2191,13 +2185,7 @@ describe('App error-path integration: errorMessage propagation', () => {
     await waitFor(() => expect(screen.getByTestId('export-dialog')).toBeTruthy());
     // Click the Export button inside the dialog
     const dialog = screen.getByTestId('export-dialog');
-    const btns = dialog.querySelectorAll('button');
-    for (const b of btns) {
-      if (b.textContent === 'Export') {
-        fireEvent.click(b);
-        break;
-      }
-    }
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Export' }));
   }
 
   it('export failure toast contains the original error message', async () => {
