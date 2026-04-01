@@ -129,6 +129,23 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_as_path_map_returns_path_keyed_entries() {
+        let mut store = DocumentStore::new();
+        let uri_a = test_uri("alpha");
+        let uri_b = test_uri("beta");
+        store.open(uri_a.clone(), "aaa".to_string(), 1);
+        store.open(uri_b.clone(), "bbb".to_string(), 2);
+
+        let map = store.snapshot_as_path_map();
+
+        assert_eq!(map.len(), 2);
+        let path_a = uri_a.to_file_path().unwrap();
+        let path_b = uri_b.to_file_path().unwrap();
+        assert_eq!(map.get(&path_a).unwrap(), "aaa");
+        assert_eq!(map.get(&path_b).unwrap(), "bbb");
+    }
+
+    #[test]
     fn iter_returns_all_open_documents() {
         let mut store = DocumentStore::new();
         let uri_a = test_uri("alpha");
