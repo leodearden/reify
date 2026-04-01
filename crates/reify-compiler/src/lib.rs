@@ -158,6 +158,15 @@ pub enum EntityKind {
     Occurrence,
 }
 
+impl std::fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntityKind::Structure => f.write_str("structure"),
+            EntityKind::Occurrence => f.write_str("occurrence"),
+        }
+    }
+}
+
 /// A topology template — compiled from a StructureDef or OccurrenceDef.
 /// Contains all the value cells, constraints, and realizations.
 #[derive(Debug, Clone)]
@@ -6547,6 +6556,15 @@ fn extract_collection_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entity_kind_display() {
+        assert_eq!(EntityKind::Structure.to_string(), "structure");
+        assert_eq!(EntityKind::Occurrence.to_string(), "occurrence");
+        assert_eq!(EntityKind::Structure, EntityKind::Structure);
+        assert_ne!(EntityKind::Structure, EntityKind::Occurrence);
+        assert_eq!(format!("{:?}", EntityKind::Structure), "Structure");
+    }
 
     // --- Step 21: Verify new geometry function names are recognized ---
 

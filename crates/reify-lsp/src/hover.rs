@@ -51,13 +51,18 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         return Some(make_hover_markdown(md));
     }
 
-    // Try structure name
-    for (name, params, lets, constraints, kind) in ctx.structure_names() {
-        if name == word {
+    // Try structure/occurrence name
+    for entity in ctx.entity_names() {
+        if entity.name == word {
             let mut md = format!(
-                "```reify\n{kind} {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints"
+                "```reify\n{kind} {name}\n```\n\n{params} params, {lets} lets, {constraints} constraints",
+                kind = entity.kind,
+                name = entity.name,
+                params = entity.params,
+                lets = entity.lets,
+                constraints = entity.constraints,
             );
-            if let Some(doc) = ctx.find_entity_doc(name) {
+            if let Some(doc) = ctx.find_entity_doc(entity.name) {
                 md.push_str("\n\n");
                 md.push_str(doc);
             }
