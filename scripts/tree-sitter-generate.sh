@@ -139,7 +139,7 @@ fi
 GEN_EXIT=0
 # Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
 portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
-if [ "$GEN_EXIT" -eq 124 ]; then
+if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     exit 1
 elif [ "$GEN_EXIT" -ne 0 ]; then
