@@ -938,3 +938,71 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
         "Step 3: DeterminacyState should be Determined after else re-activation"
     );
 }
+
+/// When eval() runs with guard=false, Auto-kind members in the members list
+/// should get DeterminacyState::Auto (not Undetermined) in the snapshot.
+/// This makes eval() consistent with edit_param()'s Auto-skip logic.
+#[test]
+fn eval_guard_false_auto_param_gets_auto_determinacy() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to false → members are inactive
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![thickness_decl], // members (inactive because guard=false)
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=false: thickness is in deactivated members
+    let _result = engine.eval(&module);
+
+    // Auto-kind cell should have DeterminacyState::Auto even when deactivated
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated Auto param should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Auto,
+        "Deactivated Auto param should have DeterminacyState::Auto, not Undetermined"
+    );
+}
