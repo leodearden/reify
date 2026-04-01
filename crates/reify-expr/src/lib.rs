@@ -604,15 +604,53 @@ fn compute_gradient(field_val: &Value) -> Value {
         _ => return Value::Undef,
     };
 
+    // Compute gradient quantity type: R/Q (codomain dimension / domain dimension).
+    // Mirrors the runtime logic in compute_numerical_gradient_at_point (line 756).
+    let gradient_quantity = {
+        // Extract domain dimension from the domain type.
+        let domain_dim = match domain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain dimension.
+        let codomain_dim = match codomain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        };
+
+        // Divide codomain by domain dimension when both are non-trivial.
+        match (codomain_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let grad_dim = cd.div(&dd);
+                if grad_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: grad_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => codomain_type.clone(),
+        }
+    };
+
     // Construct result codomain type:
-    // 1D → same as codomain (scalar derivative)
-    // nD → Vector{n, codomain_quantity}
+    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
+    // nD → Vector{n, gradient_quantity}
     let result_codomain = if n == 1 {
-        codomain_type.clone()
+        gradient_quantity
     } else {
         Type::Vector {
             n,
-            quantity: Box::new(codomain_type.clone()),
+            quantity: Box::new(gradient_quantity),
         }
     };
 
