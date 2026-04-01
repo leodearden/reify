@@ -67,6 +67,18 @@ describe('deferred', () => {
     const winner = await Promise.race([d.promise, Promise.resolve('sentinel')]);
     expect(winner).toBe('sentinel');
   });
+
+  it('returns an object with a reject property that is a function', () => {
+    const d = deferred<string>();
+    expect(typeof d.reject).toBe('function');
+  });
+
+  it('calling reject(reason) rejects the promise with that reason', async () => {
+    const d = deferred<number>();
+    const error = new Error('test rejection');
+    d.reject(error);
+    await expect(d.promise).rejects.toThrow('test rejection');
+  });
 });
 
 describe('withSuppressedRejections', () => {
