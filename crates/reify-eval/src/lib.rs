@@ -1544,6 +1544,16 @@ impl Engine {
             (new_value.clone(), DeterminacyState::Determined),
         );
 
+        // Update the param's cache entry to match the snapshot.
+        // The param is a source node (not in dirty_cone / eval_set), so its
+        // cache entry would otherwise retain the stale value from initial eval().
+        self.cache.record_evaluation(
+            NodeId::Value(cell.clone()),
+            CachedResult::Value(new_value.clone(), DeterminacyState::Determined),
+            VersionId(version_id),
+            crate::deps::DependencyTrace::default(),
+        );
+
         // Build the full ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in new_snapshot.values.iter() {

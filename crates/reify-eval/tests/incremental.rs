@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use reify_eval::Engine;
-use reify_eval::cache::NodeId;
+use reify_eval::cache::{CachedResult, NodeId};
 use reify_test_support::bracket_compiled_module;
 use reify_test_support::builders::{binop, gt, literal, value_ref, value_ref_typed};
 use reify_test_support::mocks::{
@@ -15,8 +15,8 @@ use reify_test_support::mocks::{
 };
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, Freshness, ModulePath,
-    SnapshotId, SnapshotProvenance, Type, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, ContentHash, DeterminacyState,
+    Freshness, ModulePath, SnapshotId, SnapshotProvenance, Type, Value, ValueCellId, VersionId,
 };
 
 /// Canary backward-compatibility test: verifies that cold-start eval()
@@ -2335,5 +2335,203 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     assert!(
         eval_set.contains(&NodeId::Value(x_id.clone())),
         "x should be in eval set — it was re-evaluated (though value unchanged)"
+    );
+}
+
+/// After edit_param, the param's own cache entry must hold the new value/determinacy,
+/// not the old default that was stored during initial eval().
+///
+/// Bug: edit_param updates the snapshot but never calls record_evaluation for the
+/// param itself, so the cache retains CachedResult::Value(old_default, Determined).
+#[test]
+fn edit_param_updates_param_cache_entry() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    // Edit width from 80mm (0.08m) to 100mm (0.1m)
+    let width_id = ValueCellId::new(e, "width");
+    engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+
+    // The cache entry for the param itself must reflect the edited value
+    let cache = engine.cache_store();
+    let width_node = NodeId::Value(width_id);
+    let entry = cache
+        .get(&width_node)
+        .expect("width should be in cache after edit_param");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(v, DeterminacyState::Determined)
+            if (v.as_f64().unwrap() - 0.1).abs() < 1e-12
+        ),
+        "cache entry for edited param should hold new value 0.1m, got {:?}",
+        entry.result
+    );
+}
+
+/// Consecutive edit_param calls on the SAME param must each update the cache.
+/// This proves no stale carryover between consecutive edits.
+#[test]
+fn double_edit_param_updates_param_cache_both_times() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    let width_id = ValueCellId::new(e, "width");
+
+    // First edit: width → 100mm (0.1m)
+    let result1 = engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+    // volume = 0.1 * 0.1 * 0.005 = 5e-5
+    let vol1 = result1
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(
+        (vol1 - 5e-5).abs() < 1e-10,
+        "volume after first edit should be ~5e-5, got {}",
+        vol1
+    );
+
+    // Second edit: width → 120mm (0.12m)
+    let result2 = engine
+        .edit_param(width_id.clone(), Value::length(0.12))
+        .unwrap();
+    // volume = 0.12 * 0.1 * 0.005 = 6e-5
+    let vol2 = result2
+        .values
+        .get(&ValueCellId::new(e, "volume"))
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert!(
+        (vol2 - 6e-5).abs() < 1e-10,
+        "volume after second edit should be ~6e-5, got {}",
+        vol2
+    );
+
+    // The cache entry for the param must reflect the SECOND edit's value (0.12)
+    let cache = engine.cache_store();
+    let width_node = NodeId::Value(width_id);
+    let entry = cache
+        .get(&width_node)
+        .expect("width should be in cache after double edit");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(v, DeterminacyState::Determined)
+            if (v.as_f64().unwrap() - 0.12).abs() < 1e-12
+        ),
+        "cache entry for param should hold second edit value 0.12m, got {:?}",
+        entry.result
+    );
+}
+
+/// A param with no default_expr starts as Undef (not cached during initial eval).
+/// After edit_param sets a concrete value, the cache must contain the new value.
+#[test]
+fn edit_param_on_undef_param_updates_cache() {
+    let e = "T";
+
+    // Build a module with a single param that has no default_expr (None)
+    // and a let binding that reads it: let y = a + 1
+    let y_expr = binop(
+        BinOp::Add,
+        value_ref_typed(e, "a", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(
+            TopologyTemplateBuilder::new(e)
+                .param(e, "a", Type::Int, None)
+                .let_binding(e, "y", Type::Int, y_expr)
+                .build(),
+        )
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Cold-start: a has no default, so a=Undef (not cached for params without default_expr)
+    engine.eval(&module);
+
+    let a_id = ValueCellId::new(e, "a");
+
+    // Edit a → 42
+    engine
+        .edit_param(a_id.clone(), Value::Int(42))
+        .unwrap();
+
+    // The cache entry for a must now hold Value::Int(42)
+    let cache = engine.cache_store();
+    let a_node = NodeId::Value(a_id);
+    let entry = cache
+        .get(&a_node)
+        .expect("param a should be in cache after edit_param (even if it had no default)");
+
+    assert!(
+        matches!(
+            &entry.result,
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined)
+        ),
+        "cache entry for undef param should hold edited value Int(42), got {:?}",
+        entry.result
+    );
+}
+
+/// After edit_param, the param's cache entry must have a basis_version matching
+/// the edit's version, not the initial eval's version. This proves version
+/// metadata is also fresh.
+#[test]
+fn edit_param_cache_basis_version_updated() {
+    let module = bracket_compiled_module();
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let e = "Bracket";
+    engine.eval(&module);
+
+    // After initial eval, width's cache should have basis_version = VersionId(0)
+    let width_id = ValueCellId::new(e, "width");
+    let width_node = NodeId::Value(width_id.clone());
+    let initial_entry = engine
+        .cache_store()
+        .get(&width_node)
+        .expect("width should be in cache after initial eval");
+    assert_eq!(
+        initial_entry.basis_version,
+        VersionId(0),
+        "initial eval should produce basis_version 0"
+    );
+
+    // Edit width → 100mm
+    engine
+        .edit_param(width_id.clone(), Value::length(0.1))
+        .unwrap();
+
+    // After edit, the param's basis_version must be VersionId(1), not VersionId(0)
+    let edited_entry = engine
+        .cache_store()
+        .get(&width_node)
+        .expect("width should be in cache after edit_param");
+    assert_eq!(
+        edited_entry.basis_version,
+        VersionId(1),
+        "edit_param should update param's basis_version to the edit's version (1), not retain initial (0)"
     );
 }
