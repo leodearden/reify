@@ -3116,4 +3116,8 @@ async fn test_only_run_on_final_inputs_runs_when_final() {
         result.changed.contains(&node_a),
         "node_a should be in changed (default CommitIfSlow)"
     );
+    assert!(
+        !result.skipped.contains(&node_a),
+        "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
+    );
 }
