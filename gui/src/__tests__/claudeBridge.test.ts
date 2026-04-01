@@ -778,6 +778,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input=[1,2,3] (array) to empty object', async () => {
@@ -788,6 +789,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input=undefined to empty object', async () => {
@@ -798,6 +800,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input="string" to empty object', async () => {
@@ -808,6 +811,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input absent (key not present) to empty object', async () => {
@@ -818,6 +822,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc-absent', tool_name: 'exec', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('passes through valid tool_input object unchanged', async () => {
@@ -828,6 +833,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
     });
 
