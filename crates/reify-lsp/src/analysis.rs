@@ -1440,4 +1440,18 @@ mod tests {
             "param at 33 levels of nesting should NOT be found (depth limit exceeded)"
         );
     }
+
+    // --- depth-limit tests for count_members_recursive ---
+
+    #[test]
+    fn count_members_recursive_stops_at_depth_limit() {
+        // 33 levels of nesting — beyond MAX_MEMBER_NESTING_DEPTH (32)
+        let members = build_nested_guarded_members(33, "unreachable_param");
+        let (p, l, c) = count_members_recursive(&members);
+        assert_eq!(
+            (p, l, c),
+            (0, 0, 0),
+            "param at 33 levels of nesting should NOT be counted (depth limit exceeded)"
+        );
+    }
 }
