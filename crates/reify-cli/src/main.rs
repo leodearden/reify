@@ -400,9 +400,9 @@ mod tests {
     use reify_eval::ConstraintCheckEntry;
     use reify_types::{ConstraintNodeId, Satisfaction};
 
-    /// Helper: run `report_constraint_results` into an in-memory buffer and
-    /// return the outcome plus the formatted output as a `String`.
-    fn run_report(entries: &[ConstraintCheckEntry]) -> (ConstraintOutcome, String) {
+    /// Helper: capture `report_constraint_results` output into an in-memory
+    /// buffer and return the outcome plus the formatted output as a `String`.
+    fn capture_report_output(entries: &[ConstraintCheckEntry]) -> (ConstraintOutcome, String) {
         let mut buf = Vec::new();
         let result = report_constraint_results(entries, &mut buf);
         let output = String::from_utf8(buf).unwrap();
@@ -410,16 +410,19 @@ mod tests {
     }
 
     #[test]
-    fn run_report_helper_returns_outcome_and_output() {
-        let entries = vec![
-            make_entry("Widget", 0, Some("length_ok"), Satisfaction::Satisfied),
-            make_entry("Widget", 1, Some("weight_limit"), Satisfaction::Violated),
-        ];
-        let (outcome, output) = run_report(&entries);
+    fn empty_entries_returns_all_satisfied_with_no_output() {
+        let (result, output) = capture_report_output(&[]);
 
-        assert_eq!(outcome, ConstraintOutcome::SomeViolated);
-        assert!(output.contains("OK length_ok"), "expected OK line, got: {}", output);
-        assert!(output.contains("VIOLATED weight_limit"), "expected VIOLATED line, got: {}", output);
+        assert_eq!(
+            result,
+            ConstraintOutcome::AllSatisfied,
+            "empty entries should return AllSatisfied (vacuous truth)"
+        );
+        assert!(
+            output.is_empty(),
+            "empty entries should produce no output, got: {:?}",
+            output
+        );
     }
 
     fn make_entry(
@@ -441,7 +444,7 @@ mod tests {
             make_entry("Bracket", 0, Some("stress_limit"), Satisfaction::Satisfied),
             make_entry("Bracket", 1, Some("size_bound"), Satisfaction::Satisfied),
         ];
-        let (result, output) = run_report(&entries);
+        let (result, output) = capture_report_output(&entries);
 
         assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
         assert!(output.contains("OK stress_limit"));
@@ -455,7 +458,7 @@ mod tests {
             make_entry("Part", 0, Some("max_force"), Satisfaction::Satisfied),
             make_entry("Part", 1, Some("clearance"), Satisfaction::Violated),
         ];
-        let (result, output) = run_report(&entries);
+        let (result, output) = capture_report_output(&entries);
 
         assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
         assert!(output.contains("OK max_force"));
@@ -467,7 +470,7 @@ mod tests {
         let entries = vec![
             make_entry("Beam", 0, Some("load"), Satisfaction::Indeterminate),
         ];
-        let (result, output) = run_report(&entries);
+        let (result, output) = capture_report_output(&entries);
 
         assert_eq!(result, ConstraintOutcome::SomeIndeterminate(1), "indeterminate should return SomeIndeterminate with count");
         assert!(output.contains("INDETERMINATE load"));
@@ -479,7 +482,7 @@ mod tests {
             make_entry("Bracket", 0, Some("thickness"), Satisfaction::Violated),
             make_entry("Bracket", 1, Some("tolerance"), Satisfaction::Indeterminate),
         ];
-        let (result, output) = run_report(&entries);
+        let (result, output) = capture_report_output(&entries);
 
         assert_eq!(
             result,
@@ -508,7 +511,7 @@ mod tests {
         let entries = vec![
             make_entry("Gear", 2, None, Satisfaction::Satisfied),
         ];
-        let (_result, output) = run_report(&entries);
+        let (_result, output) = capture_report_output(&entries);
 
         // ConstraintNodeId Display: "Gear#constraint[2]"
         assert!(
@@ -523,7 +526,7 @@ mod tests {
         let entries = vec![
             make_entry("Axle", 0, Some("torque_limit"), Satisfaction::Violated),
         ];
-        let (_result, output) = run_report(&entries);
+        let (_result, output) = capture_report_output(&entries);
 
         assert!(
             output.contains("VIOLATED torque_limit"),
