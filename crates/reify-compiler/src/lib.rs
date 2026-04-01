@@ -1391,7 +1391,9 @@ fn collect_type_expr_names(type_expr: &reify_syntax::TypeExpr) -> Vec<String> {
             .iter()
             .flat_map(collect_type_expr_names)
             .collect(),
-        name => vec![name.to_string()],
+        name => std::iter::once(name.to_string())
+            .chain(type_expr.type_args.iter().flat_map(collect_type_expr_names))
+            .collect(),
     }
 }
 
