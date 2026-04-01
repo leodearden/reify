@@ -83,7 +83,15 @@ impl AnalysisContext {
         // Get the span, doc, and owning declaration name from the parsed module
         let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, enclosing_decl)?;
 
-        // Find type info from the compiled module, scoped to the same declaration
+        // Find type info from the compiled module, scoped to the same declaration.
+        //
+        // The compiler separates members into two collections:
+        //   - template.value_cells: top-level params, lets, and autos
+        //   - template.guarded_groups: members declared inside
+        //     `where cond { ... } else { ... }` blocks
+        //
+        // Both must be searched to get complete coverage regardless of
+        // where a member appears syntactically.
         for template in &self.compiled.templates {
             if template.name != decl_name {
                 continue;
@@ -100,7 +108,7 @@ impl AnalysisContext {
                     });
                 }
             }
-            // Also search inside guarded groups (where blocks)
+            // Also search inside guarded groups (where/else blocks)
             for group in &template.guarded_groups {
                 for vc in group.members.iter().chain(group.else_members.iter()) {
                     if vc.id.member == name {
@@ -270,15 +278,33 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
     None
 }
 
+/// Maximum nesting depth for recursive member lookups. Prevents stack
+/// overflow on pathological input with deeply nested guarded groups or ports.
+/// 32 is generous for any realistic Reify source (typical nesting is 2-3 levels).
+const MAX_MEMBER_NESTING_DEPTH: usize = 32;
+
 /// Recursively search a member list for a named param or let declaration.
 ///
 /// Returns `(span, doc)` for the first match. Recurses into
-/// `GuardedGroup.members` and `GuardedGroup.else_members` so that
-/// declarations inside `where cond { ... } else { ... }` blocks are found.
+/// `GuardedGroup.members`, `GuardedGroup.else_members`, and `Port.members`
+/// so that declarations inside `where cond { ... } else { ... }` blocks
+/// and port bodies are found. Recursion is bounded by
+/// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological input.
 pub fn find_named_member_span<'a>(
     members: &'a [reify_syntax::MemberDecl],
     name: &str,
 ) -> Option<(SourceSpan, Option<&'a str>)> {
+    find_named_member_span_depth(members, name, 0)
+}
+
+fn find_named_member_span_depth<'a>(
+    members: &'a [reify_syntax::MemberDecl],
+    name: &str,
+    depth: usize,
+) -> Option<(SourceSpan, Option<&'a str>)> {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return None;
+    }
     for member in members {
         match member {
             reify_syntax::MemberDecl::Param(p) if p.name == name => {
@@ -288,15 +314,19 @@ pub fn find_named_member_span<'a>(
                 return Some((l.span, l.doc.as_deref()));
             }
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                if let Some(result) = find_named_member_span(&g.members, name) {
+                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
                     return Some(result);
                 }
-                if let Some(result) = find_named_member_span(&g.else_members, name) {
+                if let Some(result) =
+                    find_named_member_span_depth(&g.else_members, name, depth + 1)
+                {
                     return Some(result);
                 }
             }
             reify_syntax::MemberDecl::Port(port) => {
-                if let Some(result) = find_named_member_span(&port.members, name) {
+                if let Some(result) =
+                    find_named_member_span_depth(&port.members, name, depth + 1)
+                {
                     return Some(result);
                 }
             }
@@ -1349,5 +1379,67 @@ mod tests {
     fn enclosing_decl_at_empty_declarations() {
         let decl = enclosing_decl_at(&[], 0);
         assert!(decl.is_none(), "empty declarations should return None");
+    }
+
+    // --- depth-limit tests for find_named_member_span ---
+
+    /// Build a member tree with `depth` levels of GuardedGroup nesting,
+    /// placing a single Param named `target` at the innermost level.
+    fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_syntax::MemberDecl> {
+        use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
+        use reify_types::{ContentHash, SourceSpan};
+
+        let dummy_span = SourceSpan::new(0, 1);
+        let dummy_hash = ContentHash(0);
+        let dummy_expr = Expr {
+            kind: ExprKind::BoolLiteral(true),
+            span: dummy_span,
+        };
+
+        // Innermost level: a single param with the target name
+        let leaf = vec![MemberDecl::Param(ParamDecl {
+            name: target.to_string(),
+            doc: None,
+            type_expr: None,
+            default: None,
+            where_clause: None,
+            span: dummy_span,
+            content_hash: dummy_hash,
+        })];
+
+        // Wrap in `depth` levels of GuardedGroup
+        let mut current = leaf;
+        for _ in 0..depth {
+            current = vec![MemberDecl::GuardedGroup(GuardedGroupDecl {
+                condition: dummy_expr.clone(),
+                members: current,
+                else_members: vec![],
+                span: dummy_span,
+                content_hash: dummy_hash,
+            })];
+        }
+        current
+    }
+
+    #[test]
+    fn find_named_member_span_succeeds_within_depth_limit() {
+        // 5 levels of nesting — well within the 32-level limit
+        let members = build_nested_guarded_members(5, "deep_param");
+        let result = find_named_member_span(&members, "deep_param");
+        assert!(
+            result.is_some(),
+            "param at 5 levels of nesting should be found"
+        );
+    }
+
+    #[test]
+    fn find_named_member_span_returns_none_beyond_depth_limit() {
+        // 33 levels of nesting — beyond the MAX_MEMBER_NESTING_DEPTH (32)
+        let members = build_nested_guarded_members(33, "unreachable_param");
+        let result = find_named_member_span(&members, "unreachable_param");
+        assert!(
+            result.is_none(),
+            "param at 33 levels of nesting should NOT be found (depth limit exceeded)"
+        );
     }
 }
