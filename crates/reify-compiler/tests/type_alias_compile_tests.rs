@@ -521,3 +521,62 @@ fn non_pub_alias_has_is_pub_false() {
         .expect("Velocity alias not found in compiled module type_aliases");
     assert!(!alias.is_pub, "non-pub type alias should have is_pub=false");
 }
+
+// ─── step-21: alias with non-dimensional parameterized RHS ─────────────────
+
+#[test]
+fn alias_list_of_string() {
+    // type StringList = List<String>
+    // When used as a param type, should resolve to Type::List(Box::new(Type::String))
+    let source = r#"
+        type StringList = List<String>
+        structure S {
+            param p : StringList = ["hello"]
+        }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "alias with List<String> RHS should compile without errors; got: {:?}",
+        errs
+    );
+    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let p_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p not found");
+    assert_eq!(
+        p_cell.cell_type,
+        Type::List(Box::new(Type::String)),
+        "StringList alias should resolve to List<String>"
+    );
+}
+
+#[test]
+fn parameterized_alias_map_instantiation() {
+    // type IntMap<V> = Map<Int, V>
+    // When used as IntMap<String>, V=String → Map<Int, String>
+    let source = r#"
+        type IntMap<V> = Map<Int, V>
+        fn identity(m: IntMap<String>) -> IntMap<String> { m }
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "parameterized alias with Map<Int, V> should compile without errors; got: {:?}",
+        errs
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "identity")
+        .expect("identity function not found");
+    assert_eq!(
+        func.params[0].1,
+        Type::Map(Box::new(Type::Int), Box::new(Type::String)),
+        "IntMap<String> alias should resolve to Map<Int, String>"
+    );
+}
