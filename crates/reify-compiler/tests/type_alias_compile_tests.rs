@@ -4,7 +4,7 @@
 //! dimensional aliases, transitive resolution, cycle detection, parameterized aliases,
 //! and integration with existing type resolution paths.
 
-use reify_compiler::{compile, CompiledModule, CompiledTypeAlias, TypeAliasEntry, TypeAliasRegistry};
+use reify_compiler::{compile, CompiledModule, CompiledTypeAlias};
 use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type, Diagnostic};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -31,78 +31,56 @@ fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
         .collect()
 }
 
-// ─── step-1: TypeAliasEntry and TypeAliasRegistry data structures ────────────
+// ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
 #[test]
-fn type_alias_entry_fields_exist() {
+fn compiled_type_alias_fields_exist() {
     let dummy_span = SourceSpan::new(0, 0);
     let hash = ContentHash::of_str("Pressure");
-    let entry = TypeAliasEntry {
+    let alias = CompiledTypeAlias {
         name: "Pressure".to_string(),
         resolved_type: Some(Type::Scalar {
             dimension: reify_types::DimensionVector::LENGTH,
         }),
         type_params: vec![],
-        type_expr: None,
         is_pub: true,
         span: dummy_span,
         content_hash: hash,
     };
-    assert_eq!(entry.name, "Pressure");
-    assert!(entry.resolved_type.is_some());
-    assert!(entry.type_params.is_empty());
-    assert!(entry.type_expr.is_none());
-    assert!(entry.is_pub);
+    assert_eq!(alias.name, "Pressure");
+    assert!(alias.resolved_type.is_some());
+    assert!(alias.type_params.is_empty());
+    assert!(alias.is_pub);
 }
 
 #[test]
-fn type_alias_registry_new_and_lookup_empty() {
-    let reg = TypeAliasRegistry::new();
-    assert!(reg.lookup("Pressure").is_none());
-    assert!(reg.lookup("Velocity").is_none());
+fn compiled_alias_appears_in_module_output() {
+    // A simple alias should appear in module.type_aliases after compilation.
+    let source = r#"
+        type Pressure = Force
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(errs.is_empty(), "alias should compile cleanly; got: {:?}", errs);
+    let alias = module.type_aliases.iter().find(|a| a.name == "Pressure");
+    assert!(alias.is_some(), "Pressure alias should appear in module.type_aliases");
+    assert_eq!(alias.unwrap().name, "Pressure");
 }
 
 #[test]
-fn type_alias_registry_register_and_lookup() {
-    let mut reg = TypeAliasRegistry::new();
-    let entry = TypeAliasEntry {
-        name: "Pressure".to_string(),
-        resolved_type: Some(Type::Real),
-        type_params: vec![],
-        type_expr: None,
-        is_pub: false,
-        span: SourceSpan::new(0, 0),
-        content_hash: ContentHash::of_str("Pressure"),
-    };
-    assert!(reg.register(entry).is_ok());
-    let looked_up = reg.lookup("Pressure");
-    assert!(looked_up.is_some());
-    assert_eq!(looked_up.unwrap().name, "Pressure");
-}
-
-#[test]
-fn type_alias_registry_duplicate_register_returns_err() {
-    let mut reg = TypeAliasRegistry::new();
-    let entry1 = TypeAliasEntry {
-        name: "Pressure".to_string(),
-        resolved_type: Some(Type::Real),
-        type_params: vec![],
-        type_expr: None,
-        is_pub: false,
-        span: SourceSpan::new(0, 0),
-        content_hash: ContentHash::of_str("Pressure"),
-    };
-    let entry2 = TypeAliasEntry {
-        name: "Pressure".to_string(),
-        resolved_type: Some(Type::Int),
-        type_params: vec![],
-        type_expr: None,
-        is_pub: true,
-        span: SourceSpan::new(10, 15),
-        content_hash: ContentHash::of_str("Pressure2"),
-    };
-    assert!(reg.register(entry1).is_ok());
-    assert!(reg.register(entry2).is_err());
+fn compiled_alias_duplicate_produces_diagnostic() {
+    // Duplicate alias names should produce an error diagnostic.
+    let source = r#"
+        type Foo = Int
+        type Foo = Real
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| d.message.contains("duplicate") || d.message.contains("Duplicate")),
+        "duplicate alias should produce an error; got: {:?}",
+        errs
+    );
 }
 
 // ─── step-3: simple alias compilation ────────────────────────────────────────

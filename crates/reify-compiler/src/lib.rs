@@ -148,7 +148,7 @@ pub struct CompiledModule {
     /// Compiled unit declarations from this module.
     pub units: Vec<CompiledUnit>,
     /// Compiled type alias declarations from this module.
-    pub type_aliases: Vec<TypeAliasEntry>,
+    pub type_aliases: Vec<CompiledTypeAlias>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -582,36 +582,50 @@ impl Default for UnitRegistry {
 /// For parameterized aliases, `type_params` is non-empty and `type_expr` holds the
 /// original `TypeExpr` for deferred substitution at each use site.
 #[derive(Debug, Clone)]
-pub struct TypeAliasEntry {
-    pub name: String,
+pub(crate) struct TypeAliasEntry {
+    pub(crate) name: String,
     /// The resolved type for non-parameterized aliases; `None` for parameterized aliases
     /// (which require instantiation with concrete type arguments).
-    pub resolved_type: Option<Type>,
+    pub(crate) resolved_type: Option<Type>,
     /// Type parameters for parameterized aliases (empty for simple aliases).
-    pub type_params: Vec<reify_types::TypeParam>,
+    pub(crate) type_params: Vec<reify_types::TypeParam>,
     /// The original type expression, stored for parameterized alias substitution.
-    pub type_expr: Option<reify_syntax::TypeExpr>,
-    pub is_pub: bool,
-    pub span: SourceSpan,
-    pub content_hash: ContentHash,
+    pub(crate) type_expr: Option<reify_syntax::TypeExpr>,
+    pub(crate) is_pub: bool,
+    pub(crate) span: SourceSpan,
+    pub(crate) content_hash: ContentHash,
+}
+
+impl TypeAliasEntry {
+    /// Convert to the public `CompiledTypeAlias` representation (no `type_expr`).
+    fn into_compiled(self) -> CompiledTypeAlias {
+        CompiledTypeAlias {
+            name: self.name,
+            resolved_type: self.resolved_type,
+            type_params: self.type_params,
+            is_pub: self.is_pub,
+            span: self.span,
+            content_hash: self.content_hash,
+        }
+    }
 }
 
 /// Registry mapping type alias names to compiled alias entries.
 /// Built during the pre-pass so type resolution can check aliases.
-pub struct TypeAliasRegistry {
+pub(crate) struct TypeAliasRegistry {
     entries: HashMap<String, TypeAliasEntry>,
 }
 
 impl TypeAliasRegistry {
     /// Create an empty registry.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         TypeAliasRegistry {
             entries: HashMap::new(),
         }
     }
 
     /// Register a type alias entry. Returns `Err(entry)` if the name is already registered.
-    pub fn register(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
+    pub(crate) fn register(&mut self, entry: TypeAliasEntry) -> Result<(), Box<TypeAliasEntry>> {
         if self.entries.contains_key(&entry.name) {
             Err(Box::new(entry))
         } else {
@@ -624,23 +638,23 @@ impl TypeAliasRegistry {
     ///
     /// Used to pre-populate the registry with aliases from prelude modules
     /// before processing module-local declarations.
-    pub fn seed_prelude_alias(&mut self, entry: TypeAliasEntry) {
+    pub(crate) fn seed_prelude_alias(&mut self, entry: TypeAliasEntry) {
         self.entries.insert(entry.name.clone(), entry);
     }
 
     /// Look up a type alias by name.
-    pub fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
+    pub(crate) fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
         self.entries.get(name)
     }
 
     /// Iterate over all entries in the registry.
-    pub fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
         self.entries.values()
     }
 
-    /// Consume the registry, returning all entries as a Vec.
-    pub fn into_entries(self) -> Vec<TypeAliasEntry> {
-        self.entries.into_values().collect()
+    /// Consume the registry, returning all compiled entries.
+    pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
+        self.entries.into_values().map(|e| e.into_compiled()).collect()
     }
 }
 
@@ -658,6 +672,23 @@ pub struct CompiledUnit {
     pub dimension: DimensionVector,
     pub factor: f64,
     pub offset: Option<f64>,
+    pub content_hash: ContentHash,
+}
+
+/// A compiled type alias — the public output representation in `CompiledModule`.
+///
+/// Contains only semantic data (no `TypeExpr` from `reify_syntax`), preserving
+/// the module boundary: downstream crates consuming `CompiledModule` do not
+/// transitively depend on `reify_syntax`.
+#[derive(Debug, Clone)]
+pub struct CompiledTypeAlias {
+    pub name: String,
+    /// The resolved type for non-parameterized aliases; `None` for parameterized aliases.
+    pub resolved_type: Option<Type>,
+    /// Type parameters for parameterized aliases (empty for simple aliases).
+    pub type_params: Vec<reify_types::TypeParam>,
+    pub is_pub: bool,
+    pub span: SourceSpan,
     pub content_hash: ContentHash,
 }
 
@@ -4047,7 +4078,7 @@ pub fn compile_with_prelude(
         ContentHash::combine_all(all_hashes)
     };
 
-    let type_aliases = alias_registry.into_entries();
+    let type_aliases = alias_registry.into_compiled();
 
     CompiledModule {
         path: parsed.path.clone(),
