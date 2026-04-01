@@ -33,7 +33,7 @@ const rules: ErrorRule[] = [
 ];
 
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return (err instanceof Error ? err.message : String(err)) || 'Unknown error';
 }
 
 export function classifyError(message: string): ClassifiedError {
