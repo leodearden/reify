@@ -109,7 +109,10 @@ impl AnalysisContext {
                     });
                 }
             }
-            // Also search inside guarded groups (where/else blocks)
+            // The compiler flattens nested `where` blocks into a flat
+            // Vec<CompiledGuardedGroup> using parent_guard pointers for nesting
+            // relationships, so flat iteration here correctly visits all guarded
+            // members regardless of source-level nesting depth.
             for group in &template.guarded_groups {
                 for vc in group.members.iter().chain(group.else_members.iter()) {
                     if vc.id.member == name {
@@ -190,6 +193,8 @@ impl AnalysisContext {
             for vc in &template.value_cells {
                 result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
             }
+            // Flat iteration: the compiler flattens nested `where` blocks into a
+            // flat Vec using parent_guard pointers for nesting relationships.
             for group in &template.guarded_groups {
                 for vc in group.members.iter().chain(group.else_members.iter()) {
                     result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
@@ -206,7 +211,8 @@ impl AnalysisContext {
             for vc in &template.value_cells {
                 result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
             }
-            // Also include members inside guarded groups (where blocks)
+            // Flat iteration: the compiler flattens nested `where` blocks into a
+            // flat Vec using parent_guard pointers for nesting relationships.
             for group in &template.guarded_groups {
                 for vc in group.members.iter().chain(group.else_members.iter()) {
                     result.push((vc.id.member.as_str(), vc.kind, &vc.cell_type));
