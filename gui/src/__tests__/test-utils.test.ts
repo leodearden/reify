@@ -15,6 +15,13 @@ describe('flushMacrotasks', () => {
     await flushMacrotasks();
     expect(flag).toBe(true);
   });
+
+  it('Promise.resolve() microtask work is visible after awaiting', async () => {
+    let flag = false;
+    Promise.resolve().then(() => { flag = true; });
+    await flushMacrotasks();
+    expect(flag).toBe(true);
+  });
 });
 
 describe('flushMicrotasks', () => {
@@ -53,6 +60,12 @@ describe('deferred', () => {
     d.resolve(obj);
     const result = await d.promise;
     expect(result).toEqual({ name: 'test' });
+  });
+
+  it('promise is initially pending (not immediately resolved)', async () => {
+    const d = deferred<string>();
+    const winner = await Promise.race([d.promise, Promise.resolve('sentinel')]);
+    expect(winner).toBe('sentinel');
   });
 });
 
