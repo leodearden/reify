@@ -962,3 +962,47 @@ fn alias_content_hash_deterministic() {
         );
     }
 }
+
+// ─── recursive parameterized alias depth guard ────────────────────────────
+
+#[test]
+fn recursive_parameterized_alias_does_not_stack_overflow() {
+    // type A<T> = List<A<T>> is recursive in a way that only manifests
+    // at use-site instantiation (the DFS pre-pass catches the declaration-level
+    // cycle, but instantiation would previously recurse infinitely).
+    let source = r#"
+        type A<T> = List<A<T>>
+        type UseA = A<Real>
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| {
+            d.message.contains("circular")
+                || d.message.contains("instantiation depth")
+                || d.message.contains("recursive")
+        }),
+        "expected circular/recursive alias error; got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn self_recursive_parameterized_alias_does_not_stack_overflow() {
+    // type A<T> = A<T> — direct self-reference with type params
+    let source = r#"
+        type A<T> = A<T>
+        type UseA = A<Int>
+    "#;
+    let module = parse_and_compile(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.iter().any(|d| {
+            d.message.contains("circular")
+                || d.message.contains("instantiation depth")
+                || d.message.contains("recursive")
+        }),
+        "expected circular/recursive alias error for self-reference; got: {:?}",
+        errs
+    );
+}

@@ -1052,6 +1052,7 @@ fn resolve_type_alias_expr(
                     &empty,
                     alias_registry,
                     &mut tmp_diags,
+                    0,
                 ) {
                     return Some(ty);
                 }
@@ -1158,11 +1159,16 @@ fn resolve_type_expr_with_aliases(
             type_param_names,
             alias_registry,
             diagnostics,
+            0,
         );
     }
 
     None
 }
+
+/// Maximum recursion depth for parameterized alias instantiation.
+/// Prevents stack overflow from recursive type aliases like `type A<T> = List<A<T>>`.
+const MAX_ALIAS_INSTANTIATION_DEPTH: usize = 64;
 
 /// Instantiate a parameterized alias by substituting type arguments.
 ///
@@ -1174,7 +1180,18 @@ fn resolve_parameterized_alias(
     type_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
 ) -> Option<Type> {
+    if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
+                alias_entry.name
+            ))
+            .with_label(DiagnosticLabel::new(alias_entry.span, "recursive expansion")),
+        );
+        return None;
+    }
     let total_params = alias_entry.type_params.len();
     let got = type_args.len();
     let required_params = alias_entry
@@ -1228,19 +1245,33 @@ fn resolve_parameterized_alias(
 
     // Apply substitution to alias body
     let body = alias_entry.type_expr.as_ref()?;
-    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics)
+    resolve_type_alias_expr_with_subst(body, alias_registry, &subst, diagnostics, depth + 1)
 }
 
 /// Resolve a type alias body TypeExpr with parameter substitutions applied.
 ///
 /// Like `resolve_type_alias_expr`, but checks the substitution map first so
 /// type parameters in the alias body get replaced with concrete types.
+///
+/// The `depth` parameter tracks alias expansion depth to prevent stack overflow
+/// from recursive parameterized type aliases.
 fn resolve_type_alias_expr_with_subst(
     type_expr: &reify_syntax::TypeExpr,
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
 ) -> Option<Type> {
+    if depth > MAX_ALIAS_INSTANTIATION_DEPTH {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
+                type_expr.name
+            ))
+            .with_label(DiagnosticLabel::new(type_expr.span, "recursive expansion")),
+        );
+        return None;
+    }
     match type_expr.name.as_str() {
         "*" | "/" => {
             if type_expr.type_args.len() != 2 {
@@ -1280,6 +1311,7 @@ fn resolve_type_alias_expr_with_subst(
                     alias_registry,
                     subst,
                     diagnostics,
+                    depth,
                 )
             {
                 return Some(ty);
@@ -1310,6 +1342,7 @@ fn resolve_type_alias_expr_with_subst(
                         alias_registry,
                         subst,
                         diagnostics,
+                        depth,
                     )?;
                     inner_subst.insert(param.name.clone(), resolved);
                 }
@@ -1324,6 +1357,7 @@ fn resolve_type_alias_expr_with_subst(
                     alias_registry,
                     &inner_subst,
                     diagnostics,
+                    depth + 1,
                 );
             }
             // Then builtins + alias registry
@@ -1373,28 +1407,29 @@ fn resolve_parameterized_builtin_type_with_subst(
     alias_registry: &TypeAliasRegistry,
     subst: &HashMap<String, Type>,
     diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
 ) -> Option<Type> {
     match name {
         "List" if type_args.len() == 1 => {
             let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
             Some(Type::List(Box::new(inner)))
         }
         "Set" if type_args.len() == 1 => {
             let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
             Some(Type::Set(Box::new(inner)))
         }
         "Map" if type_args.len() == 2 => {
             let key =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
             let val =
-                resolve_type_alias_expr_with_subst(&type_args[1], alias_registry, subst, diagnostics)?;
+                resolve_type_alias_expr_with_subst(&type_args[1], alias_registry, subst, diagnostics, depth)?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
         "Option" if type_args.len() == 1 => {
             let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics)?;
+                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
             Some(Type::Option(Box::new(inner)))
         }
         _ => None,
