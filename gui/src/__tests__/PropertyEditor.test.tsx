@@ -16,6 +16,11 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
   };
 }
 
+/** Single editable (determined) param — shared fixture for most describe blocks. */
+const EDITABLE_C1: Record<string, ValueData> = {
+  c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+};
+
 describe('PropertyEditor basic rendering', () => {
   it('renders with data-testid="property-editor"', () => {
     render(() => (
@@ -339,56 +344,57 @@ describe('PropertyEditor navigation enhancements', () => {
 });
 
 describe('PropertyEditor blur-commit', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
-  it('blurring a determined input commits the current value via onSetParameter', () => {
+  it.each([
+    ['75', '75', 'plain integer'],
+    ['80mm', '80mm', 'quantity with unit'],
+    ['  75 ', '75', 'whitespace-padded number'],
+    [' 5mm ', '5mm', 'whitespace-padded quantity'],
+    ['1e3', '1e3', 'scientific notation'],
+    ['.5', '.5', 'leading-dot decimal'],
+    ['-3', '-3', 'negative integer'],
+    ['.5mm', '.5mm', 'leading-dot quantity'],
+    ['1e3mm', '1e3mm', 'sci-notation quantity'],
+    ['-10mm', '-10mm', 'negative quantity'],
+  ])("blur '%s' (%s) calls onSetParameter with '%s' and no data-invalid", (input, expected) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
     ));
     const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '75' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
-  });
-});
-
-describe('PropertyEditor blur-commit quantity literals', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
-
-  it("blur with valid quantity '80mm' calls onSetParameter and does NOT set data-invalid", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '80mm' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
+    expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
+  it.each([
+    ['mm80', 'unit-first quantity'],
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+    ['   ', 'whitespace-only'],
+  ])("blur '%s' (%s) does NOT call onSetParameter, reverts to '50', no data-invalid", (input) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
     ));
     const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: 'mm80' } });
-    fireEvent.blur(input);
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
     expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(el.value).toBe('50');
+    expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 });
 
@@ -441,9 +447,7 @@ describe('PropertyEditor stale input during editing', () => {
 });
 
 describe('PropertyEditor escape-cancel', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('pressing Escape reverts input to original prop value and does NOT call onSetParameter', () => {
     const onSetParam = vi.fn();
@@ -461,9 +465,7 @@ describe('PropertyEditor escape-cancel', () => {
 });
 
 describe('PropertyEditor validation', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('empty string on Enter does NOT call onSetParameter and input gets data-invalid', () => {
     const onSetParam = vi.fn();
@@ -481,9 +483,7 @@ describe('PropertyEditor validation', () => {
 });
 
 describe('PropertyEditor validation - non-parseable', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("'abc' on Enter does NOT call onSetParameter and input shows error styling", () => {
     const onSetParam = vi.fn();
@@ -531,9 +531,7 @@ describe('PropertyEditor group header', () => {
 });
 
 describe('PropertyEditor validation - valid number', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it.each([
     ['42.5', 'decimal'],
@@ -570,9 +568,7 @@ describe('PropertyEditor input tooltip', () => {
 });
 
 describe('PropertyEditor validation - trailing non-numeric characters', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("'10mm' on Enter DOES call onSetParameter (quantity literal)", () => {
     const onSetParam = vi.fn();
@@ -644,24 +640,10 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("' 75 ' (whitespace-padded number) on blur submits trimmed '75'", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: ' 75 ' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
-  });
 });
 
 describe('PropertyEditor quantity literal acceptance', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it.each([
     ['80mm'],
@@ -729,9 +711,7 @@ describe('Design decision: whitespace between number and unit is rejected', () =
   // stricter rule. The backend parse_value_string is more lenient (accepts '5 mm') but
   // that is an incidental bug, not a design choice.
 
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it.each([
     ['5 mm', 'single space'],
@@ -754,9 +734,7 @@ describe('Design decision: whitespace between number and unit is rejected', () =
 });
 
 describe('PropertyEditor validation - Infinity rejection', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("'Infinity' on Enter does NOT call onSetParameter and sets data-invalid", () => {
     const onSetParam = vi.fn();
@@ -850,9 +828,7 @@ describe('PropertyEditor validation - Infinity rejection', () => {
 });
 
 describe('PropertyEditor validation - valid sci-notation quantities still accepted', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it.each([
     ['1e2mm', 'scientific notation + mm'],
@@ -875,9 +851,7 @@ describe('PropertyEditor validation - valid sci-notation quantities still accept
 });
 
 describe('PropertyEditor validation - quantity overflow rejection', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('QUANTITY_RE accepts overflow strings but Number(strip) reveals Infinity — documents the gap', () => {
     const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
@@ -908,9 +882,7 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
 });
 
 describe('PropertyEditor escape clears data-invalid', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('Escape after invalid entry reverts value AND clears data-invalid', () => {
     const onSetParam = vi.fn();
@@ -932,9 +904,7 @@ describe('PropertyEditor escape clears data-invalid', () => {
 });
 
 describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it.each([
     ['0x10', 'hex lowercase'],
@@ -1005,40 +975,8 @@ describe('PropertyEditor accessibility', () => {
   });
 });
 
-describe('PropertyEditor blur-path rejection for invalid literals', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
-
-  it.each([
-    ['0x10', 'hex lowercase'],
-    ['0X10', 'hex uppercase'],
-    ['0o10', 'octal lowercase'],
-    ['0O10', 'octal uppercase'],
-    ['0b10', 'binary lowercase'],
-    ['0B10', 'binary uppercase'],
-    ['+5', 'leading plus'],
-    ['+0', 'leading plus zero'],
-  ])("'%s' (%s) on blur does NOT call onSetParameter, reverts to original value, and does NOT set data-invalid", (invalidLiteral) => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: invalidLiteral } });
-    fireEvent.blur(input);
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
-});
-
 describe('PropertyEditor whitespace-only input rejection', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("whitespace-only '   ' on Enter does NOT call onSetParameter and sets data-invalid", () => {
     const onSetParam = vi.fn();
@@ -1054,18 +992,4 @@ describe('PropertyEditor whitespace-only input rejection', () => {
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
-  it("whitespace-only '   ' on blur does NOT call onSetParameter and reverts to original prop value", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '   ' } });
-    fireEvent.blur(input);
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
 });
