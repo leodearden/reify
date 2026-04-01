@@ -468,6 +468,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn goto_def_cursor_inside_enum_decl_falls_through_to_global() {
+        // Enum variant 'x' shares name with param x in structure S.
+        // Cursor on 'x' inside enum span → enclosing_decl_at returns Enum,
+        // _ => &[] gives empty members, falls through to phase-2 global search,
+        // which finds param x in S.
+        let source = "enum Foo { x }\nstructure S {\n    param x: Scalar = 5mm\n}";
+        // Line 0: "enum Foo { x }"
+        //                     ^ col 11 = 'x' variant
+        let position = Position::new(0, 11);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x inside enum should fall through to S's param x");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to S's param x on line 2
+        assert_eq!(
+            loc.range.start.line, 2,
+            "expected S's param x (line 2), got line {}",
+            loc.range.start.line
+        );
+    }
+
     // --- cross-file goto-definition tests ---
 
     fn parts_uri() -> Url {
