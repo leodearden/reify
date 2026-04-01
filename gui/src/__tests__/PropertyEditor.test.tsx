@@ -346,33 +346,6 @@ describe('PropertyEditor navigation enhancements', () => {
 describe('PropertyEditor blur-commit', () => {
   const values = EDITABLE_C1;
 
-  it('blurring a determined input commits the current value via onSetParameter', () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '75' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
-  });
-
-  it("blur with valid quantity '80mm' calls onSetParameter and does NOT set data-invalid", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '80mm' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '80mm');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
-
   it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
     const onSetParam = vi.fn();
     render(() => (
@@ -386,6 +359,31 @@ describe('PropertyEditor blur-commit', () => {
     expect(onSetParam).not.toHaveBeenCalled();
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it.each([
+    ['75', '75', 'plain integer'],
+    ['80mm', '80mm', 'quantity with unit'],
+    ['  75 ', '75', 'whitespace-padded number'],
+    [' 5mm ', '5mm', 'whitespace-padded quantity'],
+    ['1e3', '1e3', 'scientific notation'],
+    ['.5', '.5', 'leading-dot decimal'],
+    ['-3', '-3', 'negative integer'],
+    ['.5mm', '.5mm', 'leading-dot quantity'],
+    ['1e3mm', '1e3mm', 'sci-notation quantity'],
+    ['-10mm', '-10mm', 'negative quantity'],
+  ])("blur '%s' (%s) calls onSetParameter with '%s' and no data-invalid", (input, expected) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
+    expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 });
 
@@ -631,18 +629,6 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("' 75 ' (whitespace-padded number) on blur submits trimmed '75'", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: ' 75 ' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
-  });
 });
 
 describe('PropertyEditor quantity literal acceptance', () => {
