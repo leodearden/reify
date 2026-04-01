@@ -161,6 +161,14 @@ impl SharedPriorityPromoter {
             .remove(node_id);
     }
 
+    /// Remove multiple nodes in a single critical section (one mutex acquisition).
+    pub fn batch_remove(&self, nodes: &[NodeId]) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .batch_remove(nodes);
+    }
+
     /// Return the number of tracked nodes (for test verification of cleanup).
     pub fn count(&self) -> usize {
         self.inner
