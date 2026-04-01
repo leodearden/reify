@@ -593,6 +593,88 @@ fn sub_component_missing_structure_skipped_gracefully() {
     );
 }
 
+/// Regression test: edit_param's second propagation wave (lib.rs ~line 1864)
+/// must not panic after solver resolution. The `eval_state.as_ref().unwrap()`
+/// is exercised through the positive path (eval_state is always Some when the
+/// early guard at edit_param entry passes).
+///
+/// Setup: param `a`, auto `x`, let `y = x * 2`, constraint `x > a`.
+/// Sequenced solver: 1st call (eval) → x=mm(5), 2nd call (edit_param) → x=mm(20).
+/// After edit_param(a, mm(8)): y must be re-evaluated via the second wave
+/// to reflect the new x value (y = 0.02 * 2 = 0.04).
+#[test]
+fn edit_param_second_wave_no_panic_after_solver_resolution() {
+    use std::collections::HashMap;
+    use reify_types::{BinOp, ModulePath, SolveResult, Type, Value, ValueCellId};
+
+    let a_id = ValueCellId::new("S", "a");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    // First call (cold eval): solver returns x = mm(5.0)
+    let mut solved1 = HashMap::new();
+    solved1.insert(x_id.clone(), mm(5.0));
+    // Second call (edit_param): solver returns x = mm(20.0)
+    let mut solved2 = HashMap::new();
+    solved2.insert(x_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![
+        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved { values: solved2 },
+    ]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param("S", "a", Type::length(), Some(literal(mm(3.0))))
+        .auto_param("S", "x", Type::length())
+        .let_binding(
+            "S",
+            "y",
+            Type::length(),
+            binop(BinOp::Mul, value_ref("S", "x"), literal(Value::Real(2.0))),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "x"), value_ref("S", "a")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(solver));
+
+    // Cold eval: solver returns x=mm(5.0)=0.005 SI, y = 0.005 * 2 = 0.01
+    let result = engine.eval(&module);
+    let y_val = result.values.get(&y_id).expect("y should be in values");
+    assert!(
+        matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-10),
+        "y should be ~0.01 after cold eval, got {:?}",
+        y_val,
+    );
+
+    // edit_param(a, mm(8.0)) → solver re-resolves x to mm(20.0)=0.02 SI.
+    // Second propagation wave re-evaluates y = 0.02 * 2 = 0.04.
+    // This exercises the eval_state unwrap through the positive path.
+    let result2 = engine
+        .edit_param(a_id.clone(), mm(8.0))
+        .expect("edit_param should succeed (eval_state populated by eval())");
+
+    // x should have the new resolved value
+    let x_val2 = result2.values.get(&x_id).expect("x should be in values");
+    assert!(
+        matches!(x_val2, Value::Scalar { si_value, .. } if (*si_value - 0.02).abs() < 1e-10),
+        "x should be mm(20.0)=0.02 SI after re-resolution, got {:?}",
+        x_val2,
+    );
+
+    // y should be re-evaluated via second wave: y = 0.02 * 2 = 0.04
+    let y_val2 = result2.values.get(&y_id).expect("y should be in values");
+    assert!(
+        matches!(y_val2, Value::Scalar { si_value, .. } if (*si_value - 0.04).abs() < 1e-10),
+        "y should be ~0.04 after second wave re-evaluation, got {:?}",
+        y_val2,
+    );
+}
+
 /// Engine-level verification: stdlib functions evaluate correctly in let-bindings.
 #[test]
 fn engine_eval_stdlib_function_in_let() {

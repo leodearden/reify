@@ -1891,8 +1891,13 @@ impl Engine {
             // ── Second propagation wave (once, with union of all resolved IDs) ──
             // Re-resolved auto params may have changed value. Let bindings
             // depending on them may NOT be in the original dirty cone.
-            if !all_resolved_ids.is_empty() {
-                let es = self.eval_state.as_ref().unwrap();
+            // Guard: skip if eval_state is None (defensive; the early guard at
+            // edit_param entry ensures this is unreachable, but an if-let is
+            // consistent with the guard re-elaboration phase below which uses
+            // .and_then for the same field).
+            if !all_resolved_ids.is_empty()
+                && let Some(es) = self.eval_state.as_ref()
+            {
                 let wave2_dirty =
                     crate::dirty::compute_dirty_cone(&all_resolved_ids, &es.reverse_index);
                 let wave2_eval =
@@ -2801,6 +2806,10 @@ impl Engine {
                             }
                         }
                     }
+                    // Discard intermediate handles from partially-failed realizations
+                    if step_handles.len() - handle_start < realization.operations.len() {
+                        step_handles.truncate(handle_start);
+                    }
                 }
             }
 
@@ -2875,6 +2884,10 @@ impl Engine {
                                 break;
                             }
                         }
+                    }
+                    // Discard intermediate handles from partially-failed realizations
+                    if step_handles.len() - handle_start < realization.operations.len() {
+                        step_handles.truncate(handle_start);
                     }
                 }
             }
@@ -2990,6 +3003,11 @@ impl Engine {
                             break;
                         }
                     }
+                }
+
+                // Discard intermediate handles from partially-failed realizations
+                if step_handles.len() - handle_start < realization.operations.len() {
+                    step_handles.truncate(handle_start);
                 }
 
                 // Tessellate this realization's final handle (if any new handles were produced)
@@ -3973,13 +3991,23 @@ fn elaborate_child_lets_only<'t>(
                     found_any = true;
                 }
             }
-            if found_any || entity_template.value_cells.is_empty() {
+            // For structural intermediaries (zero value_cells), found_any is always
+            // false. Check whether any key in `values` has this entity as a prefix,
+            // proving unfold_recursive_sub actually created descendants. Without this
+            // check, two structural intermediaries forming a cycle (W1→W2→W1) would
+            // cause the BFS to generate ever-growing entity paths without bound.
+            let intermediary_has_descendants = entity_template.value_cells.is_empty()
+                && values
+                    .iter()
+                    .any(|(k, _)| k.entity.starts_with(&format!("{}.", depth_entity)));
+            if found_any || intermediary_has_descendants {
                 // Enqueue children if:
                 // 1. found_any: values were projected from this entity (entity exists), OR
-                // 2. value_cells is empty: structural intermediary template with zero
-                //    value_cells — found_any is meaningless, but children may have values.
+                // 2. intermediary_has_descendants: structural intermediary with zero
+                //    value_cells but confirmed descendants in the values map.
                 // For templates WITH value_cells, found_any==false means the entity was
                 // never unfolded (e.g., guard was false), so BFS terminates naturally.
+                // For structural intermediaries, the prefix check serves the same purpose.
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_expr.is_some() {
                         if let Some(target_tmpl) =
@@ -4635,7 +4663,7 @@ mod tests {
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
                 ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_f64(1.5708)),
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
             ],
         };
 

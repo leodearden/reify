@@ -1100,3 +1100,118 @@ fn all_nine_hardcoded_units_resolve_via_stdlib() {
         }
     }
 }
+
+// ─── step-18 (task-706): degF stdlib affine unit at three canonical temperatures ─
+
+/// degF stdlib unit converts correctly at three canonical temperature points:
+/// ice (32°F → 273.15K), steam (212°F → 373.15K), body temp (98.6°F → 310.15K).
+/// The affine conversion formula is: si_value = value × (5/9) + 255.3722222222222.
+/// Note: negative quantity literals like -40degF are parsed as -(40degF), which
+/// applies negation after the affine offset — giving a wrong physical value. This
+/// is a known parser limitation, so we use positive values only here.
+#[test]
+fn degf_stdlib_unit_converts_correctly() {
+    let source = r#"
+structure def TempCheck {
+    param ice     : Temperature = 32degF
+    param steam   : Temperature = 212degF
+    param bodytemp: Temperature = 98.6degF
+}
+"#;
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "compile_with_stdlib_helper should resolve degF without errors, got: {:?}",
+        errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "TempCheck")
+        .expect("TempCheck not found");
+
+    // Helper: extract si_value from a named param's default_expr
+    let si_value_of = |name: &str| -> f64 {
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == name)
+            .unwrap_or_else(|| panic!("{} not found", name));
+        let expr = cell
+            .default_expr
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} has no default_expr", name));
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            *si_value
+        } else {
+            panic!("expected scalar literal for {}, got {:?}", name, expr.kind);
+        }
+    };
+
+    let ice_si = si_value_of("ice");
+    let steam_si = si_value_of("steam");
+    let bodytemp_si = si_value_of("bodytemp");
+
+    assert!(
+        (ice_si - 273.15).abs() < 1e-6,
+        "32degF (ice point) should be 273.15K, got {}",
+        ice_si
+    );
+    assert!(
+        (steam_si - 373.15).abs() < 1e-6,
+        "212degF (steam point) should be 373.15K, got {}",
+        steam_si
+    );
+    assert!(
+        (bodytemp_si - 310.15).abs() < 1e-6,
+        "98.6degF (body temperature) should be 310.15K, got {}",
+        bodytemp_si
+    );
+}
+
+// ─── step-22 (task-706): prelude unit collision diagnostic mentions stdlib ──
+
+/// When a module-local unit shadows a prelude unit, the diagnostic should:
+/// (1) contain 'duplicate' and the unit name,
+/// (2) mention 'stdlib prelude' so the user knows the original is built-in,
+/// (3) NOT include any label with SourceSpan::empty(0) (the misleading
+///     prelude sentinel that points to byte 0 of the user's file).
+#[test]
+fn prelude_unit_collision_diagnostic_mentions_stdlib() {
+    let source = "unit mm : Length = 0.002";
+    let module = compile_with_stdlib_helper(source);
+    let errors = errors_only(&module);
+
+    // (1) At least one error mentions 'duplicate' and 'mm'
+    let dup_diag = errors
+        .iter()
+        .find(|d| d.message.contains("duplicate") && d.message.contains("mm"));
+    assert!(
+        dup_diag.is_some(),
+        "expected a 'duplicate' error mentioning 'mm', got: {:?}",
+        errors
+    );
+    let dup_diag = dup_diag.unwrap();
+
+    // (2) The error message should mention 'stdlib prelude'
+    assert!(
+        dup_diag.message.contains("stdlib prelude"),
+        "expected diagnostic message to contain 'stdlib prelude', got: {:?}",
+        dup_diag.message
+    );
+
+    // (3) No label should have SourceSpan::empty(0) — the misleading prelude sentinel
+    let empty_span = reify_types::SourceSpan::empty(0);
+    for label in &dup_diag.labels {
+        assert_ne!(
+            label.span, empty_span,
+            "diagnostic label '{}' has SourceSpan::empty(0) — misleading prelude offset",
+            label.message
+        );
+    }
+}

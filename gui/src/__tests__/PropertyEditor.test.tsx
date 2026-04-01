@@ -368,6 +368,8 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(el, { target: { value: input } });
     fireEvent.blur(el);
     expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    // After blur-commit, input reverts to prop value (mock doesn't propagate the change)
+    expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 
@@ -653,6 +655,7 @@ describe('PropertyEditor quantity literal acceptance', () => {
     ['1rad'],
     ['-10mm'],
     ['1e3mm'],
+    ['1e+3mm'],
     ['1.5e-2deg'],
     ['.5mm'],
     ['.25deg'],
@@ -673,6 +676,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
+    // Leading '+' rejected: QUANTITY_RE uses ^-? (minus-only), so '+10mm' fails even
+    // though the exponent group [eE][+-]? does accept '+' (e.g., '1e+3mm' is valid).
+    // This matches the .ri grammar which only defines unary minus for number literals.
     ['+10mm'],
     ['mm'],
     ['deg'],
@@ -900,6 +906,25 @@ describe('PropertyEditor escape clears data-invalid', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it('blur after invalid Enter clears data-invalid and reverts value', () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: 'abc' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    // data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Now blur (instead of Escape) — handleBlur reverts invalid input
+    fireEvent.blur(input);
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).not.toHaveBeenCalled();
   });
 });
 
