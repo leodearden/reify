@@ -808,6 +808,80 @@ fn eval_method_call(
             match obj {
                 Value::List(items) => Value::Bool(items.contains(needle)),
                 Value::Set(items) => Value::Bool(items.contains(needle)),
+                Value::Range {
+                    lower,
+                    upper,
+                    lower_inclusive,
+                    upper_inclusive,
+                } => {
+                    // Undef needle propagates immediately.
+                    if needle.is_undef() {
+                        return Value::Undef;
+                    }
+                    // Check lower bound (if present).
+                    if let Some(lo) = lower {
+                        let cmp_result = if *lower_inclusive {
+                            eval_cmp(lo, needle, |a, b| a <= b)
+                        } else {
+                            eval_cmp(lo, needle, |a, b| a < b)
+                        };
+                        match cmp_result {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => return Value::Bool(false),
+                            _ => return Value::Undef,
+                        }
+                    }
+                    // Check upper bound (if present).
+                    if let Some(hi) = upper {
+                        let cmp_result = if *upper_inclusive {
+                            eval_cmp(needle, hi, |a, b| a <= b)
+                        } else {
+                            eval_cmp(needle, hi, |a, b| a < b)
+                        };
+                        match cmp_result {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => return Value::Bool(false),
+                            _ => return Value::Undef,
+                        }
+                    }
+                    Value::Bool(true)
+                }
+                _ => Value::Undef,
+            }
+        }
+        "lower" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { lower, .. } => match lower {
+                    Some(lo) => Value::Option(Some(lo.clone())),
+                    None => Value::Option(None),
+                },
+                _ => Value::Undef,
+            }
+        }
+        "upper" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { upper, .. } => match upper {
+                    Some(hi) => Value::Option(Some(hi.clone())),
+                    None => Value::Option(None),
+                },
+                _ => Value::Undef,
+            }
+        }
+        "span" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { lower, upper, .. } => match (lower, upper) {
+                    (Some(lo), Some(hi)) => eval_sub(hi, lo),
+                    _ => Value::Undef,
+                },
                 _ => Value::Undef,
             }
         }
