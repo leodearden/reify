@@ -428,6 +428,22 @@ describe('selectionStore', () => {
       });
     });
 
+    it('clearIfRemoved does not dispatch when neither field matches', () => {
+      batch(() => {
+        selectEntity('A');
+        hoverEntity('B');
+      });
+      // Flush the combined debounced dispatch
+      vi.advanceTimersByTime(100);
+      mockInvoke.mockClear();
+
+      clearIfRemoved('Other');
+
+      // Neither field matched → no state change, no dispatch
+      vi.advanceTimersByTime(100);
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+
     it('clearHighlights dispatches exactly one backend sync for selection→null', () => {
       // Set up: select an entity (triggers immediate invoke)
       selectEntity('Bracket');
