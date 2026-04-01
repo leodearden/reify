@@ -190,3 +190,41 @@ fn parse_member_access_not_shadowed() {
         other => panic!("expected MemberAccess, got {:?}", other),
     }
 }
+
+// ── Step 13: qualified access in arithmetic ─────────────────────────────────
+
+#[test]
+fn parse_qualified_in_arithmetic() {
+    let (decls, errors) = parse_decls("structure S { let x = Foo::bar + 1 }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    // Top-level should be BinOp { + } with QualifiedAccess on left, NumberLiteral on right
+    match &let_decl.value.kind {
+        ExprKind::BinOp { op, left, right } => {
+            assert_eq!(op, "+");
+            match &left.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert!(matches!(&qualifier.kind, ExprKind::Ident(n) if n == "Foo"));
+                    assert_eq!(member, "bar");
+                }
+                other => panic!("expected QualifiedAccess as left, got {:?}", other),
+            }
+            assert!(
+                matches!(&right.kind, ExprKind::NumberLiteral(n) if *n == 1.0),
+                "expected NumberLiteral(1), got {:?}",
+                right.kind
+            );
+        }
+        other => panic!("expected BinOp, got {:?}", other),
+    }
+}
