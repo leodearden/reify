@@ -76,6 +76,13 @@ echo "--- Test 7: _PORTABLE_TIMEOUT_TIMED_OUT set to true on genuine timeout ---
 assert "_PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout" \
     bash -c "source '$LIB_PORTABLE' && portable_timeout 1 sleep 10 || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'true' ]"
 
+# -- Test 8: _PORTABLE_TIMEOUT_TIMED_OUT is false for natural exit 124 --------
+echo ""
+echo "--- Test 8: _PORTABLE_TIMEOUT_TIMED_OUT false on natural exit 124 ---"
+
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command exits 124 naturally" \
+    bash -c "source '$LIB_PORTABLE' && portable_timeout 5 bash -c 'exit 124' || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'false' ]"
+
 # -- Summary ------------------------------------------------------------------
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
