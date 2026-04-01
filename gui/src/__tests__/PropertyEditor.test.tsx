@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
@@ -369,7 +369,9 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(el, { target: { value: input } });
     fireEvent.blur(el);
     expect(onSetParam).toHaveBeenCalledWith('c1', expected);
-    // After blur-commit, input reverts to prop value (mock doesn't propagate the change)
+    // In tests the mock doesn't update the prop, so after editing ends the input shows
+    // the original prop value '50'. In production the parent would update values and
+    // the input would show '80mm'.
     expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
   });
@@ -888,40 +890,34 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
   });
 });
 
-describe('PropertyEditor escape clears data-invalid', () => {
+describe('PropertyEditor data-invalid recovery', () => {
   const values = EDITABLE_C1;
+  let input: HTMLInputElement;
+  let onSetParam: ReturnType<typeof vi.fn>;
 
-  it('Escape after invalid entry reverts value AND clears data-invalid', () => {
-    const onSetParam = vi.fn();
+  beforeEach(() => {
+    onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
     ));
     const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: 'abc' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // data-invalid should be set after invalid Enter
+    // Precondition: data-invalid should be set after invalid Enter
     expect(input.hasAttribute('data-invalid')).toBe(true);
-    // Now press Escape
+  });
+
+  it('Escape reverts value and clears data-invalid', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it('blur after invalid Enter clears data-invalid and reverts value', () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: 'abc' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    // data-invalid should be set after invalid Enter
-    expect(input.hasAttribute('data-invalid')).toBe(true);
-    // Now blur (instead of Escape) — handleBlur reverts invalid input
+  it('blur reverts value and clears data-invalid', () => {
+    // Typed value is preserved in editing state until blur reverts it
+    expect(input.value).toBe('abc');
     fireEvent.blur(input);
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
