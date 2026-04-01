@@ -261,20 +261,34 @@ describe('claude invoke wrappers', () => {
     expect(wireKeys).toEqual(expectedWireKeys);
   });
 
-  it('mapContextToWire passes undefined fields through', () => {
+  it('mapContextToWire omits undefined fields from output', () => {
     const input: MessageContext = {
       selectedEntity: 'Bracket.w',
     };
 
     const wire = mapContextToWire(input);
 
-    expect(wire).toStrictEqual({
-      selected_entity: 'Bracket.w',
-      diagnostics: undefined,
-      constraints: undefined,
-      current_file: undefined,
-      attached_contexts: undefined,
-    });
+    // Only the defined field should be present
+    expect(wire).toStrictEqual({ selected_entity: 'Bracket.w' });
+    // Undefined-valued fields must be absent from the object's own keys
+    expect(Object.keys(wire).sort()).toEqual(['selected_entity']);
+    expect(Object.keys(wire)).not.toContain('diagnostics');
+    expect(Object.keys(wire)).not.toContain('constraints');
+    expect(Object.keys(wire)).not.toContain('current_file');
+    expect(Object.keys(wire)).not.toContain('attached_contexts');
+  });
+
+  it('mapContextToWire output matches JSON.stringify round-trip', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Bracket.w',
+      diagnostics: ['err1'],
+    };
+
+    const wire = mapContextToWire(input);
+    const roundTripped = JSON.parse(JSON.stringify(wire)) as typeof wire;
+
+    // No information should be lost: the round-tripped object must equal the original wire object
+    expect(roundTripped).toStrictEqual(wire);
   });
 });
 
