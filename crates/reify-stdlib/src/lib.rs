@@ -1878,73 +1878,6 @@ mod tests {
         )
     }
 
-    /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
-    /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
-    fn assert_complex_builtin_undef(
-        builtin: &str,
-        re: f64,
-        im: f64,
-        dimension: DimensionVector,
-    ) {
-        let z = Value::Complex {
-            re,
-            im,
-            dimension,
-        };
-        assert!(
-            eval_builtin(builtin, &[z]).is_undef(),
-            "{builtin} with Complex{{re={re}, im={im}, dimension={dimension:?}}} must return Undef"
-        );
-    }
-
-    #[test]
-    fn complex_overflow_returns_undef_both_builtins() {
-        // Both `magnitude` and `complex_magnitude` delegate to complex_abs for Complex
-        // inputs; f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
-        for builtin in ["magnitude", "complex_magnitude"] {
-            assert_complex_builtin_undef(
-                builtin,
-                f64::MAX,
-                f64::MAX,
-                DimensionVector::DIMENSIONLESS,
-            );
-        }
-    }
-
-    #[test]
-    fn complex_overflow_dimensioned_returns_undef_both_builtins() {
-        // Same overflow but through the Scalar branch (non-dimensionless).
-        for builtin in ["magnitude", "complex_magnitude"] {
-            assert_complex_builtin_undef(
-                builtin,
-                f64::MAX,
-                f64::MAX,
-                DimensionVector::LENGTH,
-            );
-        }
-    }
-
-    #[test]
-    fn complex_nan_component_returns_undef_both_builtins() {
-        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
-        for builtin in ["magnitude", "complex_magnitude"] {
-            // re=NaN
-            assert_complex_builtin_undef(
-                builtin,
-                f64::NAN,
-                1.0,
-                DimensionVector::DIMENSIONLESS,
-            );
-            // im=NaN (symmetric case)
-            assert_complex_builtin_undef(
-                builtin,
-                1.0,
-                f64::NAN,
-                DimensionVector::DIMENSIONLESS,
-            );
-        }
-    }
-
     #[test]
     fn abs_real_negative() {
         let result = eval_builtin("abs", &[Value::Real(-5.0)]);
@@ -5914,6 +5847,75 @@ mod tests {
     #[test]
     fn imag_non_complex_returns_undef() {
         assert!(eval_builtin("imag", &[Value::Real(3.0)]).is_undef());
+    }
+
+    // ── consolidated magnitude / complex_magnitude edge-case tests (task 770/820) ──
+
+    /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
+    /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
+    fn assert_complex_builtin_undef(
+        builtin: &str,
+        re: f64,
+        im: f64,
+        dimension: DimensionVector,
+    ) {
+        let z = Value::Complex {
+            re,
+            im,
+            dimension,
+        };
+        assert!(
+            eval_builtin(builtin, &[z]).is_undef(),
+            "{builtin} with Complex{{re={re}, im={im}, dimension={dimension:?}}} must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_overflow_returns_undef_both_builtins() {
+        // Both `magnitude` and `complex_magnitude` delegate to complex_abs for Complex
+        // inputs; f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_overflow_dimensioned_returns_undef_both_builtins() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_nan_component_returns_undef_both_builtins() {
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            // re=NaN
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NAN,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            // im=NaN (symmetric case)
+            assert_complex_builtin_undef(
+                builtin,
+                1.0,
+                f64::NAN,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
     }
 
     // ── complex_magnitude() tests (step-5) ───────────────────────────────────
