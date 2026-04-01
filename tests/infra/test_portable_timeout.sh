@@ -69,6 +69,13 @@ echo "--- Test 6: command output is passed through ---"
 assert "portable_timeout passes through stdout" \
     bash -c "source '$LIB_PORTABLE' && out=\$(portable_timeout 5 echo hello) && [ \"\$out\" = 'hello' ]"
 
+# -- Test 7: _PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout --------
+echo ""
+echo "--- Test 7: _PORTABLE_TIMEOUT_TIMED_OUT set to true on genuine timeout ---"
+
+assert "_PORTABLE_TIMEOUT_TIMED_OUT is true after genuine timeout" \
+    bash -c "source '$LIB_PORTABLE' && portable_timeout 1 sleep 10 || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'true' ]"
+
 # -- Summary ------------------------------------------------------------------
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
