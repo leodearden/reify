@@ -1126,10 +1126,14 @@ impl Engine {
                     } else {
                         // Guard is false or Undef — member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        snapshot.values.insert(
-                            cell.id.clone(),
-                            (Value::Undef, DeterminacyState::Undetermined),
-                        );
+                        let det = if cell.kind == ValueCellKind::Auto {
+                            DeterminacyState::Auto
+                        } else {
+                            DeterminacyState::Undetermined
+                        };
+                        snapshot
+                            .values
+                            .insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
 
