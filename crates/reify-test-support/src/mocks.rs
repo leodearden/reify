@@ -1864,8 +1864,11 @@ mod tests {
                 other => panic!("expected Solved variant, got {:?}", other),
             })
             .collect();
-        seen.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        seen.sort_by(f64::total_cmp);
         let expected: Vec<f64> = (0..4).map(|i| 0.001 * (i + 1) as f64).collect();
+        // Exact f64 equality is safe here: the mock stores and returns
+        // values verbatim with no arithmetic transformation, so bit-exact
+        // round-trip equality holds.
         assert_eq!(
             seen, expected,
             "each distinct result slot should be consumed exactly once"
