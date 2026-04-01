@@ -100,7 +100,7 @@ echo "--- Test g: assert increments PASS on success ---"
 
 result=$(bash -c "
     source '$HELPER_FILE'
-    assert 'should pass' true
+    assert 'should pass' true >/dev/null
     echo \"\$PASS\"
 " 2>/dev/null || echo "ERROR")
 if [ "$result" = "1" ]; then
@@ -115,7 +115,7 @@ echo "--- Test h: assert increments FAIL on failure ---"
 
 result=$(bash -c "
     source '$HELPER_FILE'
-    assert 'should fail' false
+    assert 'should fail' false >/dev/null
     echo \"\$FAIL\"
 " 2>/dev/null || echo "ERROR")
 if [ "$result" = "1" ]; then
