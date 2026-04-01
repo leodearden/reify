@@ -1074,3 +1074,62 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
         "Deactivated Auto param in else_members should have DeterminacyState::Auto, not Undetermined"
     );
 }
+
+/// Regression test: regular Param-kind members must still get Undetermined when
+/// their guard is false during eval(). The Auto-kind fix should not affect normal params.
+#[test]
+fn eval_guard_false_regular_param_still_undetermined() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let width_id = ValueCellId::new("S", "width");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Regular Param-kind member 'width' with a default value
+    let width_decl = make_param_decl("S", "width", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to false → members are inactive
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![width_decl], // members (inactive because guard=false)
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=false: width is in deactivated members
+    let _result = engine.eval(&module);
+
+    // Regular Param-kind cell should still have DeterminacyState::Undetermined
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&width_id)
+        .expect("width should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated regular Param should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Undetermined,
+        "Deactivated regular Param should have DeterminacyState::Undetermined"
+    );
+}
