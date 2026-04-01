@@ -534,41 +534,19 @@ describe('subscribeToClaudeEvents', () => {
     expect(handler).toHaveBeenCalledWith({ type: 'error', id: 'e1', message: 'rate limit' });
   });
 
-  it('payload type field does not override mapped event type for thinking_delta', async () => {
-    const { setup } = captureListener('claude-thinking-delta');
+  it.each([
+    { eventName: 'claude-thinking-delta', expectedType: 'thinking_delta', payload: { id: 'x', content: 'think', type: 'WRONG' } },
+    { eventName: 'claude-text-delta', expectedType: 'text_delta', payload: { id: 'x', content: 'hi', type: 'WRONG' } },
+    { eventName: 'claude-error', expectedType: 'error', payload: { id: 'x', message: 'oops', type: 'WRONG' } },
+  ])('payload type field does not override mapped event type for $eventName', async ({ eventName, expectedType, payload }) => {
+    const { setup } = captureListener(eventName);
     const handler = vi.fn();
     const listener = await setup(handler);
 
-    listener({ payload: { id: 'x', content: 'think', type: 'WRONG' } });
+    listener({ payload });
 
     expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'thinking_delta' }),
-    );
-  });
-
-  it('payload type field does not override mapped event type', async () => {
-    const { setup } = captureListener('claude-text-delta');
-    const handler = vi.fn();
-    const listener = await setup(handler);
-
-    // Simulate payload with a rogue `type` field that should NOT override the mapped type
-    listener({ payload: { id: 'x', content: 'hi', type: 'WRONG' } });
-
-    expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'text_delta' }),
-    );
-  });
-
-  it('payload type field does not override mapped event type for claude-error', async () => {
-    const { setup } = captureListener('claude-error');
-    const handler = vi.fn();
-    const listener = await setup(handler);
-
-    // Simulate payload with a rogue `type` field that should NOT override the mapped type
-    listener({ payload: { id: 'x', message: 'oops', type: 'WRONG' } });
-
-    expect(handler).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'error', id: 'x', message: 'oops' }),
+      expect.objectContaining({ type: expectedType }),
     );
   });
 
