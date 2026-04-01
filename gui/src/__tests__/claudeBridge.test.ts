@@ -921,14 +921,17 @@ type ExpectedWireNames = 'selected_entity' | 'diagnostics' | 'constraints' | 'cu
 type _AssertFieldMapValuesLiteral = AssertTrue<Equals<FieldMapValues, ExpectedWireNames>>;
 
 // WireMessageContext must match the expected snake_case shape derived from MessageContext.
+// All keys are optional — matching the JSON wire format where absent fields are omitted.
 type ExpectedWireShape = {
-  selected_entity: string | undefined;
-  diagnostics: string[] | undefined;
-  constraints: string[] | undefined;
-  current_file: string | undefined;
-  attached_contexts: string[] | undefined;
+  selected_entity?: string | undefined;
+  diagnostics?: string[] | undefined;
+  constraints?: string[] | undefined;
+  current_file?: string | undefined;
+  attached_contexts?: string[] | undefined;
 };
 type _AssertWireMessageContextShape = AssertTrue<Equals<WireMessageContext, ExpectedWireShape>>;
+// Guard: WireMessageContext must be identical to its own Partial (i.e., all keys already optional).
+type _AssertWireMessageContextIsPartial = AssertTrue<Equals<WireMessageContext, Partial<WireMessageContext>>>;
 
 // mapContextToWire must return WireMessageContext (not Record<string, unknown>).
 type _AssertMapReturnType = AssertTrue<Equals<ReturnType<typeof mapContextToWire>, WireMessageContext>>;
