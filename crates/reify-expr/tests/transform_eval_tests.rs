@@ -858,6 +858,38 @@ fn near_zero_quat_transform_compose_returns_undef() {
     );
 }
 
+/// Transform*Transform with all-zero quaternion (w=0,x=0,y=0,z=0) should return
+/// Undef. The zero quaternion has norm=0.0 < EPSILON, so it cannot be normalized.
+/// This is the exact-zero boundary case complementing near_zero_quat (w=1e-17).
+#[test]
+fn compose_zero_norm_quaternion_returns_undef() {
+    let zero_quat_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        zero_quat_transform,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "zero-norm quaternion should return Undef, got {:?}",
+        result
+    );
+}
+
 /// Transform*Vector with near-zero quaternion should return Undef.
 #[test]
 fn near_zero_quat_transform_mul_vector_returns_undef() {
