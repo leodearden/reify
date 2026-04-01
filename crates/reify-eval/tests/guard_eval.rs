@@ -938,3 +938,287 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
         "Step 3: DeterminacyState should be Determined after else re-activation"
     );
 }
+
+/// When eval() runs with guard=false, Auto-kind members in the members list
+/// should get DeterminacyState::Auto (not Undetermined) in the snapshot.
+/// This makes eval() consistent with edit_param()'s Auto-skip logic.
+#[test]
+fn eval_guard_false_auto_param_gets_auto_determinacy() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to false → members are inactive
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![thickness_decl], // members (inactive because guard=false)
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=false: thickness is in deactivated members
+    let _result = engine.eval(&module);
+
+    // Auto-kind cell should have DeterminacyState::Auto even when deactivated
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated Auto param should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Auto,
+        "Deactivated Auto param should have DeterminacyState::Auto, not Undetermined"
+    );
+}
+
+/// Mirror of eval_guard_false_auto_param_gets_auto_determinacy but for else_members:
+/// When guard defaults to true, else_members are deactivated. Auto-kind cells
+/// in else_members should get DeterminacyState::Auto (not Undetermined).
+#[test]
+fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to true → else_members are inactive
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .auto_param("S", "thickness", Type::length())
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![],               // members
+            vec![],               // constraints
+            vec![thickness_decl], // else_members (inactive because guard=true)
+            vec![],               // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=true: thickness is in deactivated else_members
+    let _result = engine.eval(&module);
+
+    // Auto-kind cell should have DeterminacyState::Auto even when deactivated
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated Auto param in else_members should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Auto,
+        "Deactivated Auto param in else_members should have DeterminacyState::Auto, not Undetermined"
+    );
+}
+
+/// Regression test: regular Param-kind members must still get Undetermined when
+/// their guard is false during eval(). The Auto-kind fix should not affect normal params.
+#[test]
+fn eval_guard_false_regular_param_still_undetermined() {
+    let _active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let width_id = ValueCellId::new("S", "width");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    // Regular Param-kind member 'width' with a default value
+    let width_decl = make_param_decl("S", "width", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            // Guard defaults to false → members are inactive
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![width_decl], // members (inactive because guard=false)
+            vec![],
+            vec![],
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // eval() with guard=false: width is in deactivated members
+    let _result = engine.eval(&module);
+
+    // Regular Param-kind cell should still have DeterminacyState::Undetermined
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&width_id)
+        .expect("width should be in snapshot after eval");
+    assert_eq!(
+        *snap_val,
+        Value::Undef,
+        "Deactivated regular Param should have Value::Undef"
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Undetermined,
+        "Deactivated regular Param should have DeterminacyState::Undetermined"
+    );
+}
+
+/// Edge case: when the guard expression evaluates to Undef (neither true nor false),
+/// both members and else_members are deactivated. Auto-kind cells in this case
+/// should get DeterminacyState::Auto, not Undetermined.
+#[test]
+fn eval_guard_undef_auto_param_gets_auto_determinacy() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let depth_id = ValueCellId::new("S", "depth");
+
+    // Guard expression references an Auto param (starts Undef, no solver)
+    let guard_expr = value_ref_typed("S", "flag", Type::Bool);
+
+    // Auto param 'thickness' in members
+    let thickness_decl = ValueCellDecl {
+        id: thickness_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    // Auto param 'depth' in else_members
+    let depth_decl = ValueCellDecl {
+        id: depth_id.clone(),
+        kind: ValueCellKind::Auto,
+        visibility: Visibility::Public,
+        cell_type: Type::length(),
+        default_expr: None,
+        span: SourceSpan::new(0, 0),
+    };
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "flag", Type::Bool)
+        .auto_param("S", "thickness", Type::length())
+        .auto_param("S", "depth", Type::length())
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![thickness_decl], // members (deactivated: guard is Undef)
+            vec![],
+            vec![depth_decl], // else_members (deactivated: guard is Undef)
+            vec![],
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    let result = engine.eval(&module);
+
+    // Guard should be Undef
+    assert_eq!(
+        result.values.get(&guard_id),
+        Some(&Value::Undef),
+        "guard cell should be Undef when referencing unresolved Auto param"
+    );
+
+    let snapshot = engine.snapshot().expect("snapshot should exist after eval");
+
+    // Auto-kind member in members: should get Auto determinacy
+    let (thick_val, thick_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in snapshot");
+    assert_eq!(*thick_val, Value::Undef);
+    assert_eq!(
+        *thick_det,
+        DeterminacyState::Auto,
+        "Auto member deactivated by Undef guard should have DeterminacyState::Auto"
+    );
+
+    // Auto-kind member in else_members: should also get Auto determinacy
+    let (depth_val, depth_det) = snapshot
+        .values
+        .get(&depth_id)
+        .expect("depth should be in snapshot");
+    assert_eq!(*depth_val, Value::Undef);
+    assert_eq!(
+        *depth_det,
+        DeterminacyState::Auto,
+        "Auto else_member deactivated by Undef guard should have DeterminacyState::Auto"
+    );
+}
