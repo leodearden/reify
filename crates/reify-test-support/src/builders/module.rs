@@ -133,6 +133,7 @@ impl CompiledModuleBuilder {
             compiled_purposes: self.compiled_purposes,
             templates: self.templates,
             units: Vec::new(),
+            type_aliases: Vec::new(),
             diagnostics: self.diagnostics,
             content_hash,
         }

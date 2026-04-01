@@ -147,6 +147,8 @@ pub struct CompiledModule {
     pub templates: Vec<TopologyTemplate>,
     /// Compiled unit declarations from this module.
     pub units: Vec<CompiledUnit>,
+    /// Compiled type alias declarations from this module.
+    pub type_aliases: Vec<TypeAliasEntry>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -629,6 +631,16 @@ impl TypeAliasRegistry {
     /// Look up a type alias by name.
     pub fn lookup(&self, name: &str) -> Option<&TypeAliasEntry> {
         self.entries.get(name)
+    }
+
+    /// Iterate over all entries in the registry.
+    pub fn iter(&self) -> impl Iterator<Item = &TypeAliasEntry> {
+        self.entries.values()
+    }
+
+    /// Consume the registry, returning all entries as a Vec.
+    pub fn into_entries(self) -> Vec<TypeAliasEntry> {
+        self.entries.into_values().collect()
     }
 }
 
@@ -3810,6 +3822,9 @@ pub fn compile_with_prelude(
         // Unit content hashes
         let unit_hashes = compiled_units.iter().map(|u| u.content_hash);
 
+        // Type alias content hashes
+        let alias_hashes = alias_registry.iter().map(|a| a.content_hash);
+
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
             .chain(import_hashes)
@@ -3818,10 +3833,13 @@ pub fn compile_with_prelude(
             .chain(trait_hashes)
             .chain(field_hashes)
             .chain(purpose_hashes)
-            .chain(unit_hashes);
+            .chain(unit_hashes)
+            .chain(alias_hashes);
 
         ContentHash::combine_all(all_hashes)
     };
+
+    let type_aliases = alias_registry.into_entries();
 
     CompiledModule {
         path: parsed.path.clone(),
@@ -3833,6 +3851,7 @@ pub fn compile_with_prelude(
         compiled_purposes,
         templates,
         units: compiled_units,
+        type_aliases,
         diagnostics,
         content_hash,
     }
