@@ -356,9 +356,7 @@ impl ConcurrentScheduler {
                     }
                 }
                 if let Some(ref promoter) = config.priority_promoter {
-                    for node in dirty {
-                        promoter.remove(node);
-                    }
+                    promoter.batch_remove(dirty);
                 }
             };
 
