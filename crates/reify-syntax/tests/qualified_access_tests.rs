@@ -110,3 +110,35 @@ fn parse_qualified_access_precedence_over_and() {
         other => panic!("expected BinOp, got {:?}", other),
     }
 }
+
+// ── Step 7: instance qualified access ───────────────────────────────────────
+
+#[test]
+fn parse_instance_qualified_access() {
+    let (decls, errors) = parse_decls("structure S { let x = obj.(Foo::bar) }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "obj"));
+            match &qualified.kind {
+                ExprKind::QualifiedAccess { qualifier, member } => {
+                    assert!(matches!(&qualifier.kind, ExprKind::Ident(n) if n == "Foo"));
+                    assert_eq!(member, "bar");
+                }
+                other => panic!("expected inner QualifiedAccess, got {:?}", other),
+            }
+        }
+        other => panic!("expected InstanceQualifiedAccess, got {:?}", other),
+    }
+}
