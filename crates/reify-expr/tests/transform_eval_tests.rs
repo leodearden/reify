@@ -791,6 +791,39 @@ fn compose_all_nan_rotation_returns_undef() {
     );
 }
 
+/// Identity * Transform-with-NaN-rotation should return Undef.
+/// Complements compose_nan_rotation_returns_undef which tests NaN on the LHS;
+/// this ensures the RHS NaN propagates through quat_mul_t and is caught by
+/// the post-multiply finiteness check.
+#[test]
+fn compose_rhs_nan_rotation_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_transform,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "RHS NaN rotation should return Undef, got {:?}",
+        result
+    );
+}
+
 // ── Near-zero quaternion tests ───────────────────────────────────────────────
 
 /// Transform*Transform with near-zero quaternion (w=1e-17, rest=0 — norm=1e-17
