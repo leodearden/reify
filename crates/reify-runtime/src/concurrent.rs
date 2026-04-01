@@ -859,6 +859,92 @@ mod tests {
         assert!(result.skipped.is_empty());
     }
 
+    /// Priority sort from config: 3 nodes at level 0 with different priorities.
+    /// Verifies nodes are spawned in priority order (P0 first, P3 last) when
+    /// execute_with_config uses config.node_priorities for sorting.
+    #[tokio::test]
+    async fn priority_sort_from_config_orders_spawn_correctly() {
+        use reify_eval::cache::{EvalOutcome, NodeId};
+        use reify_eval::deps::DependencyTrace;
+        use reify_types::ValueCellId;
+        use std::collections::{HashMap, HashSet};
+        use std::sync::{Arc, Mutex};
+
+        /// Tracks evaluation order with a small delay to serialize spawn order.
+        struct OrderTrackingEvaluator {
+            eval_order: Arc<Mutex<Vec<NodeId>>>,
+        }
+
+        impl AsyncNodeEvaluator for OrderTrackingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                // Record the order immediately on spawn
+                self.eval_order.lock().unwrap().push(node);
+                EvalOutcome::Changed
+            }
+        }
+
+        let eval_order = Arc::new(Mutex::new(Vec::new()));
+        let evaluator = Arc::new(OrderTrackingEvaluator {
+            eval_order: Arc::clone(&eval_order),
+        });
+
+        let e = "Prio";
+        let a = NodeId::Value(ValueCellId::new(e, "a")); // will be P0
+        let b = NodeId::Value(ValueCellId::new(e, "b")); // will be P1Slow
+        let c = NodeId::Value(ValueCellId::new(e, "c")); // will be P3
+
+        // All at level 0 (no reads → dirty by default)
+        let mut traces = HashMap::new();
+        traces.insert(a.clone(), DependencyTrace::default());
+        traces.insert(b.clone(), DependencyTrace::default());
+        traces.insert(c.clone(), DependencyTrace::default());
+
+        // Configure priorities: a=P0, b=P1Slow, c=P3
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(a.clone(), Priority::P0Interactive);
+        node_priorities.insert(b.clone(), Priority::P1Slow);
+        node_priorities.insert(c.clone(), Priority::P3Speculative);
+
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let config = SchedulerConfig {
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        // Provide eval_set in reverse-priority order to prove sorting works
+        let eval_set = vec![c.clone(), b.clone(), a.clone()];
+        let changed_cells = HashSet::new();
+
+        let result = scheduler
+            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .await
+            .unwrap();
+
+        assert_eq!(result.changed.len(), 3);
+
+        // Verify spawn order: a (P0) should be first in the sorted dirty_nodes
+        let order = eval_order.lock().unwrap();
+        let a_pos = order.iter().position(|n| *n == a).unwrap();
+        let b_pos = order.iter().position(|n| *n == b).unwrap();
+        let c_pos = order.iter().position(|n| *n == c).unwrap();
+        assert!(
+            a_pos < c_pos,
+            "P0 node should be spawned before P3 node, but a_pos={a_pos} c_pos={c_pos}"
+        );
+        assert!(
+            b_pos < c_pos,
+            "P1Slow node should be spawned before P3 node, but b_pos={b_pos} c_pos={c_pos}"
+        );
+        assert!(
+            a_pos < b_pos,
+            "P0 node should be spawned before P1Slow node, but a_pos={a_pos} b_pos={b_pos}"
+        );
+    }
+
     /// Pre-computed skip: 3 parents (p1 Changed, p2/p3 Unchanged) fan into
     /// downstream d which reads ONLY p1/p2/p3 (not the changed param a).
     /// d must be evaluated (not skipped) because p1 is Changed.
