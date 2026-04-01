@@ -2149,7 +2149,7 @@ describe('App claudeSendMessage error-path integration', () => {
   it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
     await withSuppressedRejections(async () => {
       vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
+      vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
         meshes: [],
         values: [],
         constraints: [],
