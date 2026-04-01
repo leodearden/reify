@@ -622,6 +622,23 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
         "Auto param 'thickness' in else_members should retain solver-resolved value (0.005 SI) after else branch deactivation, got {:?}",
         thickness_after
     );
+
+    // DeterminacyState in snapshot must remain Determined after else branch deactivation
+    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let (snap_val, snap_det) = snapshot
+        .values
+        .get(&thickness_id)
+        .expect("thickness in snapshot after else deactivation");
+    assert!(
+        matches!(snap_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "thickness should retain 0.005 SI in snapshot after else deactivation, got {:?}",
+        snap_val
+    );
+    assert_eq!(
+        *snap_det,
+        DeterminacyState::Determined,
+        "Auto param DeterminacyState must remain Determined after else branch deactivation"
+    );
 }
 
 /// Regression test: regular Param-kind members must still be set to Undef when
