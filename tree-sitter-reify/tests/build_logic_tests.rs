@@ -660,12 +660,9 @@ fn test_stamp_shared_across_simulated_profiles() {
 /// DAC permission enforcement, which root/CAP_DAC_OVERRIDE bypasses.
 #[cfg(unix)]
 fn is_root() -> bool {
-    // SAFETY: getuid() is a trivial POSIX syscall with a stable ABI.
-    // uid_t is u32 on all major Unix platforms (Linux, macOS, BSD).
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    unsafe { getuid() == 0 }
+    // SAFETY: libc::getuid() is a trivial POSIX syscall. libc provides a
+    // well-audited, platform-tested binding — uid_t maps to u32 on Linux/macOS/BSD.
+    unsafe { libc::getuid() == 0 }
 }
 
 /// RAII guard that unconditionally restores write permissions on drop.
@@ -698,30 +695,95 @@ impl Drop for ReadonlyGuard {
     }
 }
 
+/// Extracts the source text of a test function identified by `fn_sig`.
+///
+/// Searches `source` for `fn_sig` and returns the slice from that point up to
+/// (but not including) the next `\n#[test]` annotation, or to the end of
+/// `source` if no subsequent test function exists.
+///
+/// The sub-slice offset arithmetic adds 1 when converting from
+/// `fn_section[1..].find(...)` back to an index in `fn_section`, avoiding the
+/// off-by-one that would clip the character immediately before the next `#[test]`.
+/// Similarly the fallback uses `fn_section.len()` (not `len() - 1`) so that
+/// the last function's closing `}` is always included.
+fn extract_test_fn_body<'a>(source: &'a str, fn_sig: &str) -> Option<&'a str> {
+    let fn_start = source.find(fn_sig)?;
+    let fn_section = &source[fn_start..];
+    // `find` on `fn_section[1..]` returns an offset relative to the sub-slice.
+    // Adding 1 converts it back to an index in `fn_section`.
+    let fn_end = fn_section[1..]
+        .find("\n#[test]")
+        .map(|p| p + 1)
+        .unwrap_or(fn_section.len());
+    Some(&fn_section[..fn_end])
+}
+
+/// Scans `source` for test functions annotated with `#[cfg(unix)]` and returns
+/// their signatures (e.g. `"fn test_foo()"`).
+///
+/// Uses a line-by-line state machine: once `#[cfg(unix)]` is seen, the flag
+/// `saw_cfg_unix` is set. Intermediate attribute/comment lines keep the flag
+/// alive. When a line starting with `fn test_` is reached with the flag set,
+/// the signature up to and including `()` is collected. Non-test `fn` lines or
+/// a blank line clears the flag, preventing false positives from isolated
+/// `#[cfg(unix)]` helper functions.
+fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut saw_cfg_unix = false;
+    let mut saw_test = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[cfg(unix)]") {
+            saw_cfg_unix = true;
+        } else if trimmed == "#[test]" {
+            saw_test = true;
+        } else if trimmed.starts_with("fn test_") && saw_cfg_unix && saw_test {
+            // Extract "fn name()" — everything up to and including the first ')'
+            if let Some(end) = trimmed.find(')') {
+                result.push(trimmed[..=end].to_string());
+            }
+            saw_cfg_unix = false;
+            saw_test = false;
+        } else if trimmed.starts_with('#') {
+            // Another attribute — keep flags alive (e.g. #[allow(...)])
+        } else if trimmed.starts_with("//") || trimmed.is_empty() {
+            // Comment or blank line — keep flags alive
+        } else {
+            // Any other line (fn without test, let, etc.) resets the flags
+            saw_cfg_unix = false;
+            saw_test = false;
+        }
+    }
+    result
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
-    // Source-level regression guard: both #[cfg(unix)] tests that rely on
-    // DAC permission enforcement must contain an is_root() skip guard.
+    // Source-level regression guard: every #[cfg(unix)] test function that
+    // relies on DAC permission enforcement must contain an is_root() skip guard.
     // Without it, tests produce misleading failures under root/CAP_DAC_OVERRIDE.
+    //
+    // The set of unix test functions is discovered dynamically by
+    // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
+    // automatically checked without updating a hardcoded list.
     let source = std::fs::read_to_string("tests/build_logic_tests.rs")
         .expect("should be able to read this test file");
 
-    let unix_test_fns = [
-        "fn test_stamp_write_failure_no_panic()",
-        "fn test_readonly_guard_restores_on_drop()",
-    ];
+    let unix_test_fns = find_cfg_unix_test_fns(&source);
+
+    // Sanity-check: the scanner must find at least 2 unix tests (the ones we
+    // know about). This catches a broken scanner that silently returns empty.
+    assert!(
+        unix_test_fns.len() >= 2,
+        "find_cfg_unix_test_fns should discover at least 2 #[cfg(unix)] test functions, \
+         but found {:?}",
+        unix_test_fns
+    );
 
     for fn_sig in &unix_test_fns {
-        let fn_start = source
-            .find(fn_sig)
+        let fn_body = extract_test_fn_body(&source, fn_sig)
             .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
-        // Extract enough of the function body to check for the guard
-        let fn_section = &source[fn_start..];
-        // Find the next test function or end of file as boundary
-        let fn_end = fn_section[1..]
-            .find("\n#[test]")
-            .unwrap_or(fn_section.len() - 1);
-        let fn_body = &fn_section[..fn_end];
 
         assert!(
             fn_body.contains("is_root()"),
@@ -797,4 +859,169 @@ fn test_readonly_guard_restores_on_drop() {
     // After guard is dropped, directory should be writable again
     std::fs::File::create(subdir.join("probe_after_drop.txt"))
         .expect("directory should be writable after ReadonlyGuard is dropped");
+}
+
+#[test]
+fn test_is_root_uses_libc_not_raw_ffi() {
+    // Source-level regression guard: is_root() must use libc::getuid() rather than
+    // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
+    // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
+    // a well-audited, platform-tested binding.
+    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+        .expect("should be able to read this test file");
+
+    let fn_start = source
+        .find("fn is_root()")
+        .expect("source should contain is_root() function");
+    let fn_section = &source[fn_start..];
+    // Grab just up to the next function definition to avoid false positives
+    let fn_end = fn_section[1..]
+        .find("\nfn ")
+        .map(|p| p + 1)
+        .unwrap_or(fn_section.len());
+    let fn_body = &fn_section[..fn_end];
+
+    assert!(
+        !fn_body.contains("unsafe extern \"C\""),
+        "is_root() must NOT use a raw `unsafe extern \"C\"` FFI declaration. \
+         Use `libc::getuid()` from the libc crate instead. Found body:\n{}",
+        fn_body
+    );
+    assert!(
+        fn_body.contains("libc::getuid()"),
+        "is_root() must use `libc::getuid()` from the libc crate. Found body:\n{}",
+        fn_body
+    );
+}
+
+#[test]
+fn test_extract_test_fn_body_no_off_by_one() {
+    // Tests for the extract_test_fn_body() helper.
+    // This helper extracts the source text of a test function bounded by fn_sig.
+    // Key correctness property: the sub-slice offset arithmetic must add 1 when
+    // converting from `fn_section[1..].find(...)` back to an index in `fn_section`.
+
+    // Case (a): middle function — body must include all content up to (not including)
+    // the "\n#[test]" that introduces the next function.
+    let src_middle = concat!(
+        "#[test]\n",
+        "fn test_first() {\n",
+        "    let x = 1;\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_second() {\n",
+        "    let y = 2;\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_third() {\n",
+        "    let z = 3;\n",
+        "}"
+    );
+    let body = extract_test_fn_body(src_middle, "fn test_second()");
+    let body = body.expect("extract_test_fn_body should find test_second");
+    assert!(
+        body.contains("let y = 2;"),
+        "body should contain function content; got: {:?}",
+        body
+    );
+    // The off-by-one would clip the closing `}` of test_second; verify it's present.
+    assert!(
+        body.contains('}'),
+        "body should include closing brace of test_second; got: {:?}",
+        body
+    );
+    // Body must NOT bleed into the next function.
+    assert!(
+        !body.contains("let z = 3;"),
+        "body must not include content from test_third; got: {:?}",
+        body
+    );
+
+    // Case (b): last function — off-by-one `unwrap_or(len - 1)` would clip the
+    // final character. The corrected version uses `unwrap_or(len)`.
+    let src_last = concat!(
+        "#[test]\n",
+        "fn test_alpha() {\n",
+        "    is_root();\n",
+        "}\n",
+        "#[test]\n",
+        "fn test_omega() {\n",
+        "    let last = true;\n",
+        "}"   // NOTE: no trailing newline — the off-by-one clips this `}`
+    );
+    let body_last = extract_test_fn_body(src_last, "fn test_omega()");
+    let body_last = body_last.expect("extract_test_fn_body should find test_omega");
+    assert!(
+        body_last.ends_with('}'),
+        "body of last function must include the closing brace (off-by-one would clip it); \
+         got: {:?}",
+        body_last
+    );
+
+    // Case (c): function not found returns None.
+    let none = extract_test_fn_body(src_last, "fn test_nonexistent()");
+    assert!(none.is_none(), "should return None for missing function");
+}
+
+#[test]
+fn test_find_cfg_unix_test_fns_discovers_dynamically() {
+    // Tests for the find_cfg_unix_test_fns() helper.
+    // The helper should find all test functions annotated with #[cfg(unix)],
+    // regardless of ordering of attributes.
+
+    let synthetic_source = concat!(
+        // A plain test — no #[cfg(unix)] — should be ignored.
+        "#[test]\n",
+        "fn test_plain_no_unix() {\n",
+        "    let _ = 1;\n",
+        "}\n\n",
+        // A #[cfg(unix)] test — should be collected.
+        "#[cfg(unix)]\n",
+        "#[test]\n",
+        "fn test_unix_one() {\n",
+        "    if is_root() { return; }\n",
+        "}\n\n",
+        // A non-test #[cfg(unix)] function — should be ignored.
+        "#[cfg(unix)]\n",
+        "fn helper_unix_not_a_test() {\n",
+        "    let _ = 2;\n",
+        "}\n\n",
+        // A #[test] before #[cfg(unix)] — should also be collected.
+        "#[test]\n",
+        "#[cfg(unix)]\n",
+        "fn test_unix_two() {\n",
+        "    if is_root() { return; }\n",
+        "}\n\n",
+        // A #[cfg(unix)] followed by a non-test fn — should be ignored.
+        "#[cfg(unix)]\n",
+        "fn not_a_test_fn() {}\n",
+    );
+
+    let fns = find_cfg_unix_test_fns(synthetic_source);
+
+    assert!(
+        fns.contains(&"fn test_unix_one()".to_string()),
+        "should discover test_unix_one; got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_unix_two()".to_string()),
+        "should discover test_unix_two; got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_plain_no_unix()".to_string()),
+        "should NOT include test_plain_no_unix (no #[cfg(unix)]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("helper_unix_not_a_test")),
+        "should NOT include helper_unix_not_a_test (not a #[test]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("not_a_test_fn")),
+        "should NOT include not_a_test_fn (not a #[test]); got: {:?}",
+        fns
+    );
 }
