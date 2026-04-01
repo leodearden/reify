@@ -83,7 +83,15 @@ impl AnalysisContext {
         // Get the span, doc, and owning declaration name from the parsed module
         let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, enclosing_decl)?;
 
-        // Find type info from the compiled module, scoped to the same declaration
+        // Find type info from the compiled module, scoped to the same declaration.
+        //
+        // The compiler separates members into two collections:
+        //   - template.value_cells: top-level params, lets, and autos
+        //   - template.guarded_groups: members declared inside
+        //     `where cond { ... } else { ... }` blocks
+        //
+        // Both must be searched to get complete coverage regardless of
+        // where a member appears syntactically.
         for template in &self.compiled.templates {
             if template.name != decl_name {
                 continue;
@@ -100,7 +108,7 @@ impl AnalysisContext {
                     });
                 }
             }
-            // Also search inside guarded groups (where blocks)
+            // Also search inside guarded groups (where/else blocks)
             for group in &template.guarded_groups {
                 for vc in group.members.iter().chain(group.else_members.iter()) {
                     if vc.id.member == name {
