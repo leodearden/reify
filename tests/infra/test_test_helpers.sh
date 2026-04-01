@@ -256,7 +256,7 @@ done
 echo ""
 echo "--- Pipeline divergence documented in test_helpers.sh ---"
 
-if grep -q 'test_tree_sitter_pipeline' "$HELPER_FILE" 2>/dev/null; then
+if grep -q 'tests/infra/test_tree_sitter_pipeline.sh' "$HELPER_FILE" 2>/dev/null; then
     check "test_helpers.sh documents pipeline divergence" "true"
 else
     check "test_helpers.sh documents pipeline divergence" "false"
