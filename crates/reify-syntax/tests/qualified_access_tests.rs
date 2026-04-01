@@ -164,3 +164,29 @@ fn parse_invalid_instance_qualified_numeric() {
         errors
     );
 }
+
+// ── Step 11: member access not shadowed ─────────────────────────────────────
+
+#[test]
+fn parse_member_access_not_shadowed() {
+    let (decls, errors) = parse_decls("structure S { let x = a.b }");
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = match &decls[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    let let_decl = match &structure.members[0] {
+        MemberDecl::Let(l) => l,
+        other => panic!("expected Let, got {:?}", other),
+    };
+
+    match &let_decl.value.kind {
+        ExprKind::MemberAccess { object, member } => {
+            assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "a"));
+            assert_eq!(member, "b");
+        }
+        other => panic!("expected MemberAccess, got {:?}", other),
+    }
+}
