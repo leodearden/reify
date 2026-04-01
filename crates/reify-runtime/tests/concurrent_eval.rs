@@ -3036,6 +3036,15 @@ async fn test_always_cancel_when_stale_drops_result() {
         !result.changed.contains(&slow_node),
         "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
     );
+    // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
+    // It is neither committed (changed) nor preemptively skipped — it ran but
+    // its result was discarded due to cancellation, so it doesn't appear in
+    // either set. This is distinct from OnlyRunOnFinalInputs which skips
+    // evaluation entirely and places the node in `skipped`.
+    assert!(
+        !result.skipped.contains(&slow_node),
+        "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
+    );
 }
 
 /// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
