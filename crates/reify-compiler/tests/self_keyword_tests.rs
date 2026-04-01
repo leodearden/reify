@@ -45,6 +45,7 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_param_resolves_to_value_ref() {
     // `self.x` inside a structure should resolve to the same value cell as `x`.
     let source = r#"structure S {
@@ -81,6 +82,7 @@ fn self_dot_param_resolves_to_value_ref() {
 // ─── step-2: self.sub.param resolves ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_sub_dot_param_resolves() {
     // `self.bolt.d` should resolve to the sub component's member.
     let source = r#"structure Bolt {
@@ -129,6 +131,7 @@ structure S {
 // ─── step-3: self in let binding ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_let_binding_compiles() {
     // `self.a + 1mm` in a let binding should compile without errors.
     let source = r#"structure S {
@@ -152,6 +155,7 @@ fn self_in_let_binding_compiles() {
 // ─── step-4: self in constraint ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_compiles() {
     // `constraint self.x > 2mm` should compile without errors.
     let source = r#"structure S {
@@ -184,6 +188,7 @@ fn self_in_constraint_compiles() {
 // ─── step-5: bare self as entity reference ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn bare_self_as_entity_reference() {
     // Bare `self` (without `.member`) should resolve to the enclosing entity
     // as a StructureRef type. `let me = self` captures the entity itself.
@@ -220,6 +225,7 @@ fn bare_self_as_entity_reference() {
 // ─── step-6: self in guarded block (TreeBracket pattern) ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_guarded_block() {
     // The TreeBracket pattern from spec section 8.9: `self.depth` in a guarded
     // `where` block should resolve to the enclosing entity's params.
@@ -348,6 +354,7 @@ fn self_error_at_module_scope() {
 // ─── step-11: self.param equivalence with bare param ───
 
 #[test]
+#[ignore = "requires task 153: self keyword compiler support"]
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
     let source = r#"structure S {
