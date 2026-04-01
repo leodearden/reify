@@ -57,6 +57,14 @@ impl PriorityPromoter {
         self.effective.remove(node_id);
     }
 
+    /// Remove multiple nodes in a single call (avoids per-node locking overhead
+    /// when called through [`SharedPriorityPromoter::batch_remove`]).
+    pub fn batch_remove(&mut self, nodes: &[NodeId]) {
+        for node in nodes {
+            self.effective.remove(node);
+        }
+    }
+
     /// Return the number of tracked nodes (for test verification of cleanup).
     pub fn count(&self) -> usize {
         self.effective.len()
