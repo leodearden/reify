@@ -161,6 +161,91 @@ fn transform_mul_vector_preserves_dimension() {
     }
 }
 
+// ── Wrong-dimension vector tests ────────────────────────────────────────────
+
+/// Transform * 2-element Vector should return Undef because vec3_components
+/// rejects vectors with len != 3.
+#[test]
+fn transform_mul_vector_2d_returns_undef() {
+    let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v2,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "2-element vector should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * 4-element Vector should return Undef because vec3_components
+/// rejects vectors with len != 3.
+#[test]
+fn transform_mul_vector_4d_returns_undef() {
+    let v4 = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+        Value::length(4.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v4,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "4-element vector should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Dimensionless vector tests ──────────────────────────────────────────────
+
+/// Identity transform applied to a dimensionless vector (Value::Real components)
+/// should return a Vector with Value::Real components, not Value::Scalar.
+/// This exercises the make_components_3 DIMENSIONLESS branch.
+#[test]
+fn transform_mul_dimensionless_vector_preserves_real() {
+    let v = Value::Vector(vec![
+        Value::Real(1.0),
+        Value::Real(0.0),
+        Value::Real(0.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v.clone(),
+        Type::vec3(Type::Real),
+        Type::vec3(Type::Real),
+    );
+    // Verify the result is a Vector (not Undef)
+    match &result {
+        Value::Vector(items) => {
+            assert_eq!(items.len(), 3, "result should have 3 components");
+            // Verify each component is Value::Real (not Value::Scalar)
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::Real(_) => {} // correct variant
+                    other => panic!(
+                        "component {i} should be Value::Real, got {:?}",
+                        other
+                    ),
+                }
+            }
+            // Verify values match input
+            assert_eq!(result, v, "identity transform should preserve dimensionless vector exactly");
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
 // ── step-3: Transform * Point tests ──────────────────────────────────────────
 
 /// Identity transform * point returns the same point.
