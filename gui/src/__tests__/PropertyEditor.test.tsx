@@ -921,6 +921,8 @@ describe('PropertyEditor escape clears data-invalid', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     // data-invalid should be set after invalid Enter
     expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Typed value is preserved in editing state until blur reverts it
+    expect(input.value).toBe('abc');
     // Now blur (instead of Escape) — handleBlur reverts invalid input
     fireEvent.blur(input);
     expect(input.value).toBe('50');
