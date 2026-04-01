@@ -8,11 +8,12 @@ export const flushMacrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
 /** Flush the microtask queue only (no setTimeout). Equivalent to Promise.resolve(). */
 export const flushMicrotasks = () => Promise.resolve();
 
-/** Create a Promise whose resolve function is returned alongside it. */
+/** Create a Promise whose resolve and reject functions are returned alongside it. */
 export function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 /**
