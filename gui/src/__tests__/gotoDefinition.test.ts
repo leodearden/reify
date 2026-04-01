@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { flushMacrotasks } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -67,7 +68,7 @@ describe('reifyGotoDefinition', () => {
     // First call uses first URI
     mousedownHandler(mockEvent, mockView);
     // Wait for the async requestDefinition to complete
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMacrotasks();
     let params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
     expect(params.textDocument.uri).toBe('file:///first.ri');
 
@@ -83,7 +84,7 @@ describe('reifyGotoDefinition', () => {
 
     // Second call uses updated URI
     mousedownHandler(mockEvent, mockView);
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMacrotasks();
     params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
     expect(params.textDocument.uri).toBe('file:///second.ri');
   });
@@ -121,7 +122,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
     };
 
     mousedownHandler(mockEvent, mockView);
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMacrotasks();
 
     // onNavigate should be called with the cross-file URI, line, character
     expect(onNavigate).toHaveBeenCalledWith('file:///other.ri', 5, 2);
@@ -160,7 +161,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
     };
 
     mousedownHandler(mockEvent, mockView);
-    await new Promise((r) => setTimeout(r, 10));
+    await flushMacrotasks();
 
     // onNavigate should NOT be called (same file)
     expect(onNavigate).not.toHaveBeenCalled();
