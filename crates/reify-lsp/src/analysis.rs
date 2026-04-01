@@ -437,6 +437,7 @@ mod tests {
             .expect("diameter should exist in occurrence");
         assert_eq!(info.name, "diameter");
         assert_eq!(info.kind, ValueCellKind::Param);
+        assert!(matches!(info.cell_type, Type::Scalar { .. }));
     }
 
     #[test]
@@ -778,6 +779,13 @@ mod tests {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Bracket"), None);
+    }
+
+    #[test]
+    fn find_entity_doc_returns_none_for_undocumented_occurrence() {
+        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Joint"), None);
     }
 
     #[test]

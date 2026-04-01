@@ -510,6 +510,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hover_on_documented_occurrence_shows_doc() {
+        let source =
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        // 'Joint' starts after 'occurrence def ' = col 15 on line 1
+        let position = Position::new(1, 16);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for documented occurrence name");
+        assert!(
+            md.contains("occurrence Joint"),
+            "should show 'occurrence Joint', got: {md}"
+        );
+        assert!(
+            md.contains("A joint process."),
+            "should contain doc comment, got: {md}"
+        );
+    }
+
     // --- guarded-group hover tests ---
 
     #[test]
