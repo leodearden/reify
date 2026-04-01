@@ -9,20 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIB_PORTABLE="$REPO_ROOT/scripts/lib_portable.sh"
 
-PASS=0
-FAIL=0
-
-assert() {
-    local desc="$1"
-    shift
-    if "$@" >/dev/null 2>&1; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        FAIL=$((FAIL + 1))
-    fi
-}
+source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== portable_sha256 unit tests ==="
 
@@ -85,8 +72,4 @@ assert "sourcing lib_portable.sh twice succeeds (source guard)" \
     bash -c "source '$LIB_PORTABLE' && source '$LIB_PORTABLE'"
 
 # -- Summary ------------------------------------------------------------------
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
+test_summary

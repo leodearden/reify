@@ -7,20 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_FILE="$SCRIPT_DIR/lib.sh"
 
-PASS=0
-FAIL=0
-
-assert() {
-    local desc="$1"
-    shift
-    if "$@" >/dev/null 2>&1; then
-        echo "  PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $desc"
-        FAIL=$((FAIL + 1))
-    fi
-}
+source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 echo "=== lib.sh unit tests ==="
 
@@ -69,8 +56,4 @@ assert "compute_sha256 still produces a 64-char hex hash" \
     bash -c "source '$LIB_FILE' && hash=\$(compute_sha256 '$LIB_FILE' | awk '{print \$1}') && [[ \"\$hash\" =~ ^[0-9a-f]{64}$ ]]"
 
 # ── Summary ───────────────────────────────────────────────────────
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
+test_summary
