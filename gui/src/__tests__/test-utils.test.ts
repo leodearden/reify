@@ -61,6 +61,12 @@ describe('deferred', () => {
     const result = await d.promise;
     expect(result).toEqual({ name: 'test' });
   });
+
+  it('promise is initially pending (not immediately resolved)', async () => {
+    const d = deferred<string>();
+    const winner = await Promise.race([d.promise, Promise.resolve('sentinel')]);
+    expect(winner).toBe('sentinel');
+  });
 });
 
 describe('withSuppressedRejections', () => {
