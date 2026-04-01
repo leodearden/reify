@@ -112,6 +112,67 @@ assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command succeeds" \
 assert "_PORTABLE_TIMEOUT_TIMED_OUT is false when command fails normally" \
     bash -c "source '$LIB_PORTABLE' && portable_timeout 5 false || true; [ \"\$_PORTABLE_TIMEOUT_TIMED_OUT\" = 'false' ]"
 
+# -- Test 10: mktemp failure + genuine timeout still enforced -----------------
+echo ""
+echo "--- Test 10: mktemp failure + genuine timeout still enforced ---"
+
+# Force POSIX fallback (exclude timeout/gtimeout from PATH) AND force mktemp
+# failure (TMPDIR=/dev/null/nope). The timeout should still fire, kill the
+# command, and report _PORTABLE_TIMEOUT_TIMED_OUT=true.
+assert "mktemp failure: timeout still enforced (exit 124)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        export TMPDIR=/dev/null/nope
+        hash -r
+        source "$LIB_PORTABLE"
+        rc=0; portable_timeout 1 sleep 10 || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is true" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        export TMPDIR=/dev/null/nope
+        hash -r
+        source "$LIB_PORTABLE"
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ]
+    '
+
+assert "mktemp failure: stderr contains warning" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        new_path=""
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        export TMPDIR=/dev/null/nope
+        hash -r
+        source "$LIB_PORTABLE"
+        err=$(portable_timeout 1 sleep 10 2>&1 >/dev/null || true)
+        echo "$err" | grep -q "mktemp failed"
+    '
+
 # -- Summary ------------------------------------------------------------------
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
