@@ -69,6 +69,11 @@ fn eval_mul_expr(
 // ── step-1: Transform * Vector tests ─────────────────────────────────────────
 
 /// Identity transform * vector returns the same vector.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn identity_transform_mul_vector() {
     let v = Value::Vector(vec![
@@ -116,6 +121,11 @@ fn transform_90z_mul_vector() {
 }
 
 /// Translation component is ignored when multiplying Transform * Vector.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn transform_translation_ignored_for_vector() {
     let v = Value::Vector(vec![
@@ -161,9 +171,99 @@ fn transform_mul_vector_preserves_dimension() {
     }
 }
 
+// ── Wrong-dimension vector tests ────────────────────────────────────────────
+
+/// Transform * 2-element Vector should return Undef because vec3_components
+/// rejects vectors with len != 3.
+#[test]
+fn transform_mul_vector_2d_returns_undef() {
+    let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v2,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "2-element vector should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform * 4-element Vector should return Undef because vec3_components
+/// rejects vectors with len != 3.
+#[test]
+fn transform_mul_vector_4d_returns_undef() {
+    let v4 = Value::Vector(vec![
+        Value::length(1.0),
+        Value::length(2.0),
+        Value::length(3.0),
+        Value::length(4.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v4,
+        Type::vec3(Type::length()),
+        Type::vec3(Type::length()),
+    );
+    assert!(
+        result.is_undef(),
+        "4-element vector should return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Dimensionless vector tests ──────────────────────────────────────────────
+
+/// Identity transform applied to a dimensionless vector (Value::Real components)
+/// should return a Vector with Value::Real components, not Value::Scalar.
+/// This exercises the make_components_3 DIMENSIONLESS branch.
+#[test]
+fn transform_mul_dimensionless_vector_preserves_real() {
+    let v = Value::Vector(vec![
+        Value::Real(1.0),
+        Value::Real(0.0),
+        Value::Real(0.0),
+    ]);
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        v.clone(),
+        Type::vec3(Type::Real),
+        Type::vec3(Type::Real),
+    );
+    // Verify the result is a Vector (not Undef)
+    match &result {
+        Value::Vector(items) => {
+            assert_eq!(items.len(), 3, "result should have 3 components");
+            // Verify each component is Value::Real (not Value::Scalar)
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    Value::Real(_) => {} // correct variant
+                    other => panic!(
+                        "component {i} should be Value::Real, got {:?}",
+                        other
+                    ),
+                }
+            }
+            // Verify values match input
+            assert_eq!(result, v, "identity transform should preserve dimensionless vector exactly");
+        }
+        other => panic!("expected Vector, got {:?}", other),
+    }
+}
+
 // ── step-3: Transform * Point tests ──────────────────────────────────────────
 
 /// Identity transform * point returns the same point.
+///
+/// `assert_eq!` is valid here (not `assert_approx`) because the identity
+/// quaternion `(1,0,0,0)` rotation is exact under IEEE 754: `quat_rotate`
+/// multiplies by 1.0 and 0.0, which produce exact results with no
+/// floating-point rounding.
 #[test]
 fn identity_transform_mul_point() {
     let p = Value::Point(vec![
@@ -791,6 +891,39 @@ fn compose_all_nan_rotation_returns_undef() {
     );
 }
 
+/// Identity * Transform-with-NaN-rotation should return Undef.
+/// Complements compose_nan_rotation_returns_undef which tests NaN on the LHS;
+/// this ensures the RHS NaN propagates through quat_mul_t and is caught by
+/// the post-multiply finiteness check.
+#[test]
+fn compose_rhs_nan_rotation_returns_undef() {
+    let nan_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        identity_transform(),
+        Type::Transform(3),
+        nan_transform,
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "RHS NaN rotation should return Undef, got {:?}",
+        result
+    );
+}
+
 // ── Near-zero quaternion tests ───────────────────────────────────────────────
 
 /// Transform*Transform with near-zero quaternion (w=1e-17, rest=0 — norm=1e-17
@@ -821,6 +954,38 @@ fn near_zero_quat_transform_compose_returns_undef() {
     assert!(
         result.is_undef(),
         "near-zero quaternion should return Undef, got {:?}",
+        result
+    );
+}
+
+/// Transform*Transform with all-zero quaternion (w=0,x=0,y=0,z=0) should return
+/// Undef. The zero quaternion has norm=0.0 < EPSILON, so it cannot be normalized.
+/// This is the exact-zero boundary case complementing near_zero_quat (w=1e-17).
+#[test]
+fn compose_zero_norm_quaternion_returns_undef() {
+    let zero_quat_transform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])),
+    };
+    let result = eval_mul_expr(
+        zero_quat_transform,
+        Type::Transform(3),
+        identity_transform(),
+        Type::Transform(3),
+        Type::Transform(3),
+    );
+    assert!(
+        result.is_undef(),
+        "zero-norm quaternion should return Undef, got {:?}",
         result
     );
 }
