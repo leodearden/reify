@@ -55,24 +55,36 @@ portable_timeout() {
         # Use a temp file flag so we can distinguish the timer's kill from
         # a coincidental exit code 143 or 124.
         local timeout_flag
-        timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX")
-        rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+        timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
 
         "$@" &
         local cmd_pid=$!
-        ( sleep "$seconds" && touch "$timeout_flag" && kill "$cmd_pid" 2>/dev/null ) &
+
+        if [ -n "$timeout_flag" ]; then
+            # Normal path: use flag file for precise timeout detection.
+            rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+            ( sleep "$seconds" && touch "$timeout_flag" && kill "$cmd_pid" 2>/dev/null ) &
+        else
+            # Degraded path: mktemp failed, fall back to old 143-detection.
+            echo "WARNING: mktemp failed, timeout detection degraded" >&2
+            ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+        fi
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
         # Clean up timer — if command finished before timeout, kill the sleep+kill subshell.
         kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
 
-        if [ -f "$timeout_flag" ]; then
+        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ]; then
             # Timer fired and killed the process — genuine timeout.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
+            rm -f "$timeout_flag"
+        elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+            # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+            cmd_exit=124
         fi
-        rm -f "$timeout_flag"
     fi
 
     return "$cmd_exit"
