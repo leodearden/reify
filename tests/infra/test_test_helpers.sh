@@ -237,6 +237,14 @@ for consumer in "${CONSUMERS[@]}"; do
         fi
         ;;
     esac
+
+    # (f) all consumers must have a pre-source existence guard for test_helpers.sh
+    #     matching pattern: [ -f ... ] || or test -f ... ||
+    if grep -E '\[ -f.*test_helpers\.sh.*\] \|\||test -f.*test_helpers\.sh.*\|\|' "$cfile" >/dev/null 2>&1; then
+        check "$cname has pre-source existence guard" "true"
+    else
+        check "$cname has pre-source existence guard" "false"
+    fi
 done
 
 # -- Summary -------------------------------------------------------------------
