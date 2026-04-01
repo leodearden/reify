@@ -3911,8 +3911,13 @@ pub fn compile_with_prelude(
         // Unit content hashes
         let unit_hashes = compiled_units.iter().map(|u| u.content_hash);
 
-        // Type alias content hashes
-        let alias_hashes = alias_registry.iter().map(|a| a.content_hash);
+        // Type alias content hashes (sorted by name for deterministic ordering)
+        let mut alias_hash_pairs: Vec<_> = alias_registry
+            .iter()
+            .map(|a| (a.name.clone(), a.content_hash))
+            .collect();
+        alias_hash_pairs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let alias_hashes = alias_hash_pairs.into_iter().map(|(_, h)| h);
 
         let all_hashes = std::iter::once(path_hash)
             .chain(template_hashes)
