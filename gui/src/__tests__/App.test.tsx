@@ -1154,16 +1154,12 @@ describe('App handleReload race condition', () => {
 
   it('concurrent file-change event during reload is preserved after all succeed', async () => {
     // Use deferred promises to control when bridgeOpenFile resolves
-    let resolveBracket: ((value: any) => void) | undefined;
-    let resolveGear: ((value: any) => void) | undefined;
+    const bracketOpen = deferred<any>();
+    const gearOpen = deferred<any>();
 
     vi.mocked(bridge.openFile).mockImplementation((path: string) => {
-      if (path === '/project/bracket.ri') {
-        return new Promise((resolve) => { resolveBracket = resolve; });
-      }
-      if (path === '/project/gear.ri') {
-        return new Promise((resolve) => { resolveGear = resolve; });
-      }
+      if (path === '/project/bracket.ri') return bracketOpen.promise;
+      if (path === '/project/gear.ri') return gearOpen.promise;
       return Promise.resolve({ path, content: `updated ${path}` });
     });
 
@@ -1187,8 +1183,8 @@ describe('App handleReload race condition', () => {
     fileChangedCallback!({ path: '/project/housing.ri', content: '' });
 
     // Now resolve both promises (both succeed)
-    resolveBracket!({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
-    resolveGear!({ path: '/project/gear.ri', content: 'updated gear.ri' });
+    bracketOpen.resolve({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
+    gearOpen.resolve({ path: '/project/gear.ri', content: 'updated gear.ri' });
 
     // After settlement, housing.ri should still be in changedFiles
     // The reload prompt should show housing.ri, not disappear entirely
@@ -1200,16 +1196,12 @@ describe('App handleReload race condition', () => {
 
   it('concurrent file-change event during reload preserved alongside partial failure', async () => {
     // bracket.ri succeeds, gear.ri fails, housing.ri arrives concurrently
-    let resolveBracket: ((value: any) => void) | undefined;
-    let rejectGear: ((reason: any) => void) | undefined;
+    const bracketOpen = deferred<any>();
+    const gearOpen = deferred<any>();
 
     vi.mocked(bridge.openFile).mockImplementation((path: string) => {
-      if (path === '/project/bracket.ri') {
-        return new Promise((resolve) => { resolveBracket = resolve; });
-      }
-      if (path === '/project/gear.ri') {
-        return new Promise((_resolve, reject) => { rejectGear = reject; });
-      }
+      if (path === '/project/bracket.ri') return bracketOpen.promise;
+      if (path === '/project/gear.ri') return gearOpen.promise;
       return Promise.resolve({ path, content: `updated ${path}` });
     });
 
@@ -1236,8 +1228,8 @@ describe('App handleReload race condition', () => {
         fileChangedCallback!({ path: '/project/housing.ri', content: '' });
 
         // Resolve bracket (success), reject gear (failure)
-        resolveBracket!({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
-        rejectGear!(new Error('disk error'));
+        bracketOpen.resolve({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
+        gearOpen.reject(new Error('disk error'));
 
         // After settlement: gear.ri (failed) + housing.ri (concurrent) should both remain
         // bracket.ri (succeeded) should be removed
