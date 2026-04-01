@@ -2052,6 +2052,9 @@ mod tests {
     /// With auto param bounds [5mm, 100mm] and a trivially-satisfied constraint
     /// (x > 1mm), minimizing x should drive it toward the 5mm lower bound,
     /// confirming convergence quality (result between 4mm and 8mm).
+    ///
+    /// Also serves as a positive-path regression guard for "feasibility check
+    /// returns Solved when an objective is present."
     #[test]
     fn optimization_converges_near_lower_bound() {
         use crate::DimensionalSolver;
@@ -2098,7 +2101,7 @@ mod tests {
                 );
             }
             other => panic!(
-                "feasible initial point with objective should return Solved, got {:?}",
+                "minimizing x with feasible initial point should return Solved, got {:?}",
                 other
             ),
         }
