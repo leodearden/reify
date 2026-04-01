@@ -358,10 +358,6 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.blur(input);
     expect(onSetParam).toHaveBeenCalledWith('c1', '75');
   });
-});
-
-describe('PropertyEditor blur-commit quantity literals', () => {
-  const values = EDITABLE_C1;
 
   it("blur with valid quantity '80mm' calls onSetParameter and does NOT set data-invalid", () => {
     const onSetParam = vi.fn();
