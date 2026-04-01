@@ -2050,4 +2050,24 @@ mod tests {
             panic!("deliberate test panic");
         });
     }
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_from_scoped_threads() {
+        // Validates the exact pattern used by the refactored concurrent tests:
+        // thread::scope + Mutex<Vec<i32>>, recovering the Vec with
+        // unwrap_or_else(|e| e.into_inner()) in case of mutex poisoning.
+        let result: Vec<i32> = run_with_deadlock_timeout(|| {
+            let collected = Mutex::new(Vec::new());
+            std::thread::scope(|s| {
+                for i in 0..4i32 {
+                    let collected_ref = &collected;
+                    s.spawn(move || {
+                        collected_ref.lock().unwrap().push(i);
+                    });
+                }
+            });
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
+        });
+        assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
+    }
 }
