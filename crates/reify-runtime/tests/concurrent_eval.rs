@@ -2260,6 +2260,11 @@ mod poison_evaluate {
             Value::Real(20.0),
             "T.b should be a*2 = 10*2 = 20.0 after evaluate"
         );
+        assert_eq!(
+            results[0].determinacy,
+            DeterminacyState::Determined,
+            "T.b should be Determined after successful evaluate"
+        );
     }
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
