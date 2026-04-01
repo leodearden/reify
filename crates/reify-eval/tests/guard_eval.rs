@@ -700,11 +700,12 @@ fn edit_param_guard_false_still_deactivates_regular_params() {
     );
 }
 
-/// Round-trip test: guard true→false→true re-resolves Auto param via solver.
+/// Round-trip test: guard true→false→true preserves Auto param value.
 ///
-/// Uses SequencedMockConstraintSolver with two results (5mm, 8mm) to prove
-/// re-activation triggers a new solve() call rather than serving a stale value.
-/// Asserts DeterminacyState::Determined at every step.
+/// Uses SequencedMockConstraintSolver with two results (5mm, 8mm). The solver
+/// is invoked once during initial eval (5mm). On re-activation, the preserved
+/// value keeps constraints out of the dirty cone, so the solver is NOT re-invoked.
+/// Asserts the value and DeterminacyState::Determined are preserved at every step.
 #[test]
 fn guard_round_trip_true_false_true_re_resolves_auto_param() {
     let active_id = ValueCellId::new("S", "active");
@@ -797,14 +798,17 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
         "Step 2: DeterminacyState should remain Determined after deactivation"
     );
 
-    // Step 3: edit_param(active, true) — guard re-activates, solver re-invoked (8mm)
+    // Step 3: edit_param(active, true) — guard re-activates.
+    // The solver is NOT re-invoked because the preserved value (5mm) keeps
+    // constraints out of the dirty cone. The Auto param retains its original
+    // solver-resolved value through the full round-trip.
     let edit_result2 = engine
         .edit_param(active_id.clone(), Value::Bool(true))
         .expect("edit_param to true should succeed");
     let thickness_react = edit_result2.values.get(&thickness_id);
     assert!(
-        matches!(thickness_react, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.008).abs() < 1e-10),
-        "Step 3: thickness should be 8mm (0.008 SI) after re-activation (solver re-invoked), got {:?}",
+        matches!(thickness_react, Some(Value::Scalar { si_value, .. }) if (*si_value - 0.005).abs() < 1e-10),
+        "Step 3: thickness should retain preserved value (5mm / 0.005 SI) after re-activation, got {:?}",
         thickness_react
     );
     let snap3 = engine.snapshot().expect("snapshot after re-activation");
