@@ -106,22 +106,16 @@ describe('claude invoke wrappers', () => {
     });
   });
 
-  it('claudeSendMessage passes undefined fields correctly', async () => {
+  it('claudeSendMessage omits undefined-valued fields from wire context', async () => {
     mockInvoke.mockResolvedValue(undefined);
 
     await claudeSendMessage('hello', {
       selectedEntity: 'Bracket.w',
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+    expect(mockInvoke.mock.calls[0][1]).toStrictEqual({
       text: 'hello',
-      context: {
-        selected_entity: 'Bracket.w',
-        diagnostics: undefined,
-        constraints: undefined,
-        current_file: undefined,
-        attached_contexts: undefined,
-      },
+      context: { selected_entity: 'Bracket.w' },
     });
   });
 
@@ -158,15 +152,9 @@ describe('claude invoke wrappers', () => {
       diagnostics: ['error: type mismatch'],
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith('claude_send_message', {
+    expect(mockInvoke.mock.calls[0][1]).toStrictEqual({
       text: 'fix this',
-      context: {
-        selected_entity: undefined,
-        diagnostics: ['error: type mismatch'],
-        constraints: undefined,
-        current_file: undefined,
-        attached_contexts: undefined,
-      },
+      context: { diagnostics: ['error: type mismatch'] },
     });
   });
 
@@ -261,20 +249,34 @@ describe('claude invoke wrappers', () => {
     expect(wireKeys).toEqual(expectedWireKeys);
   });
 
-  it('mapContextToWire passes undefined fields through', () => {
+  it('mapContextToWire omits undefined fields from output', () => {
     const input: MessageContext = {
       selectedEntity: 'Bracket.w',
     };
 
     const wire = mapContextToWire(input);
 
-    expect(wire).toStrictEqual({
-      selected_entity: 'Bracket.w',
-      diagnostics: undefined,
-      constraints: undefined,
-      current_file: undefined,
-      attached_contexts: undefined,
-    });
+    // Only the defined field should be present
+    expect(wire).toStrictEqual({ selected_entity: 'Bracket.w' });
+    // Undefined-valued fields must be absent from the object's own keys
+    expect(Object.keys(wire).sort()).toEqual(['selected_entity']);
+    expect(Object.keys(wire)).not.toContain('diagnostics');
+    expect(Object.keys(wire)).not.toContain('constraints');
+    expect(Object.keys(wire)).not.toContain('current_file');
+    expect(Object.keys(wire)).not.toContain('attached_contexts');
+  });
+
+  it('mapContextToWire output matches JSON.stringify round-trip', () => {
+    const input: MessageContext = {
+      selectedEntity: 'Bracket.w',
+      diagnostics: ['err1'],
+    };
+
+    const wire = mapContextToWire(input);
+    const roundTripped = JSON.parse(JSON.stringify(wire)) as typeof wire;
+
+    // No information should be lost: the round-tripped object must equal the original wire object
+    expect(roundTripped).toStrictEqual(wire);
   });
 });
 
@@ -921,14 +923,17 @@ type ExpectedWireNames = 'selected_entity' | 'diagnostics' | 'constraints' | 'cu
 type _AssertFieldMapValuesLiteral = AssertTrue<Equals<FieldMapValues, ExpectedWireNames>>;
 
 // WireMessageContext must match the expected snake_case shape derived from MessageContext.
+// All keys are optional — matching the JSON wire format where absent fields are omitted.
 type ExpectedWireShape = {
-  selected_entity: string | undefined;
-  diagnostics: string[] | undefined;
-  constraints: string[] | undefined;
-  current_file: string | undefined;
-  attached_contexts: string[] | undefined;
+  selected_entity?: string | undefined;
+  diagnostics?: string[] | undefined;
+  constraints?: string[] | undefined;
+  current_file?: string | undefined;
+  attached_contexts?: string[] | undefined;
 };
 type _AssertWireMessageContextShape = AssertTrue<Equals<WireMessageContext, ExpectedWireShape>>;
+// Guard: WireMessageContext must be identical to its own Partial (i.e., all keys already optional).
+type _AssertWireMessageContextIsPartial = AssertTrue<Equals<WireMessageContext, Partial<WireMessageContext>>>;
 
 // mapContextToWire must return WireMessageContext (not Record<string, unknown>).
 type _AssertMapReturnType = AssertTrue<Equals<ReturnType<typeof mapContextToWire>, WireMessageContext>>;

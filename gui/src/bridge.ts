@@ -163,14 +163,16 @@ export const BUILD_CONTEXT_HANDLED_FIELDS = [
  * and the map automatically extends this type.
  */
 export type WireMessageContext = {
-  [K in keyof Required<MessageContext> as (typeof MESSAGE_CONTEXT_FIELD_MAP)[K]]: MessageContext[K];
+  [K in keyof Required<MessageContext> as (typeof MESSAGE_CONTEXT_FIELD_MAP)[K]]?: MessageContext[K];
 };
 
 /** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
 export function mapContextToWire(ctx: MessageContext): WireMessageContext {
   const wire: Record<string, unknown> = {};
   for (const [camel, snake] of Object.entries(MESSAGE_CONTEXT_FIELD_MAP)) {
-    wire[snake] = ctx[camel as keyof MessageContext];
+    if (ctx[camel as keyof MessageContext] !== undefined) {
+      wire[snake] = ctx[camel as keyof MessageContext];
+    }
   }
   return wire as WireMessageContext;
 }
