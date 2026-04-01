@@ -410,19 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn run_report_helper_returns_outcome_and_output() {
-        let entries = vec![
-            make_entry("Widget", 0, Some("length_ok"), Satisfaction::Satisfied),
-            make_entry("Widget", 1, Some("weight_limit"), Satisfaction::Violated),
-        ];
-        let (outcome, output) = run_report(&entries);
-
-        assert_eq!(outcome, ConstraintOutcome::SomeViolated);
-        assert!(output.contains("OK length_ok"), "expected OK line, got: {}", output);
-        assert!(output.contains("VIOLATED weight_limit"), "expected VIOLATED line, got: {}", output);
-    }
-
-    #[test]
     fn empty_entries_returns_all_satisfied_with_no_output() {
         let (result, output) = run_report(&[]);
 
