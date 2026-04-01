@@ -1893,7 +1893,7 @@ mod tests {
         };
         assert!(
             eval_builtin(builtin, &[z]).is_undef(),
-            "{builtin} with Complex{{re={re}, im={im}}} must return Undef"
+            "{builtin} with Complex{{re={re}, im={im}, dimension={dimension:?}}} must return Undef"
         );
     }
 
