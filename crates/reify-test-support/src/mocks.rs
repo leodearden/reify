@@ -533,7 +533,6 @@ mod tests {
     use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
     use std::sync::Barrier;
-    use std::time::Duration;
 
     #[test]
     fn empty_problem_has_all_defaults() {
@@ -1887,9 +1886,10 @@ mod tests {
         );
 
         let expected_clone = expected_values.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(SolveResult, Vec<SolveResult>)>(1);
 
-        std::thread::spawn(move || {
+        // Run inside a spawned thread so we can apply a timeout — a real
+        // deadlock would hang CI forever without this.
+        let (phase1_result, results) = run_with_deadlock_timeout(move || {
             let solver = SequencedMockConstraintSolver::new(vec![
                 SolveResult::Solved {
                     values: expected_clone.clone(),
@@ -1918,12 +1918,8 @@ mod tests {
                 }
             });
 
-            let _ = tx.send((phase1_result, collected.into_inner().unwrap()));
+            (phase1_result, collected.into_inner().unwrap_or_else(|e| e.into_inner()))
         });
-
-        let (phase1_result, results) = rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("test timed out after 10s — possible deadlock");
 
         match &phase1_result {
             SolveResult::Solved { values } => {
