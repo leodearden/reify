@@ -670,6 +670,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 123, content: 'hello' } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-text-delta'),
+          { id: 123, content: 'hello' },
+        );
       });
 
       it('drops text_delta when content field is missing', async () => {
@@ -678,6 +683,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 'msg-1' } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-text-delta'),
+          { id: 'msg-1' },
+        );
       });
 
       it('drops thinking_delta when content is null', async () => {
@@ -686,6 +696,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 'msg-t1', content: null } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-thinking-delta'),
+          { id: 'msg-t1', content: null },
+        );
       });
 
       it('drops tool_call when tool_name is missing', async () => {
@@ -694,6 +709,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 'tc1', tool_input: {} } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-tool-call'),
+          { id: 'tc1', tool_input: {} },
+        );
       });
 
       it('drops tool_result when tool_name is a number', async () => {
@@ -702,6 +722,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 'tr1', tool_name: 42, result: 'ok' } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-tool-result'),
+          { id: 'tr1', tool_name: 42, result: 'ok' },
+        );
       });
 
       it('drops done when id is undefined', async () => {
@@ -710,6 +735,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: undefined } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-done'),
+          { id: undefined },
+        );
       });
 
       it('drops error when message is an array', async () => {
@@ -718,6 +748,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { id: 'e1', message: ['bad', 'stuff'] } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-error'),
+          { id: 'e1', message: ['bad', 'stuff'] },
+        );
       });
 
       it('drops error when id is missing', async () => {
@@ -726,6 +761,11 @@ describe('subscribeToClaudeEvents', () => {
         const listener = await setup(handler);
         listener({ payload: { message: 'rate limit exceeded' } });
         expect(handler).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledOnce();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('claude-error'),
+          { message: 'rate limit exceeded' },
+        );
       });
     });
 
@@ -738,6 +778,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc1', tool_name: 'edit', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input=[1,2,3] (array) to empty object', async () => {
@@ -748,6 +789,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc2', tool_name: 'read', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input=undefined to empty object', async () => {
@@ -758,6 +800,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc3', tool_name: 'write', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input="string" to empty object', async () => {
@@ -768,6 +811,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc4', tool_name: 'run', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('normalizes tool_input absent (key not present) to empty object', async () => {
@@ -778,6 +822,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc-absent', tool_name: 'exec', tool_input: {},
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
 
       it('passes through valid tool_input object unchanged', async () => {
@@ -788,6 +833,7 @@ describe('subscribeToClaudeEvents', () => {
         expect(handler).toHaveBeenCalledWith({
           type: 'tool_call', id: 'tc5', tool_name: 'edit', tool_input: { path: '/f' },
         });
+        expect(warnSpy).not.toHaveBeenCalled();
       });
     });
 
