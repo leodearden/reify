@@ -346,21 +346,6 @@ describe('PropertyEditor navigation enhancements', () => {
 describe('PropertyEditor blur-commit', () => {
   const values = EDITABLE_C1;
 
-  it("blur with invalid quantity 'mm80' does NOT call onSetParameter, reverts to '50', no data-invalid", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: 'mm80' } });
-    fireEvent.blur(input);
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
-
   it.each([
     ['75', '75', 'plain integer'],
     ['80mm', '80mm', 'quantity with unit'],
@@ -383,6 +368,32 @@ describe('PropertyEditor blur-commit', () => {
     fireEvent.input(el, { target: { value: input } });
     fireEvent.blur(el);
     expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    expect(el.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it.each([
+    ['mm80', 'unit-first quantity'],
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+    ['   ', 'whitespace-only'],
+  ])("blur '%s' (%s) does NOT call onSetParameter, reverts to '50', no data-invalid", (input) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(el.value).toBe('50');
     expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 });
@@ -964,34 +975,6 @@ describe('PropertyEditor accessibility', () => {
   });
 });
 
-describe('PropertyEditor blur-path rejection for invalid literals', () => {
-  const values = EDITABLE_C1;
-
-  it.each([
-    ['0x10', 'hex lowercase'],
-    ['0X10', 'hex uppercase'],
-    ['0o10', 'octal lowercase'],
-    ['0O10', 'octal uppercase'],
-    ['0b10', 'binary lowercase'],
-    ['0B10', 'binary uppercase'],
-    ['+5', 'leading plus'],
-    ['+0', 'leading plus zero'],
-  ])("'%s' (%s) on blur does NOT call onSetParameter, reverts to original value, and does NOT set data-invalid", (invalidLiteral) => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: invalidLiteral } });
-    fireEvent.blur(input);
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
-});
-
 describe('PropertyEditor whitespace-only input rejection', () => {
   const values = EDITABLE_C1;
 
@@ -1009,18 +992,4 @@ describe('PropertyEditor whitespace-only input rejection', () => {
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
-  it("whitespace-only '   ' on blur does NOT call onSetParameter and reverts to original prop value", () => {
-    const onSetParam = vi.fn();
-    render(() => (
-      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
-    ));
-    const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '   ' } });
-    fireEvent.blur(input);
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.value).toBe('50');
-    expect(input.hasAttribute('data-invalid')).toBe(false);
-  });
 });
