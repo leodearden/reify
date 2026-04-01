@@ -2850,3 +2850,99 @@ async fn test_cleanup_on_task_cancelled() {
         "promoter should have 0 nodes after error, got {promoter_count}"
     );
 }
+
+/// Test that node_overrides are correctly threaded from the dirty-check to
+/// the commitment tracker registration. Three nodes at same level:
+/// - trigger: fires cancel immediately (fast, < always_commit_after → cancelled)
+/// - node_a: default CommitIfSlow, sleeps 50ms (> 10ms always_commit_after → committed, survives cancel)
+/// - node_b: AlwaysCancelWhenStale override, sleeps 50ms (NeverCommit regardless of time → cancelled)
+///
+/// This validates that the override looked up during the dirty/skip pre-computation
+/// is the same override used during commitment tracker registration — if they diverge,
+/// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
+#[tokio::test]
+async fn test_node_override_threaded_to_commitment_tracker() {
+    use reify_eval::cache::{EvalOutcome, NodeId};
+    use reify_eval::deps::DependencyTrace;
+    use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
+    use reify_runtime::concurrent::{
+        AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerConfig,
+    };
+    use reify_types::ValueCellId;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let e = "THREAD";
+    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+    // All at same level, empty traces → dirty by default
+    let mut traces = HashMap::new();
+    traces.insert(trigger.clone(), DependencyTrace::default());
+    traces.insert(node_a.clone(), DependencyTrace::default());
+    traces.insert(node_b.clone(), DependencyTrace::default());
+
+    let cancel = CancellationToken::new();
+
+    struct OverrideThreadingEvaluator {
+        cancel: CancellationToken,
+        trigger: NodeId,
+    }
+    impl AsyncNodeEvaluator for OverrideThreadingEvaluator {
+        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+            if node == self.trigger {
+                // Trigger: fire cancel immediately
+                self.cancel.cancel();
+                EvalOutcome::Changed
+            } else {
+                // Slow nodes: sleep long enough to exceed always_commit_after
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                EvalOutcome::Changed
+            }
+        }
+    }
+
+    let evaluator = Arc::new(OverrideThreadingEvaluator {
+        cancel: cancel.clone(),
+        trigger: trigger.clone(),
+    });
+
+    // CommitmentPolicy: commit after 10ms (slow nodes' 50ms will exceed this)
+    let policy = CommitmentPolicy {
+        always_commit_after: Duration::from_millis(10),
+        commit_when_proportion_done: 0.5,
+    };
+    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+    // node_b has AlwaysCancelWhenStale override
+    let mut node_overrides = HashMap::new();
+    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+
+    let config = SchedulerConfig {
+        commitment_tracker: Some(Arc::clone(&tracker)),
+        node_overrides,
+        ..SchedulerConfig::default()
+    };
+
+    let scheduler = ConcurrentScheduler;
+    let eval_set = vec![trigger.clone(), node_a.clone(), node_b.clone()];
+
+    let result = scheduler
+        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
+        .await
+        .unwrap();
+
+    // node_a (CommitIfSlow default): elapsed 50ms > 10ms → committed → survives cancel
+    assert!(
+        result.changed.contains(&node_a),
+        "node_a should be in changed (CommitIfSlow, elapsed > always_commit_after → committed)"
+    );
+
+    // node_b (AlwaysCancelWhenStale): NeverCommit regardless of elapsed time → cancelled
+    assert!(
+        !result.changed.contains(&node_b),
+        "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
+    );
+}
