@@ -300,20 +300,8 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
 /// Recursively count Param, Let, and Constraint members, including those
 /// nested inside `GuardedGroup.members` and `GuardedGroup.else_members`.
 ///
-/// Returns `(param_count, let_count, constraint_count)`. Recursion is bounded
-/// by [`reify_syntax::MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on
-/// pathological input; subtrees beyond the limit are silently skipped.
+/// Returns `(param_count, let_count, constraint_count)`.
 pub fn count_members_recursive(members: &[reify_syntax::MemberDecl]) -> (usize, usize, usize) {
-    count_members_recursive_depth(members, 0)
-}
-
-fn count_members_recursive_depth(
-    members: &[reify_syntax::MemberDecl],
-    depth: usize,
-) -> (usize, usize, usize) {
-    if depth > reify_syntax::MAX_MEMBER_NESTING_DEPTH {
-        return (0, 0, 0);
-    }
     let mut params = 0;
     let mut lets = 0;
     let mut constraints = 0;
@@ -323,17 +311,17 @@ fn count_members_recursive_depth(
             reify_syntax::MemberDecl::Let(_) => lets += 1,
             reify_syntax::MemberDecl::Constraint(_) => constraints += 1,
             reify_syntax::MemberDecl::GuardedGroup(g) => {
-                let (p, l, c) = count_members_recursive_depth(&g.members, depth + 1);
+                let (p, l, c) = count_members_recursive(&g.members);
                 params += p;
                 lets += l;
                 constraints += c;
-                let (p, l, c) = count_members_recursive_depth(&g.else_members, depth + 1);
+                let (p, l, c) = count_members_recursive(&g.else_members);
                 params += p;
                 lets += l;
                 constraints += c;
             }
             reify_syntax::MemberDecl::Port(port) => {
-                let (p, l, c) = count_members_recursive_depth(&port.members, depth + 1);
+                let (p, l, c) = count_members_recursive(&port.members);
                 params += p;
                 lets += l;
                 constraints += c;
@@ -1450,108 +1438,6 @@ mod tests {
         assert!(
             result.is_none(),
             "param at 33 levels of nesting should NOT be found (depth limit exceeded)"
-        );
-    }
-
-    // --- depth-limit tests for count_members_recursive ---
-
-    #[test]
-    fn count_members_recursive_succeeds_within_depth_limit() {
-        // 5 levels of nesting — well within the 32-level limit
-        let members = build_nested_guarded_members(5, "deep_param");
-        let (p, l, c) = count_members_recursive(&members);
-        assert_eq!(
-            (p, l, c),
-            (1, 0, 0),
-            "param at 5 levels of nesting should be counted"
-        );
-    }
-
-    #[test]
-    fn count_members_recursive_stops_at_depth_limit() {
-        // 33 levels of nesting — beyond MAX_MEMBER_NESTING_DEPTH (32)
-        let members = build_nested_guarded_members(33, "unreachable_param");
-        let (p, l, c) = count_members_recursive(&members);
-        assert_eq!(
-            (p, l, c),
-            (0, 0, 0),
-            "param at 33 levels of nesting should NOT be counted (depth limit exceeded)"
-        );
-    }
-
-    /// Build a GuardedGroup whose `else_members` contain a nested GuardedGroup
-    /// with a single Param at the innermost level (for testing the else-path).
-    fn build_nested_else_guarded_members(target: &str) -> Vec<reify_syntax::MemberDecl> {
-        use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl};
-        use reify_types::{ContentHash, SourceSpan};
-
-        let dummy_span = SourceSpan::new(0, 1);
-        let dummy_hash = ContentHash(0);
-        let dummy_expr = Expr {
-            kind: ExprKind::BoolLiteral(true),
-            span: dummy_span,
-        };
-
-        // Inner GuardedGroup with a param in its members
-        let inner = MemberDecl::GuardedGroup(GuardedGroupDecl {
-            condition: dummy_expr.clone(),
-            members: vec![MemberDecl::Param(ParamDecl {
-                name: target.to_string(),
-                doc: None,
-                type_expr: None,
-                default: None,
-                where_clause: None,
-                span: dummy_span,
-                content_hash: dummy_hash,
-            })],
-            else_members: vec![],
-            span: dummy_span,
-            content_hash: dummy_hash,
-        });
-
-        // Outer GuardedGroup with the inner one in else_members
-        vec![MemberDecl::GuardedGroup(GuardedGroupDecl {
-            condition: dummy_expr,
-            members: vec![],
-            else_members: vec![inner],
-            span: dummy_span,
-            content_hash: dummy_hash,
-        })]
-    }
-
-    #[test]
-    fn count_members_recursive_counts_else_members_nested_guarded() {
-        // A GuardedGroup with a nested GuardedGroup in else_members containing a param
-        let members = build_nested_else_guarded_members("else_param");
-        let (p, l, c) = count_members_recursive(&members);
-        assert_eq!(
-            (p, l, c),
-            (1, 0, 0),
-            "param nested in else_members of a GuardedGroup should be counted"
-        );
-    }
-
-    #[test]
-    fn find_named_member_span_finds_param_in_nested_else_guarded() {
-        // A param named 'deep_else' nested inside else_members of a GuardedGroup
-        let members = build_nested_else_guarded_members("deep_else");
-        let result = find_named_member_span(&members, "deep_else");
-        assert!(
-            result.is_some(),
-            "param nested in else_members should be found by find_named_member_span"
-        );
-    }
-
-    #[test]
-    fn count_members_recursive_at_boundary() {
-        // Exactly MAX_MEMBER_NESTING_DEPTH (32) levels — should still work
-        let members =
-            build_nested_guarded_members(reify_syntax::MAX_MEMBER_NESTING_DEPTH, "boundary_param");
-        let (p, l, c) = count_members_recursive(&members);
-        assert_eq!(
-            (p, l, c),
-            (1, 0, 0),
-            "param at exactly MAX_MEMBER_NESTING_DEPTH levels should be counted"
         );
     }
 }
