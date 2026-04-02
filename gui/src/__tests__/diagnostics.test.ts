@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { flushMacrotasks, deferred } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -79,10 +80,7 @@ describe('diagnostics listener lifecycle', () => {
     //   // ... later, onCleanup: cancelled = true;
 
     const unlisten = vi.fn();
-    let resolveListenPromise: (val: () => void) => void;
-    const listenPromise = new Promise<() => void>((resolve) => {
-      resolveListenPromise = resolve;
-    });
+    const { promise: listenPromise, resolve: resolveListenPromise } = deferred<() => void>();
     mockListen.mockReturnValue(listenPromise);
 
     const callback = vi.fn();
@@ -105,7 +103,7 @@ describe('diagnostics listener lifecycle', () => {
     resolveListenPromise!(unlisten);
 
     // Let microtasks flush
-    await new Promise((r) => setTimeout(r, 0));
+    await flushMacrotasks();
 
     // The unlisten should have been called because we were cancelled
     expect(unlisten).toHaveBeenCalled();

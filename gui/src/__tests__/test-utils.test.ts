@@ -8,6 +8,14 @@ describe('flushMacrotasks', () => {
     await result;
   });
 
+  it('accepts an optional ms parameter for the timeout delay', async () => {
+    const start = performance.now();
+    await flushMacrotasks(50);
+    const elapsed = performance.now() - start;
+    // Should wait at least ~50ms (allow small margin)
+    expect(elapsed).toBeGreaterThanOrEqual(40);
+  });
+
   it('side effects scheduled via setTimeout(0) are visible after awaiting', async () => {
     let flag = false;
     setTimeout(() => { flag = true; }, 0);
@@ -54,6 +62,18 @@ describe('deferred', () => {
     expect(result).toBe(42);
   });
 
+  it('returns an object with a reject property (function)', () => {
+    const d = deferred<string>();
+    expect(typeof d.reject).toBe('function');
+  });
+
+  it('calling reject(err) rejects the promise with that error', async () => {
+    const d = deferred<number>();
+    const err = new Error('test rejection');
+    d.reject(err);
+    await expect(d.promise).rejects.toThrow('test rejection');
+  });
+
   it('respects generic type parameter', async () => {
     const d = deferred<{ name: string }>();
     const obj = { name: 'test' };
@@ -66,18 +86,6 @@ describe('deferred', () => {
     const d = deferred<string>();
     const winner = await Promise.race([d.promise, Promise.resolve('sentinel')]);
     expect(winner).toBe('sentinel');
-  });
-
-  it('returns an object with a reject property that is a function', () => {
-    const d = deferred<string>();
-    expect(typeof d.reject).toBe('function');
-  });
-
-  it('calling reject(reason) rejects the promise with that reason', async () => {
-    const d = deferred<number>();
-    const error = new Error('test rejection');
-    d.reject(error);
-    await expect(d.promise).rejects.toThrow('test rejection');
   });
 });
 
