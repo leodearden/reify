@@ -16017,7 +16017,7 @@
         "description": "Extract a shared helper to eliminate near-identical test duplication between `magnitude` and `complex_magnitude` builtin tests in `crates/reify-stdlib/src/lib.rs`.\n\nCurrently there are 3 pairs of mirrored tests that differ only by the builtin name string:\n- `magnitude_complex_overflow_returns_undef` ↔ `complex_magnitude_overflow_returns_undef`\n- `magnitude_complex_overflow_dimensioned_returns_undef` ↔ `complex_magnitude_overflow_dimensioned_returns_undef`\n- `magnitude_complex_nan_component_returns_undef` ↔ `complex_magnitude_nan_component_returns_undef`\n\nCreate a private helper like:\n```rust\nfn assert_complex_builtin_undef(builtin: &str, re: f64, im: f64, dim: DimensionVector) {\n    let z = Value::Complex { re, im, dimension: dim };\n    assert!(eval_builtin(builtin, &[z]).is_undef(),\n        \"{builtin} re={re} im={im} must return Undef\");\n}\n```\n\nThen consolidate each pair into a single test that loops over both builtin names.\n\nMemory hints: search \"magnitude complex_magnitude test duplication helper\", entities: eval_builtin, complex_abs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16028,7 +16028,8 @@
           "modules": [
             "crates/reify-stdlib"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:09:23.373Z"
       },
       {
         "id": "771",
@@ -16827,9 +16828,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:08:13.633Z",
+      "lastModified": "2026-04-02T02:09:23.403Z",
       "taskCount": 816,
-      "completedCount": 484,
+      "completedCount": 485,
       "tags": [
         "master"
       ]
