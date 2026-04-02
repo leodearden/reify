@@ -15582,7 +15582,7 @@
         "description": "Extract make_function_call (duplicated in gradient_tests.rs and lambda_eval_tests.rs), make_value_lambda (triplicated across gradient_tests.rs, lambda_eval_tests.rs, collection_eval_tests.rs), and make_conditional into a shared crates/reify-expr/tests/helpers.rs module. Also fix content_hash_contract issue: make_function_call should fold argument hashes into the function-call hash.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15596,7 +15596,8 @@
           "modules": [
             "crates/reify-expr/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T07:19:04.330Z"
       },
       {
         "id": "747",
@@ -17048,7 +17049,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T07:19:04.113Z",
+      "lastModified": "2026-04-02T07:19:04.330Z",
       "taskCount": 819,
       "completedCount": 560,
       "tags": [
