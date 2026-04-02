@@ -16687,7 +16687,7 @@
         "description": "In `crates/reify-test-support/src/mocks.rs`: (1) replace `seen.sort_by(|a, b| a.partial_cmp(b).unwrap())` with `seen.sort_by(f64::total_cmp)` to use the infallible total ordering (stable since Rust 1.62); (2) add a brief comment at the `assert_eq!(seen, expected)` f64 comparison noting that values are stored and returned verbatim by the mock with no arithmetic transformation, justifying exact equality.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16699,7 +16699,7 @@
             "crates/reify-test-support/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:02:31.588Z"
+        "updatedAt": "2026-04-02T14:04:58.952Z"
       },
       {
         "id": "801",
@@ -17068,9 +17068,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:04:10.902Z",
+      "lastModified": "2026-04-02T14:04:58.952Z",
       "taskCount": 819,
-      "completedCount": 588,
+      "completedCount": 589,
       "tags": [
         "master"
       ]
