@@ -110,8 +110,16 @@ describe('errorClassifier', () => {
       expect(errorMessage('')).toBe('Unknown error');
     });
 
-    it('returns whitespace-only string as-is for Error with whitespace message', () => {
-      expect(errorMessage(new Error('   '))).toBe('   ');
+    it('returns "Unknown error" for Error with whitespace-only message', () => {
+      expect(errorMessage(new Error('   '))).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for whitespace-only string input', () => {
+      expect(errorMessage('   ')).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for plain object with whitespace-only .message', () => {
+      expect(errorMessage({ message: '   ' })).toBe('Unknown error');
     });
 
     it('coerces non-Error, non-string values via String()', () => {
