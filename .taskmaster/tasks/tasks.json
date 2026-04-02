@@ -16499,7 +16499,7 @@
         "description": "Add EvalOutcome::Changed assertion to evaluate_recovers_poisoned_values_write (currently only checks is_ok()). Assert _outcome.is_ok() in tracing test. Tighten WARN count to >= 2 per test's docstring. Add comment or restore test for read-path lock recovery coverage.",
         "details": "Source: escalation esc-610-194 (task 610 review). File: crates/reify-runtime/tests/concurrent_eval.rs:2189-2285.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16510,7 +16510,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:14:11.420Z"
       },
       {
         "id": "793",
@@ -17026,9 +17027,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:13:16.770Z",
+      "lastModified": "2026-04-02T04:14:11.420Z",
       "taskCount": 819,
-      "completedCount": 532,
+      "completedCount": 533,
       "tags": [
         "master"
       ]
