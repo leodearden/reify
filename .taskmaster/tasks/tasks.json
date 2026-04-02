@@ -12571,7 +12571,7 @@
         "description": "Pre-existing robustness issues surfaced during task 437 review. (1) find_member_decl searches ALL structures for parsed span then ALL compiled templates — cross-structure name collision silently mixes span from structure A with type from structure B. Fix: anchor span lookup to a specific structure name. (2) find_named_member_span has unbounded recursion — add depth limit or use explicit stack. (3) reify-eval geometry-op compile_geometry_op returning None doesn't push placeholder into step_handles, corrupting relative GeomRef::Step(n) indexing for subsequent ops. Fix: push sentinel or break loop on None/Err.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -12585,7 +12585,8 @@
             "crates/reify-lsp/src",
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:38:30.050Z"
       },
       {
         "id": "605",
@@ -17032,9 +17033,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:37:35.508Z",
+      "lastModified": "2026-04-02T04:38:30.050Z",
       "taskCount": 819,
-      "completedCount": 543,
+      "completedCount": 544,
       "tags": [
         "master"
       ]
