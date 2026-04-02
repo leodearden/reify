@@ -13743,7 +13743,7 @@
         "description": "Add missing test coverage for position-aware completion in `crates/reify-lsp/src/completion.rs` and `crates/reify-lsp/src/analysis.rs`:\n\n1. **Verify `structure_name` in `determine_context` tests** — Current tests only check variant type via `matches!()` without verifying the `structure_name` field. Add destructuring assertions. Include a two-structure source to verify the correct structure is reported when the cursor is inside the second one.\n\n2. **Add `sub` TypePosition test** — `starts_with_decl_keyword` recognises `sub` but no test exercises it for TypePosition detection. Add test: source `\"structure Foo {\\n    sub part: \\n}\"`, cursor after `sub part: `, assert `TypePosition`.\n\n3. **Add positive assertion for dot-access test** — `completion_after_dot_returns_only_members` only asserts exclusions. Since the source has `param a` in `Foo`, assert `items.iter().any(|i| i.label == \"a\")`.\n\n4. **Test cursor on structure header line** — No test checks `determine_context` when cursor is on the `structure Foo {` line itself. Document the expected behavior and add a test.\n\n5. **Test guarded-group members via `member_names_for_structure`** — The function iterates `guarded_groups` but no test exercises that path for the scoped variant. Add a test with a `where` guard block.\n\n6. **Test guarded-group members in Expression context** — No Expression-context test verifies that guarded-group members are accessible. Add a test with a `where` block and cursor in an expression.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "482"
         ],
@@ -13757,7 +13757,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:40:48.747Z"
       },
       {
         "id": "659",
@@ -17128,7 +17129,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:40:48.025Z",
+      "lastModified": "2026-04-02T14:40:48.747Z",
       "taskCount": 822,
       "completedCount": 605,
       "tags": [
