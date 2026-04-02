@@ -8827,7 +8827,7 @@
         "description": "The GUI format_value tests added in task 381 have gaps identified during code review:\n\n1. **Tautological test**: `format_value_display_frame` asserts `format_value_display(&frame) == format_value(&frame).0` which is true by definition. Replace with concrete expected string: `\"frame(point(0, 0, 0), [1, 0, 0, 0]q)\"`.\n\n2. **Missing characterization tests**: No tests for List, Set, Map, Tensor, or Option arms. Especially important: `Value::Option(Some(Scalar{0.08, LENGTH}))` returns `(\"80\", \"mm\")` — unique unit-propagation behavior that is untested.\n\n3. **Range edge cases**: Only fully-bounded inclusive `[1..5]` is tested. Add: open-lower `(-∞..5]`, open-upper `[1..+∞)`, fully-open `(-∞..+∞)`, exclusive `(0..10)`.\n\n4. **Field test contract**: GUI `format_value_field` hardcodes `\"Field<Real, Real>(Analytical)\"` instead of asserting the delegation contract like the LSP test does. Either assert `format_value(&v).0 == format!(\"{}\", v)` or keep both forms.\n\nmemory_hints: search \"format_value test characterization\", entity \"format_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "381"
         ],
@@ -8841,7 +8841,8 @@
           "modules": [
             "gui/src-tauri/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T07:23:57.735Z"
       },
       {
         "id": "443",
@@ -17049,7 +17050,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T07:20:42.274Z",
+      "lastModified": "2026-04-02T07:23:57.735Z",
       "taskCount": 819,
       "completedCount": 561,
       "tags": [
