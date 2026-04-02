@@ -9545,13 +9545,13 @@
         "description": "Multiple eval functions use guards like `denom == 0.0` or `magnitude < 1e-12` that silently pass NaN through (IEEE 754: NaN comparisons return false). Affected locations:\n\n1. **eval_div** (crates/reify-expr/src/lib.rs): `denom == 0.0` guard — NaN denominator bypasses, producing NaN results instead of Undef\n2. **Revolve axis magnitude guard** (crates/reify-eval/src/lib.rs ~line 3264): magnitude check uses `< 1e-12` — NaN axis vector bypasses\n3. **orient_basis** and similar geometry helpers: magnitude/epsilon guards that don't handle NaN\n\nFix: Replace `x == 0.0` with `x == 0.0 || x.is_nan()`, and `x < threshold` with `!(x >= threshold)` (or explicit `x.is_nan() || x < threshold`). Add comprehensive tests for NaN input at each guard.\n\nmemory_hints: search \"NaN bypass pattern geometry magnitude guards\", search \"eval_div denom == 0.0 NaN\", search \"Revolve axis magnitude guard\", entities: eval_div, Revolve",
         "details": "<info added on 2026-03-27T07:40:44.969Z>\nTask 475 and Task 359 MUST NOT run concurrently. Both tasks modify orient_basis NaN guards in crates/reify-stdlib/src/lib.rs — concurrent execution will produce merge conflicts. Task 359 focuses on orient_basis finiteness checks and vec3_norm helper; Task 475 covers NaN bypass guards across eval_div, Revolve axis, and orient_basis. Either may proceed first; the second must wait for the first to merge.\n</info added on 2026-03-27T07:40:44.969Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "359"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-02T02:30:44.828Z",
+        "updatedAt": "2026-04-02T02:36:50.928Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17002,9 +17002,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:35:50.489Z",
+      "lastModified": "2026-04-02T02:36:50.928Z",
       "taskCount": 819,
-      "completedCount": 506,
+      "completedCount": 507,
       "tags": [
         "master"
       ]
