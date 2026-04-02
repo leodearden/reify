@@ -15291,7 +15291,7 @@
         "description": "Clean up quality issues in gui/src/__tests__/PropertyEditor.test.tsx identified during task 706 review:\n\n1. **Extract shared test fixture** — The `const values: Record<string, ValueData> = { c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }) }` pattern appears verbatim in 24 describe blocks. Extract a module-level `const singleParamValues = { ... }` constant and reference it from blocks that use this exact shape.\n\n2. **Merge escape/blur data-invalid describe blocks** — The 'PropertyEditor escape clears data-invalid' (~line 805) and 'PropertyEditor blur clears data-invalid after invalid Enter' (~line 829) blocks have identical setup (same values, render, focus→type 'abc'→Enter sequence). Merge into a single 'PropertyEditor data-invalid recovery' describe with a beforeEach for shared setup and two it() cases (one Escape, one blur).\n\n3. **Fix misleading comment at line 377** — The comment \"SolidJS reverts to prop value (same as invalid case)\" incorrectly implies value reversion after valid commit is intentional component behavior. In reality it's a mock artifact (vi.fn() doesn't update props). Replace with: \"// In tests the mock doesn't update the prop, so after editing ends the input shows the original prop value '50'. In production the parent would update values and the input would show '80mm'.\"\n\n4. **Add intermediate state assertion** — In the 'blur clears data-invalid after invalid Enter' test, after the Enter keyDown and data-invalid assertion, add `expect(input.value).toBe('abc')` to confirm the typed value is preserved in editing state until blur reverts it.\n\nmemory_hints: search(\"PropertyEditor test fixture dedup\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15302,7 +15302,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:07:05.973Z"
       },
       {
         "id": "735",
@@ -17012,9 +17013,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:06:57.735Z",
+      "lastModified": "2026-04-02T04:07:05.973Z",
       "taskCount": 819,
-      "completedCount": 520,
+      "completedCount": 521,
       "tags": [
         "master"
       ]
