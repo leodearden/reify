@@ -15648,7 +15648,7 @@
         "description": "Three suggestion-level improvements from task 569 review (architect, robustness, reuse auditor):\\n\\n1. **Timeout inconsistency (S1)**: mkdir lock fallback gives up at 75 attempts (~75s) but flock waits 120s. Align to a shared MAX_WAIT constant. File: scripts/tree-sitter-generate.sh lines 88-108.\\n\\n2. **No timeout fallback (S2)**: When neither `timeout` nor `gtimeout` is found, tree-sitter generate runs without a timeout guard and can hang indefinitely. Add background-process + sleep + kill pattern as portable fallback, or make timeout a hard prerequisite. File: scripts/tree-sitter-generate.sh lines 143-148.\\n\\n3. **compute_hash duplication (S3)**: Identical portable SHA-256 helper exists in both scripts/tree-sitter-generate.sh (compute_sha256) and scripts/test_tree_sitter_generate.sh (compute_hash). Extract to shared scripts/lib.sh. Files: scripts/tree-sitter-generate.sh lines 31-40, scripts/test_tree_sitter_generate.sh lines 18-27.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15661,7 +15661,8 @@
           "modules": [
             "scripts"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:34:56.105Z"
       },
       {
         "id": "752",
@@ -17000,9 +17001,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:34:35.625Z",
+      "lastModified": "2026-04-02T02:34:56.105Z",
       "taskCount": 819,
-      "completedCount": 503,
+      "completedCount": 504,
       "tags": [
         "master"
       ]
