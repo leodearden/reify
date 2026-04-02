@@ -16789,7 +16789,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/server.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 810,
@@ -16817,7 +16825,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/document.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 812,
@@ -16828,7 +16844,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/test-utils.ts",
+            "gui/src/__tests__/test-utils.test.ts",
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 813,
