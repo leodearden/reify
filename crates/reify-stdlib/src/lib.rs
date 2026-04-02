@@ -5973,6 +5973,32 @@ mod tests {
                 f64::NEG_INFINITY,
                 DimensionVector::LENGTH,
             );
+            // im=+Inf (symmetric of re=+Inf)
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::INFINITY,
+                DimensionVector::LENGTH,
+            );
+            // re=-Inf (symmetric of im=-Inf)
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NEG_INFINITY,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NEG_INFINITY,
+                0.0,
+                DimensionVector::LENGTH,
+            );
         }
     }
 
