@@ -15805,7 +15805,7 @@
         "description": "The parse_type_alias_empty_rhs_no_panic test in type_alias_tests.rs has three issues introduced by task 716:\n\n1. **Lost error assertion**: `_errors` is discarded — no assertion that parse errors are produced for malformed input `\"type Foo =\"`. The task description explicitly asked for an unconditional `!errors.is_empty()` assertion but it was not implemented. Fix: bind as `errors` and add `assert!(!errors.is_empty(), \"expected at least one parse error for empty RHS\");` before the TypeAlias shape check.\n\n2. **Lost diagnostic info**: The error vector should be included in assertion failure messages for debugging. Thread `errors` into assert format strings.\n\n3. **Fragile .expect()**: The unconditional `.expect()` encodes Tree-sitter recovery behavior as a permanent invariant. Either revert to `if let Some(ta)` with the strengthened assertions inside, or add a comment documenting that the `.expect()` is intentional and tied to the current Tree-sitter grammar/version so future maintainers know the dependency. Also improve the `.expect()` message to include `decls` content via `.unwrap_or_else(|| panic!(\"expected TypeAlias, got decls={:?}\", decls))`.\n\nMemory hints: search \"task 716 type alias empty RHS\", search \"Tree-sitter recovery behavior\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "716"
         ],
@@ -15818,7 +15818,8 @@
           "modules": [
             "crates/reify-syntax/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:07:42.704Z"
       },
       {
         "id": "759",
@@ -17014,9 +17015,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:07:28.851Z",
+      "lastModified": "2026-04-02T04:07:42.705Z",
       "taskCount": 819,
-      "completedCount": 522,
+      "completedCount": 523,
       "tags": [
         "master"
       ]
