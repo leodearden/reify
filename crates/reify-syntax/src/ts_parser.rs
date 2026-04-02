@@ -2,6 +2,7 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::*;
@@ -12,10 +13,10 @@ use reify_types::{ContentHash, ModulePath, SourceSpan};
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
         if $child.is_error() || $child.has_error() {
-            $self.errors.push(ParseError {
-                message: format!("invalid {}: {}", $label, $self.node_text($child)),
-                span: $self.span($child),
-            });
+            $self.push_error(
+                format!("invalid {}: {}", $label, $self.node_text($child)),
+                $self.span($child),
+            );
             None
         } else {
             $lower
@@ -41,7 +42,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
     ParsedModule {
         path: module_path,
         declarations: lowering.declarations,
-        errors: lowering.errors,
+        errors: lowering.errors.into_inner(),
         content_hash,
     }
 }
@@ -50,7 +51,8 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 struct Lowering<'a> {
     source: &'a str,
     declarations: Vec<Declaration>,
-    errors: Vec<ParseError>,
+    /// Interior mutability so that `&self` expression-lowering methods can emit diagnostics.
+    errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<String>,
 }
@@ -60,9 +62,14 @@ impl<'a> Lowering<'a> {
         Self {
             source,
             declarations: Vec::new(),
-            errors: Vec::new(),
+            errors: RefCell::new(Vec::new()),
             known_enums: HashSet::new(),
         }
+    }
+
+    /// Push a parse error diagnostic.
+    fn push_error(&self, message: String, span: SourceSpan) {
+        self.errors.borrow_mut().push(ParseError { message, span });
     }
 
     /// Extract the source text for a node.
@@ -87,15 +94,15 @@ impl<'a> Lowering<'a> {
     /// child's kind and source text.
     fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
         if child.is_named() && !child.is_extra() {
-            self.errors.push(ParseError {
-                message: format!(
+            self.push_error(
+                format!(
                     "unexpected '{}' in {}: {}",
                     child.kind(),
                     context,
                     self.node_text(child)
                 ),
-                span: self.span(child),
-            });
+                self.span(child),
+            );
         }
     }
 
@@ -211,10 +218,10 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!("syntax error: {}", self.node_text(child)),
-                        span: self.span(child),
-                    });
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
@@ -702,13 +709,13 @@ impl<'a> Lowering<'a> {
                 // before the loop via child_by_field_name / lower_type_parameters.
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!(
+                    self.push_error(
+                        format!(
                             "syntax error in constraint body: {}",
                             self.node_text(child)
                         ),
-                        span: self.span(child),
-                    });
+                        self.span(child),
+                    );
                 }
                 _ => self.warn_unexpected_child(child, "constraint body"),
             }
@@ -786,20 +793,20 @@ impl<'a> Lowering<'a> {
                 let left_node = match node.child_by_field_name("left") {
                     Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
                     _ => {
-                        self.errors.push(ParseError {
-                            message: "dimensional type expression missing left operand".into(),
-                            span: self.span(node),
-                        });
+                        self.push_error(
+                            "dimensional type expression missing left operand".to_string(),
+                            self.span(node),
+                        );
                         return self.lower_type_expr_node(node);
                     }
                 };
                 let right_node = match node.child_by_field_name("right") {
                     Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
                     _ => {
-                        self.errors.push(ParseError {
-                            message: "dimensional type expression missing right operand".into(),
-                            span: self.span(node),
-                        });
+                        self.push_error(
+                            "dimensional type expression missing right operand".to_string(),
+                            self.span(node),
+                        );
                         return self.lower_type_expr_node(node);
                     }
                 };
@@ -1034,10 +1041,10 @@ impl<'a> Lowering<'a> {
                 self.lower_meta_block(child).map(MemberDecl::MetaBlock)
             ),
             "ERROR" => {
-                self.errors.push(ParseError {
-                    message: format!("syntax error: {}", self.node_text(child)),
-                    span: self.span(child),
-                });
+                self.push_error(
+                    format!("syntax error: {}", self.node_text(child)),
+                    self.span(child),
+                );
                 None
             }
             _ => None,
@@ -1349,10 +1356,10 @@ impl<'a> Lowering<'a> {
                 "out" => PortDirection::Out,
                 "bidi" => PortDirection::Bidi,
                 other => {
-                    self.errors.push(ParseError {
-                        message: format!("unknown port direction: {}", other),
-                        span: self.span(d),
-                    });
+                    self.push_error(
+                        format!("unknown port direction: {}", other),
+                        self.span(d),
+                    );
                     PortDirection::Bidi
                 }
             });
@@ -1421,13 +1428,13 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!(
+                    self.push_error(
+                        format!(
                             "syntax error in port body: {}",
                             self.node_text(child)
                         ),
-                        span: self.span(child),
-                    });
+                        self.span(child),
+                    );
                 }
                 _ => self.warn_unexpected_child(child, "port body"),
             }
@@ -1446,10 +1453,10 @@ impl<'a> Lowering<'a> {
             "<-" => ConnectOp::Reverse,
             "<->" => ConnectOp::Bidirectional,
             other => {
-                self.errors.push(ParseError {
-                    message: format!("unknown connect operator: {}", other),
-                    span: self.span(op_node),
-                });
+                self.push_error(
+                    format!("unknown connect operator: {}", other),
+                    self.span(op_node),
+                );
                 ConnectOp::Forward
             }
         };
@@ -1503,48 +1510,48 @@ impl<'a> Lowering<'a> {
             match child.kind() {
                 "connect_param_assignment" => {
                     if child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!(
+                        self.push_error(
+                            format!(
                                 "invalid connect parameter: {}",
                                 self.node_text(child)
                             ),
-                            span: self.span(child),
-                        });
+                            self.span(child),
+                        );
                         continue;
                     }
                     let Some(name_node) = child.child_by_field_name("name") else {
-                        self.errors.push(ParseError {
-                            message: format!(
+                        self.push_error(
+                            format!(
                                 "connect parameter missing name: {}",
                                 self.node_text(child)
                             ),
-                            span: self.span(child),
-                        });
+                            self.span(child),
+                        );
                         continue;
                     };
                     let name = self.node_text(name_node).to_string();
                     let Some(value_node) = child.child_by_field_name("value") else {
-                        self.errors.push(ParseError {
-                            message: format!("connect parameter '{}' missing value", name),
-                            span: self.span(child),
-                        });
+                        self.push_error(
+                            format!("connect parameter '{}' missing value", name),
+                            self.span(child),
+                        );
                         continue;
                     };
                     let Some(value) = self.lower_expr(value_node) else {
-                        self.errors.push(ParseError {
-                            message: format!("invalid value in connect parameter '{}'", name),
-                            span: self.span(value_node),
-                        });
+                        self.push_error(
+                            format!("invalid value in connect parameter '{}'", name),
+                            self.span(value_node),
+                        );
                         continue;
                     };
                     params.push((name, value));
                 }
                 "port_mapping" => {
                     if child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!("invalid port mapping: {}", self.node_text(child)),
-                            span: self.span(child),
-                        });
+                        self.push_error(
+                            format!("invalid port mapping: {}", self.node_text(child)),
+                            self.span(child),
+                        );
                         continue;
                     }
                     match (
@@ -1557,21 +1564,21 @@ impl<'a> Lowering<'a> {
                             port_mappings.push((from, to));
                         }
                         _ => {
-                            self.errors.push(ParseError {
-                                message: format!(
+                            self.push_error(
+                                format!(
                                     "incomplete port mapping: {}",
                                     self.node_text(child)
                                 ),
-                                span: self.span(child),
-                            });
+                                self.span(child),
+                            );
                         }
                     }
                 }
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!("syntax error in connect body: {}", self.node_text(child)),
-                        span: self.span(child),
-                    });
+                    self.push_error(
+                        format!("syntax error in connect body: {}", self.node_text(child)),
+                        self.span(child),
+                    );
                 }
                 _ => self.warn_unexpected_child(child, "connect body"),
             }
@@ -1612,10 +1619,10 @@ impl<'a> Lowering<'a> {
         }
 
         if elements.len() < 2 {
-            self.errors.push(ParseError {
-                message: "chain requires at least 2 elements".to_string(),
-                span: self.span(node),
-            });
+            self.push_error(
+                "chain requires at least 2 elements".to_string(),
+                self.span(node),
+            );
             return None;
         }
 
@@ -2144,18 +2151,27 @@ impl<'a> Lowering<'a> {
         let object_node = node.child_by_field_name("object")?;
         let qualified_node = node.child_by_field_name("qualified")?;
 
-        // Validate CST node kind — tree-sitter error recovery can violate grammar invariants
+        // Validate CST node kind — tree-sitter error recovery can violate grammar invariants.
+        // Emit a specific diagnostic so the user knows what went wrong.
         if qualified_node.kind() != "qualified_access" {
+            self.push_error(
+                "instance qualified access requires a qualified_access (::) inside the parentheses"
+                    .to_string(),
+                self.span(node),
+            );
             return None;
         }
 
         let object = self.lower_expr(object_node)?;
         let qualified = self.lower_expr(qualified_node)?;
 
-        // Validate lowered result is actually QualifiedAccess
-        if !matches!(&qualified.kind, ExprKind::QualifiedAccess { .. }) {
-            return None;
-        }
+        // If the CST kind check passed, lowering MUST produce QualifiedAccess.
+        // A mismatch here indicates a bug in the lowering code, not invalid user input.
+        debug_assert!(
+            matches!(&qualified.kind, ExprKind::QualifiedAccess { .. }),
+            "CST kind was 'qualified_access' but lowered to {:?}",
+            qualified.kind
+        );
 
         Some(Expr {
             kind: ExprKind::InstanceQualifiedAccess {
@@ -3474,7 +3490,7 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lower_fn(&mut lowering, node);
-        lowering.errors
+        lowering.errors.into_inner()
     }
 
     /// Like `lower_node_directly`, but skips the clean-parse assertion.
@@ -3496,7 +3512,7 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lower_fn(&mut lowering, node);
-        lowering.errors
+        lowering.errors.into_inner()
     }
 
     /// Helper: parse source, find the connect_body node, call lower_connect_body
@@ -3632,20 +3648,20 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lowering.lower_connect_body(constraint_node);
+        let errors = lowering.errors.borrow();
         assert!(
-            lowering.errors.len() >= 3,
+            errors.len() >= 3,
             "expected at least 3 diagnostics (one per named child: identifier, \
              param_declaration, constraint_def_predicate), got {}: {:?}",
-            lowering.errors.len(),
-            lowering.errors
+            errors.len(),
+            errors
         );
         assert!(
-            lowering
-                .errors
+            errors
                 .iter()
                 .any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
-            lowering.errors
+            errors
         );
     }
 
@@ -3706,17 +3722,18 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lowering.lower_port_body(constraint_node);
+        let errors = lowering.errors.borrow();
         assert!(
-            lowering.errors.len() >= 2,
+            errors.len() >= 2,
             "expected at least 2 diagnostics (identifier and constraint_def_predicate \
              are unexpected in port body; param_declaration is handled), got {}: {:?}",
-            lowering.errors.len(),
-            lowering.errors
+            errors.len(),
+            errors
         );
         assert!(
-            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            errors.iter().any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
-            lowering.errors
+            errors
         );
     }
 
@@ -3769,17 +3786,18 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lowering.lower_constraint_def(struct_node);
+        let errors = lowering.errors.borrow();
         assert!(
-            lowering.errors.len() >= 2,
+            errors.len() >= 2,
             "expected at least 2 diagnostics (port_declaration, sub_declaration \
              at minimum), got {}: {:?}",
-            lowering.errors.len(),
-            lowering.errors
+            errors.len(),
+            errors
         );
         assert!(
-            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            errors.iter().any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
-            lowering.errors
+            errors
         );
     }
 
@@ -3818,14 +3836,15 @@ mod tests {
 
         let mut lowering = Lowering::new(source);
         lowering.lower_source_file(struct_node);
+        let errors = lowering.errors.borrow();
         assert!(
-            !lowering.errors.is_empty(),
+            !errors.is_empty(),
             "expected diagnostics for unexpected named children in source file catch-all, got none"
         );
         assert!(
-            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            errors.iter().any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
-            lowering.errors
+            errors
         );
     }
 

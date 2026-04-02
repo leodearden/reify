@@ -789,12 +789,13 @@ module.exports = grammar({
     )),
 
     // obj.(Foo::bar) — instance-qualified access (e.g. trait-qualified method call)
-    // Inner 'qualified' field is constrained to $.qualified_access, preventing obj.(42)
+    // Inner 'qualified' field accepts any expression; lowering validates it's a
+    // qualified_access and emits a specific diagnostic if not.
     instance_qualified_access: $ => prec.left(8, seq(
       field('object', $._expression),
       '.',
       '(',
-      field('qualified', $.qualified_access),
+      field('qualified', $._expression),
       ')',
     )),
 
