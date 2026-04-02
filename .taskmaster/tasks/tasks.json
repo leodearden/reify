@@ -13720,7 +13720,7 @@
         "description": "Clean up structural issues in `CursorContext` enum and `determine_context`/`compute_completions` in `crates/reify-lsp/src/completion.rs`:\n\n1. **Expression::structure_name should be `String`, not `Option<String>`** — `determine_context` returns `TopLevel` when there's no enclosing structure, so `Expression { structure_name: None }` is unreachable. Change to `Expression { structure_name: String }` and remove the dead `push_all_members` fallback branch in `compute_completions`.\n\n2. **Add `object_name: Option<String>` to `DotAccess`** — The variant carries no data, preventing future type-aware member narrowing. Use `find_word_at_offset` in `determine_context` to populate it when scanning backward past the dot.\n\n3. **Simplify redundant Expression detection** — The `contains('=')` + `rfind('=')` + `cursor_in_line > eq_pos` block is triply redundant. `line_prefix` already ends at the cursor, so `contains('=')` alone is sufficient. Simplify to a single check.\n\n4. **DRY: extract shared member-pushing logic** — `push_all_members` and `push_scoped_members` are identical except for the iterator source. Extract a generic `push_members` helper.\n\n5. **DRY: extract shared member-collection logic in analysis.rs** — `member_names` and `member_names_for_structure` duplicate the iteration/collection body. Extract a private `collect_template_members` helper. Also add `break` after the matching template in `member_names_for_structure` since names are unique.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "482"
         ],
@@ -13735,7 +13735,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:37:21.873Z"
+        "updatedAt": "2026-04-02T14:40:48.025Z"
       },
       {
         "id": "658",
@@ -17128,9 +17128,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:40:18.838Z",
+      "lastModified": "2026-04-02T14:40:48.025Z",
       "taskCount": 822,
-      "completedCount": 604,
+      "completedCount": 605,
       "tags": [
         "master"
       ]
