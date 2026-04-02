@@ -9068,11 +9068,11 @@
         "description": "Address code duplication and structural suggestions from task 236 reviews.\n\n1. **Extract quaternion helpers** — quat_mul, quat_conj, quat_rotate, normalize_quaternion are duplicated between reify-expr and reify-stdlib. Extract to shared location (reify-types/src/quat.rs or new reify-math crate). Both crates already depend on reify-types.\n\n2. **Rename quat_mul_t** — Opaque `_t` suffix. Once consolidated, use `quat_mul` everywhere.\n\n3. **Extract Transform mul arms into private helpers** — Transform*Point has 5 levels of if-let nesting, Transform*Transform has 6. Extract into `eval_transform_mul_point()`, `eval_transform_mul_vector()`, `eval_transform_mul_transform()` keeping eval_mul as thin dispatch.\n\n4. **Rodrigues rotation formula** — Replace sandwich product in quat_rotate with optimized cross-product formula (~18 FP ops vs ~56).\n\nFiles: crates/reify-expr/src/lib.rs, crates/reify-stdlib/src/lib.rs, crates/reify-types/ (new quat module).\nReviewers: architect, performance, reuse_auditor.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-02T04:45:35.920Z",
+        "updatedAt": "2026-04-02T04:49:55.886Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17040,9 +17040,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:49:19.050Z",
+      "lastModified": "2026-04-02T04:49:55.886Z",
       "taskCount": 819,
-      "completedCount": 549,
+      "completedCount": 550,
       "tags": [
         "master"
       ]
