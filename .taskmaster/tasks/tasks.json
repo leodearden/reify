@@ -9660,7 +9660,7 @@
         "description": "The LSP diagnostics pipeline in compute_diagnostics_with_state (crates/reify-lsp/src/diagnostics.rs) creates a brand-new Engine on every source change (line 83-84), discarding all cached evaluation state. The Engine already has eval_cached() with version-based caching and early cutoff, plus content_hash on CompiledModule for change detection — but the LSP path uses none of this.\n\nThis task replaces the cold-start Engine creation with an incremental path:\n1. Compare the new CompiledModule's content_hash against the previous one (stored in EvalState.last_module)\n2. If the module structure is unchanged (same content_hash), use Engine::eval_cached() with an incremented version to leverage cache hits and early cutoff\n3. If the module structure changed (different content_hash, or new templates/constraints added/removed), fall back to a full Engine::eval() (current behavior)\n4. Always use check_snapshot() after eval (already done)\n\nThis eliminates redundant computation when users make param-value-only edits (the most common interactive edit pattern).\n\nDone: compute_diagnostics_with_state reuses the existing Engine and calls eval_cached() when the module content_hash is unchanged. The benchmark test from task #479 passes, showing measurable speedup for param-only edits. All existing LSP tests continue to pass.\n\nmemory_hints:\n- search: \"Engine eval_cached incremental evaluation caching\"\n- search: \"EvalState compute_diagnostics_with_state cold start\"\n- search: \"CompiledModule content_hash change detection\"\n- entity: \"Engine\"\n- entity: \"EvalState\"\n- entity: \"CompiledModule\"",
         "details": "## Implementation guidance\n\n### Changes to EvalState (crates/reify-lsp/src/diagnostics.rs)\n\nAdd a `last_content_hash` field to `EvalState`:\n\n```rust\npub struct EvalState {\n    engine: reify_eval::Engine,\n    last_module: Option<CompiledModule>,\n    last_content_hash: Option<ContentHash>,\n    version_counter: u64,\n}\n```\n\n### Changes to compute_diagnostics_with_state\n\nReplace lines 78-86 (the cold-start block) with:\n\n```rust\nstate.version_counter += 1;\nlet version = VersionId(state.version_counter);\n\nlet structure_unchanged = state.last_content_hash\n    .map(|h| h == compiled.content_hash)\n    .unwrap_or(false);\n\nif structure_unchanged && state.engine.is_initialized() {\n    // Incremental path: module structure unchanged, reuse engine + cache\n    let _cached_result = state.engine.eval_cached(&compiled, version);\n} else {\n    // Cold-start path: structure changed or first eval\n    let checker = SimpleConstraintChecker;\n    state.engine = reify_eval::Engine::new(Box::new(checker), None);\n    let _eval_result = state.engine.eval(&compiled);\n}\n```\n\nAfter eval/eval_cached, update the stored hash:\n```rust\nstate.last_content_hash = Some(compiled.content_hash);\n```\n\n### Key design decisions\n\n1. **content_hash granularity**: Use the module-level content_hash first (simplest). A future refinement could compare per-template content_hashes for multi-structure files where only one structure changed.\n\n2. **Fallback safety**: If eval_cached produces unexpected results (e.g., stale constraint state), the cold-start path is always available. Consider adding a diagnostic counter sanity check.\n\n3. **VersionId management**: Use state.version_counter as VersionId. Each call increments it, giving eval_cached a fresh version to detect staleness.\n\n4. **Geometry kernel**: The LSP currently passes None for geometry_kernel. If a geometry kernel is added later, Engine reuse becomes even more valuable (kernel initialization is expensive).\n\n### Files to modify\n- `crates/reify-lsp/src/diagnostics.rs` — EvalState struct, compute_diagnostics_with_state function\n\n### Files to reference (read-only)\n- `crates/reify-eval/src/lib.rs` — Engine::eval_cached (line 2082), Engine::is_initialized (line 320)\n- `crates/reify-types/src/hash.rs` — ContentHash (PartialEq, Eq)\n- `crates/reify-compiler/src/lib.rs` — CompiledModule::content_hash\n\n### Testing\n- All existing tests in crates/reify-lsp/ must continue to pass\n- The benchmark test from task #479 should now show incremental eval is faster than cold-start\n- Verify the three-phase lifecycle test (valid → violating → valid) still works correctly with engine reuse",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "479"
         ],
@@ -9674,7 +9674,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:08:50.388Z"
       },
       {
         "id": "481",
@@ -17015,9 +17016,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:07:42.705Z",
+      "lastModified": "2026-04-02T04:08:50.388Z",
       "taskCount": 819,
-      "completedCount": 523,
+      "completedCount": 524,
       "tags": [
         "master"
       ]
