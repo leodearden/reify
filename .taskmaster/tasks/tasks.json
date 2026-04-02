@@ -4382,7 +4382,13 @@
             "examples"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Geometric types: .ri example"
+            ]
+          }
         },
         "subtasks": [],
         "updatedAt": "2026-04-02T04:48:33.590Z"
@@ -4496,7 +4502,7 @@
         "dependencies": [
           "244"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -4505,7 +4511,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-02T04:49:18.404Z"
       },
       {
         "id": "246",
@@ -17033,9 +17039,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:48:33.590Z",
+      "lastModified": "2026-04-02T04:49:18.404Z",
       "taskCount": 819,
-      "completedCount": 547,
+      "completedCount": 548,
       "tags": [
         "master"
       ]
