@@ -16389,7 +16389,7 @@
         "description": "Add 4+ arg test case for frame3_identity_with_any_args_returns_undef (or rename test to match actual coverage). Add Ord test with equal-w-different-x quaternion pair to protect against field-order changes in Orientation comparison.",
         "details": "Source: escalation esc-382-149 (task 382 review). Files: crates/reify-stdlib/src/lib.rs:6179, crates/reify-types/src/value.rs:4243-4263.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16401,7 +16401,7 @@
             "crates/reify-stdlib"
           ]
         },
-        "updatedAt": "2026-04-02T12:51:57.768Z"
+        "updatedAt": "2026-04-02T13:35:01.084Z"
       },
       {
         "id": "786",
@@ -16687,7 +16687,7 @@
         "description": "In `crates/reify-test-support/src/mocks.rs`: (1) replace `seen.sort_by(|a, b| a.partial_cmp(b).unwrap())` with `seen.sort_by(f64::total_cmp)` to use the infallible total ordering (stable since Rust 1.62); (2) add a brief comment at the `assert_eq!(seen, expected)` f64 comparison noting that values are stored and returned verbatim by the mock with no arithmetic transformation, justifying exact equality.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16699,7 +16699,7 @@
             "crates/reify-test-support/src"
           ]
         },
-        "updatedAt": "2026-04-02T12:51:20.792Z"
+        "updatedAt": "2026-04-02T13:35:01.134Z"
       },
       {
         "id": "801",
@@ -17068,7 +17068,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T13:35:01.035Z",
+      "lastModified": "2026-04-02T13:35:01.134Z",
       "taskCount": 819,
       "completedCount": 587,
       "tags": [
