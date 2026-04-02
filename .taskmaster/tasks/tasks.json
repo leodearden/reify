@@ -10758,11 +10758,11 @@
         "description": "When compile_geometry_op returns None for a step in a realization sequence, no handle is pushed to step_handles. Subsequent operations referencing that missing step via GeomRef::Step(idx) silently resolve to a wrong handle or also return None, generating cascading 'failed to compile geometry operation' diagnostics that bury the root cause. Consider pushing a sentinel handle or aborting the realization early on the first failure, so downstream ops don't produce misleading redundant diagnostics. Memory hint: search for \"compile_geometry_op\" and \"realization sequence\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-27T08:27:40.898Z",
+        "updatedAt": "2026-04-02T02:22:07.779Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -16834,9 +16834,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:20:32.198Z",
+      "lastModified": "2026-04-02T02:22:07.780Z",
       "taskCount": 816,
-      "completedCount": 497,
+      "completedCount": 498,
       "tags": [
         "master"
       ]
