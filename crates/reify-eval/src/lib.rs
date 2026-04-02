@@ -3624,7 +3624,6 @@ fn unfold_recursive_sub<'t>(
         )));
         return;
     }
-    *node_budget -= 1;
 
     let guard_expr = match &sub.guard_expr {
         Some(g) => g,
@@ -3692,6 +3691,11 @@ fn unfold_recursive_sub<'t>(
     // Construct the next child's scoped entity name: parent_entity.sub_name
     let next_entity = format!("{}.{}", parent_entity, sub.name);
 
+    // Consume one budget unit now that we know this call will actually create a node
+    // (guard is true and depth is within limits). Decrementing here rather than at
+    // function entry avoids wasting budget on guard-false or depth-limited returns.
+    *node_budget -= 1;
+
     // Phase 1 (top-down): Set params for next_entity so the next recursion level
     // can evaluate its guard using the child's param values.
     let child_values = elaborate_child_params_only(
@@ -3714,7 +3718,7 @@ fn unfold_recursive_sub<'t>(
     let child_recursive_subs: Vec<&reify_compiler::SubComponentDecl> = child_template
         .sub_components
         .iter()
-        .filter(|s| s.guard_expr.is_some())
+        .filter(|s| child_template.is_recursive && s.guard_expr.is_some())
         .collect();
     let child_recursive_sub_names: Vec<&str> = child_recursive_subs
         .iter()

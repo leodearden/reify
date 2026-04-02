@@ -1706,3 +1706,260 @@ fn bfs_terminates_for_cyclic_structural_intermediaries() {
         "S.n should be 1"
     );
 }
+
+// ─── Phase 2 is_recursive guard ────────────────────────────────────────────
+
+/// Phase 2 should NOT recursively unfold guarded subs of a non-recursive child template.
+///
+/// Setup:
+///   Template A: is_recursive=true, param n: Int = 1, sub b = B(x: n) where n > 0
+///   Template B: is_recursive=false, param x: Int = 0, sub c = C() where literal(true)
+///   Template C: param y: Int = 99
+///
+/// Evaluate A(n=1):
+///   Phase 1: A.b is created (B with x=1)
+///   Phase 2: B is NOT recursive, so B's guarded sub `c` should NOT be recursively unfolded.
+///
+/// Assert: A.b.x == 1 (Phase 1 elaboration works) AND A.b.c.y does NOT exist.
+///
+/// BUG: Phase 2 filter only checks `guard_expr.is_some()`, not `child_template.is_recursive`.
+/// So B's sub `c` gets recursively unfolded producing A.b.c.y=99 even though B is not recursive.
+#[test]
+fn non_recursive_child_guarded_sub_not_unfolded() {
+    // Template A: is_recursive=true, param n: Int = 1, sub b = B(x: n) where n > 0
+    let guard_a = gt(value_ref_typed("A", "n", Type::Int), literal(Value::Int(0)));
+    let template_a = TopologyTemplateBuilder::new("A")
+        .param(
+            "A",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "b",
+            "B",
+            vec![(
+                "x".to_string(),
+                value_ref_typed("A", "n", Type::Int),
+            )],
+            guard_a,
+        )
+        .build();
+
+    // Template B: is_recursive=false, param x: Int = 0, sub c = C() where literal(true)
+    let template_b = TopologyTemplateBuilder::new("B")
+        .param(
+            "B",
+            "x",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
+        .is_recursive(false)
+        .sub_component_with_guard(
+            "c",
+            "C",
+            vec![],
+            literal(Value::Bool(true)),
+        )
+        .build();
+
+    // Template C: param y: Int = 99
+    let template_c = TopologyTemplateBuilder::new("C")
+        .param(
+            "C",
+            "y",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(99), Type::Int)),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_a)
+        .template(template_b)
+        .template(template_c)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    let result = engine.eval(&module);
+
+    // Phase 1: A.b.x should be 1 (arg x = A.n = 1)
+    assert_eq!(
+        result.values.get(&ValueCellId::new("A.b", "x")),
+        Some(&Value::Int(1)),
+        "A.b.x should be 1 (Phase 1 elaboration of B's params)"
+    );
+
+    // KEY ASSERTION: A.b.c.y should NOT exist because B is not recursive,
+    // so Phase 2 should not recursively unfold B's guarded sub c.
+    assert!(
+        !result.values.contains(&ValueCellId::new("A.b.c", "y")),
+        "A.b.c.y should NOT exist: B is not recursive, so Phase 2 should not \
+         recursively unfold B's guarded sub 'c'. Got {:?}",
+        result.values.get(&ValueCellId::new("A.b.c", "y"))
+    );
+}
+
+// ─── Budget accounting: guard-false should not consume budget ──────────────
+
+/// Budget should NOT be decremented when a guard evaluates to false.
+///
+/// Setup:
+///   Template S: is_recursive=true, param n: Int = 2
+///     sub left  = S(n: n-1) where n > 0
+///     sub right = S(n: n-1) where n > 0
+///   max_unfold_nodes = 3
+///
+/// Trace with FIXED budget (decrement after guard+depth):
+///   unfold(S, depth=0, budget=3):
+///     guard true, budget 3→2, Phase 1: S.left(n=1)
+///     Phase 2 left:  unfold(S.left, depth=1, budget=2):
+///       guard true, budget 2→1, Phase 1: S.left.left(n=0)
+///       Phase 2 left:  unfold(S.left.left, depth=2, budget=1): guard false → return (no decrement)
+///       Phase 2 right: unfold(S.left.left, depth=2, budget=1): guard false → return (no decrement)
+///     Phase 2 right: unfold(S.left, depth=1, budget=1):
+///       guard true, budget 1→0, Phase 1: S.left.right(n=0) ← CREATED
+///
+/// With BUGGY budget (decrement before guard):
+///   S.left.left.left consumes budget (3→2→1→0 on guard-false), S.left.right never created.
+///
+/// Assert: S.left.right.n == 0 (exists).
+#[test]
+fn budget_not_consumed_when_guard_false() {
+    // guard: n > 0
+    let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+    // arg: n = n - 1
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1.clone())],
+            guard.clone(),
+        )
+        .sub_component_with_guard(
+            "right",
+            "S",
+            vec![("n".to_string(), n_minus_1)],
+            guard,
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_nodes(3);
+    let result = engine.eval(&module);
+
+    // S.left.right should exist with n=0 because guard-false calls at depth 2
+    // should NOT consume budget, leaving budget=1 for S.left.right.
+    assert_eq!(
+        result.values.get(&ValueCellId::new("S.left.right", "n")),
+        Some(&Value::Int(0)),
+        "S.left.right.n should be 0: guard-false calls at leaf level should not \
+         consume budget, leaving budget for sibling branches. \
+         If missing, budget was wasted on guard-false calls."
+    );
+}
+
+// ─── Budget accounting: depth-limit should not consume budget ──────────────
+
+/// Budget should NOT be decremented when a depth-limit return prevents node creation.
+///
+/// Setup:
+///   Template S: is_recursive=true, param n: Int = 999
+///     sub left  = S(n: n-1) where n > -999  (guard always true for test range)
+///     sub right = S(n: n-1) where n > -999
+///   max_unfold_depth = 1, max_unfold_nodes = 2
+///
+/// Trace with FIXED budget (decrement after guard+depth):
+///   unfold(S, depth=0, budget=2):
+///     guard true, depth 0 < 1 ok, budget 2→1, Phase 1: S.left(n=998)
+///     Phase 2 left:  unfold(S.left, depth=1, budget=1): guard true, depth 1 >= 1 → return (no decrement)
+///     Phase 2 right: unfold(S.left, depth=1, budget=1): guard true, depth 1 >= 1 → return (no decrement)
+///   S.right:
+///   unfold(S, depth=0, budget=2): (separate budget for top-level right)
+///     guard true, depth 0 < 1 ok, budget 2→1, Phase 1: S.right(n=998)
+///     Phase 2 left:  unfold(S.right, depth=1, budget=1): depth-limited → return
+///     Phase 2 right: unfold(S.right, depth=1, budget=1): depth-limited → return
+///
+/// With BUGGY budget (decrement before guard):
+///   unfold(S, depth=0, budget=2):
+///     budget 2→1, guard true, depth ok, Phase 1: S.left(n=998)
+///     Phase 2 left:  unfold(S.left, depth=1, budget=1): budget 1→0, guard true, depth >= 1 → return
+///     Phase 2 right: unfold(S.left, depth=1, budget=0): budget exhausted ERROR
+///
+/// Assert: NO budget-exhausted diagnostics (only depth-limit diagnostics allowed).
+#[test]
+fn budget_not_consumed_when_depth_limit_hit() {
+    // guard: n > -999 (always true for test range starting at 999)
+    let guard = gt(
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(-999)),
+    );
+    // arg: n = n - 1
+    let n_minus_1 = binop(
+        BinOp::Sub,
+        value_ref_typed("S", "n", Type::Int),
+        literal(Value::Int(1)),
+    );
+
+    let template_s = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(999), Type::Int)),
+        )
+        .is_recursive(true)
+        .sub_component_with_guard(
+            "left",
+            "S",
+            vec![("n".to_string(), n_minus_1.clone())],
+            guard.clone(),
+        )
+        .sub_component_with_guard(
+            "right",
+            "S",
+            vec![("n".to_string(), n_minus_1)],
+            guard,
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template_s)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+    engine.set_max_unfold_depth(1);
+    engine.set_max_unfold_nodes(2);
+    let result = engine.eval(&module);
+
+    // Should NOT have any budget-exhausted diagnostics
+    let has_budget_error = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.message.contains("budget exhausted")
+    });
+    assert!(
+        !has_budget_error,
+        "Should not have budget-exhausted errors when depth limit prevents node creation. \
+         Depth-limited returns should not consume budget. Got: {:?}",
+        result.diagnostics
+    );
+}
