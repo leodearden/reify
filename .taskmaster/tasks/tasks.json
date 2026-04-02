@@ -5301,7 +5301,7 @@
           "223",
           "224"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -5326,7 +5326,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T12:42:19.620Z"
+        "updatedAt": "2026-04-02T12:42:20.703Z"
       },
       {
         "id": "282",
@@ -17053,7 +17053,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:42:20.365Z",
+      "lastModified": "2026-04-02T12:42:20.703Z",
       "taskCount": 819,
       "completedCount": 567,
       "tags": [
