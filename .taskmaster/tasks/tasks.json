@@ -3476,16 +3476,19 @@
         "dependencies": [
           "197"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-cli",
+            "crates/reify-compiler",
+            "crates/reify-eval",
+            "crates/reify-test-support"
           ],
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:06:31.249Z"
+        "updatedAt": "2026-04-02T14:15:23.735Z"
       },
       {
         "id": "199",
@@ -17072,7 +17075,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:15:19.481Z",
+      "lastModified": "2026-04-02T14:15:23.735Z",
       "taskCount": 819,
       "completedCount": 594,
       "tags": [
