@@ -16224,7 +16224,7 @@
         "description": "WireMessageContext uses `Required<MessageContext>` which makes all keys present with `| undefined` values, but JSON.stringify strips undefined-valued keys before Tauri IPC. The Rust side receives absent fields, not explicit null. Change to optional keys (`?`) so the TypeScript type matches the wire format.",
         "details": "Source: escalation esc-748-204 (task 748 review). Affects GUI sidecar IPC layer. The type mismatch is silent — Rust deserialization succeeds because serde treats missing optional fields as None, but the TypeScript type contract is misleading.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16237,7 +16237,8 @@
             "gui/src",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:11:51.921Z"
       },
       {
         "id": "780",
@@ -17018,9 +17019,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:11:37.658Z",
+      "lastModified": "2026-04-02T04:11:51.921Z",
       "taskCount": 819,
-      "completedCount": 527,
+      "completedCount": 528,
       "tags": [
         "master"
       ]
