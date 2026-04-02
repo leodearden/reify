@@ -16729,7 +16729,7 @@
         "description": "The three-line test setup (`let mut buf = Vec::new(); let result = report_constraint_results(&entries, &mut buf); let output = String::from_utf8(buf).unwrap();`) is copy-pasted across all seven unit tests in crates/reify-cli/src/main.rs tests module. Extract a shared helper: `fn run_report(entries: &[ConstraintCheckEntry]) -> (ConstraintOutcome, String)` that encapsulates the Vec/writeln/from_utf8 boilerplate. Update all existing tests to use it.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16737,7 +16737,8 @@
           "modules": [
             "crates/reify-cli"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T12:52:41.812Z"
       },
       {
         "id": "803",
@@ -17065,7 +17066,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:52:41.583Z",
+      "lastModified": "2026-04-02T12:52:41.812Z",
       "taskCount": 819,
       "completedCount": 585,
       "tags": [
