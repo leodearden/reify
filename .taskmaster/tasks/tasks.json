@@ -14268,7 +14268,7 @@
         "description": "The gradient/divergence/curl match arm covers all three operations but only gradient has a non-Field test. Missing tests:\n\n1. Add divergence_non_field_returns_undef and curl_non_field_returns_undef mirroring the gradient test\n2. Add sample_field_with_non_lambda_slot_returns_undef using Value::Int(42) as the lambda slot (current test only uses Value::Undef)\n\nThese ensure the match arm and else branch handle all non-Lambda/non-Field values, not just the specific cases currently tested.\n\nmemory_hints: search \"gradient divergence curl field tests\" in lambda_eval_tests.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14279,7 +14279,8 @@
           "modules": [
             "crates/reify-expr/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T07:12:24.026Z"
       },
       {
         "id": "685",
@@ -17045,7 +17046,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T07:12:23.840Z",
+      "lastModified": "2026-04-02T07:12:24.026Z",
       "taskCount": 819,
       "completedCount": 557,
       "tags": [
