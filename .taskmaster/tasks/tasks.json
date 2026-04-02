@@ -14702,7 +14702,7 @@
         "description": "In gui/src/__tests__/PropertyEditor.test.tsx: (1) Extract the makeValue({ cell_id: 'c1', name: 'width', value: '50', ... }) fixture that is copy-pasted 13 times to a module-level constant. (2) Merge the 'blur-commit quantity literals' describe block into existing 'blur-commit' describe block. (3) Convert standalone blur tests to it.each() tables mirroring the Enter-key pattern, extending valid-blur matrix to include scientific-notation and leading-dot patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14713,7 +14713,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:15:35.164Z"
       },
       {
         "id": "706",
@@ -17027,9 +17028,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:14:11.420Z",
+      "lastModified": "2026-04-02T04:15:35.164Z",
       "taskCount": 819,
-      "completedCount": 533,
+      "completedCount": 534,
       "tags": [
         "master"
       ]
