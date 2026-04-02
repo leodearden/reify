@@ -16917,7 +16917,7 @@
         "description": "Extend `gui/src/__tests__/test-utils.ts` `deferred<T>()` to return `{ promise, resolve, reject }` by capturing the rejection callback: `let reject!: (reason?: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; })`. Then migrate `App.test.tsx` lines ~1213-1222 which use a `rejectGear` pattern that cannot currently use the helper.\n\nMemory hints:\n- Search: \"deferred helper reject promise test-utils\"\n- Entities: test-utils.ts, App.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16929,7 +16929,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T12:45:02.155Z"
       },
       {
         "id": "814",
@@ -17055,7 +17056,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:45:02.031Z",
+      "lastModified": "2026-04-02T12:45:02.155Z",
       "taskCount": 819,
       "completedCount": 570,
       "tags": [
