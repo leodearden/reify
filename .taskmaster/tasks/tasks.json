@@ -16895,7 +16895,7 @@
         "description": "Rename the exported helper from `flushMicrotasks` to `flushMacrotasks` (or `yieldToMacrotaskQueue`) in `gui/src/__tests__/test-utils.ts` to match its own JSDoc comment ('Yield to the macrotask queue'). Update the test description in `gui/src/__tests__/test-utils.test.ts` line 5 from 'microtask queue' to 'macrotask queue'. Update all call-sites in `gui/src/__tests__/App.test.tsx`. If a true microtask flush is needed, optionally add a separate `flushMicrotasks = () => Promise.resolve()` helper.\n\nMemory hints:\n- Search: \"flushMicrotasks flushMacrotasks setTimeout test helper naming\"\n- Entities: test-utils.ts, App.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16909,7 +16909,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-02T12:45:01.946Z"
+        "updatedAt": "2026-04-02T12:45:02.031Z"
       },
       {
         "id": "813",
@@ -17055,9 +17055,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:45:01.946Z",
+      "lastModified": "2026-04-02T12:45:02.031Z",
       "taskCount": 819,
-      "completedCount": 569,
+      "completedCount": 570,
       "tags": [
         "master"
       ]
