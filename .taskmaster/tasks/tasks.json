@@ -8856,7 +8856,7 @@
         "description": "Currently `format_value_display(v)` calls `format_value(v).0`, constructing a `(String, String)` tuple and immediately discarding the unit String. For composite types with Scalar leaves (Point, Vector, Frame, etc.), this creates O(n) extra short-lived heap allocations.\n\nSuggested approach:\n- Split into `format_value_inner(v: &Value) -> String` (recursive, returns only display string) and keep `format_value(v: &Value) -> (String, String)` as top-level only (calls inner, attaches unit for Scalar/Complex).\n- `format_value_display` becomes an alias for `format_value_inner`.\n- Care needed around `Value::Option(Some(inner))` which intentionally propagates the inner value's unit — this arm must still use `format_value` not `format_value_inner`.\n- Add doc note to format_value_display: \"For Scalar and Complex, the unit is discarded. Use format_value directly when the unit must be preserved.\"\n\nThis is display code (hover tooltips, property editor), not a hot loop, so priority is low.\n\nmemory_hints: search \"format_value allocation display GUI\", entity \"format_value_display\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "381"
         ],
@@ -8872,7 +8872,7 @@
             "gui/src-tauri"
           ]
         },
-        "updatedAt": "2026-04-02T14:39:08.353Z"
+        "updatedAt": "2026-04-02T15:33:31.260Z"
       },
       {
         "id": "444",
@@ -9373,11 +9373,11 @@
         "description": "ConcurrentEditSetup.meta_map clones full HashMap; should use Arc since meta_map is immutable during concurrent eval",
         "details": "Change ConcurrentEditSetup.meta_map from HashMap to Arc<MetaMap>. Update Engine::prepare_concurrent_edit() in crates/reify-eval/src/lib.rs to wrap in Arc, and ConcurrentEvalAdapter::from_setup() in crates/reify-runtime/src/concurrent_eval.rs to Arc::clone instead of clone-then-wrap.\n\nCurrently line 70 does `meta_map: Arc::new(setup.meta_map.clone())` -- a full HashMap clone followed by Arc wrapping. With Arc<MetaMap> in setup, this becomes cheap Arc::clone.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"ConcurrentEditSetup meta_map clone\"\n  entities: [\"ConcurrentEditSetup\", \"ConcurrentEvalAdapter\", \"MetaMap\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:15:23.922Z",
+        "updatedAt": "2026-04-02T15:33:31.302Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17153,7 +17153,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T15:33:31.212Z",
+      "lastModified": "2026-04-02T15:33:31.302Z",
       "taskCount": 822,
       "completedCount": 613,
       "tags": [
