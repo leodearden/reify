@@ -370,7 +370,7 @@ describe('App async mount/cleanup race conditions', () => {
     // Resolve the deferred onMeshUpdate — subscribeToEvents will now complete
     resolveMeshListen(meshUnlisten);
 
-    // Flush microtasks so subscribeToEvents' await resolves
+    // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
 
     // After fix: the alive guard calls the composite unsub immediately,
@@ -411,7 +411,7 @@ describe('App async mount/cleanup race conditions', () => {
       files: [{ path: '/test.ri', content: '' }],
     });
 
-    // Flush microtasks
+    // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
 
     // After fix: alive guard returns before reaching subscribeToEvents
@@ -455,7 +455,7 @@ describe('App async mount/cleanup race conditions', () => {
     // Resolve the deferred subscribeToClaudeEvents — alive guard should fire
     resolveClaudeSub(unlistenClaude);
 
-    // Flush microtasks so the await in initApp resolves
+    // Flush macrotasks so setTimeout(0) callbacks execute
     await flushMacrotasks();
 
     // The alive guard (lines 260-263) calls unlistenClaude() and returns early,

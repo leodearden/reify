@@ -41,10 +41,11 @@ describe('flushMicrotasks', () => {
 
   it('does not yield to the macrotask queue (setTimeout callbacks not yet fired)', async () => {
     let flag = false;
-    setTimeout(() => { flag = true; }, 0);
+    const id = setTimeout(() => { flag = true; }, 0);
     await flushMicrotasks();
     // setTimeout(0) callback has NOT fired — only microtasks were flushed
     expect(flag).toBe(false);
+    clearTimeout(id);
   });
 });
 
