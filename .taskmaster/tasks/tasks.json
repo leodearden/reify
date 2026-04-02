@@ -16889,7 +16889,7 @@
         "description": "In crates/reify-lsp/src/server.rs test module: (1) Extract an async fn open_source(server, uri, text) helper that wraps the 7-line DidOpenTextDocumentParams boilerplate; replace all 4+ inline usages. (2) Add a comment above the main.ri did_open call in goto_definition_prefers_document_store_over_disk noting that main.ri is intentionally never written to disk (buffer-only). The temp dir extraction is handled in the separate reliability task.\n\nmemory_hints: search \"LSP test helper open_source did_open\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16901,7 +16901,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T22:30:18.536Z"
+        "updatedAt": "2026-04-02T22:34:24.425Z"
       },
       {
         "id": "810",
@@ -17166,9 +17166,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:30:29.254Z",
+      "lastModified": "2026-04-02T22:34:24.425Z",
       "taskCount": 822,
-      "completedCount": 626,
+      "completedCount": 627,
       "tags": [
         "master"
       ]
