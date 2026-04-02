@@ -4375,7 +4375,7 @@
           "237",
           "238"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -4385,7 +4385,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T04:38:30.253Z"
+        "updatedAt": "2026-04-02T04:48:33.590Z"
       },
       {
         "id": "240",
@@ -17033,7 +17033,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:45:43.573Z",
+      "lastModified": "2026-04-02T04:48:33.590Z",
       "taskCount": 819,
       "completedCount": 547,
       "tags": [
