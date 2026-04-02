@@ -14002,7 +14002,7 @@
         "description": "Move the three inspection methods (`values()`, `snapshot_values()`, `take_results()`) on ConcurrentEvalAdapter behind `#[cfg(any(test, feature = \"test-utils\"))]` to match the poison helpers below them. Also rename `snapshot_values()` to `values_with_determinacy()` or `determinacy_values()` to avoid verb/noun ambiguity with the field name.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Move lines 135-156 (the `values()`, `snapshot_values()`, `take_results()` methods) into the existing `#[cfg(any(test, feature = \"test-utils\"))]` impl block at line 273, or into a new cfg-gated block.\n\n2. Rename `snapshot_values()` to `values_with_determinacy()` (or similar) — the current name reads as a verb phrase (\"perform a snapshot\") rather than a getter, and is confusing when contrasted with `values()`.\n\n3. Update all call sites in tests (crates/reify-runtime/tests/concurrent_eval.rs) to use the new name.\n\n4. Verify no production (non-test) code calls these methods. If any does, keep that method ungated and document why.\n\nmemory_hints:\n  search: \"ConcurrentEvalAdapter inspection methods cfg gate\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14013,7 +14013,8 @@
           "modules": [
             "crates/reify-runtime/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:03:04.602Z"
       },
       {
         "id": "673",
@@ -17008,9 +17009,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:02:20.151Z",
+      "lastModified": "2026-04-02T04:03:04.602Z",
       "taskCount": 819,
-      "completedCount": 514,
+      "completedCount": 515,
       "tags": [
         "master"
       ]
