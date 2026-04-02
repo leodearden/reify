@@ -14288,7 +14288,7 @@
         "description": "Four small fixes in crates/reify-expr/src/lib.rs:\n\n1. Line ~146: The outer `if !matches!` for gradient/divergence/curl runs unconditionally but its body is cfg(debug_assertions). Wrap the entire if-block in the cfg guard to eliminate dead work in release builds.\n\n2. Line ~494: Comment says \"consistent with eval_user_function_call\" but the ordering actually differs (eval_user_function_call checks after arg eval, apply_lambda checks before). Fix comment to accurately describe the difference.\n\n3. Line ~495-497: apply_lambda depth check returns Undef silently. Add #[cfg(debug_assertions)] eprintln! diagnostic matching the pattern used for field operations in the same commit.\n\n4. Line ~153-155: When a valid Field IS passed to gradient/divergence/curl, the stub returns Undef with no diagnostic. Add an else-branch debug diagnostic distinguishing \"not yet implemented\" from \"wrong type\".\n\nmemory_hints: search \"apply_lambda recursion depth diagnostic\" in lib.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14299,7 +14299,8 @@
           "modules": [
             "crates/reify-expr/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T07:15:19.250Z"
       },
       {
         "id": "686",
@@ -17046,7 +17047,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T07:15:18.111Z",
+      "lastModified": "2026-04-02T07:15:19.253Z",
       "taskCount": 819,
       "completedCount": 558,
       "tags": [
