@@ -12524,7 +12524,7 @@
         "description": "Review suggestions from task 437 (LSP GuardedGroup recursion). Three related improvements: (1) Replace bare (SourceSpan, Option<&str>) return tuple with a named struct MemberSpanInfo { span, doc } — goto_def.rs already discards the second element. (2) Consider moving find_named_member_span to reify-syntax since it has no LSP dependencies and the compiler's register_guarded_names (lib.rs:4500-4539) duplicates the same recursion pattern. (3) Add comment above template.guarded_groups loop explaining the compiler flattens nested where blocks so flat iteration is correct on the compiled side.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12538,7 +12538,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:04:59.483Z"
+        "updatedAt": "2026-04-02T14:09:21.371Z"
       },
       {
         "id": "602",
@@ -17068,9 +17068,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:08:31.075Z",
+      "lastModified": "2026-04-02T14:09:21.372Z",
       "taskCount": 819,
-      "completedCount": 591,
+      "completedCount": 592,
       "tags": [
         "master"
       ]
