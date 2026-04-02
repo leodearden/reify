@@ -11441,7 +11441,7 @@
         "description": "Two tests have overly loose assertions that could pass for wrong reasons.",
         "details": "1. physical_constraint_injected_into_conforming_structure: only asserts !constraints.is_empty(). Should verify constraint references 'volume'.\n2. missing_volume_produces_error_diagnostic: broad 'missing' fallback in error message check could match unrelated errors. Should assert specifically on 'volume'.\n\nFiles: crates/reify-compiler/tests/structural_physical_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11454,7 +11454,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-02T04:29:54.385Z"
+        "updatedAt": "2026-04-02T14:15:24.239Z"
       },
       {
         "id": "557",
@@ -17075,7 +17075,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:15:23.922Z",
+      "lastModified": "2026-04-02T14:15:24.240Z",
       "taskCount": 819,
       "completedCount": 594,
       "tags": [
