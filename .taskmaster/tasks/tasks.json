@@ -10114,7 +10114,7 @@
         "description": "Engine::check(module) calls eval(module) which resets active_purposes at lib.rs:845. Purpose-injected constraints are silently lost. The incremental path (edit_param) preserves purposes, but a cold check() clears them.\n\n**What's wrong:** User activates a purpose via activate_purpose(), then calls check() to verify — injected constraints vanish, check passes incorrectly.\n\n**Fix:** Preserve the active_purposes set across eval() calls. After the fresh eval completes, re-inject constraints for any purposes in self.active_purposes. The re-injection logic already exists in activate_purpose() — extract it into a helper and call it at the end of eval().\n\n**Memory hints:** search for \"purpose activation\", \"activate_purpose\", entity names: active_purposes, eval, check",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -10126,7 +10126,8 @@
           "modules": [
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:20:59.736Z"
       },
       {
         "id": "500",
@@ -17029,9 +17030,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:20:52.415Z",
+      "lastModified": "2026-04-02T04:20:59.736Z",
       "taskCount": 819,
-      "completedCount": 536,
+      "completedCount": 537,
       "tags": [
         "master"
       ]
