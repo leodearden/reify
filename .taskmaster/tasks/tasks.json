@@ -13252,7 +13252,7 @@
         "description": "The hover format string in crates/reify-lsp/src/hover.rs always emits \"{N} params, {N} lets, {N} constraints\" regardless of count. When count is 1, this produces \"1 lets\" and \"1 constraints\" which is grammatically incorrect. \n\nFix the format string to handle singular/plural correctly: \"1 param\" vs \"2 params\", \"1 let\" vs \"2 lets\", \"1 constraint\" vs \"2 constraints\". Update the test assertion in hover.rs:524 that currently asserts `md.contains(\"1 lets\")`.\n\nMemory hints: search \"hover format params lets constraints\" in hover.rs",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13264,7 +13264,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:27:46.140Z"
+        "updatedAt": "2026-04-02T14:30:10.141Z"
       },
       {
         "id": "635",
@@ -17083,9 +17083,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:29:16.916Z",
+      "lastModified": "2026-04-02T14:30:10.141Z",
       "taskCount": 819,
-      "completedCount": 600,
+      "completedCount": 601,
       "tags": [
         "master"
       ]
