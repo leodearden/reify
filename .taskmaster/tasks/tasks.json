@@ -16520,7 +16520,7 @@
         "description": "Add tests exercising all 4 code paths (lib.rs:1219, 3671, 3908, 3950) that were upgraded from warning to error for unknown-structure references. Currently only path 2 (unfold_recursive_sub at 3671) is tested. Add complementary BFS-stops-on-false-guard test. Document the severity change for GUI export behavior (engine.rs:201-205 now aborts on these errors).",
         "details": "Source: escalation esc-550-13 (task 550 review). Files: crates/reify-eval/src/lib.rs:1219,3671,3908,3950 and crates/reify-eval/tests/recursive_unfold.rs.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -16533,7 +16533,8 @@
             "crates/reify-eval",
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:26:43.483Z"
       },
       {
         "id": "792",
@@ -17081,7 +17082,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:26:43.266Z",
+      "lastModified": "2026-04-02T14:26:43.483Z",
       "taskCount": 819,
       "completedCount": 598,
       "tags": [
