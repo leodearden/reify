@@ -2079,47 +2079,44 @@ describe('App onSend context forwarding', () => {
 
 describe('App claudeSendMessage error-path integration', () => {
   it('claudeSendMessage failure renders system-message with ipc_error type and original error', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      await withSuppressedRejections(async () => {
-        vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
-        vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
-          meshes: [],
-          values: [],
-          constraints: [],
-          files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
-        });
-
-        render(() => <App />);
-
-        await waitFor(() => {
-          expect(screen.getByTestId('app-layout')).toBeTruthy();
-        });
-
-        // Type a message in the chat input
-        const chatInput = screen.getByTestId('chat-input');
-        fireEvent.input(chatInput, { target: { value: 'help me' } });
-
-        // Click send button to trigger onSend -> claudeSendMessage
-        const sendBtn = screen.getByTestId('send-button');
-        fireEvent.click(sendBtn);
-
-        // Wait for the system-message element to appear (not a toast — this path uses addSystemMessage)
-        await waitFor(() => {
-          const sysMsg = screen.getByTestId('system-message');
-          expect(sysMsg).toBeTruthy();
-          expect(sysMsg.getAttribute('data-error-type')).toBe('ipc_error');
-          expect(sysMsg.textContent).toContain('Failed to send message');
-          expect(sysMsg.textContent).toContain('IPC channel broken');
-        });
-
-        // console.error should NOT be called (error is routed through addSystemMessage)
-        expect(errorSpy).not.toHaveBeenCalled();
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      vi.mocked(bridge.claudeSendMessage).mockRejectedValueOnce(new Error('IPC channel broken'));
+      vi.mocked(bridge.getInitialState).mockResolvedValueOnce({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: 'bracket.ri', content: 'structure Bracket {}' }],
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      render(() => <App />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Type a message in the chat input
+      const chatInput = screen.getByTestId('chat-input');
+      fireEvent.input(chatInput, { target: { value: 'help me' } });
+
+      // Click send button to trigger onSend -> claudeSendMessage
+      const sendBtn = screen.getByTestId('send-button');
+      fireEvent.click(sendBtn);
+
+      // Wait for the system-message element to appear (not a toast — this path uses addSystemMessage)
+      await waitFor(() => {
+        const sysMsg = screen.getByTestId('system-message');
+        expect(sysMsg).toBeTruthy();
+        expect(sysMsg.getAttribute('data-error-type')).toBe('ipc_error');
+        expect(sysMsg.textContent).toContain('Failed to send message');
+        expect(sysMsg.textContent).toContain('IPC channel broken');
+      });
+
+      // console.error should NOT be called (error is routed through addSystemMessage)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        '[claude] sendMessage failed:',
+        expect.any(Error),
+      );
+    });
   });
 });
 
