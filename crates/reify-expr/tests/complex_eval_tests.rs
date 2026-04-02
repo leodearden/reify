@@ -305,6 +305,34 @@ fn complex_div_by_zero_scalar() {
     assert!(result.is_undef());
 }
 
+/// Complex / Real(0.0) returns Undef (eval_div zero-guard via as_f64).
+#[test]
+fn complex_div_by_zero_real() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 4.0, DimensionVector::LENGTH),
+        Type::complex(Type::length()),
+        Value::Real(0.0),
+        Type::Real,
+        Type::complex(Type::length()),
+    );
+    assert!(result.is_undef());
+}
+
+/// Complex / Complex is not a supported operation — returns Undef.
+#[test]
+fn complex_div_complex_undef() {
+    let result = eval_binop(
+        BinOp::Div,
+        complex_val(6.0, 4.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        complex_val(2.0, 1.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        Type::complex(Type::Real),
+    );
+    assert!(result.is_undef());
+}
+
 // ─── step-11: Unary negation ───────────────────────────────────────────────
 
 /// Negating a Complex value negates both re and im, preserves dimension.
@@ -468,6 +496,101 @@ fn method_magnitude_with_args_undef() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(result.is_undef());
+}
+
+/// .re(arg) with unexpected argument returns Undef.
+#[test]
+fn method_re_with_args_undef() {
+    let expr = CompiledExpr::method_call(
+        lit(
+            complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+            Type::complex(Type::Real),
+        ),
+        "re".to_string(),
+        vec![lit(Value::Int(1), Type::Int)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef());
+}
+
+/// .im(arg) with unexpected argument returns Undef.
+#[test]
+fn method_im_with_args_undef() {
+    let expr = CompiledExpr::method_call(
+        lit(
+            complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+            Type::complex(Type::Real),
+        ),
+        "im".to_string(),
+        vec![lit(Value::Int(1), Type::Int)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef());
+}
+
+/// .phase(arg) with unexpected argument returns Undef.
+#[test]
+fn method_phase_with_args_undef() {
+    let expr = CompiledExpr::method_call(
+        lit(
+            complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+            Type::complex(Type::Real),
+        ),
+        "phase".to_string(),
+        vec![lit(Value::Int(1), Type::Int)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef());
+}
+
+/// .conjugate(arg) with unexpected argument returns Undef.
+#[test]
+fn method_conjugate_with_args_undef() {
+    let expr = CompiledExpr::method_call(
+        lit(
+            complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
+            Type::complex(Type::Real),
+        ),
+        "conjugate".to_string(),
+        vec![lit(Value::Int(1), Type::Int)],
+        Type::complex(Type::Real),
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(result.is_undef());
+}
+
+/// .phase() on zero complex (0+0i) returns 0.0 per IEEE 754 atan2(0,0) semantics.
+/// Decision: this is intentional — atan2 returns 0.0 for (0,0) per the standard.
+#[test]
+fn method_phase_of_zero_complex() {
+    let result = eval_method(
+        complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "phase",
+        Type::Real,
+    );
+    match result {
+        Value::Scalar { si_value, dimension } => {
+            assert!(
+                (si_value - 0.0).abs() < f64::EPSILON,
+                "phase(0+0i) should be 0.0, got {}",
+                si_value
+            );
+            assert_eq!(
+                dimension,
+                DimensionVector::ANGLE,
+                "phase should have ANGLE dimension"
+            );
+        }
+        other => panic!("expected Scalar with ANGLE dimension, got {:?}", other),
+    }
 }
 
 /// Undef + Complex returns Undef (propagation through eval_binop).
