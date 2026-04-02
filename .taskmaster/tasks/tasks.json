@@ -15202,7 +15202,7 @@
         "description": "The batch() wrapper in clearIfRemoved (task 717) changed the timing of selection-cleared signals when both selectedEntity and hoveredEntity match: previously selectEntity(null) dispatched immediately (0ms), now both clears are batched and hit the debounce path (100ms). Audit all createEffect consumers of state.selectedEntity and state.hoveredEntity to confirm none expect a synchronous (same-tick) clear. If a frame-synchronous consumer exists (e.g. 3D viewport highlight removal, context-menu gating), consider a two-tier approach: update a non-reactive flag immediately inside batch() for frame-sync consumers while the debounced backend dispatch remains batched.\n\nMemory hints: search \"selectionStore createEffect selectedEntity consumer\" and \"update_selection dispatch timing\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15216,7 +15216,8 @@
             "gui/src/stores",
             "gui/src/viewport"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:05:15.096Z"
       },
       {
         "id": "731",
@@ -17010,9 +17011,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:03:06.502Z",
+      "lastModified": "2026-04-02T04:05:15.096Z",
       "taskCount": 819,
-      "completedCount": 516,
+      "completedCount": 517,
       "tags": [
         "master"
       ]
