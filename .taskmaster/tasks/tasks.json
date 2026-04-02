@@ -2433,7 +2433,7 @@
           "149",
           "150"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -2442,7 +2442,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:04:10.779Z"
+        "updatedAt": "2026-04-02T14:09:45.232Z"
       },
       {
         "id": "152",
@@ -17069,9 +17069,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:09:22.289Z",
+      "lastModified": "2026-04-02T14:09:45.232Z",
       "taskCount": 819,
-      "completedCount": 592,
+      "completedCount": 593,
       "tags": [
         "master"
       ]
