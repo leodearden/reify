@@ -15777,7 +15777,7 @@
         "description": "The three dimensional-type error tests (missing_right_operand, missing_left_operand, missing_both_operands) in type_alias_tests.rs contain an identical 17-line block that: (1) finds a TypeAlias via find_map, (2) asserts ta.name == \"Foo\", (3) checks looks_like_valid_binop and asserts false. This violates the file's established convention of factoring repeated assertion logic into named helpers (assert_malformed_recovers, unwrap_single_type_alias).\n\nFix: Extract a helper `fn assert_no_valid_binop_recovery(decls: &[Declaration])` that contains the find_map + if-let + assertion logic, and call it from all three tests.\n\nMemory hints: search \"task 716 type alias test assertions\", search \"type_alias_tests.rs helpers\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "716"
         ],
@@ -15790,7 +15790,8 @@
           "modules": [
             "crates/reify-syntax/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:02:20.150Z"
       },
       {
         "id": "758",
@@ -17007,9 +17008,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:47:19.440Z",
+      "lastModified": "2026-04-02T04:02:20.151Z",
       "taskCount": 819,
-      "completedCount": 513,
+      "completedCount": 514,
       "tags": [
         "master"
       ]
