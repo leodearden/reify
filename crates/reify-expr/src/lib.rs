@@ -638,7 +638,14 @@ fn compute_gradient(field_val: &Value) -> Value {
                     Type::Real
                 }
             }
-            _ => codomain_type.clone(),
+            _ => match codomain_type {
+                Type::Scalar { dimension }
+                    if *dimension == DimensionVector::DIMENSIONLESS =>
+                {
+                    Type::Real
+                }
+                _ => codomain_type.clone(),
+            },
         }
     };
 

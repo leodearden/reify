@@ -2416,3 +2416,86 @@ fn gradient_mixed_dimensionless_codomain_type() {
         other => panic!("gradient should return a Field, got {:?}", other),
     }
 }
+
+/// Regression: gradient of Field<Point3<Scalar[m]>, Scalar[DIMENSIONLESS]> must have
+/// codomain_type = Vector { n: 3, quantity: Real }, NOT Vector { n: 3, quantity: Scalar[DIMENSIONLESS] }.
+///
+/// The codomain is explicitly typed as `Scalar[DIMENSIONLESS]` (not `Type::Real`), but the
+/// runtime produces `Value::Real` for dimensionless gradient components, so the type-level
+/// code must normalize `Scalar[DIMENSIONLESS]` → `Type::Real` in the fallback arm of
+/// `gradient_quantity`.
+#[test]
+fn gradient_explicit_dimensionless_scalar_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z  (produces Real even though domain is Scalar[m])
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    });
+    // Explicitly Scalar[DIMENSIONLESS] — NOT Type::Real — to exercise the bug.
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // The gradient of a dimensionless-scalar-codomain field must have codomain Vector3<Real>,
+    // matching what the runtime produces (Value::Real components, not Value::Scalar[DIMENSIONLESS]).
+    let expected_codomain = Type::Vector {
+        n: 3,
+        quantity: Box::new(Type::Real),
+    };
+
+    match &grad_result {
+        Value::Field { codomain_type, .. } => {
+            assert_eq!(
+                *codomain_type, expected_codomain,
+                "explicit-Scalar[DIMENSIONLESS] gradient codomain_type should be Vector3<Real>, got {:?}",
+                codomain_type
+            );
+        }
+        other => panic!("gradient should return a Field, got {:?}", other),
+    }
+}
