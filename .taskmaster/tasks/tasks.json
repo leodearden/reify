@@ -12959,7 +12959,7 @@
         "description": "The pattern of extracting (members, name, span) from a Declaration enum via `match decl { Structure(s) => ..., Occurrence(o) => ..., _ => continue }` now appears in 3 places: find_parsed_member_span_and_doc (analysis.rs), the enclosing-declaration loop (goto_def.rs:26-30), and the fallback loop (goto_def.rs:48-51).\n\nExtract a helper — either `decl_named_members(decl) -> Option<(&[MemberDecl], &str, SourceSpan)>` in analysis.rs or an inherent method on Declaration in reify-syntax — to consolidate this. Adding a third declaration kind would then be a single-site change. As part of this, the two loops in goto_def.rs can be combined into a single pass using the helper.\n\nMemory hints: search \"LSP Declaration match pattern extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12972,7 +12972,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:16:39.130Z"
+        "updatedAt": "2026-04-02T14:21:31.230Z"
       },
       {
         "id": "621",
@@ -17079,9 +17079,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:18:28.564Z",
+      "lastModified": "2026-04-02T14:21:31.230Z",
       "taskCount": 819,
-      "completedCount": 594,
+      "completedCount": 595,
       "tags": [
         "master"
       ]
