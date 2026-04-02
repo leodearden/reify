@@ -11702,7 +11702,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add `tracing::warn!` at each poison recovery site so lock poisoning is observable in logs (robustness S9)\n2. Extract private helper methods (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) to deduplicate the `.unwrap_or_else(|e| e.into_inner())` pattern, matching `CliToolContext::lock_state()` precedent (reuse S12)\n3. Consider adding an `AtomicBool tainted` flag that gets set on first poison recovery, surfaced in `ConcurrentEditResult` so callers can decide whether to trust results or retry (robustness S7, S8). This addresses silent corruption propagation and values/snapshot_values invariant divergence.\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval tainted\"\n  entities: [\"ConcurrentEvalAdapter\", \"SharedPriorityPromoter\", \"CliToolContext\"]",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11717,7 +11717,7 @@
             "crates/reify-runtime"
           ]
         },
-        "updatedAt": "2026-04-02T14:18:28.359Z"
+        "updatedAt": "2026-04-02T15:33:31.347Z"
       },
       {
         "id": "568",
@@ -12489,7 +12489,7 @@
         "description": "Two small hardening improvements:\n1. Add clarifying comment in find_member_decl explaining why both value_cells and guarded_groups must be searched (compiler stores them separately).\n2. Add depth limit parameter to find_named_member_span to prevent stack overflow on pathological input (e.g., max_depth=32).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12503,7 +12503,7 @@
             "crates/reify-syntax"
           ]
         },
-        "updatedAt": "2026-04-02T14:09:21.813Z"
+        "updatedAt": "2026-04-02T15:33:31.387Z"
       },
       {
         "id": "600",
@@ -17153,7 +17153,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T15:33:31.302Z",
+      "lastModified": "2026-04-02T15:33:31.387Z",
       "taskCount": 822,
       "completedCount": 613,
       "tags": [
