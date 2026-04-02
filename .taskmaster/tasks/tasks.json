@@ -17102,6 +17102,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 822,
+        "title": "Add tracing::warn when MemberDecl depth limit truncates traversal",
+        "description": "When `count_members_recursive_depth` and `find_named_member_span_depth` hit the depth limit, they silently return `(0,0,0)` / `None`. For `count_members_recursive`, this means incorrect counts propagate to LSP hover output (`EntitySummary.params/lets/constraints`) with no indication of truncation.\n\nAdd `tracing::warn!(depth, \"count_members_recursive: depth limit exceeded, subtree skipped\")` (and analogous for `find_named_member_span_depth`) inside the depth-guard branch before returning. This preserves stack-overflow protection while making truncation observable in LSP server logs.\n\nThis aligns with the project convention against silent defaults (feedback_silent_defaults_pattern).\n\nFiles: `crates/reify-lsp/src/analysis.rs:302-304` and `crates/reify-syntax/src/lib.rs` (find_named_member_span_depth)\n\nMemory hints: search \"silent defaults\" for project convention",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17114,7 +17125,7 @@
       ],
       "created": "2026-04-02T14:36:55.556Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-02T14:37:03.604Z"
+      "updated": "2026-04-02T14:37:10.100Z"
     }
   }
 }
