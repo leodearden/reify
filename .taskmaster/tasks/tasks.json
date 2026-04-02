@@ -15814,7 +15814,7 @@
         "description": "Multiple review suggestions identified that warm-start solver integration tests assume the fallback path is triggered without verifying it. If NLopt convergence behavior changes (version update, iteration budget formula change, platform differences), tests could silently switch from testing the fallback path to testing the optimization path and still pass — or vice versa, fail spuriously.\n\nAffected tests:\n- `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` (exact-value assertion only valid on fallback path)\n- `warm_start_fallback_returns_exact_initial_values` (same issue, 3-param variant)\n\nCurrent state: `SolveResult::Solved` carries no metadata about which code path produced the result. The fallback path logs via `tracing::debug!` but this isn't programmatically accessible.\n\nProposed fix: Add an optional `diagnostics` or `path` field to `SolveResult::Solved` (or a separate `SolverDiagnostics` struct) that indicates whether the result came from:\n1. Early-exit (initial already feasible, no objective)\n2. Optimization convergence\n3. Fallback to initial (optimizer drifted infeasible)\n\nThen update fallback tests to assert the path taken, not just the values.\n\nNote: `build_solved_values` already has 3 unit tests in solver.rs (lines ~2188-2280) covering the value construction itself. This task is about the integration-level path verification.\n\nMemory hints: search \"solver fallback path\", search \"SolveResult diagnostics\", entity DimensionalSolver, entity build_solved_values",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15828,7 +15828,8 @@
             "crates/reify-types",
             "crates/reify-constraints"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:44:48.805Z"
       },
       {
         "id": "757",
@@ -17136,7 +17137,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:44:48.628Z",
+      "lastModified": "2026-04-02T14:44:48.805Z",
       "taskCount": 822,
       "completedCount": 608,
       "tags": [
