@@ -915,6 +915,7 @@ describe('PropertyEditor data-invalid recovery', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).not.toHaveBeenCalled();
   });
 
   it('blur reverts value and clears data-invalid', () => {
