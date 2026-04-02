@@ -16203,7 +16203,7 @@
         "description": "Add `assert!(!root.has_error(), \"source '{}' should parse without errors — grammar regression?\", source);` after `let root = tree.root_node();` in the `lower_node_directly` helper in ts_parser.rs (~line 3336). Three independent reviewers flagged this gap: the inline catch-all tests added in task 650 check has_error() but the shared helper does not.",
         "details": "Source: escalation esc-650-254 (task 650 review). File: tree-sitter-reify/src/ts_parser.rs, ~line 3336.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16214,7 +16214,8 @@
           "modules": [
             "crates/reify-syntax/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:09:52.972Z"
       },
       {
         "id": "779",
@@ -17016,9 +17017,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:08:50.388Z",
+      "lastModified": "2026-04-02T04:09:52.972Z",
       "taskCount": 819,
-      "completedCount": 524,
+      "completedCount": 525,
       "tags": [
         "master"
       ]
