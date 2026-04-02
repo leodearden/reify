@@ -12125,7 +12125,7 @@
         "description": "structure_names() now returns both structures and occurrences, making its name a misnomer. It also returns an anonymous positional tuple `Vec<(&str, usize, usize, usize, &str)>` where the 5th element is a raw display string \"structure\"/\"occurrence\" — coupling analysis with presentation.\n\nRefactor:\n1. Add `pub enum EntityKind { Structure, Occurrence }` in analysis.rs (or a shared types module).\n2. Optionally introduce `pub struct EntitySummary<'a> { name, params, lets, constraints, kind: EntityKind }`.\n3. Rename `structure_names()` → `entity_names()` or `declaration_summaries()`.\n4. Update call sites in hover.rs and completion.rs to match on EntityKind for display strings.\n\nAll call sites are within the reify-lsp crate — mechanical rename with no semantic change.\n\nMemory hints: search \"LSP analysis structure_names EntityKind\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12141,7 +12141,7 @@
             "crates/reify-lsp"
           ]
         },
-        "updatedAt": "2026-04-02T12:46:13.324Z"
+        "updatedAt": "2026-04-02T13:35:02.164Z"
       },
       {
         "id": "586",
@@ -17068,7 +17068,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T13:35:02.032Z",
+      "lastModified": "2026-04-02T13:35:02.164Z",
       "taskCount": 819,
       "completedCount": 587,
       "tags": [
