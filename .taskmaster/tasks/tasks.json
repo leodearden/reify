@@ -16553,7 +16553,7 @@
         "description": "Add fn empty_problem() -> ResolutionProblem helper and use it in the 3 new tests plus retrofit existing ~10 occurrences of empty ResolutionProblem literals in the file.",
         "details": "Source: escalation esc-617-249 (task 617 review). File: crates/reify-test-support/src/mocks.rs.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16564,7 +16564,8 @@
           "modules": [
             "crates/reify-test-support"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:08:04.485Z"
       },
       {
         "id": "797",
@@ -16825,9 +16826,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:07:41.465Z",
+      "lastModified": "2026-04-02T02:08:04.493Z",
       "taskCount": 816,
-      "completedCount": 481,
+      "completedCount": 482,
       "tags": [
         "master"
       ]
