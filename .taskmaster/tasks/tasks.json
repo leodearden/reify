@@ -16493,7 +16493,7 @@
         "description": "Move portable_sha256() and portable_timeout() into scripts/lib_portable.sh sourced by both tree-sitter-generate.sh and tests/infra/ tests, so tests validate the live implementation instead of stale copies.",
         "details": "Source: escalation esc-610-194 (task 610 review). Files: tests/infra/test_portable_sha256.sh, tests/infra/test_portable_timeout.sh, scripts/tree-sitter-generate.sh.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16507,7 +16507,8 @@
             "scripts",
             "tests/infra"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:17:35.500Z"
       },
       {
         "id": "794",
@@ -16833,9 +16834,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:17:29.602Z",
+      "lastModified": "2026-04-02T02:17:35.503Z",
       "taskCount": 816,
-      "completedCount": 495,
+      "completedCount": 496,
       "tags": [
         "master"
       ]
