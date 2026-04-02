@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use crate::types::*;
-use reify_types::DeterminacyState;
+use reify_types::{DeterminacyState, DimensionVector, FieldSourceKind, Type, Value};
 
 #[test]
 fn gui_state_empty_serializes_with_expected_keys() {
@@ -139,4 +139,363 @@ fn format_determinacy_returns_lowercase_strings() {
         "provisional"
     );
     assert_eq!(format_determinacy(DeterminacyState::Auto), "auto");
+}
+
+// --- format_value characterization tests ---
+// These tests exercise Value::format_display_pair() through the GUI format_value()
+// thin wrapper, covering composite types that have no other test coverage.
+
+#[test]
+fn format_value_int() {
+    assert_eq!(
+        format_value(&Value::Int(42)),
+        ("42".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_real() {
+    assert_eq!(
+        format_value(&Value::Real(3.14)),
+        ("3.14".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_bool() {
+    assert_eq!(
+        format_value(&Value::Bool(true)),
+        ("true".to_string(), String::new())
+    );
+    assert_eq!(
+        format_value(&Value::Bool(false)),
+        ("false".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_scalar_length() {
+    let v = Value::Scalar {
+        si_value: 0.08,
+        dimension: DimensionVector::LENGTH,
+    };
+    assert_eq!(format_value(&v), ("80".to_string(), "mm".to_string()));
+}
+
+#[test]
+fn format_value_point() {
+    let v = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    assert_eq!(
+        format_value(&v),
+        ("point(0, 0, 0)".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_vector() {
+    let v = Value::Vector(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    assert_eq!(
+        format_value(&v),
+        ("vec(0, 0, 0)".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_orientation() {
+    let v = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    assert_eq!(
+        format_value(&v),
+        ("[1, 0, 0, 0]q".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_frame() {
+    let origin = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let basis = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let v = Value::Frame {
+        origin: Box::new(origin),
+        basis: Box::new(basis),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "frame(point(0, 0, 0), [1, 0, 0, 0]q)".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_transform() {
+    let rotation = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let translation = Value::Vector(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let v = Value::Transform {
+        rotation: Box::new(rotation),
+        translation: Box::new(translation),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "transform([1, 0, 0, 0]q, vec(0, 0, 0))".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_plane() {
+    let origin = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let normal = Value::Vector(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+    ]);
+    let v = Value::Plane {
+        origin: Box::new(origin),
+        normal: Box::new(normal),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "plane(point(0, 0, 0), vec(0, 0, 1))".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_axis() {
+    let origin = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let direction = Value::Vector(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+    ]);
+    let v = Value::Axis {
+        origin: Box::new(origin),
+        direction: Box::new(direction),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "axis(point(0, 0, 0), vec(0, 0, 1))".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_bbox() {
+    let min = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let max = Value::Point(vec![
+        Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+    let v = Value::BoundingBox {
+        min: Box::new(min),
+        max: Box::new(max),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "bbox(point(0, 0, 0), point(1, 1, 1))".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_range() {
+    let v = Value::Range {
+        lower: Some(Box::new(Value::Int(1))),
+        upper: Some(Box::new(Value::Int(5))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    };
+    assert_eq!(format_value(&v), ("[1..5]".to_string(), String::new()));
+}
+
+#[test]
+fn format_value_matrix() {
+    let v = Value::Matrix(vec![
+        vec![Value::Int(1), Value::Int(0)],
+        vec![Value::Int(0), Value::Int(1)],
+    ]);
+    assert_eq!(
+        format_value(&v),
+        ("[[1, 0], [0, 1]]".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_field() {
+    let v = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(Value::Undef),
+    };
+    assert_eq!(
+        format_value(&v),
+        (
+            "Field<Real, Real>(Analytical)".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn format_value_lambda() {
+    let v = Value::Lambda {
+        params: vec![],
+        body: Box::new(reify_types::CompiledExpr::literal(Value::Undef, Type::Real)),
+        captures: reify_types::ValueMap::default(),
+    };
+    assert_eq!(
+        format_value(&v),
+        ("<lambda>".to_string(), String::new())
+    );
+}
+
+#[test]
+fn format_value_undef() {
+    assert_eq!(
+        format_value(&Value::Undef),
+        ("undefined".to_string(), String::new())
+    );
 }
