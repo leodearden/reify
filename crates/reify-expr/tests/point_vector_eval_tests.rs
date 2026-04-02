@@ -1735,3 +1735,90 @@ fn scalar_div_scalar_dimensionless_returns_scalar() {
         "Scalar/Scalar with same dimension must produce Scalar{{dimensionless}}, not Real"
     );
 }
+
+// --- Task 458: additional edge-case tests ---
+
+/// Value::Vector(3 components) + Value::Vector(2 components) → Undef (length mismatch).
+/// Mirrors vector3_add_vector2_n_mismatch_returns_undef which uses Value::Tensor.
+#[test]
+fn value_vector3_add_vector2_mismatched_length_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::length(2.0)]),
+        Type::vec2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector with Undef component - Value::Vector → Undef.
+/// Mirrors value_vector_with_undef_component_add_propagates but uses BinOp::Sub
+/// to confirm componentwise_binop Undef propagation in the Sub direction.
+#[test]
+fn value_vector_with_undef_component_sub_propagates() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::Undef, Value::length(3.0)]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(1.0),
+            Value::length(1.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector / Int(0) → Undef (division-by-zero with integer zero).
+/// Mirrors value_vector_div_zero_returns_undef but uses Int(0) instead of Real(0.0)
+/// to confirm the as_f64() == 0.0 guard in eval_div catches integer zero.
+#[test]
+fn value_vector_div_int_zero_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::vec3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Point / Int(0) → Undef (division-by-zero with integer zero for Point).
+/// Mirrors value_point_div_zero_returns_undef but uses Int(0) instead of Real(0.0)
+/// to confirm the as_f64() == 0.0 guard in eval_div catches integer zero for Points.
+#[test]
+fn value_point_div_int_zero_returns_undef() {
+    let left = CompiledExpr::literal(
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]),
+        Type::point3(Type::length()),
+    );
+    let right = CompiledExpr::literal(Value::Int(0), Type::Int);
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
