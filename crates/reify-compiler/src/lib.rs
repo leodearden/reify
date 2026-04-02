@@ -3099,6 +3099,15 @@ fn compile_expr_guarded(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
+        // QualifiedAccess compiler support is implemented in a separate task.
+        reify_syntax::ExprKind::QualifiedAccess { .. }
+        | reify_syntax::ExprKind::InstanceQualifiedAccess { .. } => {
+            diagnostics.push(
+                Diagnostic::error("qualified access (::) is not yet supported in the compiler")
+                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Real)
+        }
     }
 }
 
@@ -4414,7 +4423,15 @@ fn substitute_expr(
             upper: upper.as_ref().map(|e| Box::new(substitute_expr(e, bindings))),
             lower_inclusive: *lower_inclusive,
             upper_inclusive: *upper_inclusive,
-        }
+        },
+        ExprKind::QualifiedAccess { qualifier, member } => ExprKind::QualifiedAccess {
+            qualifier: Box::new(substitute_expr(qualifier, bindings)),
+            member: member.clone(),
+        },
+        ExprKind::InstanceQualifiedAccess { object, qualified } => ExprKind::InstanceQualifiedAccess {
+            object: Box::new(substitute_expr(object, bindings)),
+            qualified: Box::new(substitute_expr(qualified, bindings)),
+        },
     };
     Expr { kind: new_kind, span }
 }
