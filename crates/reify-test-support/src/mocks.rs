@@ -1865,7 +1865,14 @@ mod tests {
             })
             .collect();
         seen.sort_by(f64::total_cmp);
-        let expected: Vec<f64> = (0..4).map(|i| 0.001 * (i + 1) as f64).collect();
+        let mut expected: Vec<f64> = expected_slots
+            .iter()
+            .map(|m| match m.get(&ValueCellId::new("S", "x")).unwrap() {
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected Scalar, got {:?}", other),
+            })
+            .collect();
+        expected.sort_by(f64::total_cmp);
         // Exact f64 equality is safe here: the mock stores and returns
         // values verbatim with no arithmetic transformation, so bit-exact
         // round-trip equality holds.

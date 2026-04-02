@@ -146,6 +146,8 @@ impl AnalysisContext {
             let (members, decl_name) = match decl {
                 reify_syntax::Declaration::Structure(s) => (&s.members, s.name.as_str()),
                 reify_syntax::Declaration::Occurrence(o) => (&o.members, o.name.as_str()),
+                reify_syntax::Declaration::Trait(t) => (&t.members, t.name.as_str()),
+                reify_syntax::Declaration::Purpose(p) => (&p.members, p.name.as_str()),
                 _ => continue,
             };
             if let Some(target) = enclosing_decl
@@ -253,19 +255,21 @@ impl AnalysisContext {
         self.check_result.values.get(&id)
     }
 
-    /// Return the name of the structure/occurrence whose span contains `offset`,
+    /// Return the name of the structure/occurrence/trait/purpose whose span contains `offset`,
     /// or `None` if the offset is outside all declarations.
     pub fn enclosing_decl_name_at(&self, offset: usize) -> Option<&str> {
-        enclosing_decl_at(&self.parsed.declarations, offset).map(|decl| match decl {
-            Declaration::Structure(s) => s.name.as_str(),
-            Declaration::Occurrence(o) => o.name.as_str(),
-            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+        enclosing_decl_at(&self.parsed.declarations, offset).and_then(|decl| match decl {
+            Declaration::Structure(s) => Some(s.name.as_str()),
+            Declaration::Occurrence(o) => Some(o.name.as_str()),
+            Declaration::Trait(t) => Some(t.name.as_str()),
+            Declaration::Purpose(p) => Some(p.name.as_str()),
+            _ => None,
         })
     }
 }
 
-/// Return the declaration (Structure or Occurrence) whose span contains `offset`,
-/// or `None` if the offset is outside all such declarations.
+/// Return the declaration whose span contains `offset`,
+/// or `None` if the offset is outside all declarations.
 ///
 /// This is a free function that operates on `&[Declaration]` directly, so it can
 /// be used by callers that only have a `ParsedModule` (e.g., goto-def) without
@@ -276,7 +280,15 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
         let decl_span = match decl {
             Declaration::Structure(s) => s.span,
             Declaration::Occurrence(o) => o.span,
-            _ => continue,
+            Declaration::Import(i) => i.span,
+            Declaration::Enum(e) => e.span,
+            Declaration::Function(f) => f.span,
+            Declaration::Trait(t) => t.span,
+            Declaration::Field(f) => f.span,
+            Declaration::Purpose(p) => p.span,
+            Declaration::Constraint(c) => c.span,
+            Declaration::Unit(u) => u.span,
+            Declaration::TypeAlias(t) => t.span,
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
             return Some(decl);
@@ -897,6 +909,43 @@ mod tests {
             ctx.enclosing_decl_name_at(offset),
             Some("Joint"),
             "offset inside occurrence should return Some(\"Joint\")"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_enum_returns_none() {
+        let source = "enum Color { Red, Green }\nstructure S {\n    param x: Scalar = 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        // Offset inside enum body: 'Red' variant
+        let red_offset = source.find("Red").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(red_offset),
+            None,
+            "offset inside enum should return None (graceful degradation, not panic)"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_trait() {
+        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("mass").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Rigid"),
+            "offset inside trait should return Some(\"Rigid\"), not None"
+        );
+    }
+
+    #[test]
+    fn enclosing_decl_name_at_inside_purpose() {
+        let source = "purpose Assemble(part: Structure) {\n    let total = 42\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let offset = source.find("total").unwrap();
+        assert_eq!(
+            ctx.enclosing_decl_name_at(offset),
+            Some("Assemble"),
+            "offset inside purpose should return Some(\"Assemble\"), not None"
         );
     }
 

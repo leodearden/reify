@@ -22,10 +22,12 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     // falls within a declaration's span. If found, search only that declaration
     // first for scoped resolution.
     if let Some(enclosing) = enclosing_decl_at(&parsed.declarations, offset) {
-        let members = match enclosing {
+        let members: &[_] = match enclosing {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
-            _ => unreachable!("enclosing_decl_at only returns Structure or Occurrence"),
+            reify_syntax::Declaration::Trait(t) => &t.members,
+            reify_syntax::Declaration::Purpose(p) => &p.members,
+            _ => &[],  // Variants without members (Import, Enum, Function, etc.)
         };
         if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {
@@ -43,6 +45,8 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
         let members = match decl {
             reify_syntax::Declaration::Structure(s) => &s.members,
             reify_syntax::Declaration::Occurrence(o) => &o.members,
+            reify_syntax::Declaration::Trait(t) => &t.members,
+            reify_syntax::Declaration::Purpose(p) => &p.members,
             _ => continue,
         };
         if let Some(info) = find_named_member_span(members, word) {
@@ -465,6 +469,66 @@ mod tests {
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),
             "goto-def on structure name should return None"
+        );
+    }
+
+    #[test]
+    fn goto_def_cursor_inside_enum_decl_falls_through_to_global() {
+        // Enum variant 'x' shares name with param x in structure S.
+        // Cursor on 'x' inside enum span → enclosing_decl_at returns Enum,
+        // _ => &[] gives empty members, falls through to phase-2 global search,
+        // which finds param x in S.
+        let source = "enum Foo { x }\nstructure S {\n    param x: Scalar = 5mm\n}";
+        // Line 0: "enum Foo { x }"
+        //                     ^ col 11 = 'x' variant
+        let position = Position::new(0, 11);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x inside enum should fall through to S's param x");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to S's param x on line 2
+        assert_eq!(
+            loc.range.start.line, 2,
+            "expected S's param x (line 2), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_fallback_finds_trait_member() {
+        // Cursor on 'mass' inside structure S, which has no member named 'mass'.
+        // Phase 1 scoped lookup returns None (S has member 'y', not 'mass').
+        // Phase 2 fallback should find the trait param mass.
+        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}\nstructure S {\n    let y = mass\n}";
+        // Line 4: "    let y = mass"
+        //                      ^ col 12 = 'mass' reference
+        let position = Position::new(4, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for mass in S should fall through to trait param");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to Rigid's param mass on line 1
+        assert_eq!(
+            loc.range.start.line, 1,
+            "expected trait's param mass (line 1), got line {}",
+            loc.range.start.line
+        );
+    }
+
+    #[test]
+    fn goto_def_cursor_in_trait_scopes_to_enclosing() {
+        // Structure A and trait T both have param x.
+        // Cursor on 'x' in T's `let y = x` should jump to T's param x, not A's.
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\ntrait T {\n    param x: Scalar = 10mm\n    let y = x\n}";
+        // Line 5: "    let y = x"
+        //                      ^ col 12 = 'x' reference
+        let position = Position::new(5, 12);
+        let loc = compute_goto_definition(source, &test_uri(), position)
+            .expect("goto-def for x in trait T should return location");
+        assert_eq!(loc.uri, test_uri());
+        // Should point to T's param x on line 4, NOT A's on line 1
+        assert_eq!(
+            loc.range.start.line, 4,
+            "expected T's param x (line 4), got line {}",
+            loc.range.start.line
         );
     }
 
