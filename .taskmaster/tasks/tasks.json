@@ -13159,7 +13159,7 @@
         "description": "Extract a shared helper for computing gradient dimensions (domain_quantity_dim, codomain_dim, gradient_dim) used by both compute_gradient_field and sample_gradient_field in crates/reify-expr/src/lib.rs. Also refactor compute_gradient_field to avoid deep-cloning the entire source Value::Field — take ownership or use Arc for inner field storage.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13171,7 +13171,7 @@
             "crates/reify-expr/src"
           ]
         },
-        "updatedAt": "2026-03-29T08:53:06.408Z"
+        "updatedAt": "2026-04-02T04:52:14.440Z"
       },
       {
         "id": "631",
@@ -17041,7 +17041,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:52:14.242Z",
+      "lastModified": "2026-04-02T04:52:14.440Z",
       "taskCount": 819,
       "completedCount": 552,
       "tags": [
