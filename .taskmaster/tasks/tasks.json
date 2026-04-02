@@ -15043,7 +15043,7 @@
         "description": "Two improvements in gui/src/__tests__/claudeBridge.test.ts:\n\n1. **Refactor old inline pattern at line ~299**: The `maps claude-tool-result event` test manually inlines the captureListener pattern (local `capturedHandler` variable, inline `mockListen.mockImplementation`, `capturedHandler!(…)`) instead of using the `captureListener` helper introduced in the same file's `payload validation guards` block. Refactor it to use `captureListener('claude-tool-result')` for consistency.\n\n2. **Expand tool_result passthrough contract tests**: The `describe('tool_result passthrough contract')` block currently only tests `result=null`. Add sibling tests for:\n   - `result: undefined` (absent key) — verifies that `p.result` → `result: undefined` is forwarded\n   - `result: { stdout: 'ok' }` — representative structured object result\n   - `result: ['line1', 'line2']` — array result value\n\nThis fully documents the unvalidated-passthrough contract and makes the describe block's name accurate.\n\nMemory hints: search \"captureListener helper claudeBridge\" for pattern context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15054,7 +15054,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:40:22.100Z"
       },
       {
         "id": "723",
@@ -17004,9 +17005,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:38:19.628Z",
+      "lastModified": "2026-04-02T02:40:22.100Z",
       "taskCount": 819,
-      "completedCount": 509,
+      "completedCount": 510,
       "tags": [
         "master"
       ]
