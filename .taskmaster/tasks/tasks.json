@@ -16869,7 +16869,7 @@
         "description": "In crates/reify-lsp/src/server.rs, change pub workspace_root and pub stdlib_path on ServerState to pub(crate), matching the visibility of last_published_diagnostics. These fields are lifecycle-managed by the LSP initialize handshake and should not be freely writable from outside the crate. Update any test code that accesses them via server.state().read().await to confirm pub(crate) is sufficient.\n\nmemory_hints: search \"ServerState visibility pub(crate)\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16881,7 +16881,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T22:27:37.714Z"
+        "updatedAt": "2026-04-02T22:30:18.268Z"
       },
       {
         "id": "809",
@@ -17165,9 +17165,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:27:46.717Z",
+      "lastModified": "2026-04-02T22:30:18.268Z",
       "taskCount": 822,
-      "completedCount": 624,
+      "completedCount": 625,
       "tags": [
         "master"
       ]
