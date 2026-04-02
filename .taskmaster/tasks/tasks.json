@@ -4375,7 +4375,7 @@
           "237",
           "238"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval",
@@ -4391,7 +4391,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T04:48:33.590Z"
+        "updatedAt": "2026-04-02T09:51:15.700Z"
       },
       {
         "id": "240",
@@ -17053,9 +17053,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T09:26:21.665Z",
+      "lastModified": "2026-04-02T09:51:15.700Z",
       "taskCount": 819,
-      "completedCount": 566,
+      "completedCount": 567,
       "tags": [
         "master"
       ]
