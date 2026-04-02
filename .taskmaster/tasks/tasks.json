@@ -16962,7 +16962,7 @@
         "description": "Add two tests to `gui/src/__tests__/test-utils.test.ts`:\n1. Verify that Promise.resolve() microtask work is visible after awaiting `flushMacrotasks()`: `let flag = false; Promise.resolve().then(() => { flag = true; }); await flushMacrotasks(); expect(flag).toBe(true);`\n2. Verify the deferred promise is initially pending (not immediately resolved): use `Promise.race([d.promise, Promise.resolve('sentinel')])` before calling resolve and expect 'sentinel' to win.\n\nMemory hints:\n- Search: \"test-utils test coverage flushMacrotasks deferred pending\"\n- Entities: test-utils.test.ts",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16974,7 +16974,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-02T12:45:47.620Z"
+        "updatedAt": "2026-04-02T12:45:47.754Z"
       },
       {
         "id": "816",
@@ -17058,9 +17058,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:45:47.620Z",
+      "lastModified": "2026-04-02T12:45:47.754Z",
       "taskCount": 819,
-      "completedCount": 572,
+      "completedCount": 573,
       "tags": [
         "master"
       ]
