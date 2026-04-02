@@ -13979,7 +13979,7 @@
         "description": "Review finding from task 547: Several error paths using errorMessage() lack integration test coverage.\n\n1. Editor.tsx save error test (line ~330 in Editor.test.tsx) asserts only 'Failed to save file' but doesn't verify the actual error message content ('disk full') is propagated. Tighten to assert `stringContaining('disk full')`.\n2. Add test for `new Error('')` (empty message) to errorClassifier.test.ts to document the edge case behavior.\n3. Add at least one representative App.tsx error-path test — e.g., mock bridgeSetParameter to reject with `new Error('param error')` and assert toast contains 'param error'. This covers 5 untested error paths (claudeSendMessage, claudeAbort, bridgeSetParameter, pickSavePath, bridgeExportGeometry).\n\nMemory hints: search \"errorMessage utility App.tsx Editor.tsx error path test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [
           "547"
         ],
@@ -14001,7 +14001,7 @@
             ]
           }
         },
-        "updatedAt": "2026-03-31T21:24:31.195Z"
+        "updatedAt": "2026-04-02T12:51:04.379Z"
       },
       {
         "id": "671",
@@ -17063,9 +17063,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:50:54.945Z",
+      "lastModified": "2026-04-02T12:51:04.379Z",
       "taskCount": 819,
-      "completedCount": 581,
+      "completedCount": 582,
       "tags": [
         "master"
       ]
