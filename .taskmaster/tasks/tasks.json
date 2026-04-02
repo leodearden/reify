@@ -15185,7 +15185,7 @@
         "description": "The first-pass loop over `template.value_cells` in `eval()` (crates/reify-eval/src/lib.rs ~lines 970-1088) uses an `if / else if / else if` chain that:\n1. Splits the two exhaustive Param sub-cases (with-default and no-default) across separate top-level conditions, hiding that they are sub-cases of one variant.\n2. Silently falls through for `ValueCellKind::Let` cells. A future new variant would compile cleanly but be silently skipped.\n\n**Fix:** Restructure to `match cell.kind { ValueCellKind::Auto => { … }, ValueCellKind::Param => { if let Some(ref expr) = cell.default_expr { /* evaluate default, Determined */ } else { /* Undef, Undetermined */ } }, ValueCellKind::Let => { /* deferred to second pass */ } }`. This makes Let-skip explicit, ensures compile-time exhaustiveness for new variants, and makes the two Param sub-cases visually adjacent.\n\n**Memory hints:** search for \"first-pass eval loop\", \"ValueCellKind match\", entity names: ValueCellKind, eval first pass",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15196,7 +15196,8 @@
           "modules": [
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:49:27.194Z"
       },
       {
         "id": "727",
@@ -17148,7 +17149,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:49:27.041Z",
+      "lastModified": "2026-04-02T14:49:27.194Z",
       "taskCount": 822,
       "completedCount": 609,
       "tags": [
