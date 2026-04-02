@@ -17108,11 +17108,18 @@
         "description": "Several test quality issues in the depth-limit tests for `count_members_recursive` and `find_named_member_span`:\n\n1. **Deduplicate `build_nested_guarded_members`** — identical helper exists in both `crates/reify-syntax/tests/member_span_tests.rs:176` and `crates/reify-lsp/src/analysis.rs:1398`. Extract to a shared location (e.g. `reify-test-support` or a `#[cfg(test)]` module in reify-syntax).\n\n2. **Fix hardcoded depth 33** — `count_members_recursive_stops_at_depth_limit` at analysis.rs:1473 uses hardcoded `33` instead of `reify_syntax::MAX_MEMBER_NESTING_DEPTH + 1`. The boundary test in the same file correctly uses the constant. If `MAX_MEMBER_NESTING_DEPTH` is ever increased above 33, this test silently breaks.\n\n3. **Add Port recursion path test** — The Port arm in `count_members_recursive_depth` (analysis.rs:335-338) recurses with depth+1 but no test exercises this path. Add a test using `MemberDecl::Port` wrapping nested members.\n\n4. **Add partial-counting test** — No test verifies that shallow members are still counted when deep siblings are truncated. Build a flat member list with a Param at depth 2 alongside a GuardedGroup nested beyond MAX_MEMBER_NESTING_DEPTH, assert the shallow param is counted `(1, 0, 0)` while the deep one is not.\n\nMemory hints: search \"build_nested_guarded_members\" and \"MAX_MEMBER_NESTING_DEPTH\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:37:22.138Z"
+        "updatedAt": "2026-04-02T14:42:22.369Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp",
+            "crates/reify-syntax",
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": "822",
@@ -17135,7 +17142,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:42:19.920Z",
+      "lastModified": "2026-04-02T14:42:22.369Z",
       "taskCount": 822,
       "completedCount": 606,
       "tags": [
