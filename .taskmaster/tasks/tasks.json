@@ -6867,7 +6867,7 @@
           "338",
           "342"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-polish",
           "modules": [
@@ -6877,7 +6877,7 @@
         },
         "subtasks": [],
         "details": "Add all ~100 new stdlib functions to LSP autocompletion with signatures and brief docs. Group by category.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-02T04:45:43.572Z"
       },
       {
         "id": "350",
@@ -17033,9 +17033,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:45:35.920Z",
+      "lastModified": "2026-04-02T04:45:43.573Z",
       "taskCount": 819,
-      "completedCount": 546,
+      "completedCount": 547,
       "tags": [
         "master"
       ]
