@@ -15003,7 +15003,7 @@
         "description": "In gui/src/__tests__/claudeBridge.test.ts, the `required string field validation` tests (lines 530-593) exercise the second-level console.warn guards (e.g. 'claude-text-delta: invalid payload, expected {id: string, content: string}') but never assert that console.warn was called, what message it contained, or how many times it fired. The warnSpy is already set up in the enclosing beforeEach.\n\nSimilarly, the `tool_input normalization` tests (lines 596-646) don't assert `expect(warnSpy).not.toHaveBeenCalled()` to encode the contract that normalization is intentionally silent.\n\nChanges needed:\n1. Add `expect(warnSpy).toHaveBeenCalledOnce()` and `expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('<event-name>'), ...)` to each test in `required string field validation`.\n2. Add `expect(warnSpy).not.toHaveBeenCalled()` to each test in `tool_input normalization`.\n\nmemory_hints: search for \"bridge.ts payload validation guards\" and \"claudeBridge test warnSpy\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15014,7 +15014,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:40:36.467Z"
       },
       {
         "id": "721",
@@ -17006,9 +17007,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:40:31.009Z",
+      "lastModified": "2026-04-02T02:40:36.467Z",
       "taskCount": 819,
-      "completedCount": 511,
+      "completedCount": 512,
       "tags": [
         "master"
       ]
