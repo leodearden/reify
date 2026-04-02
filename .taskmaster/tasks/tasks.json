@@ -15345,7 +15345,7 @@
         "description": "CLI integration tests in cli_build.rs, cli_check.rs, and cli_gui.rs have significant duplicated boilerplate:\n\n1. **fixture_path()** helper is defined identically in cli_build.rs and cli_check.rs (lines 3-6 in both files).\n2. **Command construction** (Command::new + stdin/stdout/stderr piping) is repeated 19+ times across test files. cli_gui.rs already has a `reify_cmd() -> Command` factory but it's not shared.\n3. **Assertion patterns** for indeterminate-only output (INDETERMINATE present, OK/VIOLATED/summary absent) are near-identical between build and check test variants.\n\nRefactor:\n- Create `crates/reify-cli/tests/common/mod.rs` with `pub fn fixture_path(name: &str) -> String` and `pub fn reify_cmd() -> Command`.\n- Add shared assertion helpers like `fn assert_indeterminate_only_output(stdout: &str)`.\n- Update cli_build.rs, cli_check.rs, and cli_gui.rs to use `mod common;` imports.\n- While touching build tests, add missing `assert!(stdout.contains(\"Wrote\"), ...)` to `build_violated_and_indeterminate_exits_failure` for consistency with other build tests.\n\nMemory hints: search \"CLI test helper\", entity names: cli_build.rs, cli_check.rs, reify_cmd",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15360,7 +15360,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-04-02T12:42:22.532Z"
+        "updatedAt": "2026-04-02T12:49:34.274Z"
       },
       {
         "id": "736",
@@ -17060,9 +17060,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:49:13.292Z",
+      "lastModified": "2026-04-02T12:49:34.274Z",
       "taskCount": 819,
-      "completedCount": 578,
+      "completedCount": 579,
       "tags": [
         "master"
       ]
