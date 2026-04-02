@@ -2,41 +2,12 @@
 # Rust + Tauri/TypeScript (GUI) project
 
 # Concurrency
-max_concurrent_tasks: 12
+max_concurrent_tasks: 48
 max_per_module: 1
 lock_depth: 2
 module_overrides:
   tests: 2
   "gui/src": 4    # frontend tasks create separate subdirs (viewport/, editor/, panels/) — safe to parallelize
-
-# Iteration limits
-max_execute_iterations: 10
-max_verify_attempts: 5
-max_review_cycles: 2
-
-# Models per role
-models:
-  architect: "opus"
-  implementer: "opus"
-  debugger: "opus"
-  reviewer: "sonnet"
-  merger: "opus"
-
-# Budget per invocation (USD)
-budgets:
-  architect: 5.0
-  implementer: 10.0
-  debugger: 5.0
-  reviewer: 2.0
-  merger: 5.0
-
-# Turn limits per invocation
-max_turns:
-  architect: 50
-  implementer: 80
-  debugger: 50
-  reviewer: 30
-  merger: 50
 
 # Verification commands (Rust + GUI frontend)
 # package-lock.json is committed — use npm ci for reproducible installs
