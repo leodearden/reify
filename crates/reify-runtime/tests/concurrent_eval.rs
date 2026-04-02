@@ -2146,6 +2146,11 @@ mod poison_recovery_extended {
 // Tests for evaluate() recovering from poisoned locks. The evaluate method
 // acquires 4 locks: values read, values write, snapshot_values write, and
 // results lock. These tests verify each lock site recovers gracefully.
+//
+// NOTE: evaluate_recovers_poisoned_values_write covers BOTH the read path
+// (read_values(), which clones the current values map) and the write path
+// (write_values(), which inserts the computed value) because poison_values()
+// poisons the single RwLock shared by both operations.
 
 #[cfg(feature = "test-utils")]
 mod poison_evaluate {
@@ -2167,8 +2172,12 @@ mod poison_evaluate {
     }
 
     /// evaluate() recovers from poisoned values RwLock (both read and write paths).
-    /// The write lock is the same RwLock as the read lock — this test verifies the
-    /// write acquisition (used to store computed values) also recovers.
+    /// The write lock is the same RwLock as the read lock — this test verifies both:
+    /// - the read path (read_values() clones the current values map for evaluation input)
+    /// - the write path (write_values() inserts the computed result after evaluation)
+    ///
+    /// Both paths acquire the same RwLock, so poisoning via poison_values() exercises
+    /// both recovery sites in a single test.
     ///
     /// If evaluate() panics on poison instead of recovering, this test will fail
     /// with the panic rather than completing.
@@ -2181,11 +2190,9 @@ mod poison_evaluate {
         // Poison the values lock — both read and write acquisitions must recover
         adapter.poison_values();
 
-        let result = evaluate_with_recovery(&adapter, node);
-        assert!(
-            result.is_ok(),
-            "evaluate() should recover from poisoned values lock, not panic"
-        );
+        let outcome = evaluate_with_recovery(&adapter, node)
+            .expect("evaluate() should recover from poisoned values lock, not panic");
+        assert_eq!(outcome, EvalOutcome::Changed);
 
         // Verify the value was written despite poisoning
         let values = adapter.values();
@@ -2285,9 +2292,11 @@ mod poison_evaluate {
         adapter.poison_values();
 
         let (subscriber, warn_count) = warn_counting_subscriber();
-        let _outcome = tracing::subscriber::with_default(subscriber, || {
+        let outcome = tracing::subscriber::with_default(subscriber, || {
             evaluate_with_recovery(&adapter, node)
         });
+        let outcome = outcome.expect("evaluate() should recover from poisoned values lock, not panic");
+        assert_eq!(outcome, EvalOutcome::Changed);
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
