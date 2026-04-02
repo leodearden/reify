@@ -1216,149 +1216,131 @@ describe('App handleReload race condition', () => {
 
 describe('App handleSetParameter error handling', () => {
   it('shows error toast when bridge.setParameter rejects', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
 
-    try {
-      await withSuppressedRejections(async () => {
-        vi.mocked(bridge.setParameter).mockRejectedValue(new Error('backend unavailable'));
-
-        vi.mocked(bridge.getInitialState).mockResolvedValue({
-          meshes: [],
-          values: [{
-            cell_id: 'c1',
-            name: 'width',
-            value: '80',
-            unit: 'mm',
-            determinacy: 'determined',
-            entity_path: 'Bracket.width',
-            kind: 'parameter',
-          }],
-          constraints: [],
-          files: [],
-        });
-
-        render(() => <App />);
-
-        // Wait for PropertyEditor to show the value
-        await waitFor(() => {
-          expect(screen.getByText('width')).toBeTruthy();
-        });
-
-        // Find the input and press Enter to trigger onSetParameter
-        const row = screen.getByTestId('prop-row-c1');
-        const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-        expect(input).toBeTruthy();
-
-        fireEvent.keyDown(input, { key: 'Enter' });
-
-        // Wait for the error toast to appear
-        await waitFor(() => {
-          const toast = screen.getByTestId('toast');
-          expect(toast).toBeTruthy();
-          expect(toast.dataset.type).toBe('error');
-          expect(toast.textContent).toContain('Parameter update failed');
-          expect(toast.textContent).toContain('backend unavailable');
-        });
-
-        // console.error should NOT be called (replaced with toast)
-        expect(errorSpy).not.toHaveBeenCalledWith(
-          'setParameter failed:',
-          expect.any(Error),
-        );
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [{
+          cell_id: 'c1',
+          name: 'width',
+          value: '80',
+          unit: 'mm',
+          determinacy: 'determined',
+          entity_path: 'Bracket.width',
+          kind: 'parameter',
+        }],
+        constraints: [],
+        files: [],
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      render(() => <App />);
+
+      // Wait for PropertyEditor to show the value
+      await waitFor(() => {
+        expect(screen.getByText('width')).toBeTruthy();
+      });
+
+      // Find the input and press Enter to trigger onSetParameter
+      const row = screen.getByTestId('prop-row-c1');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toast = screen.getByTestId('toast');
+        expect(toast).toBeTruthy();
+        expect(toast.dataset.type).toBe('error');
+        expect(toast.textContent).toContain('Parameter update failed');
+        expect(toast.textContent).toContain('backend unavailable');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'setParameter failed:',
+        expect.any(Error),
+      );
+    });
   });
 });
 
 describe('App re-evaluate error toast', () => {
   it('shows error toast when re-evaluate (F5) fails', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      await withSuppressedRejections(async () => {
-        vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
-        vi.mocked(bridge.getInitialState).mockResolvedValue({
-          meshes: [],
-          values: [],
-          constraints: [],
-          files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-        });
-
-        render(() => <App />);
-
-        // Wait for ready state
-        await waitFor(() => {
-          expect(screen.getByTestId('app-layout')).toBeTruthy();
-        });
-
-        // Press F5 to trigger re-evaluate (on a non-input element)
-        fireEvent.keyDown(document, { key: 'F5' });
-
-        // Wait for the error toast to appear
-        await waitFor(() => {
-          const toastEl = screen.getByTestId('toast');
-          expect(toastEl).toBeTruthy();
-          expect(toastEl.dataset.type).toBe('error');
-          expect(toastEl.textContent).toContain('Re-evaluation failed');
-          expect(toastEl.textContent).toContain('eval error');
-        });
-
-        // console.error should NOT be called
-        expect(errorSpy).not.toHaveBeenCalledWith(
-          'Re-evaluate failed:',
-          expect.any(Error),
-        );
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      vi.mocked(bridge.updateSource).mockRejectedValue(new Error('eval error'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      render(() => <App />);
+
+      // Wait for ready state
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Press F5 to trigger re-evaluate (on a non-input element)
+      fireEvent.keyDown(document, { key: 'F5' });
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('Re-evaluation failed');
+        expect(toastEl.textContent).toContain('eval error');
+      });
+
+      // console.error should NOT be called
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Re-evaluate failed:',
+        expect.any(Error),
+      );
+    });
   });
 });
 
 describe('App event subscription error toast', () => {
   it('shows warning toast when subscribeToEvents fails', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      await withSuppressedRejections(async () => {
-        // Make onMeshUpdate throw synchronously — this causes subscribeToEvents
-        // to reject because the array literal throws before Promise.allSettled runs
-        vi.mocked(bridge.onMeshUpdate).mockImplementation(() => {
-          throw new Error('subscription failed');
-        });
-
-        vi.mocked(bridge.getInitialState).mockResolvedValue({
-          meshes: [],
-          values: [],
-          constraints: [],
-          files: [],
-        });
-
-        render(() => <App />);
-
-        // Wait for ready state (subscribeToEvents failure is non-fatal)
-        await waitFor(() => {
-          expect(screen.getByTestId('app-layout')).toBeTruthy();
-        });
-
-        // Wait for the warning toast to appear
-        await waitFor(() => {
-          const toastEl = screen.getByTestId('toast');
-          expect(toastEl).toBeTruthy();
-          expect(toastEl.textContent).toContain('Event subscription failed');
-        });
-
-        // console.error should NOT be called (replaced with toast)
-        expect(errorSpy).not.toHaveBeenCalledWith(
-          'Failed to subscribe to events:',
-          expect.any(Error),
-        );
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      // Make onMeshUpdate throw synchronously — this causes subscribeToEvents
+      // to reject because the array literal throws before Promise.allSettled runs
+      vi.mocked(bridge.onMeshUpdate).mockImplementation(() => {
+        throw new Error('subscription failed');
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state (subscribeToEvents failure is non-fatal)
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      });
+
+      // Wait for the warning toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.textContent).toContain('Event subscription failed');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Failed to subscribe to events:',
+        expect.any(Error),
+      );
+    });
   });
 });
 
@@ -1391,62 +1373,56 @@ describe('App Claude subscription error toast', () => {
 
 describe('App reload error toast', () => {
   it('shows error toast when reload fails', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    try {
-      await withSuppressedRejections(async () => {
-        // Set up a file-changed callback we can trigger
-        let fileChangedCb!: (data: any) => void;
-        vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
-          fileChangedCb = cb;
-          return () => {};
-        });
-
-        // Make bridgeOpenFile reject
-        vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
-
-        vi.mocked(bridge.getInitialState).mockResolvedValue({
-          meshes: [],
-          values: [],
-          constraints: [],
-          files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
-        });
-
-        render(() => <App />);
-
-        // Wait for ready state and file-changed subscription
-        await waitFor(() => {
-          expect(screen.getByTestId('app-layout')).toBeTruthy();
-          expect(fileChangedCb).toBeDefined();
-        });
-
-        // Trigger file changed event to show the reload prompt
-        fileChangedCb({ path: '/project/bracket.ri', content: 'updated' });
-
-        await waitFor(() => {
-          expect(screen.getByTestId('reload-prompt')).toBeTruthy();
-        });
-
-        // Click the Reload button
-        fireEvent.click(screen.getByText('Reload'));
-
-        // Wait for the error toast to appear
-        await waitFor(() => {
-          const toastEl = screen.getByTestId('toast');
-          expect(toastEl).toBeTruthy();
-          expect(toastEl.dataset.type).toBe('error');
-          expect(toastEl.textContent).toContain('failed to reload');
-        });
-
-        // console.error should NOT be called (replaced with toast)
-        expect(errorSpy).not.toHaveBeenCalledWith(
-          'Reload failed:',
-          expect.any(Error),
-        );
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      // Set up a file-changed callback we can trigger
+      let fileChangedCb!: (data: any) => void;
+      vi.mocked(bridge.onFileChanged).mockImplementation(async (cb: any) => {
+        fileChangedCb = cb;
+        return () => {};
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      // Make bridgeOpenFile reject
+      vi.mocked(bridge.openFile).mockRejectedValue(new Error('file not found'));
+
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+      });
+
+      render(() => <App />);
+
+      // Wait for ready state and file-changed subscription
+      await waitFor(() => {
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+        expect(fileChangedCb).toBeDefined();
+      });
+
+      // Trigger file changed event to show the reload prompt
+      fileChangedCb({ path: '/project/bracket.ri', content: 'updated' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('reload-prompt')).toBeTruthy();
+      });
+
+      // Click the Reload button
+      fireEvent.click(screen.getByText('Reload'));
+
+      // Wait for the error toast to appear
+      await waitFor(() => {
+        const toastEl = screen.getByTestId('toast');
+        expect(toastEl).toBeTruthy();
+        expect(toastEl.dataset.type).toBe('error');
+        expect(toastEl.textContent).toContain('failed to reload');
+      });
+
+      // console.error should NOT be called (replaced with toast)
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        'Reload failed:',
+        expect.any(Error),
+      );
+    });
   });
 });
 
