@@ -14152,7 +14152,7 @@
         "description": "Several improvements needed for the dot-access completion tests added in task 484 (`crates/reify-lsp/src/completion.rs`):\n\n### 1. Rename `completion_after_dot_includes_known_members` (line ~628)\nCurrent name implies type-directed member lookup, but the test actually exercises the type-unaware `push_all_members` path. Rename to `completion_after_dot_includes_all_module_members` to honestly describe behavior.\n\n### 2. Add exclusion assertions to the positive dot-access test (line ~628)\nThe test only has positive assertions (width/height present). Add exclusion assertions mirroring `completion_after_dot_returns_only_members`: verify `keyword_labels.is_empty()`, `func_labels.is_empty()`, and `type_labels.is_empty()`.\n\n### 3. Add missing TODO(task-2) annotation (line ~628)\nThe new test exercises DotAccess → push_all_members, which task-2 will change. Add TODO consistent with peer tests.\n\n### 4. Fix misleading TODO framing on 8 tests\nCurrent TODOs say \"verify these assertions still hold\" which implies no change expected. In reality, task-2 WILL change the behavior (e.g., top-level keywords should be EXCLUDED from structure body context). Reframe to: \"TODO(task-2): This test passes because filtering is position-agnostic. Once [context] filtering is added, [expected change] — update assertions accordingly.\"\n\nAffected lines: ~296, ~324, ~358, ~374, ~395, ~434, ~940, ~968.\n\n## memory_hints\n- search: \"LSP completion tests position-sensitive\"\n- entity: \"compute_completions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14164,7 +14164,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:47:32.008Z"
+        "updatedAt": "2026-04-02T14:51:56.201Z"
       },
       {
         "id": "678",
@@ -17149,9 +17149,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:49:27.194Z",
+      "lastModified": "2026-04-02T14:51:56.201Z",
       "taskCount": 822,
-      "completedCount": 609,
+      "completedCount": 610,
       "tags": [
         "master"
       ]
