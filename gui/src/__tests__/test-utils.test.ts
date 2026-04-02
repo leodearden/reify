@@ -154,8 +154,8 @@ describe('withSuppressedRejectionsAndErrorSpy', () => {
     await withSuppressedRejectionsAndErrorSpy(async (spy) => {
       // The spy wraps console.error — console.error === spy inside fn
       expect(spy).toBe(console.error);
-      // Calling it records the call without actual output
-      spy('test message');
+      // Calling console.error (which === spy) records the call via the spy
+      console.error('test message');
       expect(spy).toHaveBeenCalledWith('test message');
     });
   });
