@@ -14278,7 +14278,7 @@
         "description": "The compile-time assertion `_AssertUnknownPayloadContract` at gui/src/__tests__/claudeBridge.test.ts:477-478 is vacuously true. It defines a local `UnknownPayloadEvent = { payload: unknown }` and checks `Equals<UnknownPayloadEvent['payload'], unknown>` — which is `unknown === unknown` by construction. It has no structural link to the actual `EventEntry` type (which is function-scoped inside `subscribeToClaudeEvents` in bridge.ts).\n\nFix options (pick one):\n1. **Remove the assertion** — keep only the comment explaining the design intent. The real regression protection comes from tsc catching invalid `as` casts if the payload type were later narrowed.\n2. **Make it meaningful** — extract `EventEntry` to module scope in bridge.ts, export it, then write a real assertion like `AssertTrue<Equals<Parameters<EventEntry[1]>[0]['payload'], unknown>>`.\n\nOption 1 is simpler and sufficient. The comment at line 473-476 already documents the rationale clearly.\n\nmemory_hints: search \"EventEntry payload type bridge.ts\" for context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14290,7 +14290,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-03-29T08:53:06.817Z"
+        "updatedAt": "2026-04-02T02:33:12.168Z"
       },
       {
         "id": "687",
@@ -17000,9 +17000,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:30:44.828Z",
+      "lastModified": "2026-04-02T02:33:12.168Z",
       "taskCount": 819,
-      "completedCount": 500,
+      "completedCount": 501,
       "tags": [
         "master"
       ]
