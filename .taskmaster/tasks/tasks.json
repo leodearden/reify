@@ -13308,7 +13308,7 @@
         "description": "Improve `error_path_aborts_in_flight_tasks` test in `crates/reify-runtime/src/concurrent.rs`:\n\n1. **Enable tokio/time for tests** — Replace `std::thread::sleep(Duration::from_secs(3))` with `tokio::time::sleep` to avoid blocking a tokio worker thread. Replace the busy yield loop (`while elapsed < 2s { yield_now().await }`) with `tokio::time::sleep(Duration::from_secs(2)).await` — each yield is a cancellation point, and sleep is too, but without thousands of unnecessary context switches.\n\n2. **Add startup barrier** — The panic task does a single `yield_now()` assuming slow tasks have started. Add an `Arc<AtomicUsize>` startup counter that slow tasks increment at entry, and have the panic task spin until `startup_counter.load() == 2` before panicking. This removes timing assumptions and prevents vacuous passes.\n\n3. **Add TaskCancelled branch test** — Current test only exercises the `is_panic()` error branch. Add a second test that triggers the `Err(_)` / `SchedulerError::TaskCancelled` branch and verifies sibling tasks are aborted.\n\nMemory hints: search \"JoinSet abort concurrent scheduler\" for task 580 context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13321,7 +13321,8 @@
             "crates/reify-runtime/src",
             "crates/reify-runtime"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:40:31.009Z"
       },
       {
         "id": "640",
@@ -17005,9 +17006,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:40:22.100Z",
+      "lastModified": "2026-04-02T02:40:31.009Z",
       "taskCount": 819,
-      "completedCount": 510,
+      "completedCount": 511,
       "tags": [
         "master"
       ]
