@@ -13680,7 +13680,7 @@
         "description": "Add tests for differently-shaped valid rectangular matrices: (1) `mismatched_column_count_add_returns_undef` — 2×2 + 2×3, (2) `mismatched_row_count_add_returns_undef` — 2×2 + 3×2. These exercise the `componentwise_binop` length-check handoff which is currently untested — `validate_rank2_tensors` validates per-operand well-formedness but cross-operand shape compatibility is delegated to `componentwise_binop`.\n\nMemory hints: search \"componentwise_binop validate_rank2_tensors matrix shape mismatch\", entities: eval_add, componentwise_binop",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -13692,7 +13692,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-02T07:08:13.863Z"
+        "updatedAt": "2026-04-02T07:10:36.451Z"
       },
       {
         "id": "657",
@@ -17043,9 +17043,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T07:08:13.863Z",
+      "lastModified": "2026-04-02T07:10:36.451Z",
       "taskCount": 819,
-      "completedCount": 554,
+      "completedCount": 555,
       "tags": [
         "master"
       ]
