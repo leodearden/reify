@@ -14773,7 +14773,7 @@
         "description": "Three fixes: (1) solver.rs: Restructure redundant si < 0.010 assertion in feasibility_check_runs_with_objective (subsumed by si < 0.008). (2) solver.rs: Rename feasibility_check_runs_with_objective to reflect it now asserts optimization convergence quality. (3) solver_integration.rs: In maximize test, change si <= 0.0502 to si <= 0.050 or si <= 0.0505 matching param clamp semantics with comment.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14786,7 +14786,8 @@
             "crates/reify-constraints/src",
             "crates/reify-constraints/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:07:01.512Z"
       },
       {
         "id": "710",
@@ -16822,9 +16823,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:04:55.533Z",
+      "lastModified": "2026-04-02T02:07:01.531Z",
       "taskCount": 816,
-      "completedCount": 478,
+      "completedCount": 479,
       "tags": [
         "master"
       ]
