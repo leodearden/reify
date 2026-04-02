@@ -9523,7 +9523,7 @@
         "description": "Follow-up from task-446 review suggestions (test_analyst + robustness reviewers). Add tests to crates/reify-expr/tests/point_vector_eval_tests.rs:\n\n1. **Vector+Vector mismatched-length**: `value_vector3_add_vector2_mismatched_length_returns_undef` — Value::Vector(3) + Value::Vector(2) via BinOp::Add → Undef. Exercises componentwise_binop length guard on Vector+Vector arm (eval_add line 832).\n\n2. **Undef propagation for Sub**: `value_vector_with_undef_component_sub_propagates` — Value::Vector([1m, Undef, 3m]) - Value::Vector([1m,1m,1m]) via BinOp::Sub → Undef. Mirror of existing Add test for subtraction path.\n\n3. **Int(0) division**: `value_vector_div_int_zero_returns_undef` and `value_point_div_int_zero_returns_undef` — Value::Vector/Point / Int(0) → Undef. Int(0).as_f64() returns Some(0.0), so the early zero-check at eval_div fires identically to Real(0.0).\n\n4. **Right-operand Undef**: `value_vector_add_vector_with_undef_right_component_propagates` — Value::Vector([1m,1m,1m]) + Value::Vector([1m, Undef, 1m]) → Undef. Tests symmetric Undef propagation in right operand.\n\nmemory_hints: search \"point_vector_eval_tests\" for existing test patterns",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -9536,7 +9536,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-02T04:49:56.377Z"
+        "updatedAt": "2026-04-02T04:52:14.242Z"
       },
       {
         "id": "474",
@@ -17041,9 +17041,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:50:21.919Z",
+      "lastModified": "2026-04-02T04:52:14.242Z",
       "taskCount": 819,
-      "completedCount": 551,
+      "completedCount": 552,
       "tags": [
         "master"
       ]
