@@ -16230,11 +16230,11 @@
         "description": "Task 450 fixed silent defaults in the Transform and Pattern arms of compile_geometry_op (crates/reify-eval/src/lib.rs), but left the Primitive arm (line ~3157) and Modify arm (line ~3213) with the old `unwrap_or(Value::Undef)` pattern. This creates an inconsistent contract within the same match expression: missing args in Pattern/Transform ops are hard errors (None), but missing args in Primitive/Modify ops silently produce Undef.\n\nApply the same `Option<Value>` + `?` pattern to the `eval_arg` closures in the Primitive and Modify arms. Additionally, decide whether `eval_arg` should filter out `Value::Undef` results from `eval_expr` (present-but-Undef args currently pass through as `Some(Value::Undef)` rather than returning `None`). Add test coverage for the present-but-Undef edge case.\n\nAlso consider making `eval_arg_f64` a thin wrapper over `eval_arg` where both closures exist in the same scope (e.g., Pattern arm: `eval_arg(name)?.as_f64().filter(|v| v.is_finite())`).\n\nmemory_hints: search \"silent defaults convention feedback_silent_defaults_pattern\", get_entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:22:29.190Z",
+        "updatedAt": "2026-04-02T14:26:43.266Z",
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs"
@@ -17081,9 +17081,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:25:25.284Z",
+      "lastModified": "2026-04-02T14:26:43.266Z",
       "taskCount": 819,
-      "completedCount": 597,
+      "completedCount": 598,
       "tags": [
         "master"
       ]
