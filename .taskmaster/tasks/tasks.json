@@ -11926,7 +11926,7 @@
         "description": "In `crates/reify-runtime/tests/concurrent_eval.rs`, the execute_with_config test section has significant code duplication:\n\n1. **AllChangedAsync** — defined identically at lines ~2034 and ~2270 (2 copies).\n2. **PanickingEvaluator** — defined identically at lines ~638, ~740, ~2344, and ~2432 (4 copies total).\n3. **Import blocks** — ~10 identical `use` lines repeated in each of the 7 new test functions.\n\n**Fix:** Wrap the execute_with_config tests in a `mod execute_with_config_tests { use super::*; ... }` block (like the existing `mod poison_panics` pattern). Hoist `AllChangedAsync` and `PanickingEvaluator` to module-level helpers visible to all tests.\n\n**File:** `crates/reify-runtime/tests/concurrent_eval.rs`",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "477"
         ],
@@ -11940,7 +11940,8 @@
           "modules": [
             "crates/reify-runtime/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:14:35.675Z"
       },
       {
         "id": "579",
@@ -16829,9 +16830,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:14:01.713Z",
+      "lastModified": "2026-04-02T02:14:35.675Z",
       "taskCount": 816,
-      "completedCount": 488,
+      "completedCount": 489,
       "tags": [
         "master"
       ]
