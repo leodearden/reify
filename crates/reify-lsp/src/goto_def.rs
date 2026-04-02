@@ -495,13 +495,15 @@ mod tests {
 
     #[test]
     fn goto_def_fallback_finds_trait_member() {
-        // Standalone 'mass' outside any declaration. Phase 2 fallback should
-        // find the trait's param mass.
-        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}\nmass";
-        // Line 3: "mass" — standalone word after the trait's closing brace
-        let position = Position::new(3, 0);
+        // Cursor on 'mass' inside structure S, which has no member named 'mass'.
+        // Phase 1 scoped lookup returns None (S has member 'y', not 'mass').
+        // Phase 2 fallback should find the trait param mass.
+        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}\nstructure S {\n    let y = mass\n}";
+        // Line 4: "    let y = mass"
+        //                      ^ col 12 = 'mass' reference
+        let position = Position::new(4, 12);
         let loc = compute_goto_definition(source, &test_uri(), position)
-            .expect("goto-def for mass outside declarations should find trait's param");
+            .expect("goto-def for mass in S should fall through to trait param");
         assert_eq!(loc.uri, test_uri());
         // Should point to Rigid's param mass on line 1
         assert_eq!(
