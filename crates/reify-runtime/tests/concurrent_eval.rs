@@ -2504,6 +2504,18 @@ async fn test_committed_node_survives_cancellation() {
         .await
         .unwrap();
 
+    // Verify cancellation actually occurred (fast_node fires cancel.cancel())
+    assert!(
+        cancel.is_cancelled(),
+        "cancel token should be fired by fast_node during evaluation"
+    );
+
+    // Exactly one node survives: slow_node (committed) — fast_node dropped (uncommitted)
+    assert_eq!(
+        result.changed.len(),
+        1,
+        "exactly one node should survive cancellation (the committed slow_node)"
+    );
     // slow_node should survive cancellation because it's committed (elapsed > 10ms)
     assert!(
         result.changed.contains(&slow_node),

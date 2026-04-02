@@ -1409,8 +1409,7 @@ mod tests {
         }
 
         // Wait long enough for the slow tasks to complete if they were detached.
-        // Using std::thread::sleep since tokio time feature is not enabled.
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         // If tasks were properly aborted, counter should be 0.
         // If tasks were detached (Vec<JoinHandle> behavior), counter would be 2.
