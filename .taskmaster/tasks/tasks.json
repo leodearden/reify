@@ -15039,7 +15039,7 @@
         "description": "cross_builder_hash_equivalence in crates/reify-test-support/src/builders/trait_def.rs only exercises RequirementKind::Param but CompiledTraitBuilder also exposes require_let and require_sub. Add sub-cases that compare TraitDefBuilder vs CompiledTraitBuilder for Let and Sub requirement kinds.\n\nAlso, compute_trait_content_hash_matches_builder only asserts against TraitDefBuilder. Add an analogous assertion against CompiledTraitBuilder for symmetric verification.\n\nmemory_hints: search \"content_hash builder test support cross_builder_hash_equivalence\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "726"
         ],
@@ -15052,7 +15052,8 @@
           "modules": [
             "crates/reify-test-support/src/builders"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:55:27.814Z"
       },
       {
         "id": "720",
@@ -17152,7 +17153,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:55:27.625Z",
+      "lastModified": "2026-04-02T14:55:27.814Z",
       "taskCount": 822,
       "completedCount": 613,
       "tags": [
