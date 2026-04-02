@@ -14960,7 +14960,7 @@
         "description": "Improve test robustness in gui/src/__tests__/selectionStore.test.ts:\n\n1. **Timer cleanup safety**: The two standalone tests at lines 173-237 (`no invoke is dispatched on store creation` and `clearHighlights triggers only one backend sync`) manage fake timers inline. If an assertion throws before cleanup, fake timers leak into subsequent tests. Either:\n   - Move both tests into the existing `describe('backend sync')` block (they share identical infrastructure), OR\n   - Wrap them in a new `describe` block with shared `beforeEach`/`afterEach` for timer lifecycle.\n\n2. **Fix misleading test description**: The `clearHighlights triggers only one backend sync (atomic batch update)` test would pass identically without `batch()` because the createEffect only tracks `selectedEntity` and `hoveredEntity`, not `highlightedParams`. Either:\n   - Update the test description to accurately reflect what it verifies: \"clearHighlights dispatches exactly one backend sync for the selection→null change\", OR\n   - Add a comment explaining that `batch()` prevents intermediate state visible to other subscribers, even though invoke count is the same in this test.\n\n3. **Deduplicate setup/teardown**: Both standalone tests reproduce the exact setup/teardown from the `backend sync` describe block (~12 lines of boilerplate each). Moving them into that block eliminates this duplication.\n\nMemory hints: search \"selectionStore test backend sync\" for test pattern context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14971,7 +14971,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:37:35.114Z"
       },
       {
         "id": "719",
@@ -17002,9 +17003,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:36:50.928Z",
+      "lastModified": "2026-04-02T02:37:35.116Z",
       "taskCount": 819,
-      "completedCount": 507,
+      "completedCount": 508,
       "tags": [
         "master"
       ]
