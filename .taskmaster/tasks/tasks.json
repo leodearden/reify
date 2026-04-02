@@ -14858,7 +14858,7 @@
         "description": "Follow-up from task 373 review (all 5 reviewers, suggestions only). Five clusters:\n\nS1: `is_rank2` naming/inlining — rename or inline into `validate_rank2_tensors` since it only checks first element. File: crates/reify-expr/src/lib.rs:938-943\n\nS2: `neg_components` eager allocation — short-circuit on first Undef instead of collecting full Vec then scanning. File: crates/reify-types/src/value.rs:218-228\n\nS3: Asymmetric test coverage — add subtraction variants for jagged-A, mixed-rank, heterogeneous tensors. Add cross-operand shape mismatch tests (2×2 + 2×3). Add Int(0), Int(-5), recursive rank-2 negation tests. File: crates/reify-expr/tests/matrix_eval_tests.rs\n\nS4: `tensor_ty()` always returns rank:1 — add `matrix_ty()` helper for rank-2 tests. File: crates/reify-expr/tests/matrix_eval_tests.rs:14-19\n\nS5: `validate_rank2_tensors` — combine 4 O(n) passes into 1, fix inverted Option semantics (Some=error), extract `is_rectangular` helper for jagged check dedup. File: crates/reify-expr/src/lib.rs:946-1004",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14873,7 +14873,8 @@
             "crates/reify-types/src",
             "crates/reify-expr/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:42:19.920Z"
       },
       {
         "id": "711",
@@ -17134,7 +17135,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:42:19.674Z",
+      "lastModified": "2026-04-02T14:42:19.920Z",
       "taskCount": 822,
       "completedCount": 606,
       "tags": [
