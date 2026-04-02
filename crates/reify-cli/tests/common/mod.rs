@@ -11,6 +11,7 @@ pub fn fixture_path(name: &str) -> String {
 }
 
 /// Captures the output of a `reify build` invocation.
+#[allow(dead_code)]
 pub struct BuildOutput {
     pub status: ExitStatus,
     pub stdout: String,
@@ -24,6 +25,7 @@ pub struct BuildOutput {
 /// Run `reify build <fixture> -o <tempdir>/out.step` and return the captured output.
 ///
 /// `fixture` is the fixture filename (e.g. `"bracket.ri"`), resolved via [`fixture_path`].
+#[allow(dead_code)]
 pub fn run_build(fixture: &str) -> BuildOutput {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let output_path = dir.path().join("out.step");

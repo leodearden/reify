@@ -867,7 +867,7 @@ structure Parent {
 #[test]
 fn root_level_cyclic_let_bindings_emit_diagnostic() {
     use reify_test_support::builders::{binop, literal, value_ref_typed};
-    use reify_types::{BinOp, CompiledExpr, ModulePath, Severity, Type, Value, ValueCellId};
+    use reify_types::{BinOp, ModulePath, Severity, Type, Value, ValueCellId};
 
     // Template S with cyclic lets: let a = b + 1, let b = a + 1
     // No sub-components, not recursive — exercises the root-level path.

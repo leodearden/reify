@@ -7986,7 +7986,7 @@ mod tests {
     #[test]
     fn inverse_2x2_identity() {
         let m = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
-        let inv = eval_builtin("inverse", &[m.clone()]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
         // inv(I) = I — check all four elements
         if let Value::Tensor(rows) = &inv {
             assert_eq!(rows.len(), 2);
@@ -8014,7 +8014,7 @@ mod tests {
     fn inverse_times_original_approx_identity() {
         // A = [[1,2],[3,4]], verify inv(A)*A ≈ I via manual multiply
         let a = make_matrix(&[&[1.0, 2.0], &[3.0, 4.0]]);
-        let inv = eval_builtin("inverse", &[a.clone()]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&a));
         // Extract inv as flat
         let inv_data = matrix_components_f64(&inv).unwrap();
         let a_data = matrix_components_f64(&a).unwrap();
@@ -8033,7 +8033,7 @@ mod tests {
     #[test]
     fn inverse_3x3() {
         let a = make_matrix(&[&[1.0, 2.0, 3.0], &[0.0, 1.0, 4.0], &[5.0, 6.0, 0.0]]);
-        let inv = eval_builtin("inverse", &[a.clone()]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&a));
         let inv_d = matrix_components_f64(&inv).unwrap();
         let a_d = matrix_components_f64(&a).unwrap();
         // 3×3 multiply to verify ≈ identity
@@ -8065,7 +8065,7 @@ mod tests {
     fn transpose_symmetric_unchanged() {
         // Symmetric matrix: transpose should equal original
         let m = make_matrix(&[&[1.0, 2.0, 3.0], &[2.0, 5.0, 6.0], &[3.0, 6.0, 9.0]]);
-        let t = eval_builtin("transpose", &[m.clone()]);
+        let t = eval_builtin("transpose", std::slice::from_ref(&m));
         let orig_d = matrix_components_f64(&m).unwrap();
         let t_d = matrix_components_f64(&t).unwrap();
         assert_eq!(orig_d.0, t_d.0);

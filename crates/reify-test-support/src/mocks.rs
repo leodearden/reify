@@ -1972,7 +1972,7 @@ mod tests {
 
     #[test]
     fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
-        use reify_types::{AutoParam, CompiledExpr, Type, ValueMap};
+        use reify_types::{AutoParam, Type, ValueMap};
 
         let mut values_a = HashMap::new();
         values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));

@@ -32,6 +32,7 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 }
 
 /// Helper: parse + compile source, return compiled output (may have errors).
+#[allow(dead_code)]
 fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_self"));
     assert!(

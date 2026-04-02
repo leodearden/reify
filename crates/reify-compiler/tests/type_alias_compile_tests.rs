@@ -23,6 +23,7 @@ fn errors_only(module: &CompiledModule) -> Vec<&Diagnostic> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn warnings_only(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics

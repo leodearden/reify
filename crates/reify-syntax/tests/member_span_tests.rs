@@ -3,7 +3,7 @@
 //! These cover: basic param/let lookup, GuardedGroup recursion,
 //! Port body recursion, missing-name returns None, and depth limiting.
 
-use reify_syntax::{find_named_member_span, MemberSpanInfo, MAX_MEMBER_NESTING_DEPTH};
+use reify_syntax::{find_named_member_span, MAX_MEMBER_NESTING_DEPTH};
 use reify_types::ModulePath;
 
 /// Helper: parse source and return the first structure's members.
