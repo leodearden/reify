@@ -12489,7 +12489,7 @@
         "description": "Two small hardening improvements:\n1. Add clarifying comment in find_member_decl explaining why both value_cells and guarded_groups must be searched (compiler stores them separately).\n2. Add depth limit parameter to find_named_member_span to prevent stack overflow on pathological input (e.g., max_depth=32).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12503,7 +12503,7 @@
             "crates/reify-syntax"
           ]
         },
-        "updatedAt": "2026-04-02T15:33:33.149Z"
+        "updatedAt": "2026-04-02T15:33:33.273Z"
       },
       {
         "id": "600",
@@ -17153,9 +17153,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T15:33:33.150Z",
+      "lastModified": "2026-04-02T15:33:33.273Z",
       "taskCount": 822,
-      "completedCount": 614,
+      "completedCount": 615,
       "tags": [
         "master"
       ]
