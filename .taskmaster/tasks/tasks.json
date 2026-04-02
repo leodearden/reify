@@ -4992,7 +4992,7 @@
         "id": "267",
         "title": "@test: compiler support",
         "description": "When @test annotation is present on a constraint def or structure def, tag the compiled entity with `is_test: true`. Test entities are excluded from the normal evaluation graph (not instantiated during regular evaluation). They are only evaluated by the test runner. Additionally, integrate memory_hints to optimize knowledge context during execution.",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [
           "265"
         ],
@@ -5020,7 +5020,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-02T14:41:59.366Z"
+        "updatedAt": "2026-04-02T14:42:36.116Z"
       },
       {
         "id": "268",
@@ -17142,7 +17142,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:42:22.369Z",
+      "lastModified": "2026-04-02T14:42:36.116Z",
       "taskCount": 822,
       "completedCount": 606,
       "tags": [
