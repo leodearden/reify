@@ -928,6 +928,20 @@ describe('PropertyEditor data-invalid recovery', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
     expect(onSetParam).not.toHaveBeenCalled();
   });
+
+  it('Escape then valid value + Enter calls onSetParam and clears data-invalid', () => {
+    // Precondition: data-invalid should be set from beforeEach
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Step 1: Escape to recover from invalid state
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    // Step 2: Enter a valid new value and submit
+    fireEvent.input(input, { target: { value: '75' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
 });
 
 describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
