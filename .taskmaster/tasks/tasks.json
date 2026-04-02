@@ -15403,7 +15403,7 @@
         "description": "In gui/src/stores/selectionStore.ts, clearIfRemoved (lines 92-99) calls selectEntity(null) and hoverEntity(null) sequentially when both match, triggering two separate createEffect runs instead of one. The first run fires an immediate backend dispatch (selectionChanged=true), then the second fires a debounced dispatch (hoverChanged=true). Wrap the body in batch() to collapse into a single effect run with one dispatch, matching the pattern already used in clearHighlights, engineStore, and claudeStore. Flagged by performance reviewer on task 696.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15414,7 +15414,8 @@
           "modules": [
             "gui/src/stores"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:07:28.851Z"
       },
       {
         "id": "739",
@@ -17013,9 +17014,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:07:05.973Z",
+      "lastModified": "2026-04-02T04:07:28.851Z",
       "taskCount": 819,
-      "completedCount": 521,
+      "completedCount": 522,
       "tags": [
         "master"
       ]
