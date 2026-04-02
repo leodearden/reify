@@ -16992,7 +16992,7 @@
         "description": "In `complex_both_infinite_returns_undef_both_builtins` (crates/reify-stdlib/src/lib.rs ~line 6006), the test only covers `(+Inf, +Inf)`. Add the three missing mixed-sign pairs: `(+Inf, -Inf)`, `(-Inf, +Inf)`, and `(-Inf, -Inf)` — both DIMENSIONLESS and LENGTH variants — so all four sign combinations are verified. Per IEEE 754, `hypot(±Inf, ±Inf) = +Inf` regardless of signs, so all should return Undef via sanitize_value.\n\nMemory hints: search \"sanitize_value infinity\", search \"assert_complex_builtin_undef\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17003,7 +17003,8 @@
           "modules": [
             "crates/reify-stdlib/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T14:12:55.128Z"
       },
       {
         "id": "817",
@@ -17070,7 +17071,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:12:54.974Z",
+      "lastModified": "2026-04-02T14:12:55.128Z",
       "taskCount": 819,
       "completedCount": 593,
       "tags": [
