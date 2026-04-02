@@ -6059,7 +6059,7 @@
         "dependencies": [
           "307"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6071,7 +6071,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T13:35:00.767Z"
+        "updatedAt": "2026-04-02T13:35:01.588Z"
       },
       {
         "id": "315",
@@ -17068,7 +17068,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T13:35:01.480Z",
+      "lastModified": "2026-04-02T13:35:01.588Z",
       "taskCount": 819,
       "completedCount": 587,
       "tags": [
