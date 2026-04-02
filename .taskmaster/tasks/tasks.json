@@ -16865,7 +16865,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/test-utils.ts",
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 814,
@@ -16876,7 +16885,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/diagnostics.test.ts",
+            "gui/src/__tests__/gotoDefinition.test.ts",
+            "gui/src/__tests__/Editor.test.tsx",
+            "gui/src/__tests__/App.test.tsx",
+            "gui/src/__tests__/test-utils.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 815,
