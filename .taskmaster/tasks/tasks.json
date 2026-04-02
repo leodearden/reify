@@ -14673,7 +14673,7 @@
         "description": "Four small fixes in crates/reify-runtime: (1) concurrent.rs:1261 — Update/remove stale comment about tokio time feature not being enabled (it now is via dev-deps). Optionally convert std::thread::sleep to tokio::time::sleep. (2) Cargo.toml — Add inline comment on tokio dev-dependency explaining time feature is intentionally dev-only. (3) concurrent_eval.rs — After execute_with_config returns, add assert!(cancel.is_cancelled()). (4) concurrent_eval.rs — Before membership assertions, add assert_eq!(result.changed.len(), 1).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14687,7 +14687,8 @@
             "crates/reify-runtime/src",
             "crates/reify-runtime"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:10:28.845Z"
       },
       {
         "id": "705",
@@ -17017,9 +17018,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:09:52.972Z",
+      "lastModified": "2026-04-02T04:10:28.845Z",
       "taskCount": 819,
-      "completedCount": 525,
+      "completedCount": 526,
       "tags": [
         "master"
       ]
