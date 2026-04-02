@@ -16128,7 +16128,7 @@
         "description": "The `undefined_objective_at_fallback_triggers_no_progress` test in solver.rs manually constructs a `CompiledExprKind::Conditional` with `ContentHash::of(&[5])`, but the canonical discriminant for Conditional is `ContentHash::of(&[4])` (as used in `reify-test-support::builders::expr::conditional_expr()`). The wrong discriminant doesn't affect test correctness (solver evaluates `kind`, not `content_hash`) but breaks hash identity convention and could cause issues if hash-keyed lookups are ever involved.\n\nFix: Replace the 15-line manual `CompiledExpr { kind: CompiledExprKind::Conditional { .. }, .. }` construction (solver.rs ~lines 2422-2434) with a call to the existing `conditional_expr(condition, then_branch, else_branch)` builder from `reify-test-support::builders::expr`. The crate is already a dev-dependency. Also consider adding a `CompiledExpr::conditional()` builder method on the production type alongside the existing `binop`/`literal`/`value_ref` builders.\n\nMemory hints: search \"conditional_expr builder\", search \"ContentHash discriminant Conditional\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "625"
         ],
@@ -16144,7 +16144,7 @@
             "crates/reify-types"
           ]
         },
-        "updatedAt": "2026-04-02T22:23:05.450Z"
+        "updatedAt": "2026-04-02T22:27:46.268Z"
       },
       {
         "id": "772",
@@ -17165,9 +17165,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:27:37.714Z",
+      "lastModified": "2026-04-02T22:27:46.268Z",
       "taskCount": 822,
-      "completedCount": 623,
+      "completedCount": 624,
       "tags": [
         "master"
       ]
