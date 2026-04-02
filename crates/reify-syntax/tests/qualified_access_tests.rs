@@ -191,6 +191,26 @@ fn parse_member_access_not_shadowed() {
     }
 }
 
+// ── Step 15: invalid instance qualified access emits specific diagnostic ────
+
+#[test]
+fn parse_invalid_instance_qualified_emits_diagnostic() {
+    let (_decls, errors) = parse_decls("structure S { let x = obj.(42) }");
+    // The lowering must emit a specific diagnostic — not just a generic tree-sitter
+    // ERROR node message — so the user knows what went wrong.
+    assert!(
+        !errors.is_empty(),
+        "expected errors for obj.(42), but got none",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("qualified_access") || e.message.contains("requires")),
+        "expected at least one error mentioning 'qualified_access' or 'requires', got: {:?}",
+        errors,
+    );
+}
+
 // ── Step 13: qualified access in arithmetic ─────────────────────────────────
 
 #[test]
