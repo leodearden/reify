@@ -156,8 +156,8 @@ fn format_value_int() {
 #[test]
 fn format_value_real() {
     assert_eq!(
-        format_value(&Value::Real(3.14)),
-        ("3.14".to_string(), String::new())
+        format_value(&Value::Real(3.125)),
+        ("3.125".to_string(), String::new())
     );
 }
 

@@ -19,6 +19,8 @@ test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
 *.kate-swp
+.jcodemunch.jsonc
+data/review-checkpoints/
 
 # Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
 tree-sitter-reify/src/parser.c
