@@ -9304,11 +9304,11 @@
         "description": "Add tests to crates/reify-expr/tests/point_vector_eval_tests.rs for untested edge cases in Point/Vector arithmetic",
         "details": "Add the following tests:\n1. value_vector3_add_vector2_mismatched_length_returns_undef: Vector(3) + Vector(2) via BinOp::Add -> Undef\n2. value_vector_with_undef_component_sub_propagates: Vector with Undef component - Vector via BinOp::Sub -> Undef\n3. value_point_with_undef_component_sub_vector_propagates: Point with Undef component - Vector via BinOp::Sub -> Undef\n4. value_vector_div_int_zero_returns_undef: Vector / Int(0) via BinOp::Div -> Undef\n5. value_point_div_int_zero_returns_undef: Point / Int(0) via BinOp::Div -> Undef\n6. value_vector_add_vector_with_undef_right_component_propagates: Vector + Vector(with Undef) -> Undef\n7. value_point_add_vector_with_undef_right_component_propagates: Point + Vector(with Undef) -> Undef\n\nFollow existing test patterns in the file. From review of task 446 (esc-446-125).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:54.032Z",
+        "updatedAt": "2026-04-02T04:11:37.658Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17018,7 +17018,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:11:37.434Z",
+      "lastModified": "2026-04-02T04:11:37.658Z",
       "taskCount": 819,
       "completedCount": 527,
       "tags": [
