@@ -16707,7 +16707,7 @@
         "description": "Task 702 extracted shared test helpers (fixture_path, run_build, BuildOutput) into common/mod.rs but only partially migrated cli_check.rs and didn't touch cli_smoke.rs.\n\n1) Add `CheckOutput` struct and `run_check(fixture: &str) -> CheckOutput` to `common/mod.rs`, mirroring the `BuildOutput` / `run_build` pattern.\n2) Update `cli_check.rs` to use `common::run_check`, removing the local `run_check` function and the `use std::process::Command` import.\n3) Add `mod common;` to `cli_smoke.rs` and refactor its tests to use `common::fixture_path` and a shared command runner, removing inline Command boilerplate.\n\nmemory_hints: search \"CLI test helper common module fixture_path\" for context on the shared test infrastructure.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16721,7 +16721,7 @@
             "crates/reify-cli/tests"
           ]
         },
-        "updatedAt": "2026-04-02T12:49:34.505Z"
+        "updatedAt": "2026-04-02T12:52:41.583Z"
       },
       {
         "id": "802",
@@ -17065,9 +17065,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:52:11.010Z",
+      "lastModified": "2026-04-02T12:52:41.583Z",
       "taskCount": 819,
-      "completedCount": 584,
+      "completedCount": 585,
       "tags": [
         "master"
       ]
