@@ -16079,7 +16079,7 @@
         "description": "test_uri() (Url::parse(\"file:///test.ri\").unwrap()) is defined identically in 7 separate test modules across reify-lsp: analysis.rs, hover.rs, completion.rs, convert.rs, diagnostics.rs, server.rs, goto_def.rs. Move it into the reify-test-support crate (alongside bracket_source() and other shared fixtures) and import it from there in all LSP test modules.\n\nmemory_hints: search for \"reify-test-support shared fixtures\", get_entity \"reify-test-support\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16098,7 +16098,8 @@
             "crates/reify-test-support",
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T22:21:27.737Z"
       },
       {
         "id": "770",
@@ -17161,7 +17162,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:21:27.473Z",
+      "lastModified": "2026-04-02T22:21:27.737Z",
       "taskCount": 822,
       "completedCount": 620,
       "tags": [
