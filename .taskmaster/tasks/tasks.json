@@ -15224,7 +15224,7 @@
         "description": "The backend-sync describe block in selectionStore.test.ts tests all three matching variants of clearIfRemoved (only-selected, only-hovered, both match) but has no test for the no-op path where neither field matches. Add a test: set selectedEntity to 'A' and hoveredEntity to 'B', call clearIfRemoved('Other'), advance timers by 100ms, and assert mockInvoke was not called. This guards against regressions where batch() or the createEffect somehow dispatches on a no-op clearIfRemoved call.\n\nMemory hints: search \"selectionStore backend sync test clearIfRemoved\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15235,7 +15235,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:03:06.502Z"
       },
       {
         "id": "732",
@@ -17009,9 +17010,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:03:04.602Z",
+      "lastModified": "2026-04-02T04:03:06.502Z",
       "taskCount": 819,
-      "completedCount": 515,
+      "completedCount": 516,
       "tags": [
         "master"
       ]
