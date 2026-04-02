@@ -16308,7 +16308,7 @@
         "description": "Use Value::length(0.0) for Point components in exports.rs Frame construction (currently uses dimensionless Value::Real(0.0)). Add assert_eq for Type::frame(3) vs Type::Frame(3) to verify factory method correctness.",
         "details": "Source: escalation esc-382-149 (task 382 review). File: crates/reify-types/tests/exports.rs:178-201.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16319,7 +16319,8 @@
           "modules": [
             "crates/reify-types/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:07:21.400Z"
       },
       {
         "id": "785",
@@ -16823,9 +16824,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:07:01.531Z",
+      "lastModified": "2026-04-02T02:07:21.403Z",
       "taskCount": 816,
-      "completedCount": 479,
+      "completedCount": 480,
       "tags": [
         "master"
       ]
