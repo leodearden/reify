@@ -16926,7 +16926,7 @@
         "description": "In crates/reify-lsp/src/document.rs test module, add a test iter_excludes_closed_documents that: opens two documents, closes one, calls iter(), and asserts exactly one entry is returned with the URI of the still-open document. This covers the close/iter interaction that is currently absent from the test suite.\n\nmemory_hints: search \"DocumentStore iter close test\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16937,7 +16937,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T22:34:24.938Z"
       },
       {
         "id": "812",
@@ -17166,7 +17167,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:34:24.425Z",
+      "lastModified": "2026-04-02T22:34:24.939Z",
       "taskCount": 822,
       "completedCount": 627,
       "tags": [
