@@ -9368,11 +9368,11 @@
         "description": "ConcurrentEditSetup.meta_map clones full HashMap; should use Arc since meta_map is immutable during concurrent eval",
         "details": "Change ConcurrentEditSetup.meta_map from HashMap to Arc<MetaMap>. Update Engine::prepare_concurrent_edit() in crates/reify-eval/src/lib.rs to wrap in Arc, and ConcurrentEvalAdapter::from_setup() in crates/reify-runtime/src/concurrent_eval.rs to Arc::clone instead of clone-then-wrap.\n\nCurrently line 70 does `meta_map: Arc::new(setup.meta_map.clone())` -- a full HashMap clone followed by Arc wrapping. With Arc<MetaMap> in setup, this becomes cheap Arc::clone.\n\nFrom review of task 397 (esc-397-121).\n\nmemory_hints:\n  search: \"ConcurrentEditSetup meta_map clone\"\n  entities: [\"ConcurrentEditSetup\", \"ConcurrentEvalAdapter\", \"MetaMap\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-02T04:20:59.960Z",
+        "updatedAt": "2026-04-02T12:42:19.777Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -11697,7 +11697,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add `tracing::warn!` at each poison recovery site so lock poisoning is observable in logs (robustness S9)\n2. Extract private helper methods (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) to deduplicate the `.unwrap_or_else(|e| e.into_inner())` pattern, matching `CliToolContext::lock_state()` precedent (reuse S12)\n3. Consider adding an `AtomicBool tainted` flag that gets set on first poison recovery, surfaced in `ConcurrentEditResult` so callers can decide whether to trust results or retry (robustness S7, S8). This addresses silent corruption propagation and values/snapshot_values invariant divergence.\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval tainted\"\n  entities: [\"ConcurrentEvalAdapter\", \"SharedPriorityPromoter\", \"CliToolContext\"]",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11712,7 +11712,7 @@
             "crates/reify-runtime"
           ]
         },
-        "updatedAt": "2026-04-02T04:29:54.596Z"
+        "updatedAt": "2026-04-02T12:42:19.825Z"
       },
       {
         "id": "568",
@@ -17053,7 +17053,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:42:19.738Z",
+      "lastModified": "2026-04-02T12:42:19.825Z",
       "taskCount": 819,
       "completedCount": 567,
       "tags": [
