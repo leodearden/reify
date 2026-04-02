@@ -28,6 +28,16 @@ impl EvalState {
             version_counter: 0,
         }
     }
+
+    /// Content hash of the last compiled module, if any.
+    pub fn last_content_hash(&self) -> Option<reify_types::ContentHash> {
+        self.last_module.as_ref().map(|m| m.content_hash)
+    }
+
+    /// Whether the engine has been initialized (i.e., eval has been called).
+    pub fn is_engine_initialized(&self) -> bool {
+        self.engine.is_initialized()
+    }
 }
 
 impl Default for EvalState {
