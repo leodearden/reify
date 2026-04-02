@@ -15913,7 +15913,7 @@
         "description": "Task 636 added low-level tests for find_named_member_span with port-internal members, but several coverage gaps remain:\n\n1. No API-level test through `AnalysisContext::find_member_decl` for port-internal members (existing GuardedGroup tests at lines 724-897 go through this path and verify info.kind, info.cell_type, info.decl_name — port members should too).\n\n2. No multi-port test: structure with two ports where the target name is only in the second port, verifying iteration past non-matching ports.\n\n3. No shadowing test: same param name at structure top-level AND inside a port body, to document that first-match-wins (top-level) is the intended semantic.\n\nMemory hints: search \"find_member_decl_param_inside_where_block\" in analysis.rs for the test pattern to follow",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15925,7 +15925,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T22:15:37.861Z"
+        "updatedAt": "2026-04-02T22:19:51.268Z"
       },
       {
         "id": "761",
@@ -17160,9 +17160,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:19:37.317Z",
+      "lastModified": "2026-04-02T22:19:51.268Z",
       "taskCount": 822,
-      "completedCount": 618,
+      "completedCount": 619,
       "tags": [
         "master"
       ]
