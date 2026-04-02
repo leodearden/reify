@@ -8128,11 +8128,11 @@
         "description": "Three allocation issues in the gradient sampling path (crates/reify-expr/src/lib.rs):\n\n1. Use Arc instead of Box+clone for the lambda slot in eval_gradient (~line 429) to avoid deep-cloning the original field on every gradient() call.\n2. Reuse a mutable buffer in compute_numerical_gradient instead of cloning coords Vec 6 times per sample (lines 475-476).\n3. Reduce or eliminate captures.clone() in apply_lambda (~line 376) which is called 6 times per gradient sample.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-02T12:49:06.306Z",
+        "updatedAt": "2026-04-02T13:35:00.870Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8849,7 +8849,7 @@
         "description": "Currently `format_value_display(v)` calls `format_value(v).0`, constructing a `(String, String)` tuple and immediately discarding the unit String. For composite types with Scalar leaves (Point, Vector, Frame, etc.), this creates O(n) extra short-lived heap allocations.\n\nSuggested approach:\n- Split into `format_value_inner(v: &Value) -> String` (recursive, returns only display string) and keep `format_value(v: &Value) -> (String, String)` as top-level only (calls inner, attaches unit for Scalar/Complex).\n- `format_value_display` becomes an alias for `format_value_inner`.\n- Care needed around `Value::Option(Some(inner))` which intentionally propagates the inner value's unit — this arm must still use `format_value` not `format_value_inner`.\n- Add doc note to format_value_display: \"For Scalar and Complex, the unit is discarded. Use format_value directly when the unit must be preserved.\"\n\nThis is display code (hover tooltips, property editor), not a hot loop, so priority is low.\n\nmemory_hints: search \"format_value allocation display GUI\", entity \"format_value_display\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "381"
         ],
@@ -8865,7 +8865,7 @@
             "gui/src-tauri"
           ]
         },
-        "updatedAt": "2026-04-02T12:49:06.410Z"
+        "updatedAt": "2026-04-02T13:35:00.909Z"
       },
       {
         "id": "444",
@@ -17068,7 +17068,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T13:35:00.832Z",
+      "lastModified": "2026-04-02T13:35:00.909Z",
       "taskCount": 819,
       "completedCount": 587,
       "tags": [
