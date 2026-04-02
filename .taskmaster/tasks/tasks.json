@@ -14128,7 +14128,7 @@
         "description": "The completion test module in `crates/reify-lsp/src/completion.rs` repeats the same label-extraction idiom ~33 times:\n```rust\nitems.iter().filter(|i| i.kind == Some(K)).map(|v| v.label.as_str()).collect::<Vec<&str>>()\n```\n\nExtract a private helper:\n```rust\nfn labels_of_kind<'a>(items: &'a [CompletionItem], kind: CompletionItemKind) -> Vec<&'a str> {\n    items.iter()\n        .filter(|i| i.kind == Some(kind))\n        .map(|i| i.label.as_str())\n        .collect()\n}\n```\n\nThen replace all inline instances with `labels_of_kind(&items, CompletionItemKind::VARIABLE)` etc.\n\n## memory_hints\n- search: \"LSP completion tests\"\n- entity: \"compute_completions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -14140,7 +14140,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:43:50.050Z"
+        "updatedAt": "2026-04-02T14:47:31.786Z"
       },
       {
         "id": "677",
@@ -17143,9 +17143,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:46:18.622Z",
+      "lastModified": "2026-04-02T14:47:31.786Z",
       "taskCount": 822,
-      "completedCount": 608,
+      "completedCount": 609,
       "tags": [
         "master"
       ]
