@@ -907,17 +907,19 @@ describe('PropertyEditor data-invalid recovery', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: 'abc' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // Precondition: data-invalid should be set after invalid Enter
-    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
   it('Escape reverts value and clears data-invalid', () => {
+    // Precondition: data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
   it('blur reverts value and clears data-invalid', () => {
+    // Precondition: data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
     // Typed value is preserved in editing state until blur reverts it
     expect(input.value).toBe('abc');
     fireEvent.blur(input);
