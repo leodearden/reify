@@ -16637,7 +16637,7 @@
         "description": "In the Task-795 implementation in `crates/reify-test-support/src/mocks.rs`: (1) change `expected_slots.iter().map(|v| SolveResult::Solved { values: v.clone() }).collect()` to use `.into_iter()` and drop the `.clone()` call (line ~1784); (2) replace `values: expected_clone.clone()` with `values: expected_clone` in the first test's spawned closure (line ~1876); (3) replace the same redundant clone in the second test's spawned closure (line ~1873).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16648,7 +16648,8 @@
           "modules": [
             "crates/reify-test-support/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T12:47:57.565Z"
       },
       {
         "id": "798",
@@ -17061,7 +17062,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:47:57.359Z",
+      "lastModified": "2026-04-02T12:47:57.565Z",
       "taskCount": 819,
       "completedCount": 573,
       "tags": [
