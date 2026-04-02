@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import type { GuiState } from '../types';
-import { flushMacrotasks, deferred, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -972,30 +972,24 @@ describe('App handleReload partial failure', () => {
       return { path, content: `updated ${path}` };
     });
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
 
-    try {
-      await withSuppressedRejections(async () => {
-        render(() => <App />);
-        await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
-        fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
-        fileChangedCallback!({ path: '/project/gear.ri', content: '' });
-        await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+      fireEvent.click(screen.getByText('Reload'));
 
-        fireEvent.click(screen.getByText('Reload'));
-
-        // After allSettled, only gear.ri should remain (bracket.ri succeeded)
-        await waitFor(() => {
-          const prompt = screen.getByTestId('reload-prompt');
-          expect(prompt.textContent).toMatch(/gear\.ri/);
-          expect(prompt.textContent).not.toMatch(/bracket\.ri/);
-          expect(prompt.textContent).not.toMatch(/2 files changed/);
-        });
+      // After allSettled, only gear.ri should remain (bracket.ri succeeded)
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        expect(prompt.textContent).toMatch(/gear\.ri/);
+        expect(prompt.textContent).not.toMatch(/bracket\.ri/);
+        expect(prompt.textContent).not.toMatch(/2 files changed/);
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+    });
   });
 
   it('when one file fails, confirmReload is still reset to false', async () => {
@@ -1006,40 +1000,34 @@ describe('App handleReload partial failure', () => {
       return { path, content: `updated ${path}` };
     });
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      await waitFor(() => expect(capturedEditorStore).toBeTruthy());
 
-    try {
-      await withSuppressedRejections(async () => {
-        render(() => <App />);
-        await waitFor(() => expect(fileChangedCallback).toBeDefined());
-        await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+      // Mark gear.ri as dirty so we enter confirmReload flow
+      capturedEditorStore.markDirty('/project/gear.ri');
 
-        // Mark gear.ri as dirty so we enter confirmReload flow
-        capturedEditorStore.markDirty('/project/gear.ri');
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
-        fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
-        fileChangedCallback!({ path: '/project/gear.ri', content: '' });
-        await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+      // First click shows confirmation warning
+      fireEvent.click(screen.getByText('Reload'));
+      await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
 
-        // First click shows confirmation warning
-        fireEvent.click(screen.getByText('Reload'));
-        await waitFor(() => expect(screen.getByText('Reload Anyway')).toBeTruthy());
+      // Confirm reload
+      fireEvent.click(screen.getByText('Reload Anyway'));
 
-        // Confirm reload
-        fireEvent.click(screen.getByText('Reload Anyway'));
-
-        // After partial failure, confirmReload should be reset
-        // (so the remaining gear.ri prompt shows normal Reload, not Reload Anyway)
-        await waitFor(() => {
-          const prompt = screen.getByTestId('reload-prompt');
-          // gear.ri remains but confirmReload was reset — should NOT show 'Reload Anyway'
-          expect(prompt.textContent).toMatch(/gear\.ri/);
-          expect(prompt.textContent).not.toMatch(/Reload Anyway/);
-        });
+      // After partial failure, confirmReload should be reset
+      // (so the remaining gear.ri prompt shows normal Reload, not Reload Anyway)
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        // gear.ri remains but confirmReload was reset — should NOT show 'Reload Anyway'
+        expect(prompt.textContent).toMatch(/gear\.ri/);
+        expect(prompt.textContent).not.toMatch(/Reload Anyway/);
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+    });
   });
 
   it('when one file fails, an error toast is shown mentioning the failure count', async () => {
@@ -1050,29 +1038,23 @@ describe('App handleReload partial failure', () => {
       return { path, content: `updated ${path}` };
     });
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
 
-    try {
-      await withSuppressedRejections(async () => {
-        render(() => <App />);
-        await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
-        fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
-        fileChangedCallback!({ path: '/project/gear.ri', content: '' });
-        await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+      fireEvent.click(screen.getByText('Reload'));
 
-        fireEvent.click(screen.getByText('Reload'));
-
-        // An error toast should appear indicating reload failure
-        await waitFor(() => {
-          const toasts = screen.getAllByTestId('toast');
-          const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
-          expect(errorToast).toBeTruthy();
-        });
+      // An error toast should appear indicating reload failure
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
+        expect(errorToast).toBeTruthy();
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+    });
   });
 
   it('when all files succeed, changedFiles is cleared completely', async () => {
@@ -1100,32 +1082,26 @@ describe('App handleReload partial failure', () => {
       throw new Error('disk error');
     });
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
 
-    try {
-      await withSuppressedRejections(async () => {
-        render(() => <App />);
-        await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
-        fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
-        fileChangedCallback!({ path: '/project/gear.ri', content: '' });
-        await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+      fireEvent.click(screen.getByText('Reload'));
 
-        fireEvent.click(screen.getByText('Reload'));
-
-        // After all failures, both files should remain and an error toast should appear
-        await waitFor(() => {
-          const toasts = screen.getAllByTestId('toast');
-          const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
-          expect(errorToast).toBeTruthy();
-        });
-
-        // Both files should still be in changedFiles
-        expect(screen.getByText(/2 files changed/)).toBeTruthy();
+      // After all failures, both files should remain and an error toast should appear
+      await waitFor(() => {
+        const toasts = screen.getAllByTestId('toast');
+        const errorToast = toasts.find((t) => t.textContent?.match(/failed.*reload/i));
+        expect(errorToast).toBeTruthy();
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      // Both files should still be in changedFiles
+      expect(screen.getByText(/2 files changed/)).toBeTruthy();
+    });
   });
 });
 
@@ -1205,42 +1181,36 @@ describe('App handleReload race condition', () => {
       return Promise.resolve({ path, content: `updated ${path}` });
     });
 
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      render(() => <App />);
+      await waitFor(() => expect(fileChangedCallback).toBeDefined());
 
-    try {
-      await withSuppressedRejections(async () => {
-        render(() => <App />);
-        await waitFor(() => expect(fileChangedCallback).toBeDefined());
+      // Two files change
+      fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
+      fileChangedCallback!({ path: '/project/gear.ri', content: '' });
+      await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
 
-        // Two files change
-        fileChangedCallback!({ path: '/project/bracket.ri', content: '' });
-        fileChangedCallback!({ path: '/project/gear.ri', content: '' });
-        await waitFor(() => expect(screen.getByText(/2 files changed/)).toBeTruthy());
+      // Click Reload
+      fireEvent.click(screen.getByText('Reload'));
 
-        // Click Reload
-        fireEvent.click(screen.getByText('Reload'));
-
-        await waitFor(() => {
-          expect(bridge.openFile).toHaveBeenCalledTimes(2);
-        });
-
-        // Concurrent file-change event during in-flight reload
-        fileChangedCallback!({ path: '/project/housing.ri', content: '' });
-
-        // Resolve bracket (success), reject gear (failure)
-        bracketOpen.resolve({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
-        gearOpen.reject(new Error('disk error'));
-
-        // After settlement: gear.ri (failed) + housing.ri (concurrent) should both remain
-        // bracket.ri (succeeded) should be removed
-        await waitFor(() => {
-          const prompt = screen.getByTestId('reload-prompt');
-          expect(prompt.textContent).toMatch(/2 files changed/);
-        });
+      await waitFor(() => {
+        expect(bridge.openFile).toHaveBeenCalledTimes(2);
       });
-    } finally {
-      errorSpy.mockRestore();
-    }
+
+      // Concurrent file-change event during in-flight reload
+      fileChangedCallback!({ path: '/project/housing.ri', content: '' });
+
+      // Resolve bracket (success), reject gear (failure)
+      bracketOpen.resolve({ path: '/project/bracket.ri', content: 'updated bracket.ri' });
+      gearOpen.reject(new Error('disk error'));
+
+      // After settlement: gear.ri (failed) + housing.ri (concurrent) should both remain
+      // bracket.ri (succeeded) should be removed
+      await waitFor(() => {
+        const prompt = screen.getByTestId('reload-prompt');
+        expect(prompt.textContent).toMatch(/2 files changed/);
+      });
+    });
   });
 });
 
