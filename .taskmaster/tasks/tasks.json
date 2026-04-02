@@ -6895,7 +6895,7 @@
         "dependencies": [
           "349"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-polish",
           "modules": [
@@ -6905,7 +6905,7 @@
         },
         "subtasks": [],
         "details": "Update crates/reify-mcp/src/tools/chunks/stdlib.md with complete function listings for all new stdlib functions. Include usage examples for key operations.",
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-02T04:50:21.919Z"
       },
       {
         "id": "351",
@@ -17041,9 +17041,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:49:56.377Z",
+      "lastModified": "2026-04-02T04:50:21.919Z",
       "taskCount": 819,
-      "completedCount": 550,
+      "completedCount": 551,
       "tags": [
         "master"
       ]
