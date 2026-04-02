@@ -16938,7 +16938,7 @@
         "description": "Migrate all remaining raw inline patterns to the shared helpers:\n- `gui/src/__tests__/diagnostics.test.ts:108` — replace `await new Promise((r) => setTimeout(r, 0))` with `await flushMacrotasks()`\n- `gui/src/__tests__/diagnostics.test.ts:82-84` — replace manual `let resolveListenPromise / new Promise` split with `deferred<() => void>()`\n- `gui/src/__tests__/gotoDefinition.test.ts:70,86,124,163` — replace `await new Promise((r) => setTimeout(r, 10))` with `await flushMacrotasks()` (verify 0ms is sufficient, or add optional `ms` param to helper)\n- `gui/src/__tests__/Editor.test.tsx:715-718` — replace manual `let resolveOpenFile / new Promise` with `deferred<FileData>()`\n- `gui/src/__tests__/App.test.tsx:1167-1176,1213-1222` — migrate remaining inline deferred constructs in the 'concurrent file-change during reload' tests\n\nMemory hints:\n- Search: \"flushMacrotasks deferred test helper adoption inline pattern\"\n- Entities: test-utils.ts, diagnostics.test.ts, gotoDefinition.test.ts, Editor.test.tsx, App.test.tsx",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16953,7 +16953,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T12:45:14.558Z"
       },
       {
         "id": "815",
@@ -17056,7 +17057,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:45:14.426Z",
+      "lastModified": "2026-04-02T12:45:14.558Z",
       "taskCount": 819,
       "completedCount": 571,
       "tags": [
