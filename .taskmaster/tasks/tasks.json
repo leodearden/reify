@@ -9260,11 +9260,11 @@
         "description": "Post-merge cleanup from task 287 reviews. In reify-expr/src/lib.rs eval_method_call: (S1) Move Complex method arms (magnitude, phase, conjugate, re, im) after the .x/.y/.z Tensor arms for hot-path ordering. (S2) Split \"re\" | \"im\" into separate match arms. (S3) Extract scalar_or_real(v, dim) helper to dedup dimensionless→Real / dimensioned→Scalar dispatch (used in magnitude, re/im, and eval_div Scalar/Scalar). (S4) Add section comment delimiter before Complex methods. (S9) Add inline comments for intentional Complex/Complex division omission in eval_div and zero-scalar multiplication dimension semantics in eval_mul.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-03-26T12:05:53.960Z",
+        "updatedAt": "2026-04-02T04:06:24.250Z",
         "metadata": {
           "prd": "none",
           "files": [
@@ -17012,9 +17012,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:06:18.241Z",
+      "lastModified": "2026-04-02T04:06:24.250Z",
       "taskCount": 819,
-      "completedCount": 518,
+      "completedCount": 519,
       "tags": [
         "master"
       ]
