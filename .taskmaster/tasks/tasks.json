@@ -16237,7 +16237,7 @@
         "description": "Two small fixes in crates/reify-lsp/src/hover.rs from task 695 review:\n\n1. **Comment accuracy (line 20-21):** The comment says goto_def.rs falls back to `find_member_decl(word, None)` but goto_def.rs does not call find_member_decl at all — it uses `find_named_member_span()` in a manual two-pass loop (scoped iteration over enclosing decl members, then full-declaration scan). Change the parenthetical from `(find_member_decl(word, None))` to something like `(a manual scan across all declarations via find_named_member_span)`.\n\n2. **Positive companion test (line 607):** The `hover_no_fallback_to_other_structure_member` test only checks that hovering on `unique_a` inside structure B returns None. Add a companion assertion (or separate test) that hovers on `unique_a` at its declaration site inside structure A and confirms it returns Some(...) with expected `param` info. This anchors the test: scoped lookup works in A, and correctly returns None in B.\n\nmemory_hints: search \"hover scoping goto_def fallback find_named_member_span\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16248,7 +16248,8 @@
           "modules": [
             "crates/reify-lsp/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T22:26:04.300Z"
       },
       {
         "id": "777",
@@ -17163,7 +17164,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T22:26:04.030Z",
+      "lastModified": "2026-04-02T22:26:04.300Z",
       "taskCount": 822,
       "completedCount": 622,
       "tags": [
