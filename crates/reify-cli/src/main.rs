@@ -447,8 +447,8 @@ mod tests {
         let (result, output) = run_report(&entries);
 
         assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
-        assert!(output.contains("OK stress_limit"));
-        assert!(output.contains("OK size_bound"));
+        assert!(output.contains("  OK stress_limit"));
+        assert!(output.contains("  OK size_bound"));
         assert!(!output.contains("VIOLATED"));
     }
 
@@ -461,7 +461,7 @@ mod tests {
         let (result, output) = run_report(&entries);
 
         assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
-        assert!(output.contains("OK max_force"));
+        assert!(output.contains("  OK max_force"));
         assert!(output.contains("VIOLATED clearance"));
     }
 
@@ -521,8 +521,8 @@ mod tests {
             "violated takes priority over indeterminate: should return SomeViolated"
         );
         assert!(
-            output.contains("OK weight_limit"),
-            "output should contain 'OK weight_limit', got: {}",
+            output.contains("  OK weight_limit"),
+            "output should contain '  OK weight_limit', got: {}",
             output
         );
         assert!(
@@ -546,7 +546,7 @@ mod tests {
 
         // ConstraintNodeId Display: "Gear#constraint[2]"
         assert!(
-            output.contains("OK Gear#constraint[2]"),
+            output.contains("  OK Gear#constraint[2]"),
             "should use id Display as fallback, got: {}",
             output
         );
@@ -589,7 +589,7 @@ mod tests {
 
         // (a) out buffer contains constraint status lines
         assert!(
-            out_str.contains("OK stress_limit"),
+            out_str.contains("  OK stress_limit"),
             "out should contain constraint OK line, got: {}",
             out_str
         );
