@@ -34,12 +34,12 @@ const rules: ErrorRule[] = [
 
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
-    return err.message || 'Unknown error';
+    return err.message.trim() || 'Unknown error';
   }
   if (err !== null && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {
-    return (err as Record<string, unknown>).message as string || 'Unknown error';
+    return ((err as Record<string, unknown>).message as string).trim() || 'Unknown error';
   }
-  return String(err) || 'Unknown error';
+  return String(err).trim() || 'Unknown error';
 }
 
 export function classifyError(message: string): ClassifiedError {
