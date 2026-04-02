@@ -15101,7 +15101,7 @@
         "description": "hooks/project-checks and orchestrator.yaml test/lint commands only run `npm ci` in gui/. The gui/sidecar/ and tree-sitter-reify/ directories also have committed package-lock.json files but their lockfile integrity is never verified by any automated step.\n\nSteps:\n1. In hooks/project-checks, add `npm ci` for gui/sidecar/ (conditional on package-lock.json existing)\n2. In hooks/project-checks, add `npm ci` for tree-sitter-reify/ (conditional on package-lock.json existing)\n3. In orchestrator.yaml test_command and lint_command, extend the npm ci step to also cover gui/sidecar/ and tree-sitter-reify/\n4. Verify the pre-commit hook still runs in acceptable time (these are small packages, should be fast)\n\nmemory_hints: search \"hooks/project-checks npm ci\", search \"package manager standardization\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15114,7 +15114,7 @@
             "hooks"
           ]
         },
-        "updatedAt": "2026-04-02T12:42:20.170Z"
+        "updatedAt": "2026-04-02T12:42:22.409Z"
       },
       {
         "id": "724",
@@ -17054,7 +17054,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:42:22.291Z",
+      "lastModified": "2026-04-02T12:42:22.409Z",
       "taskCount": 819,
       "completedCount": 567,
       "tags": [
