@@ -17002,7 +17002,7 @@
         "description": "Three improvements to gui/src/__tests__/test-utils.test.ts identified during task 918 review:\n\n1. **flushMicrotasks positive case** (near line 42-49): The flushMicrotasks suite only tests that setTimeout(0) does NOT fire (negative case). Add a positive assertion that microtask-queued work (Promise.resolve().then(...)) IS visible after awaiting flushMicrotasks(). Example:\n   ```ts\n   it('microtask-queued work is visible after awaiting', async () => {\n     let flag = false;\n     Promise.resolve().then(() => { flag = true; });\n     await flushMicrotasks();\n     expect(flag).toBe(true);\n   });\n   ```\n\n2. **flushMacrotasks multi-callback drain** (near line 4-33): flushMacrotasks is only tested with a single queued setTimeout(0). App.test.tsx relies on it draining chains of async continuations. Add a test that queues two or more independent setTimeout(0) callbacks and asserts both are true after a single await flushMacrotasks(), or document that multiple calls are required if the implementation only drains one.\n\n3. **try/finally for clearTimeout** (line 44-48): clearTimeout(id) is placed after the expect assertion. If the assertion throws, clearTimeout never runs. Wrap in try/finally:\n   ```ts\n   const id = setTimeout(() => { flag = true; }, 0);\n   try {\n     await flushMicrotasks();\n     expect(flag).toBe(false);\n   } finally {\n     clearTimeout(id);\n   }\n   ```\n\nMemory hints:\n- Search: \"flushMacrotasks flushMicrotasks test helper task 812 815\"\n- Entities: test-utils.test.ts, test-utils.ts",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -17013,7 +17013,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T12:46:13.425Z"
       },
       {
         "id": "818",
@@ -17059,7 +17060,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:46:13.324Z",
+      "lastModified": "2026-04-02T12:46:13.425Z",
       "taskCount": 819,
       "completedCount": 573,
       "tags": [
