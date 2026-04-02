@@ -15623,7 +15623,7 @@
         "description": "Add tests: (1) gradient_non_field_argument_returns_undef — calls gradient with Value::Real(1.0) and asserts Undef. (2) gradient_valid_scalar_field_currently_returns_undef — calls gradient with a properly-formed scalar-domain field and asserts Undef as documented stub expectation, with TODO noting it should return Vec3<Real> once implemented. Also rename misleading tests (gradient_wrong_size_tensor → sample_wrong_size_tensor) and fix vacuous test guardrails (use valid Lambda instead of Value::Undef in field fixtures).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15635,7 +15635,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-02T14:23:25.557Z"
+        "updatedAt": "2026-04-02T14:29:16.915Z"
       },
       {
         "id": "748",
@@ -17083,9 +17083,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T14:27:46.140Z",
+      "lastModified": "2026-04-02T14:29:16.916Z",
       "taskCount": 819,
-      "completedCount": 599,
+      "completedCount": 600,
       "tags": [
         "master"
       ]
