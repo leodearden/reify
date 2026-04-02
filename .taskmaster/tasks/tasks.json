@@ -16758,7 +16758,7 @@
         "description": "No unit test covers the three-way combination of Satisfied + Violated + Indeterminate entries in report_constraint_results (crates/reify-cli/src/main.rs ~line 397+). The existing tests cover: all-satisfied, satisfied+violated, indeterminate-only, and violated+indeterminate, but not the most likely real-world scenario where all three states coexist.\n\nAdd a unit test with three entries covering all three Satisfaction states:\n- Assert result == ConstraintOutcome::SomeViolated\n- Assert output contains \"OK <label>\" for the satisfied entry\n- Assert output contains \"VIOLATED <label>\" for the violated entry\n- Assert output contains \"INDETERMINATE <label>\" for the indeterminate entry",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16770,7 +16770,7 @@
             "crates/reify-cli/src"
           ]
         },
-        "updatedAt": "2026-04-02T12:52:42.186Z"
+        "updatedAt": "2026-04-02T12:52:42.330Z"
       },
       {
         "id": "805",
@@ -17067,9 +17067,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T12:52:42.186Z",
+      "lastModified": "2026-04-02T12:52:42.330Z",
       "taskCount": 819,
-      "completedCount": 586,
+      "completedCount": 587,
       "tags": [
         "master"
       ]
