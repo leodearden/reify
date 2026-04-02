@@ -15685,7 +15685,7 @@
         "description": "The find_err_arm_braced helper in build_logic_tests.rs has two minor bugs and a test quality gap:\n\n1. **usize underflow (line 259):** `depth -= 1` panics in debug mode if a `}` is encountered at depth 0 (e.g. from an unhandled char literal or comment). Use `depth.checked_sub(1)` and return None on underflow, or switch to isize.\n\n2. **Escape off-by-one (line 248):** Inside the string-scanning loop, `i += 2` for `\\\\X` escapes. If the backslash is the last byte, `i` overshoots and the outer `i += 1` skips the first byte after the closing quote. Add a bounds check after `i += 2`.\n\n3. **Boundary assertion (line 316-340):** test_try_wait_error_path_kills_child only asserts the extracted arm *contains* child.kill()/child.wait(). Since the Ok(None) arm also has these calls, over-extraction would pass silently. Add `assert!(!err_arm.contains(\"Ok(None)\"))` to verify extraction doesn't bleed into sibling arms.\n\nMemory hint: search for \"task 606 brace-depth tracking\" for implementation context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15696,7 +15696,8 @@
           "modules": [
             "tree-sitter-reify/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:07:41.440Z"
       },
       {
         "id": "754",
@@ -16824,9 +16825,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:07:21.403Z",
+      "lastModified": "2026-04-02T02:07:41.465Z",
       "taskCount": 816,
-      "completedCount": 480,
+      "completedCount": 481,
       "tags": [
         "master"
       ]
