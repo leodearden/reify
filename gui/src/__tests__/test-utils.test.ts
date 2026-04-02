@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -138,6 +138,66 @@ describe('withSuppressedRejections', () => {
 
     await expect(
       withSuppressedRejections(async () => { throw original; }),
+    ).rejects.toThrow(original);
+  });
+});
+
+describe('withSuppressedRejectionsAndErrorSpy', () => {
+  it('passes a mock function as errorSpy to the callback', async () => {
+    let receivedSpy: unknown;
+    await withSuppressedRejectionsAndErrorSpy(async (spy) => {
+      receivedSpy = spy;
+    });
+    expect(vi.isMockFunction(receivedSpy)).toBe(true);
+  });
+
+  it('errorSpy is console.error spied on, with output suppressed during fn', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async (spy) => {
+      // The spy wraps console.error — console.error === spy inside fn
+      expect(spy).toBe(console.error);
+      // Calling console.error (which === spy) records the call via the spy
+      console.error('test message');
+      expect(spy).toHaveBeenCalledWith('test message');
+    });
+  });
+
+  it('restores console.error after fn resolves', async () => {
+    const original = console.error;
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      // inside fn, console.error is mocked (not the original)
+      expect(console.error).not.toBe(original);
+    });
+    // after fn resolves, console.error should be restored
+    expect(console.error).toBe(original);
+  });
+
+  it('restores console.error after fn rejects', async () => {
+    const original = console.error;
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      throw new Error('expected failure');
+    }).catch(() => {});
+    // even after rejection, console.error should be restored
+    expect(console.error).toBe(original);
+  });
+
+  it('suppresses unhandled rejections by delegating to withSuppressedRejections', async () => {
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      // no-op fn, just verifying delegation
+    });
+
+    expect(addSpy.mock.calls.some(([event]) => event === 'unhandledrejection')).toBe(true);
+    expect(removeSpy.mock.calls.some(([event]) => event === 'unhandledrejection')).toBe(true);
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
+  it('re-throws the original error from fn', async () => {
+    const original = new Error('propagated failure');
+    await expect(
+      withSuppressedRejectionsAndErrorSpy(async () => { throw original; }),
     ).rejects.toThrow(original);
   });
 });

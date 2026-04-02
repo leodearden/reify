@@ -1,6 +1,7 @@
 /**
  * Shared test helpers for async patterns.
  */
+import { vi, type MockInstance } from 'vitest';
 
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
 export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
@@ -29,5 +30,24 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
     await fn();
   } finally {
     window.removeEventListener('unhandledrejection', handler);
+  }
+}
+
+/**
+ * Run `fn` with both a temporary `console.error` spy (output suppressed) and
+ * the `unhandledrejection` suppression from `withSuppressedRejections`.
+ *
+ * The spy is passed as the first argument to `fn` so callers can make
+ * targeted assertions (e.g. `expect(errorSpy).not.toHaveBeenCalledWith(...)`).
+ * The spy is restored in a `finally` block so it never leaks across tests.
+ */
+export async function withSuppressedRejectionsAndErrorSpy(
+  fn: (errorSpy: MockInstance) => Promise<void>,
+): Promise<void> {
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    await withSuppressedRejections(() => fn(errorSpy));
+  } finally {
+    errorSpy.mockRestore();
   }
 }
