@@ -14298,7 +14298,7 @@
         "description": "The `capturedHandler + mockListen.mockImplementation + subscribeToClaudeEvents` boilerplate is duplicated 11 times in claudeBridge.test.ts (lines ~179, 200, 224, 241, 258, 279, 300, 323, 342, 372, 393). Each test declares the same `let capturedHandler`, same mock implementation, same subscribe call.\n\n1. Extract a shared helper function, e.g.:\n   ```ts\n   async function captureHandlerFor(eventName: string) {\n     let captured: ((e: { payload: unknown }) => void) | undefined;\n     mockListen.mockImplementation(async (name, h) => {\n       if (name === eventName) captured = h as any;\n       return vi.fn();\n     });\n     const handler = vi.fn();\n     await subscribeToClaudeEvents(handler);\n     expect(captured).toBeDefined(); // guard assertion\n     return { captured: captured!, handler };\n   }\n   ```\n2. Replace all 11 instances with calls to this helper.\n3. Convert the two discriminant-override tests (text_delta + claude-error) to use `it.each` with a data table for extensibility.\n4. Add `expect(capturedHandler).toBeDefined()` guard assertions before all `capturedHandler!()` calls (currently missing, produces opaque TypeError on failure instead of clean assertion).\n\nMemory hints: search \"claudeBridge test boilerplate capturedHandler extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "548"
         ],
@@ -14311,7 +14311,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T02:35:50.489Z"
       },
       {
         "id": "688",
@@ -17001,9 +17002,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T02:35:23.258Z",
+      "lastModified": "2026-04-02T02:35:50.489Z",
       "taskCount": 819,
-      "completedCount": 505,
+      "completedCount": 506,
       "tags": [
         "master"
       ]
