@@ -21,4 +21,16 @@ describe('errorMessage', () => {
     expect(errorMessage(undefined)).toBe('undefined');
     expect(errorMessage({ key: 'val' })).toBe('[object Object]');
   });
+
+  it('returns "Unknown error" for Error with empty message', () => {
+    expect(errorMessage(new Error(''))).toBe('Unknown error');
+  });
+
+  it('returns "Unknown error" for Error with whitespace-only message', () => {
+    expect(errorMessage(new Error('   '))).toBe('Unknown error');
+  });
+
+  it('returns "Unknown error" for whitespace-only string input', () => {
+    expect(errorMessage('   ')).toBe('Unknown error');
+  });
 });
