@@ -15039,7 +15039,7 @@
         "description": "cross_builder_hash_equivalence in crates/reify-test-support/src/builders/trait_def.rs only exercises RequirementKind::Param but CompiledTraitBuilder also exposes require_let and require_sub. Add sub-cases that compare TraitDefBuilder vs CompiledTraitBuilder for Let and Sub requirement kinds.\n\nAlso, compute_trait_content_hash_matches_builder only asserts against TraitDefBuilder. Add an analogous assertion against CompiledTraitBuilder for symmetric verification.\n\nmemory_hints: search \"content_hash builder test support cross_builder_hash_equivalence\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "726"
         ],
@@ -15053,7 +15053,7 @@
             "crates/reify-test-support/src/builders"
           ]
         },
-        "updatedAt": "2026-04-02T14:55:27.814Z"
+        "updatedAt": "2026-04-02T15:33:31.427Z"
       },
       {
         "id": "720",
@@ -15743,7 +15743,7 @@
         "description": "Four assertion gaps in the tests added by task 622 (multi-declaration goto_def/find_member_decl coverage):\n\n1. `find_member_decl_non_first_decl_propagates_decl_name` (analysis.rs ~L887): Missing `cell_type` assertion — all sibling tests assert `cell_type` (e.g. `Type::Scalar`), this one skips it. Add `assert!(matches!(info.cell_type, Type::Scalar { .. }))`.\n\n2. Same test: Span verification uses a weak lower-bound check (`span.start >= b_start`) instead of the canonical pattern that extracts the substring and verifies content. Replace with: `let span_text = &source[info.span.start as usize..info.span.end as usize]; assert!(span_text.contains(\"y\"))`.\n\n3. Same test: Missing `span.end` upper-bound check. Compute `b_end` and assert `info.span.end <= b_end as u32` to match the thoroughness of `find_member_decl_scoped_to_second_structure`.\n\n4. Missing failure mode test in goto_def.rs: No test for when Phase 2 fallback also fails (identifier exists in no declaration). Add a test where cursor is on an unknown identifier inside a declaration, verify `compute_goto_definition` returns `None`.\n\nMemory hints: search \"task 622 LSP multi-declaration test coverage\" and \"find_member_decl assertion pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -15756,7 +15756,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-02T14:55:26.052Z"
+        "updatedAt": "2026-04-02T15:33:31.471Z"
       },
       {
         "id": "753",
@@ -17153,7 +17153,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T15:33:31.387Z",
+      "lastModified": "2026-04-02T15:33:31.471Z",
       "taskCount": 822,
       "completedCount": 613,
       "tags": [
