@@ -16535,7 +16535,7 @@
         "description": "Track whether timeout was actually applied and only diagnose exit code 124 as a timeout when it was. Currently the fallback path (no timeout binary) can misdiagnose exit 124 as timeout failure.",
         "details": "Source: escalation esc-610-194 (task 610 review). File: scripts/tree-sitter-generate.sh:89-91.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16546,7 +16546,8 @@
           "modules": [
             "scripts"
           ]
-        }
+        },
+        "updatedAt": "2026-04-02T04:12:18.665Z"
       },
       {
         "id": "795",
@@ -17019,9 +17020,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-02T04:11:51.921Z",
+      "lastModified": "2026-04-02T04:12:18.665Z",
       "taskCount": 819,
-      "completedCount": 528,
+      "completedCount": 529,
       "tags": [
         "master"
       ]
