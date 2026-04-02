@@ -901,7 +901,9 @@ describe('PropertyEditor data-invalid recovery', () => {
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
     ));
     const row = screen.getByTestId('prop-row-c1');
-    input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    const el = row.querySelector('input[type="text"]');
+    if (!el) throw new Error('text input not found in prop-row-c1');
+    input = el as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: 'abc' } });
     fireEvent.keyDown(input, { key: 'Enter' });
