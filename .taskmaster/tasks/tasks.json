@@ -7114,7 +7114,7 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-03T15:29:32.319Z",
+        "updatedAt": "2026-04-03T15:29:32.628Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17263,7 +17263,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T15:29:32.319Z",
+      "lastModified": "2026-04-03T15:29:32.628Z",
       "taskCount": 822,
       "completedCount": 654,
       "tags": [
