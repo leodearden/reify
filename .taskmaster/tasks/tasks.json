@@ -17836,6 +17836,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 854,
+        "title": "Investigate to_bits().cmp() ordering correctness for negative floats in Value Ord",
+        "description": "The Value Ord implementation uses f64::to_bits().cmp() for comparing float components (Orientation at value.rs:1278-1283, and likely other float-bearing variants). IEEE 754 to_bits() does NOT preserve ordering for negative values — the sign bit inverts the magnitude comparison. For example, -0.5.to_bits() > 0.5.to_bits() even though -0.5 < 0.5, and -1.0.to_bits() > -0.5.to_bits() even though -1.0 < -0.5.\n\nInvestigate whether mathematical ordering is required (vs just any consistent total order for BTreeMap keys), and if so, replace to_bits().cmp() with a sign-aware total-order comparison (e.g. the float_ord crate pattern or manual sign-bit fixup). Add tests with negative float components to validate.\n\nMemory hints: search \"Value Ord implementation to_bits\" and \"float comparison convention\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17848,7 +17859,7 @@
       ],
       "created": "2026-04-03T23:54:03.641Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:54:03.651Z"
+      "updated": "2026-04-03T23:54:09.786Z"
     }
   }
 }
