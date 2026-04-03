@@ -319,3 +319,164 @@ structure S {
         "two instantiations should reference different params, both got '{first_param}'"
     );
 }
+
+// ── Test 7: too many args produces error ─────────────────────────────────────
+
+/// Providing 3 args for a 2-param def should produce an error mentioning the
+/// unknown arg name.
+#[test]
+fn wrong_arg_count_too_many() {
+    let source = r#"
+constraint def TwoParam {
+    param a: Length
+    param b: Length
+    a > b
+}
+structure S {
+    param x: Length
+    param y: Length
+    param z: Length
+    constraint TwoParam(a: x, b: y, c: z)
+}
+"#;
+    let module = compile_module(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for unknown arg 'c'"
+    );
+    // Error should mention 'c' (the unknown arg name) or 'unknown'
+    let found = errors
+        .iter()
+        .any(|d| d.message.contains('c') || d.message.to_lowercase().contains("unknown"));
+    assert!(
+        found,
+        "expected error mentioning unknown arg 'c', got: {:?}",
+        errors
+    );
+}
+
+// ── Test 8: all args have wrong names (none matching required param) ──────────
+
+/// Providing an arg that doesn't match any param name triggers both
+/// "unknown argument" AND "missing argument" errors (one for the unknown
+/// arg provided, one for the required param that was never bound).
+/// The grammar requires ≥1 named arg, so zero args isn't valid syntax;
+/// this test covers the equivalent scenario with misnamed args.
+#[test]
+fn wrong_arg_count_zero() {
+    let source = r#"
+constraint def RequiredOne {
+    param x: Length
+    x > 0
+}
+structure S {
+    param v: Length
+    constraint RequiredOne(y: v)
+}
+"#;
+    // 'y' is unknown + 'x' is missing → should produce at least two errors
+    let module = compile_module(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        errors.len() >= 2,
+        "expected >=2 errors (unknown 'y' + missing 'x'), got: {:?}",
+        errors
+    );
+    let has_unknown_y = errors
+        .iter()
+        .any(|d| d.message.contains('y') || d.message.to_lowercase().contains("unknown"));
+    let has_missing_x = errors
+        .iter()
+        .any(|d| d.message.contains('x') || d.message.to_lowercase().contains("missing"));
+    assert!(
+        has_unknown_y,
+        "expected error about unknown arg 'y', got: {:?}",
+        errors
+    );
+    assert!(
+        has_missing_x,
+        "expected error about missing arg 'x', got: {:?}",
+        errors
+    );
+}
+
+// ── Test 9: one of two required params missing ────────────────────────────────
+
+/// Providing 1 of 2 required args should produce an error naming the missing param.
+#[test]
+fn missing_required_param_with_others_present() {
+    let source = r#"
+constraint def TwoRequired {
+    param a: Length
+    param b: Length
+    a > b
+}
+structure S {
+    param x: Length
+    constraint TwoRequired(a: x)
+}
+"#;
+    let module = compile_module(source);
+    let errors = error_diags(&module.diagnostics);
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for missing required param 'b'"
+    );
+    // Error should name the missing param 'b'
+    let found = errors
+        .iter()
+        .any(|d| d.message.contains('b') || d.message.to_lowercase().contains("missing"));
+    assert!(
+        found,
+        "expected error mentioning missing param 'b', got: {:?}",
+        errors
+    );
+}
+
+// ── Test 10: violation diagnostic label mechanism ─────────────────────────────
+
+/// Compile a constraint def instantiation and verify the label field in the
+/// CompiledConstraint contains the def name. This is the mechanism by which
+/// the eval engine produces diagnostics with the def name when the constraint
+/// is violated at runtime.
+///
+/// Full end-to-end violation diagnostics are tested in constraint_def_eval.rs:
+/// `violated_constraint_def_produces_labeled_diagnostic`.
+#[test]
+fn violation_diagnostic_contains_def_name() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param t: Length
+    constraint MinWall(wall: t)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no compile errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        1,
+        "expected exactly 1 constraint"
+    );
+
+    // The label "MinWall[0]" is the def name + predicate index.
+    // When eval detects a violation, it replaces the raw ConstraintNodeId
+    // with this label in the diagnostic message, so the message contains "MinWall".
+    let label = tmpl.constraints[0].label.as_deref().unwrap_or("");
+    assert!(
+        label.contains("MinWall"),
+        "constraint label should contain def name 'MinWall', got: {:?}",
+        tmpl.constraints[0].label
+    );
+    assert_eq!(
+        label, "MinWall[0]",
+        "expected label 'MinWall[0]', got: {:?}",
+        tmpl.constraints[0].label
+    );
+}
