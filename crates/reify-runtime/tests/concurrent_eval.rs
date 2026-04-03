@@ -98,7 +98,7 @@ fn simple_setup() -> ConcurrentEditSetup {
         parent_snapshot_id: SnapshotId(0),
         changed_cells,
         functions: vec![],
-        meta_map: HashMap::new(),
+        meta_map: Arc::new(HashMap::new()),
         objective: None,
     }
 }
