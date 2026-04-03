@@ -1105,4 +1105,50 @@ mod tests {
             "error message should contain cell_id, got: {err_msg}"
         );
     }
+
+    /// Error from add_auto_coord should propagate through add_point and
+    /// add_pattern_to_builder back to the caller. This verifies the error
+    /// propagation chain used by solve()'s Err(reason) arm, exercised via
+    /// a hand-crafted GeometricPattern (the path is unreachable via
+    /// recognize_pattern because it guards non-auto coords at line 299).
+    #[test]
+    fn add_pattern_to_builder_propagates_coord_error() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "bad_coord");
+        // cell_id is NOT in auto_params (empty) → non-auto treatment
+        let auto_params: Vec<AutoParam> = vec![];
+        // cell_id is also NOT in current_values → triggers Err in add_auto_coord
+        let current_values = ValueMap::new();
+
+        // Craft a Coincident pattern whose pt_a references the missing cell_id.
+        // pt_b is a fixed point so it won't contribute any error.
+        let pattern = GeometricPattern::Coincident {
+            pt_a: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+            pt_b: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+
+        let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
+
+        assert!(
+            result.is_err(),
+            "expected Err when coord cell_id is missing from current_values, got Ok"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("missing"),
+            "propagated error should contain 'missing', got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains(&cell_id.to_string()),
+            "propagated error should contain cell_id, got: {err_msg}"
+        );
+    }
 }
