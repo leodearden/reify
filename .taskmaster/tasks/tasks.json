@@ -17438,6 +17438,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 832,
+        "title": "Extract add_line_pair helper to remove triplication",
+        "description": "Add a private method SystemBuilder::add_line_pair (or free function) that encapsulates the 4× add_point + 2× add_line_segment pattern. Replace the three identical blocks in the Angle (lines 921-926), Parallel (lines 940-945), and Perpendicular (lines 959-964) arms of add_pattern_to_builder with a single call to it.\n\nmemory_hints: search(\"solvespace add_line_pair code duplication\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17450,7 +17461,7 @@
       ],
       "created": "2026-04-03T23:15:52.967Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:15:57.874Z"
+      "updated": "2026-04-03T23:16:01.944Z"
     }
   }
 }
