@@ -4,8 +4,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
 use reify_types::ExportFormat;
 
+use reify_mcp::DiagnosticInfo;
+
 use crate::engine::{EngineSession, parse_value_string};
-use crate::types::DiagnosticData;
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -790,7 +791,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
 }
 
@@ -822,7 +823,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
         .load_from_source(source, "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     assert!(
         !diags.is_empty(),
@@ -895,7 +896,7 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
         .load_from_source(bracket_source(), "bracket")
         .expect("bracket source should compile cleanly");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
         diags.is_empty(),
         "bracket source has no warnings — diagnostics must be empty, got: {:?}",
