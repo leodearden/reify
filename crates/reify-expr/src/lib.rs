@@ -1192,14 +1192,17 @@ fn eval_method_call(
             }
             match obj {
                 Value::Complex { re, im, .. } => {
+                    if !re.is_finite() || !im.is_finite() {
+                        return Value::Undef;
+                    }
                     if *re == 0.0 && *im == 0.0 {
                         return Value::Undef;
                     }
                     let angle = im.atan2(*re);
-                    Value::Scalar {
+                    sanitize_value(Value::Scalar {
                         si_value: angle,
                         dimension: DimensionVector::ANGLE,
-                    }
+                    })
                 }
                 _ => Value::Undef,
             }
