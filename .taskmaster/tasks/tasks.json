@@ -17324,6 +17324,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 829,
+        "title": "Review cleanup sweep: jsonrpc default, stale comments, dead-code fields, unused lint",
+        "description": "Bundle of low-severity cleanup items from 2026-04-03 review:\n\n1. reify-mcp/src/jsonrpc.rs:232 — serde_json::to_string(&response).unwrap_or_default() should be .expect(\"JsonRpcResponse serialization\") since structural failure is a bug (F7)\n2. Stale \"stub\" comments on fully-implemented files (F8):\n   - crates/reify-runtime/src/lib.rs:1 — \"Stub — M1 implementation pending\"\n   - crates/reify-mcp/src/tools/write.rs:1 — \"Write tool stubs (5 tools)\"\n   - crates/reify-eval/src/deps.rs:5 — \"minimal stub for task 12\"\n3. Dead-code fields stored but never read (F9):\n   - EntityDefRef::content_hash (crates/reify-compiler/src/lib.rs:4108)\n   - ConcurrentEvalAdapter::version (crates/reify-runtime/src/concurrent_eval.rs:69)\n   Either document why retained or remove.\n4. Redundant #[allow(unused_imports)] on crates/reify-expr/tests/component_helper_tests.rs:6 (F10)\n\nPartially overlaps with task #383 (sweep/loft dead code, pending).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17336,7 +17347,7 @@
       ],
       "created": "2026-04-03T22:11:45.614Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T22:19:21.227Z"
+      "updated": "2026-04-03T22:19:32.115Z"
     }
   }
 }
