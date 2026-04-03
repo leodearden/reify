@@ -222,3 +222,67 @@ structure S {
         error_diags
     );
 }
+
+// ── step-8: predicates checked independently (transparent to solver) ──────────
+
+/// 3-predicate constraint def with individually distinct satisfaction states:
+/// - Triple[0] (a > 0): x=5, 5 > 0 → Satisfied
+/// - Triple[1] (a > b): x=5, y=10, 5 > 10 → Violated
+/// - Triple[2] (a > c): z has no default → Indeterminate
+/// This proves each predicate is checked independently.
+#[test]
+fn constraint_def_predicates_transparent_to_checking() {
+    let source = r#"
+constraint def Triple {
+    param a: Length
+    param b: Length
+    param c: Length
+    a > 0
+    a > b
+    a > c
+}
+structure S {
+    param x: Length = 5
+    param y: Length = 10
+    param z: Length
+    constraint Triple(a: x, b: y, c: z)
+}
+"#;
+    let result = check_source(source);
+
+    // Exactly 3 constraint results
+    assert_eq!(
+        result.constraint_results.len(),
+        3,
+        "expected 3 constraint results, got: {:?}",
+        result.constraint_results
+    );
+
+    let find_entry = |label: &str| {
+        result
+            .constraint_results
+            .iter()
+            .find(|e| e.label == Some(label.to_string()))
+            .unwrap_or_else(|| panic!("expected entry with label '{label}'"))
+    };
+
+    let t0 = find_entry("Triple[0]");
+    let t1 = find_entry("Triple[1]");
+    let t2 = find_entry("Triple[2]");
+
+    assert_eq!(
+        t0.satisfaction,
+        Satisfaction::Satisfied,
+        "Triple[0] (a > 0 with a=5) should be Satisfied"
+    );
+    assert_eq!(
+        t1.satisfaction,
+        Satisfaction::Violated,
+        "Triple[1] (a > b with a=5, b=10) should be Violated"
+    );
+    assert_eq!(
+        t2.satisfaction,
+        Satisfaction::Indeterminate,
+        "Triple[2] (a > c with c=Undef) should be Indeterminate"
+    );
+}
