@@ -17280,6 +17280,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 825,
+        "title": "Reconcile infer_type() empty-collection defaults with compiler",
+        "description": "Convention violation + cross-module inconsistency. Value::infer_type() in reify-types/src/value.rs defaults empty List/Set to Type::Int (lines 504, 512) and empty Map keys to Type::String (line 520). The compiler in reify-compiler/src/lib.rs defaults empty List/Set to Type::Real (lines 2705, 2727) and empty Map values to Type::Real (line 2763). This means compile-time and runtime type inference disagree for empty collections.\n\nFix: either make both consistent (both Type::Real or both Type::Int), or — better — emit a diagnostic / return Option<Type> for the ambiguous case rather than silently picking a default. Task #368 (done) fixed the builders.rs path but missed these value.rs sites.\n\nLocations:\n- crates/reify-types/src/value.rs:504, 512, 520\n- Also line 524: Value::Option(None) defaults to Type::Option(Box::new(Type::Bool))\n\nmemory_hints: search(\"infer_type empty collection type default convention\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17292,7 +17303,7 @@
       ],
       "created": "2026-04-03T22:11:45.614Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T22:11:52.172Z"
+      "updated": "2026-04-03T22:18:54.807Z"
     }
   }
 }
