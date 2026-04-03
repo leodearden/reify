@@ -17566,11 +17566,16 @@
         "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) change the test fixture at line 814 from `structure S {` to `structure def S {` to match compiler port test convention; (2) add test for module_name=None branch (construct EngineSession with source_map populated but module_name=None); (3) add test for diag.labels.first()=None fallback returning (1,1,1,1); (4) add test for update_source→get_diagnostics contract (load warning source, confirm diagnostic, update to clean source, confirm empty). In gui/src-tauri/src/tests/mcp_context_tests.rs: (5) remove get_diagnostics_delegates_to_engine (lines 521-528) as it is a strict subset of get_diagnostics_clean_source_returns_empty; (6) reduce get_diagnostics_maps_warning_fields_to_diagnostic_info to spot-check field mapping only, removing redundant semantic assertions already covered by engine test; (7) add `assert!(first.message.contains(\"NonExistentTrait\"), ...)` to the mcp warning test (lines 593-597).\n\nmemory_hints: search(\"diagnostic test coverage engine_tests mcp_context_tests\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:18:11.954Z"
+        "updatedAt": "2026-04-03T23:24:20.088Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "840",
@@ -17593,7 +17598,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:22:09.992Z",
+      "lastModified": "2026-04-03T23:24:20.088Z",
       "taskCount": 840,
       "completedCount": 657,
       "tags": [
