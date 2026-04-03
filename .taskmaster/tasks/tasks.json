@@ -7859,16 +7859,22 @@
         "testStrategy": "",
         "priority": "low",
         "dependencies": [],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval",
             "crates/reify-runtime"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T06:31:12.736Z"
+        "updatedAt": "2026-04-03T06:36:48.820Z"
       },
       {
         "id": "398",
@@ -17230,7 +17236,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:31:12.737Z",
+      "lastModified": "2026-04-03T06:36:48.820Z",
       "taskCount": 822,
       "completedCount": 634,
       "tags": [
