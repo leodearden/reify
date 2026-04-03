@@ -17435,10 +17435,11 @@
         "description": "Define a small error enum (e.g. `enum BuilderError { MissingNonAutoValue(ValueCellId) }`) implementing Display, and change the return types of add_auto_coord, add_point, and add_pattern_to_builder from Result<_, String> to Result<_, BuilderError>. This preserves the cell_id as typed data, enables pattern-matched error handling, eliminates unnecessary heap allocation on the error path, and aligns with Rust library idioms. File: crates/reify-constraints/src/solvespace.rs lines 531, 531-576.\n\nmemory_hints: search(\"solvespace error types BuilderError\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:16:28.156Z"
       },
       {
         "id": "832",
@@ -17476,7 +17477,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:16:27.900Z",
+      "lastModified": "2026-04-03T23:16:28.156Z",
       "taskCount": 834,
       "completedCount": 656,
       "tags": [
