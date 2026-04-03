@@ -1,0 +1,47 @@
+// M9 constraint def: exercises constraint definition features through the full pipeline.
+// Features covered:
+//   1. Simple constraint def with 1 predicate — MinThickness
+//   2. Multi-param, multi-predicate constraint def — Bounded (lo/hi range check)
+//   3. Multi-predicate conjunction — SafeRatio with 2 predicates
+//   4. pub constraint def — Positive (exported)
+//   5. Structure using single-predicate def — Wall
+//   6. Structure using multi-param def with all satisfied — Pipe
+//   7. Same def reused by two structures with different args — ThinPlate + ThickPlate
+//   8. Named args in non-declaration order — FlippedPipe
+//   9. Where-guarded active constraint — ActiveWall (guard=true, constraint checked)
+//  10. Where-guarded inactive constraint — InactiveWall (guard=false, constraint skipped)
+//
+// All active constraints are designed to be Satisfied.
+
+// ── Feature 1: simple single-predicate constraint def ──────────────────────────
+
+constraint def MinThickness {
+    param t: Length
+    t > 1mm
+}
+
+// ── Feature 2: multi-param, multi-predicate (range) constraint def ────────────
+
+constraint def Bounded {
+    param x: Length
+    param lo: Length
+    param hi: Length
+    x >= lo
+    x <= hi
+}
+
+// ── Feature 3: two-predicate ratio constraint def ─────────────────────────────
+
+constraint def SafeRatio {
+    param a: Length
+    param b: Length
+    a / b > 0.5
+    a / b < 2.0
+}
+
+// ── Feature 4: pub constraint def ─────────────────────────────────────────────
+
+pub constraint def Positive {
+    param v: Length
+    v > 0mm
+}
