@@ -17427,6 +17427,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 831,
+        "title": "Replace String error type with structured BuilderError enum",
+        "description": "Define a small error enum (e.g. `enum BuilderError { MissingNonAutoValue(ValueCellId) }`) implementing Display, and change the return types of add_auto_coord, add_point, and add_pattern_to_builder from Result<_, String> to Result<_, BuilderError>. This preserves the cell_id as typed data, enables pattern-matched error handling, eliminates unnecessary heap allocation on the error path, and aligns with Rust library idioms. File: crates/reify-constraints/src/solvespace.rs lines 531, 531-576.\n\nmemory_hints: search(\"solvespace error types BuilderError\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17439,7 +17450,7 @@
       ],
       "created": "2026-04-03T23:15:52.967Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:15:52.980Z"
+      "updated": "2026-04-03T23:15:57.874Z"
     }
   }
 }
