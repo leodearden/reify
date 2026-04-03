@@ -3632,4 +3632,90 @@ mod tests {
             "z.im with NaN imaginary part (dimensioned) should return Undef"
         );
     }
+
+    // ── method: magnitude ─────────────────────────────────────────────────────
+
+    #[test]
+    fn magnitude_nan_dimensionless_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.magnitude → Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "magnitude".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.magnitude with NaN should return Undef"
+        );
+    }
+
+    #[test]
+    fn magnitude_overflow_dimensionless_returns_undef() {
+        // Complex{re:f64::MAX, im:f64::MAX, DIMENSIONLESS}.magnitude → Undef (overflow to +Inf)
+        let complex_val = Value::Complex {
+            re: f64::MAX,
+            im: f64::MAX,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "magnitude".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.magnitude overflowing to +Inf should return Undef"
+        );
+    }
+
+    #[test]
+    fn magnitude_nan_dimensioned_returns_undef() {
+        // Complex{re:NaN, im:1.0, LENGTH}.magnitude → Undef (dimensioned path)
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "magnitude".to_string(),
+            vec![],
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.magnitude with NaN (dimensioned) should return Undef"
+        );
+    }
+
+    #[test]
+    fn magnitude_inf_dimensionless_returns_undef() {
+        // Complex{re:+Inf, im:0.0, DIMENSIONLESS}.magnitude → Undef (direct Inf input)
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "magnitude".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.magnitude with +Inf input should return Undef"
+        );
+    }
 }
