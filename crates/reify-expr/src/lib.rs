@@ -3502,4 +3502,69 @@ mod tests {
             "negating i64::MIN should return Undef, not panic"
         );
     }
+
+    // ── method: re ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn re_nan_dimensionless_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.re → Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "re".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.re with NaN real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn re_inf_dimensionless_returns_undef() {
+        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.re → Undef
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "re".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.re with Inf real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn re_nan_dimensioned_returns_undef() {
+        // Complex{re:NaN, im:1.0, LENGTH}.re → Undef (dimensioned Scalar path)
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "re".to_string(),
+            vec![],
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.re with NaN real part (dimensioned) should return Undef"
+        );
+    }
 }
