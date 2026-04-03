@@ -3329,7 +3329,7 @@
           "191",
           "182"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3353,7 +3353,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:59:46.611Z"
+        "updatedAt": "2026-04-03T06:51:42.502Z"
       },
       {
         "id": "193",
@@ -17240,7 +17240,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:51:42.221Z",
+      "lastModified": "2026-04-03T06:51:42.502Z",
       "taskCount": 822,
       "completedCount": 636,
       "tags": [
