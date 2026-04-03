@@ -17373,7 +17373,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/bridge.rs",
+            "crates/reify-lsp/tests/bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
       },
       {
         "id": 829,
@@ -17384,7 +17393,25 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-mcp/src/jsonrpc.rs",
+            "crates/reify-runtime/src/lib.rs",
+            "crates/reify-mcp/src/tools/write.rs",
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs",
+            "crates/reify-expr/tests/component_helper_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-mcp",
+            "crates/reify-runtime",
+            "crates/reify-eval",
+            "crates/reify-compiler",
+            "crates/reify-expr"
+          ]
+        }
       }
     ],
     "metadata": {
