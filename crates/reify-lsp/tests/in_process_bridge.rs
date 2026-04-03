@@ -297,34 +297,25 @@ async fn initialize_with_malformed_params_returns_error() {
     );
 }
 
-/// Regression guard: malformed params must not prevent capabilities from being
-/// returned. Even if InitializeParams can't be deserialized, the server should
-/// fall back to defaults and still advertise its capabilities.
+/// Wrong field type within a valid-looking object should return Err containing
+/// "initialize params error".
 #[tokio::test]
-async fn initialize_with_malformed_params_still_returns_capabilities() {
+async fn initialize_with_invalid_field_type_returns_error() {
     let lsp = InProcessLsp::new();
 
-    // processId is an Option<i32> in InitializeParams — passing a string makes
-    // deserialization fail, exercising the warn-and-fallback path.
+    // processId is an Option<u32> in InitializeParams — passing a string makes
+    // deserialization fail, exercising the error-propagation path.
     let result = lsp
         .handle_request(
             "initialize",
             json!({ "processId": "not_a_number" }),
         )
-        .await
-        .expect("server should not crash on malformed params");
+        .await;
 
-    let caps = &result["capabilities"];
+    assert!(result.is_err(), "server should return Err on invalid field type");
+    let err = result.unwrap_err();
     assert!(
-        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
-        "should advertise hover provider"
-    );
-    assert!(
-        caps["completionProvider"].is_object(),
-        "should advertise completion provider"
-    );
-    assert!(
-        caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
-        "should advertise text document sync"
+        err.contains("initialize params error"),
+        "error message should contain 'initialize params error', got: {err}"
     );
 }
