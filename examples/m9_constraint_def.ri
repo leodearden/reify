@@ -45,3 +45,86 @@ pub constraint def Positive {
     param v: Length
     v > 0mm
 }
+
+// ── Feature 5: structure using single-predicate def ───────────────────────────
+// Wall.thickness = 5mm satisfies MinThickness (t > 1mm).
+
+structure def Wall {
+    param thickness: Length = 5mm
+    constraint MinThickness(t: thickness)
+}
+
+// ── Feature 6: structure using multi-param def with all args satisfied ─────────
+// Pipe.diameter = 20mm satisfies Bounded(x: 20mm, lo: 3mm, hi: 50mm):
+//   Bounded[0]: 20mm >= 3mm ✓
+//   Bounded[1]: 20mm <= 50mm ✓
+
+structure def Pipe {
+    param diameter: Length = 20mm
+    constraint Bounded(x: diameter, lo: 3mm, hi: 50mm)
+}
+
+// ── Feature 7: same def reused by two structures with different args ───────────
+// ThinPlate.width = 2mm satisfies MinThickness (t > 1mm).
+// ThickPlate.thickness = 10mm satisfies MinThickness (t > 1mm).
+
+structure def ThinPlate {
+    param width: Length = 2mm
+    constraint MinThickness(t: width)
+}
+
+structure def ThickPlate {
+    param thickness: Length = 10mm
+    constraint MinThickness(t: thickness)
+}
+
+// ── Feature 3+6: structure using two-predicate SafeRatio def ─────────────────
+// Beam.height = 30mm, Beam.width = 20mm.
+// ratio = 30/20 = 1.5, satisfies:
+//   SafeRatio[0]: a/b > 0.5 → 1.5 > 0.5 ✓
+//   SafeRatio[1]: a/b < 2.0 → 1.5 < 2.0 ✓
+
+structure def Beam {
+    param height: Length = 30mm
+    param width: Length = 20mm
+    constraint SafeRatio(a: height, b: width)
+}
+
+// ── Feature 4: structure using pub constraint def ──────────────────────────────
+// Column.length = 100mm satisfies Positive (v > 0mm).
+
+structure def Column {
+    param length: Length = 100mm
+    constraint Positive(v: length)
+}
+
+// ── Feature 8: named args in non-declaration order ────────────────────────────
+// FlippedPipe provides Bounded args in reverse order (hi, lo, x).
+// d = 15mm satisfies Bounded(x: 15mm, lo: 5mm, hi: 50mm):
+//   Bounded[0]: 15mm >= 5mm ✓
+//   Bounded[1]: 15mm <= 50mm ✓
+
+structure def FlippedPipe {
+    param d: Length = 15mm
+    constraint Bounded(hi: 50mm, lo: 5mm, x: d)
+}
+
+// ── Feature 9: where-guarded active constraint ────────────────────────────────
+// ActiveWall has guard=true → MinThickness is checked and satisfied.
+// thickness = 5mm satisfies MinThickness (t > 1mm).
+
+structure def ActiveWall {
+    param enabled: Bool = true
+    param thickness: Length = 5mm
+    constraint MinThickness(t: thickness) where enabled
+}
+
+// ── Feature 10: where-guarded inactive constraint ─────────────────────────────
+// InactiveWall has guard=false → MinThickness is NOT checked.
+// Even though thickness = 0.5mm would violate MinThickness, no constraint is emitted.
+
+structure def InactiveWall {
+    param enabled: Bool = false
+    param thickness: Length = 0.5mm
+    constraint MinThickness(t: thickness) where enabled
+}
