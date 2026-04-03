@@ -10,8 +10,10 @@ use reify_types::{
     Satisfaction, Severity, Value, ValueCellId,
 };
 
+use reify_mcp::DiagnosticInfo;
+
 use crate::types::{
-    ConstraintData, DiagnosticData, FileData, GuiState, MeshData, ValueData, format_determinacy,
+    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy,
     format_value,
 };
 
@@ -261,7 +263,7 @@ impl EngineSession {
     ///
     /// Reuses the same `source_map` + `module_name` key resolution and
     /// `byte_offset_to_line_col` helper as [`get_source_location`].
-    pub fn get_diagnostics(&self) -> Vec<DiagnosticData> {
+    pub fn get_diagnostics(&self) -> Vec<DiagnosticInfo> {
         let compiled = match self.compiled.as_ref() {
             Some(c) => c,
             None => return Vec::new(),
@@ -296,7 +298,7 @@ impl EngineSession {
                         (1, 1, 1, 1)
                     };
 
-                DiagnosticData {
+                DiagnosticInfo {
                     file_path: file_path.clone(),
                     line,
                     column,
