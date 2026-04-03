@@ -1175,6 +1175,9 @@ fn eval_method_call(
             }
             match obj {
                 Value::Complex { re, im, .. } => {
+                    if *re == 0.0 && *im == 0.0 {
+                        return Value::Undef;
+                    }
                     let angle = im.atan2(*re);
                     Value::Scalar {
                         si_value: angle,
