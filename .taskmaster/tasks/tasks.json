@@ -17659,6 +17659,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 846,
+        "title": "Harden labeled_diagnostics correctness and ordering safety",
+        "description": "Three correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17671,7 +17682,7 @@
       ],
       "created": "2026-04-03T23:29:13.172Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:29:13.184Z"
+      "updated": "2026-04-03T23:29:20.765Z"
     }
   }
 }
