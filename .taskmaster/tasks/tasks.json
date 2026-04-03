@@ -2721,17 +2721,21 @@
         "dependencies": [
           "163"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
-            "crates/reify-expr"
+            "crates/reify-expr",
+            "crates/reify-syntax",
+            "crates/reify-types",
+            "gui/src-tauri",
+            "tree-sitter-reify/grammar.js"
           ],
           "milestone": "M8",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T06:38:27.930Z"
+        "updatedAt": "2026-04-03T06:51:42.221Z"
       },
       {
         "id": "165",
@@ -17236,7 +17240,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:42:19.729Z",
+      "lastModified": "2026-04-03T06:51:42.221Z",
       "taskCount": 822,
       "completedCount": 636,
       "tags": [
