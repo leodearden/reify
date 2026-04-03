@@ -17141,11 +17141,21 @@
             "crates/reify-syntax"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "MemberDecl",
+              "count_members_recursive",
+              "for_each_member_recursive",
+              "MemberCounts",
+              "reify-syntax",
+              "reify-lsp"
+            ],
             "queries": [
-              "resolution for: Co-locate MemberDecl traversal logic in reify-syntax"
+              "task 633 MemberDecl traversal extraction consolidation",
+              "count_members_recursive depth helper analysis.rs",
+              "find_named_member_span reify-syntax co-location"
             ]
-          }
+          },
+          "reconciliation_note": "Blocked with empty dependency array as of 2026-04-03 — task 633 (prerequisite work) is done. May be safe to unblock."
         }
       },
       {
