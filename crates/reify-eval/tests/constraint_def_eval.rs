@@ -223,6 +223,46 @@ structure S {
     );
 }
 
+// ── step-10: guarded constraint def inactive when guard is false ──────────────
+
+/// When a constraint def instantiation has a where clause and the guard
+/// evaluates to false, no constraint should be checked and no violation
+/// diagnostics should be emitted.
+#[test]
+fn guarded_constraint_def_inactive_when_guard_false() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param active: Bool = false
+    param t: Length = 1
+    constraint MinWall(wall: t) where active
+}
+"#;
+    let result = check_source(source);
+
+    // Guard is false → no constraint results at all
+    assert!(
+        result.constraint_results.is_empty(),
+        "expected no constraint results when guard is false, got: {:?}",
+        result.constraint_results
+    );
+
+    // No violation diagnostics
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected no Error diagnostics when guard is false, got: {:?}",
+        error_diags
+    );
+}
+
 // ── step-8: predicates checked independently (transparent to solver) ──────────
 
 /// 3-predicate constraint def with individually distinct satisfaction states:
@@ -284,5 +324,66 @@ structure S {
         t2.satisfaction,
         Satisfaction::Indeterminate,
         "Triple[2] (a > c with c=Undef) should be Indeterminate"
+    );
+}
+
+// ── step-12: inline constraint diagnostics are unchanged (regression) ─────────
+
+/// An inline constraint (not from a constraint def) has no label.
+/// When violated, the diagnostic message should still use the raw
+/// ConstraintNodeId format 'S#constraint[0]'. This is a regression test
+/// ensuring the labeled_diagnostics helper is a no-op when label is None.
+#[test]
+fn inline_constraint_diagnostics_unchanged() {
+    let source = r#"
+structure S {
+    param thickness: Length = 1
+    constraint thickness > 2
+}
+"#;
+    let result = check_source(source);
+
+    // Should have exactly 1 violated constraint
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected 1 constraint result, got: {:?}",
+        result.constraint_results
+    );
+    let entry = &result.constraint_results[0];
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Violated,
+        "expected Violated, got: {:?}",
+        entry.satisfaction
+    );
+    // Inline constraint has no label
+    assert_eq!(
+        entry.label,
+        None,
+        "inline constraint should have no label, got: {:?}",
+        entry.label
+    );
+
+    // The diagnostic should use the raw ConstraintNodeId format
+    let error_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected at least one Error diagnostic"
+    );
+    let has_raw_id = error_diags
+        .iter()
+        .any(|d| d.message.contains("S#constraint[0]"));
+    assert!(
+        has_raw_id,
+        "expected inline diagnostic containing 'S#constraint[0]' (raw ConstraintNodeId), got: {:?}",
+        error_diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
