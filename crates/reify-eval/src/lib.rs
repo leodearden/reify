@@ -7,6 +7,7 @@ pub mod journal;
 pub mod snapshot;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use reify_compiler::{
@@ -221,7 +222,7 @@ pub struct ConcurrentEditSetup {
     pub functions: Vec<CompiledFunction>,
     /// Template-to-meta-entries mapping, populated from Engine::meta_map.
     /// Used to resolve MetaAccess expressions during concurrent evaluation.
-    pub meta_map: HashMap<String, HashMap<String, String>>,
+    pub meta_map: Arc<HashMap<String, HashMap<String, String>>>,
     /// Template-native optimization objective for this edit's scope, if any.
     /// Populated from Engine::objectives during prepare_concurrent_edit().
     pub objective: Option<OptimizationObjective>,
@@ -573,7 +574,7 @@ impl Engine {
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: self.functions.clone(),
-            meta_map: self.meta_map.clone(),
+            meta_map: Arc::new(self.meta_map.clone()),
             objective: self.objectives.get(&cell.entity).cloned(),
         })
     }
