@@ -1172,4 +1172,34 @@ mod tests {
             "auto param with current value should use that value as warm-start initial"
         );
     }
+
+    /// add_point must propagate the Err returned by add_auto_coord when the
+    /// x-coordinate cell_id is a non-auto param absent from current_values.
+    /// This covers the `?` operator on line 489 of add_point.
+    #[test]
+    fn add_point_propagates_missing_value_error() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Fixed", "y");
+        // cell_id is NOT in auto_params (non-auto)
+        let auto_params: Vec<AutoParam> = vec![];
+        // cell_id is also NOT in current_values — triggers the Err branch
+        let current_values = ValueMap::new();
+
+        let pt = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
+        };
+        let result = builder.add_point(&pt, &auto_params, &current_values);
+
+        assert!(
+            result.is_err(),
+            "add_point should propagate the Err from add_auto_coord, got Ok"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains(&cell_id.to_string()),
+            "error message should contain cell_id, got: {err_msg}"
+        );
+    }
 }
