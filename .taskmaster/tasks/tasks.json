@@ -3777,7 +3777,7 @@
         "testStrategy": "Compiler tests: meta access compiled, nonexistent key error, type is String.",
         "priority": "high",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3791,7 +3791,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T07:06:31.204Z"
+        "updatedAt": "2026-04-03T07:06:31.303Z"
       },
       {
         "id": "212",
@@ -17240,9 +17240,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T07:06:31.204Z",
+      "lastModified": "2026-04-03T07:06:31.303Z",
       "taskCount": 822,
-      "completedCount": 640,
+      "completedCount": 641,
       "tags": [
         "master"
       ]
