@@ -3,6 +3,7 @@
 //! Tests edge cases, error paths, and cross-module import for constraint defs.
 //! Complements the existing constraint_inst_tests.rs from task 198.
 
+use reify_compiler::module_dag::{ModuleDag, ModuleResolver};
 use reify_compiler::*;
 use reify_types::*;
 
@@ -478,5 +479,118 @@ structure S {
         label, "MinWall[0]",
         "expected label 'MinWall[0]', got: {:?}",
         tmpl.constraints[0].label
+    );
+}
+
+// ── Test 11: cross-module constraint def import ───────────────────────────────
+
+/// A constraint def defined in module `a` can be imported into module `b`
+/// and instantiated in a structure. Compilation of `b` must succeed and
+/// produce a labeled constraint from the imported def.
+#[test]
+fn cross_module_constraint_def_import() {
+    use std::fs;
+
+    // Create a unique temp directory for this test
+    let dir = std::env::temp_dir()
+        .join("reify_constraint_def_test")
+        .join("cross_module")
+        .join(format!("{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    // Module a: defines a pub constraint def
+    fs::write(
+        dir.join("a.ri"),
+        "pub constraint def MinWall {\n    param w: Length\n    w > 0mm\n}\n",
+    )
+    .unwrap();
+
+    // Module b: imports a, instantiates MinWall in a structure
+    fs::write(
+        dir.join("b.ri"),
+        "import a\nstructure S {\n    param t: Length = 5mm\n    constraint MinWall(w: t)\n}\n",
+    )
+    .unwrap();
+
+    let resolver = ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = ModuleDag::new();
+    let result = dag.compile_module("b", &resolver);
+
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(
+        result.is_ok(),
+        "expected compilation to succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    // Get the compiled module for b
+    let compiled_b = dag.modules.get("b").expect("compiled module 'b' not found");
+
+    // Should have no error diagnostics
+    let errors: Vec<_> = compiled_b
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors in module b, got: {:?}",
+        errors
+    );
+
+    // The template S should have 1 constraint labeled MinWall[0]
+    let tmpl = compiled_b
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("expected template 'S' in module b");
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        1,
+        "expected 1 constraint in template S, got {}",
+        tmpl.constraints.len()
+    );
+    assert_eq!(
+        tmpl.constraints[0].label,
+        Some("MinWall[0]".to_string()),
+        "expected label MinWall[0], got {:?}",
+        tmpl.constraints[0].label
+    );
+}
+
+// ── Test 12: pub constraint def AST has is_pub = true ────────────────────────
+
+/// Parsing a `pub constraint def` produces a ConstraintDef with `is_pub == true`.
+#[test]
+fn pub_constraint_def_parsed() {
+    let source = "pub constraint def Positive {\n    param v: Length\n    v > 0mm\n}\n";
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+
+    let constraint_def = parsed
+        .declarations
+        .iter()
+        .find_map(|d| {
+            if let reify_syntax::Declaration::Constraint(c) = d {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintDef declaration");
+
+    assert!(
+        constraint_def.is_pub,
+        "expected is_pub == true for 'pub constraint def', got false"
+    );
+    assert_eq!(constraint_def.name, "Positive");
+    assert_eq!(
+        constraint_def.params.len(),
+        1,
+        "expected 1 param, got {}",
+        constraint_def.params.len()
     );
 }
