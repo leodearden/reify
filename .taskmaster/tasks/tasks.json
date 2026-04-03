@@ -8906,7 +8906,7 @@
         "description": "Currently `format_value_display(v)` calls `format_value(v).0`, constructing a `(String, String)` tuple and immediately discarding the unit String. For composite types with Scalar leaves (Point, Vector, Frame, etc.), this creates O(n) extra short-lived heap allocations.\n\nSuggested approach:\n- Split into `format_value_inner(v: &Value) -> String` (recursive, returns only display string) and keep `format_value(v: &Value) -> (String, String)` as top-level only (calls inner, attaches unit for Scalar/Complex).\n- `format_value_display` becomes an alias for `format_value_inner`.\n- Care needed around `Value::Option(Some(inner))` which intentionally propagates the inner value's unit — this arm must still use `format_value` not `format_value_inner`.\n- Add doc note to format_value_display: \"For Scalar and Complex, the unit is discarded. Use format_value directly when the unit must be preserved.\"\n\nThis is display code (hover tooltips, property editor), not a hot loop, so priority is low.\n\nmemory_hints: search \"format_value allocation display GUI\", entity \"format_value_display\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [
           "381"
         ],
@@ -8928,7 +8928,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-03T15:04:17.429Z"
+        "updatedAt": "2026-04-03T15:19:18.093Z"
       },
       {
         "id": "444",
@@ -17258,7 +17258,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T15:19:17.792Z",
+      "lastModified": "2026-04-03T15:19:18.094Z",
       "taskCount": 822,
       "completedCount": 653,
       "tags": [
