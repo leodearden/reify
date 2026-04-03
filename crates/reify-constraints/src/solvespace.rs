@@ -1008,6 +1008,33 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 mod tests {
     use super::*;
 
+    /// Non-auto param with a value present in current_values should succeed
+    /// and use the provided value. Regression guard for the non-auto happy path.
+    #[test]
+    fn add_auto_coord_succeeds_for_non_auto_with_value() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        // cell_id is NOT in auto_params — it's a non-auto param
+        let auto_params: Vec<AutoParam> = vec![];
+        // But it IS in current_values
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            cell_id.clone(),
+            Value::Scalar {
+                si_value: 42.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        let h = result.expect("expected Ok for non-auto param present in current_values");
+        // Verify the param was created with the correct value
+        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
+        assert_eq!(param.val, 42.0, "param value should match current_values entry");
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err — this is a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
