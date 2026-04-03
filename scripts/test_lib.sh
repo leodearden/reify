@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Unit tests for scripts/lib.sh shared library.
+# Tests that lib.sh is sourceable and provides expected utilities.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_FILE="$SCRIPT_DIR/lib.sh"
+
+# This is a test script, not a build script — source shared test helpers from tests/infra/.
+[ -f "$SCRIPT_DIR/../tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
+source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
+
+echo "=== lib.sh unit tests ==="
+
+# ── Test 1: lib.sh exists ─────────────────────────────────────────
+echo ""
+echo "--- Test 1: lib.sh exists ---"
+
+assert "lib.sh file exists" \
+    test -f "$LIB_FILE"
+
+# ── Test 2: lib.sh is sourceable ──────────────────────────────────
+echo ""
+echo "--- Test 2: lib.sh is sourceable ---"
+
+assert "lib.sh can be sourced without error" \
+    bash -c "source '$LIB_FILE'"
+
+# ── Test 3: compute_sha256 is defined after sourcing ─────────────
+echo ""
+echo "--- Test 3: compute_sha256 function defined ---"
+
+assert "compute_sha256 function is defined after sourcing lib.sh" \
+    bash -c "source '$LIB_FILE' && declare -f compute_sha256 >/dev/null"
+
+# ── Test 4: compute_sha256 produces a 64-char hex hash ───────────
+echo ""
+echo "--- Test 4: compute_sha256 produces correct output ---"
+
+# Use lib.sh itself as a known test file.
+assert "compute_sha256 produces a 64-char hex hash" \
+    bash -c "source '$LIB_FILE' && hash=\$(compute_sha256 '$LIB_FILE' | awk '{print \$1}') && [[ \"\$hash\" =~ ^[0-9a-f]{64}$ ]]"
+
+# ── Test 5: lib.sh sources lib_portable.sh ───────────────────────
+echo ""
+echo "--- Test 5: lib.sh sources lib_portable.sh ---"
+
+assert "lib.sh sources lib_portable.sh" \
+    grep -qE '(source|\.)\s+.*lib_portable\.sh' "$LIB_FILE"
+
+# ── Test 6: compute_sha256 backward compatibility ────────────────
+echo ""
+echo "--- Test 6: compute_sha256 backward compat (delegates to portable_sha256) ---"
+
+# compute_sha256 should still work — thin wrapper around portable_sha256.
+assert "compute_sha256 still produces a 64-char hex hash" \
+    bash -c "source '$LIB_FILE' && hash=\$(compute_sha256 '$LIB_FILE' | awk '{print \$1}') && [[ \"\$hash\" =~ ^[0-9a-f]{64}$ ]]"
+
+# ── Summary ───────────────────────────────────────────────────────
+test_summary

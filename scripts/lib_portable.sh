@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Portable shell helpers for reify build scripts and infrastructure tests.
+# Designed to be sourced, not executed directly.
+#
+# Usage:  source "$(dirname "${BASH_SOURCE[0]}")/lib_portable.sh"
+#   or:   source "$REPO_ROOT/scripts/lib_portable.sh"
+
+# Source guard — prevent double-sourcing.
+if [ "${_REIFY_LIB_PORTABLE_SH_SOURCED:-}" = "1" ]; then
+    return 0 2>/dev/null || true
+fi
+_REIFY_LIB_PORTABLE_SH_SOURCED=1
+
+# Portable SHA-256: prefer sha256sum (GNU coreutils), fall back to shasum (macOS).
+portable_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1"
+    else
+        echo "ERROR: neither sha256sum nor shasum found on PATH." >&2
+        return 1
+    fi
+}
+
+# Portable timeout: run a command with a wall-clock time limit.
+#
+# Usage: portable_timeout <seconds> <cmd> [args...]
+#
+# 3-tier strategy:
+#   1. GNU timeout (Linux coreutils)
+#   2. gtimeout (Homebrew coreutils on macOS)
+#   3. background + sleep + kill fallback (POSIX-portable)
+#
+# Returns the command's exit code, or 124 if the command was killed
+# due to exceeding the time limit (matches GNU timeout convention).
+portable_timeout() {
+    local seconds="$1"
+    shift
+
+    _PORTABLE_TIMEOUT_TIMED_OUT=false
+    local cmd_exit=0
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@" || cmd_exit=$?
+        if [ "$cmd_exit" -eq 124 ]; then
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+        fi
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$seconds" "$@" || cmd_exit=$?
+        if [ "$cmd_exit" -eq 124 ]; then
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+        fi
+    else
+        # POSIX fallback: background the command, sleep, kill if still running.
+        # Use a temp file flag so we can distinguish the timer's kill from
+        # a coincidental exit code 143 or 124.
+        local timeout_flag
+        timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
+
+        "$@" &
+        local cmd_pid=$!
+
+        if [ -n "$timeout_flag" ]; then
+            # Normal path: use flag file for precise timeout detection.
+            rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+            ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
+        else
+            # Degraded path: mktemp failed, fall back to old 143-detection.
+            echo "WARNING: mktemp failed, timeout detection degraded" >&2
+            ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+        fi
+        local timer_pid=$!
+        wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
+        # Clean up timer — if command finished before timeout, kill the sleep+kill subshell.
+        kill "$timer_pid" 2>/dev/null || true
+        wait "$timer_pid" 2>/dev/null || true
+
+        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ]; then
+            # Timer fired and killed the process — genuine timeout.
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+            cmd_exit=124
+            rm -f "$timeout_flag"
+        elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+            # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
+            _PORTABLE_TIMEOUT_TIMED_OUT=true
+            cmd_exit=124
+        fi
+    fi
+
+    return "$cmd_exit"
+}
