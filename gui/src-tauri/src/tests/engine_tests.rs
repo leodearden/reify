@@ -5,6 +5,7 @@ use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with
 use reify_types::ExportFormat;
 
 use crate::engine::{EngineSession, parse_value_string};
+use crate::types::DiagnosticData;
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -778,4 +779,17 @@ fn update_source_produces_meshes() {
         !state.meshes.is_empty(),
         "update_source should produce meshes"
     );
+}
+
+// --- Task 827: get_diagnostics tests ---
+
+/// Step-1 (TDD failing test): get_diagnostics() returns empty vec when no module is loaded.
+/// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
+#[test]
+fn engine_get_diagnostics_no_module_returns_empty() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
 }
