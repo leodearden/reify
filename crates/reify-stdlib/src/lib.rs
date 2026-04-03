@@ -5276,6 +5276,20 @@ mod tests {
         assert!(eval_builtin("phase", &[Value::Real(1.0)]).is_undef());
     }
 
+    #[test]
+    fn phase_zero_complex_returns_undef() {
+        // phase(0+0i) is mathematically undefined (zero vector has no direction)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("phase", &[z]).is_undef(),
+            "phase(0+0i) should be Undef, not Scalar{{0.0, ANGLE}}"
+        );
+    }
+
     // ── complex_add() tests (step-15) ─────────────────────────────────────────
 
     #[test]
