@@ -17498,6 +17498,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 837,
+        "title": "Optimize get_diagnostics: pre-build line-offset table and reduce allocations",
+        "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17510,7 +17521,7 @@
       ],
       "created": "2026-04-03T23:17:18.216Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:17:23.034Z"
+      "updated": "2026-04-03T23:17:29.378Z"
     }
   }
 }
