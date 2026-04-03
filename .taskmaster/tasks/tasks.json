@@ -8906,7 +8906,7 @@
         "description": "Currently `format_value_display(v)` calls `format_value(v).0`, constructing a `(String, String)` tuple and immediately discarding the unit String. For composite types with Scalar leaves (Point, Vector, Frame, etc.), this creates O(n) extra short-lived heap allocations.\n\nSuggested approach:\n- Split into `format_value_inner(v: &Value) -> String` (recursive, returns only display string) and keep `format_value(v: &Value) -> (String, String)` as top-level only (calls inner, attaches unit for Scalar/Complex).\n- `format_value_display` becomes an alias for `format_value_inner`.\n- Care needed around `Value::Option(Some(inner))` which intentionally propagates the inner value's unit — this arm must still use `format_value` not `format_value_inner`.\n- Add doc note to format_value_display: \"For Scalar and Complex, the unit is discarded. Use format_value directly when the unit must be preserved.\"\n\nThis is display code (hover tooltips, property editor), not a hot loop, so priority is low.\n\nmemory_hints: search \"format_value allocation display GUI\", entity \"format_value_display\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "blocked",
         "dependencies": [
           "381"
         ],
@@ -8928,7 +8928,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-03T15:19:17.791Z"
+        "updatedAt": "2026-04-03T15:04:17.429Z"
       },
       {
         "id": "444",
@@ -11770,7 +11770,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add `tracing::warn!` at each poison recovery site so lock poisoning is observable in logs (robustness S9)\n2. Extract private helper methods (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) to deduplicate the `.unwrap_or_else(|e| e.into_inner())` pattern, matching `CliToolContext::lock_state()` precedent (reuse S12)\n3. Consider adding an `AtomicBool tainted` flag that gets set on first poison recovery, surfaced in `ConcurrentEditResult` so callers can decide whether to trust results or retry (robustness S7, S8). This addresses silent corruption propagation and values/snapshot_values invariant divergence.\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval tainted\"\n  entities: [\"ConcurrentEvalAdapter\", \"SharedPriorityPromoter\", \"CliToolContext\"]",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11798,7 +11798,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-03T13:39:58.164Z"
+        "updatedAt": "2026-04-03T15:19:17.792Z"
       },
       {
         "id": "568",
