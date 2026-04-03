@@ -1137,4 +1137,39 @@ mod tests {
             "params.len() should not grow on the second (cache-hit) call"
         );
     }
+
+    /// When an auto-param cell_id is present in current_values, add_auto_coord
+    /// must use that value as the warm-start initial value instead of the 0.01 default.
+    #[test]
+    fn add_auto_coord_auto_param_warm_start() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params = vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }];
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            cell_id.clone(),
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let h = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("expected Ok for auto param with current value");
+
+        let param = builder
+            .params
+            .iter()
+            .find(|p| p.h == h)
+            .expect("param not found in builder");
+        assert_eq!(
+            param.val, 5.0,
+            "auto param with current value should use that value as warm-start initial"
+        );
+    }
 }
