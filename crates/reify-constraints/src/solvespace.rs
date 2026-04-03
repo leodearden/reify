@@ -1035,6 +1035,47 @@ mod tests {
         assert_eq!(param.val, 42.0, "param value should match current_values entry");
     }
 
+    /// Auto param not yet in current_values should get the 0.01 default.
+    /// Regression guard: the documented auto-param default must not be changed.
+    #[test]
+    fn add_auto_coord_auto_param_default_preserved() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        // cell_id IS in auto_params
+        let auto_params = vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }];
+        // But NOT in current_values — should use 0.01 default
+        let current_values = ValueMap::new();
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        let h = result.expect("expected Ok for auto param");
+        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
+        assert_eq!(
+            param.val, 0.01,
+            "auto param without current value should use 0.01 default"
+        );
+    }
+
+    /// None cell_id (fixed literal coordinate) should return Ok with 0.0.
+    /// Regression guard: the fixed-coordinate placeholder must remain 0.0.
+    #[test]
+    fn add_auto_coord_no_cell_id_uses_zero() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let result = builder.add_auto_coord(&None, &auto_params, &current_values);
+
+        let h = result.expect("expected Ok for None cell_id");
+        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
+        assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err — this is a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
