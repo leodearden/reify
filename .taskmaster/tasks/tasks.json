@@ -17616,6 +17616,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 843,
+        "title": "Rename Value::from_component to from_real_scalar and add NaN-safety doc note",
+        "description": "In `crates/reify-types/src/value.rs:159`, rename `from_component` to `from_real_scalar` (or `dimensioned_real`) — the doc comment itself acknowledges the name is a semantic stretch for magnitude. Update all call sites in `reify-expr/src/lib.rs` and `reify-stdlib/src/lib.rs`.\n\nAlso add a doc note clarifying that the function does not sanitize NaN/Infinity and callers that may encounter domain errors must wrap the result in `sanitize_value`.\n\nMemory hints: search \"from_component naming\", search \"Value helper naming conventions\", entities: Value::from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17628,7 +17639,7 @@
       ],
       "created": "2026-04-03T23:26:47.472Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:26:52.805Z"
+      "updated": "2026-04-03T23:26:57.794Z"
     }
   }
 }
