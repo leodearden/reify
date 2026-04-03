@@ -980,3 +980,38 @@ fn dimension_of(ty: &Type) -> DimensionVector {
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Non-auto param whose cell_id is missing from current_values should return
+    /// Err — this is a logic error (eval pass incomplete) that must not be
+    /// silently swallowed per the project's noisy-error convention.
+    #[test]
+    fn add_auto_coord_errors_on_missing_non_auto_value() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        // cell_id is NOT in auto_params — it's a non-auto param
+        let auto_params: Vec<AutoParam> = vec![];
+        // cell_id is also NOT in current_values — logic error
+        let current_values = ValueMap::new();
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        assert!(
+            result.is_err(),
+            "expected Err for non-auto param missing from current_values, got Ok"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("missing"),
+            "error message should contain 'missing', got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains(&cell_id.to_string()),
+            "error message should contain cell_id, got: {err_msg}"
+        );
+    }
+}
