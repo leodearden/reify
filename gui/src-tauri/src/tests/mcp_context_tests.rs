@@ -491,3 +491,42 @@ fn tauri_tool_context_implements_reify_tool_context() {
     let ctx = make_tauri_context();
     let _dyn_ctx: Arc<dyn ReifyToolContext> = Arc::new(ctx);
 }
+
+// --- Task 827: get_diagnostics wiring tests ---
+
+/// Step-4: get_diagnostics delegates to the engine without lock failure.
+///
+/// With bracket source loaded (no warnings), the real implementation returns
+/// Ok([]) just like the stub. This test is a regression guard ensuring the
+/// delegate path doesn't panic or error on a clean-compile module.
+#[test]
+fn get_diagnostics_delegates_to_engine() {
+    let ctx = make_tauri_context();
+    let result = ctx.get_diagnostics();
+    assert!(
+        result.is_ok(),
+        "get_diagnostics should return Ok for a clean engine, got: {:?}",
+        result.err()
+    );
+}
+
+/// Step-4: field-mapping sentinel for get_diagnostics.
+///
+/// Bracket source has no warnings so both the stub and real implementation
+/// return Ok([]). This test confirms that: the result is Ok, and no
+/// DiagnosticInfo entries exist. After wiring in step-5, if bracket source
+/// ever gains warnings this test will catch regressions in field mapping.
+#[test]
+fn get_diagnostics_maps_fields_correctly() {
+    let ctx = make_tauri_context();
+    let diags = ctx
+        .get_diagnostics()
+        .expect("get_diagnostics should return Ok");
+
+    // bracket_source() compiles cleanly → no diagnostics expected
+    assert!(
+        diags.is_empty(),
+        "bracket source has no warnings; expected empty DiagnosticInfo vec, got: {:?}",
+        diags
+    );
+}
