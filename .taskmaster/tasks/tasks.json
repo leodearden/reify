@@ -7098,7 +7098,22 @@
           "modules": [
             "crates/reify-lsp",
             "crates/reify-stdlib"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "eval_builtin",
+              "phase",
+              "complex_magnitude",
+              "Complex",
+              "reify-stdlib"
+            ],
+            "queries": [
+              "phase(0+0i) complex number edge case undefined",
+              "complex_component_to_value helper deduplication",
+              "NaN Inf second arg imaginary complex functions",
+              "re im LSP completions negative assertion design decision"
+            ]
+          }
         }
       },
       {
