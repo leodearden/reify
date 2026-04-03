@@ -332,3 +332,35 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
     });
     assert!(has_error, "should have at least one error diagnostic");
 }
+
+/// Regression guard: malformed params must not prevent capabilities from being
+/// returned. Even if InitializeParams can't be deserialized, the server should
+/// fall back to defaults and still advertise its capabilities.
+#[tokio::test]
+async fn initialize_with_malformed_params_still_returns_capabilities() {
+    let lsp = InProcessLsp::new();
+
+    // processId is an Option<i32> in InitializeParams — passing a string makes
+    // deserialization fail, exercising the warn-and-fallback path.
+    let result = lsp
+        .handle_request(
+            "initialize",
+            json!({ "processId": "not_a_number" }),
+        )
+        .await
+        .expect("server should not crash on malformed params");
+
+    let caps = &result["capabilities"];
+    assert!(
+        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
+        "should advertise hover provider"
+    );
+    assert!(
+        caps["completionProvider"].is_object(),
+        "should advertise completion provider"
+    );
+    assert!(
+        caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
+        "should advertise text document sync"
+    );
+}
