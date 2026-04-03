@@ -17832,10 +17832,11 @@
         "description": "The Orientation Ord implementation compares fields in w→x→y→z order (value.rs:1278-1283), but tests only exercise w and x tie-breaking. Add two companion tests:\n1. Equal w and x, different y (with non-zero z to create ambiguity) — catches x↔y swap regression\n2. Equal w, x, y, different z only — catches y↔z swap regression\n\nMemory hints: search \"Orientation Ord field order\" for implementation context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:54:21.301Z"
       },
       {
         "id": "854",
@@ -17852,7 +17853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:54:21.125Z",
+      "lastModified": "2026-04-03T23:54:21.301Z",
       "taskCount": 854,
       "completedCount": 662,
       "tags": [
