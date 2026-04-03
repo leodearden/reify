@@ -795,6 +795,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                         &problem.auto_params,
                         &problem.current_values,
                     ) {
+                        tracing::warn!(reason = %reason, "constraint pattern builder failed");
                         return SolveResult::NoProgress { reason };
                     }
                 }
