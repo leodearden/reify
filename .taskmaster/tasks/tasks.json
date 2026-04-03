@@ -17216,11 +17216,11 @@
         "description": "When `count_members_recursive_depth` and `find_named_member_span_depth` hit the depth limit, they silently return `(0,0,0)` / `None`. For `count_members_recursive`, this means incorrect counts propagate to LSP hover output (`EntitySummary.params/lets/constraints`) with no indication of truncation.\n\nAdd `tracing::warn!(depth, \"count_members_recursive: depth limit exceeded, subtree skipped\")` (and analogous for `find_named_member_span_depth`) inside the depth-guard branch before returning. This preserves stack-overflow protection while making truncation observable in LSP server logs.\n\nThis aligns with the project convention against silent defaults (feedback_silent_defaults_pattern).\n\nFiles: `crates/reify-lsp/src/analysis.rs:302-304` and `crates/reify-syntax/src/lib.rs` (find_named_member_span_depth)\n\nMemory hints: search \"silent defaults\" for project convention",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-02T14:40:18.838Z",
+        "updatedAt": "2026-04-03T01:20:20.092Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp",
@@ -17231,7 +17231,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T01:20:19.791Z",
+      "lastModified": "2026-04-03T01:20:20.092Z",
       "taskCount": 822,
       "completedCount": 631,
       "tags": [
