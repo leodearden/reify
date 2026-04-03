@@ -17263,7 +17263,7 @@
         "id": 823,
         "title": "Replace compiler unwrap_or(Type::Real) with diagnostics (13 locations)",
         "description": "Convention violation: reify-compiler/src/lib.rs has 13 instances of .unwrap_or(Type::Real) or .unwrap_or(Type::String) when scope.resolve() or resolve_type_name() fails during the second compilation pass. The two-pass compilation guarantees names are registered in pass 1 — a miss in pass 2 is a compiler logic bug that should surface as a diagnostic, not silently assign Type::Real.\n\nEach site should either emit a Diagnostic::error and use a sentinel type, or panic with an ICE message (internal compiler error) since the condition should be unreachable.\n\nLocations: lines 2337, 2504, 2705, 2727, 2759, 2763, 2856, 4559, 4666, 4959, 6352, 6581, 6589\n\nmemory_hints: search(\"silent defaults Type::Real compiler convention\", project_id=\"reify\")",
-        "details": "",
+        "details": "<info added on 2026-04-03T22:18:48.974Z>\nThis task subsumes task #819, which focuses only on the port type resolution at line 4542. Task #823 provides a comprehensive fix for all 13 locations. Additionally, task #368, which is completed, previously addressed some of these issues but left these 13 instances unresolved.\n</info added on 2026-04-03T22:18:48.974Z>",
         "testStrategy": "",
         "status": "pending",
         "dependencies": [],
