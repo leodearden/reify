@@ -224,6 +224,18 @@ fn phase_1_1i_returns_pi_over_4() {
 }
 
 #[test]
+fn phase_zero_complex_returns_undef() {
+    // phase(0+0i) is mathematically undefined (zero vector has no direction)
+    let z = complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("phase", &[z]);
+    assert!(
+        result.is_undef(),
+        "phase(0+0i) should be Undef, got {:?}",
+        result
+    );
+}
+
+#[test]
 fn conjugate_3_4i_negates_imaginary() {
     // conjugate(3+4i) = 3-4i, preserving dimension
     let z = complex_val(3.0, 4.0, DimensionVector::LENGTH);
