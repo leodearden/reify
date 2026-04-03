@@ -6882,6 +6882,13 @@ mod tests {
             )
             .is_undef()
         );
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]
+            )
+            .is_undef()
+        );
     }
 
     // ── transform3 tests (step-5) ─────────────────────────────────────────────
