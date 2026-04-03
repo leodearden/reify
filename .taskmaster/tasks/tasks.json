@@ -8414,7 +8414,7 @@
         "description": "Three test gaps from task 205 review (test analyst): (1) Root entity Undef undocumented: root-level lets referencing children resolve to Undef because root lets eval before unfolding. Add #[ignore] regression test. (2) Diagnostic co-verification: depth truncation tests don't assert on Error diagnostic. Add assertion. (3) Mixed recursive + non-recursive sub test: template with both sub types coexisting. Modules: crates/reify-eval/tests",
         "details": "",
         "testStrategy": "Add 3 new tests to recursive_unfold.rs covering the identified gaps.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "205"
         ],
@@ -8427,7 +8427,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:10:21.264980+00:00"
+        "updatedAt": "2026-04-03T06:36:49.241Z"
       },
       {
         "id": "423",
@@ -17236,7 +17236,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:36:49.061Z",
+      "lastModified": "2026-04-03T06:36:49.241Z",
       "taskCount": 822,
       "completedCount": 634,
       "tags": [
