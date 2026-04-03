@@ -1,7 +1,77 @@
 //! Integration tests for the InProcessLsp bridge.
 
+use std::sync::Arc;
+
 use reify_lsp::bridge::InProcessLsp;
 use serde_json::json;
+
+/// Build a tracing subscriber that counts WARN-level events.
+/// Returns the subscriber and a clone of the counter for assertions.
+fn warn_counting_subscriber() -> (
+    impl tracing::Subscriber,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::AtomicUsize;
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_clone = Arc::clone(&count);
+
+    struct WarnCounter(Arc<AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.level() <= &tracing::Level::WARN
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(
+            &self,
+            _span: &tracing::span::Id,
+            _follows: &tracing::span::Id,
+        ) {
+        }
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().level() == &tracing::Level::WARN {
+                self.0
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    (WarnCounter(count_clone), count)
+}
+
+/// Malformed (non-object) params should not crash the server and should emit a
+/// tracing WARN event.
+#[tokio::test]
+async fn initialize_with_malformed_params_emits_warning() {
+    let (subscriber, warn_count) = warn_counting_subscriber();
+    // set_default returns a DefaultGuard — compatible with async/await on a
+    // single-threaded tokio runtime because all .await points stay on the same
+    // thread where the guard is active.
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is clearly malformed for InitializeParams (expects an object)
+    let result = lsp.handle_request("initialize", json!(42)).await;
+
+    assert!(result.is_ok(), "server should not crash on malformed params");
+    assert!(
+        warn_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "expected a WARN to be emitted for malformed InitializeParams"
+    );
+}
 
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
@@ -261,4 +331,36 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
             .unwrap_or(false)
     });
     assert!(has_error, "should have at least one error diagnostic");
+}
+
+/// Regression guard: malformed params must not prevent capabilities from being
+/// returned. Even if InitializeParams can't be deserialized, the server should
+/// fall back to defaults and still advertise its capabilities.
+#[tokio::test]
+async fn initialize_with_malformed_params_still_returns_capabilities() {
+    let lsp = InProcessLsp::new();
+
+    // processId is an Option<i32> in InitializeParams — passing a string makes
+    // deserialization fail, exercising the warn-and-fallback path.
+    let result = lsp
+        .handle_request(
+            "initialize",
+            json!({ "processId": "not_a_number" }),
+        )
+        .await
+        .expect("server should not crash on malformed params");
+
+    let caps = &result["capabilities"];
+    assert!(
+        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
+        "should advertise hover provider"
+    );
+    assert!(
+        caps["completionProvider"].is_object(),
+        "should advertise completion provider"
+    );
+    assert!(
+        caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
+        "should advertise text document sync"
+    );
 }
