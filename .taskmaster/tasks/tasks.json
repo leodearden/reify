@@ -17269,6 +17269,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 824,
+        "title": "Fix solvespace non-auto param 0.0 default",
+        "description": "Convention violation: reify-constraints/src/solvespace.rs:547 defaults a non-auto parameter to 0.0 when absent from current_values. A parameter with a cell_id that is missing from current_values indicates the eval pass didn't complete — this is a logic error. Using 0.0 silently corrupts the solver starting point.\n\nFix: log a warning and either skip the parameter or return an error. Compare with the auto-param path at line 537 which has a documented justification for its 0.01 default.\n\nmemory_hints: search(\"solvespace solver convention silent defaults\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17281,7 +17292,7 @@
       ],
       "created": "2026-04-03T22:11:45.614Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T22:11:45.620Z"
+      "updated": "2026-04-03T22:11:52.172Z"
     }
   }
 }
