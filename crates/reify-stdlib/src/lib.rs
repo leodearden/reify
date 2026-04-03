@@ -5039,6 +5039,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complex_nan_im_arg_returns_undef() {
+        // NaN in the imaginary (second) arg should also produce Undef
+        let result = eval_builtin("complex", &[Value::Real(3.0), Value::Real(f64::NAN)]);
+        assert!(
+            result.is_undef(),
+            "expected Undef for NaN im, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_inf_im_arg_returns_undef() {
+        // Infinity in the imaginary (second) arg should also produce Undef
+        let result = eval_builtin("complex", &[Value::Real(3.0), Value::Real(f64::INFINITY)]);
+        assert!(
+            result.is_undef(),
+            "expected Undef for Inf im, got {:?}",
+            result
+        );
+    }
+
     // ── re() and im() accessor tests (step-7) ────────────────────────────────
 
     #[test]
