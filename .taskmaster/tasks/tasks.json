@@ -17778,11 +17778,11 @@
         "description": "In crates/reify-lsp/src/bridge.rs lines 84-90, the initialize arm silently falls back to InitializeParams::default() on a deserialization error, while all other arms (didOpen, didChange, didClose, completion, hover, definition) propagate Err(String). Either change initialize to also propagate Err (preferred — matches project silent-defaults convention), or document the fallback policy in the handle_request doc-comment and apply consistently.\n\nmemory_hints: search(\"LSP bridge handle_request error contract silent defaults convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:46:12.163Z",
+        "updatedAt": "2026-04-03T23:48:19.087Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -17826,7 +17826,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:48:17.729Z",
+      "lastModified": "2026-04-03T23:48:19.087Z",
       "taskCount": 852,
       "completedCount": 661,
       "tags": [
