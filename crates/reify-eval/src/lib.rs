@@ -2175,6 +2175,31 @@ impl Engine {
         })
     }
 
+    /// Replace occurrences of the raw ConstraintNodeId string in diagnostic
+    /// messages with a human-readable label, when a label is present.
+    ///
+    /// This enriches engine-level diagnostics for constraint def instantiations
+    /// so that messages read "constraint MinWall[0] violated" instead of
+    /// "constraint S#constraint[0] violated". When `label` is `None` (inline
+    /// constraints without a label), the messages are returned unchanged.
+    fn labeled_diagnostics(
+        messages: Vec<Diagnostic>,
+        id: &reify_types::ConstraintNodeId,
+        label: Option<&str>,
+    ) -> Vec<Diagnostic> {
+        let Some(lbl) = label else {
+            return messages;
+        };
+        let id_str = id.to_string();
+        messages
+            .into_iter()
+            .map(|mut d| {
+                d.message = d.message.replace(&id_str, lbl);
+                d
+            })
+            .collect()
+    }
+
     /// Incrementally re-evaluate and check constraints after changing a parameter.
     ///
     /// Combines edit_param() (incremental value evaluation + re-resolution)
@@ -2223,7 +2248,11 @@ impl Engine {
 
             let results = self.constraint_checker.check(&input);
             for (result, cnode) in results.into_iter().zip(constraint_nodes.iter()) {
-                diagnostics.extend(result.diagnostics.messages);
+                diagnostics.extend(Self::labeled_diagnostics(
+                    result.diagnostics.messages,
+                    &result.id,
+                    cnode.label.as_deref(),
+                ));
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
                     label: cnode.label.clone(),
@@ -2609,7 +2638,11 @@ impl Engine {
             let results = self.constraint_checker.check(&input);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                diagnostics.extend(result.diagnostics.messages);
+                diagnostics.extend(Self::labeled_diagnostics(
+                    result.diagnostics.messages,
+                    &result.id,
+                    compiled.label.as_deref(),
+                ));
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
                     label: compiled.label.clone(),
@@ -2701,7 +2734,11 @@ impl Engine {
             let results = self.constraint_checker.check(&input);
 
             for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                diagnostics.extend(result.diagnostics.messages);
+                diagnostics.extend(Self::labeled_diagnostics(
+                    result.diagnostics.messages,
+                    &result.id,
+                    compiled.label.as_deref(),
+                ));
                 constraint_results.push(ConstraintCheckEntry {
                     id: result.id,
                     label: compiled.label.clone(),
@@ -2761,7 +2798,11 @@ impl Engine {
                 let results = self.constraint_checker.check(&input);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                    diagnostics.extend(result.diagnostics.messages);
+                    diagnostics.extend(Self::labeled_diagnostics(
+                        result.diagnostics.messages,
+                        &result.id,
+                        compiled.label.as_deref(),
+                    ));
                     constraint_results.push(ConstraintCheckEntry {
                         id: result.id,
                         label: compiled.label.clone(),
@@ -3071,7 +3112,11 @@ impl Engine {
                 let results = self.constraint_checker.check(&input);
 
                 for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
-                    diagnostics.extend(result.diagnostics.messages);
+                    diagnostics.extend(Self::labeled_diagnostics(
+                        result.diagnostics.messages,
+                        &result.id,
+                        compiled.label.as_deref(),
+                    ));
                     constraint_results.push(ConstraintCheckEntry {
                         id: result.id,
                         label: compiled.label.clone(),
