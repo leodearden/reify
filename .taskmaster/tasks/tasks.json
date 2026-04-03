@@ -17627,6 +17627,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 844,
+        "title": "Fill test coverage gaps: redundant test, dimensioned edge cases, from_component unit tests, LSP positive assertion",
+        "description": "Four distinct test gaps to address:\n\n1. Remove `complex_magnitude_zero_complex_returns_zero` in `crates/reify-stdlib/src/lib.rs` — it's redundant with `magnitude_zero_complex_returns_zero` as both route through `complex_abs` for a Complex input.\n2. Add `magnitude_zero_complex_dimensioned_returns_scalar_zero` testing `Complex{0.0, 0.0, LENGTH}` → `Scalar{0.0, LENGTH}` in both the stdlib test suite and the method-call test suite (`complex_eval_tests.rs`).\n3. Add `phase_zero_dimensioned_complex_returns_undef` testing `Complex{0.0, 0.0, LENGTH}` → Undef in `complex_tests.rs` and `complex_eval_tests.rs`.\n4. Add unit tests `from_component_dimensionless_returns_real` and `from_component_dimensioned_returns_scalar` in a `#[cfg(test)]` block in `crates/reify-types/src/value.rs`.\n5. Add a positive counterpart to `re_im_not_in_builtin_completions` in `crates/reify-lsp/src/completion.rs` that triggers method completion on a complex-typed receiver and asserts `re`, `im`, `magnitude`, `phase` appear as METHOD-kind items.\n\nMemory hints: search \"complex edge case tests\", search \"LSP completion method tests\", entities: complex_magnitude, phase, from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17639,7 +17650,7 @@
       ],
       "created": "2026-04-03T23:26:47.472Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:26:57.794Z"
+      "updated": "2026-04-03T23:27:08.261Z"
     }
   }
 }
