@@ -17495,10 +17495,11 @@
         "description": "In gui/src-tauri/src/engine.rs, extract the repeated source-key resolution block (lines 233-240 and 272-283) into a private method `fn resolve_source(&self) -> Option<(String, &str)>`. Replace the else branch at lines 278-282 with `unreachable!(\"compiled is Some implies module_name is Some\")` or `debug_assert!`, documenting the invariant that load_from_source/update_source always set module_name atomically with compiled.\n\nmemory_hints: search(\"engine.rs source-key resolution module_name compiled invariant\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:18:11.732Z"
       },
       {
         "id": "837",
@@ -17547,7 +17548,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:18:11.637Z",
+      "lastModified": "2026-04-03T23:18:11.732Z",
       "taskCount": 840,
       "completedCount": 657,
       "tags": [
