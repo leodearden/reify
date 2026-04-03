@@ -1,75 +1,22 @@
 //! Integration tests for the InProcessLsp bridge.
 
-use std::sync::Arc;
-
 use reify_lsp::bridge::InProcessLsp;
 use serde_json::json;
 
-/// Build a tracing subscriber that counts WARN-level events.
-/// Returns the subscriber and a clone of the counter for assertions.
-fn warn_counting_subscriber() -> (
-    impl tracing::Subscriber,
-    Arc<std::sync::atomic::AtomicUsize>,
-) {
-    use std::sync::atomic::AtomicUsize;
-
-    let count = Arc::new(AtomicUsize::new(0));
-    let count_clone = Arc::clone(&count);
-
-    struct WarnCounter(Arc<AtomicUsize>);
-
-    impl tracing::Subscriber for WarnCounter {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::WARN
-        }
-
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(
-            &self,
-            _span: &tracing::span::Id,
-            _follows: &tracing::span::Id,
-        ) {
-        }
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            if event.metadata().level() == &tracing::Level::WARN {
-                self.0
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-
-        fn enter(&self, _span: &tracing::span::Id) {}
-
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    (WarnCounter(count_clone), count)
-}
-
-/// Malformed (non-object) params should not crash the server and should emit a
-/// tracing WARN event.
+/// Malformed (non-object) params should return an Err containing
+/// "initialize params error".
 #[tokio::test]
-async fn initialize_with_malformed_params_emits_warning() {
-    let (subscriber, warn_count) = warn_counting_subscriber();
-    // set_default returns a DefaultGuard — compatible with async/await on a
-    // single-threaded tokio runtime because all .await points stay on the same
-    // thread where the guard is active.
-    let _guard = tracing::subscriber::set_default(subscriber);
-
+async fn initialize_with_malformed_params_is_err() {
     let lsp = InProcessLsp::new();
 
     // json!(42) is clearly malformed for InitializeParams (expects an object)
     let result = lsp.handle_request("initialize", json!(42)).await;
 
-    assert!(result.is_ok(), "server should not crash on malformed params");
+    assert!(result.is_err(), "server should return Err on malformed params");
+    let err = result.unwrap_err();
     assert!(
-        warn_count.load(std::sync::atomic::Ordering::Relaxed) > 0,
-        "expected a WARN to be emitted for malformed InitializeParams"
+        err.contains("initialize params error"),
+        "error message should contain 'initialize params error', got: {err}"
     );
 }
 
