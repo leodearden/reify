@@ -3567,4 +3567,69 @@ mod tests {
             "z.re with NaN real part (dimensioned) should return Undef"
         );
     }
+
+    // ── method: im ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn im_nan_dimensionless_returns_undef() {
+        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.im → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "im".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.im with NaN imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_dimensionless_returns_undef() {
+        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.im → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "im".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.im with Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn im_nan_dimensioned_returns_undef() {
+        // Complex{re:1.0, im:NaN, LENGTH}.im → Undef (dimensioned Scalar path)
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "im".to_string(),
+            vec![],
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.im with NaN imaginary part (dimensioned) should return Undef"
+        );
+    }
 }
