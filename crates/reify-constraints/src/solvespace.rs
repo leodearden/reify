@@ -556,10 +556,6 @@ impl SystemBuilder {
                     Ok(h)
                 }
                 None => {
-                    tracing::warn!(
-                        cell_id = %id,
-                        "non-auto parameter missing from current_values — eval pass incomplete"
-                    );
                     Err(format!("non-auto parameter {id} missing from current_values"))
                 }
             }
