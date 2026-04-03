@@ -496,8 +496,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
+        // phase(0+0i) is undefined — zero vector has no direction.
         "phase" => unary(args, |v| match v {
             Value::Complex { re, im, .. } => {
+                if *re == 0.0 && *im == 0.0 {
+                    return Value::Undef;
+                }
                 let angle = im.atan2(*re);
                 sanitize_value(Value::Scalar {
                     si_value: angle,
