@@ -17460,6 +17460,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 834,
+        "title": "Clarify SolveResult semantics: distinguish precondition failure from solver stall",
+        "description": "SolveResult::NoProgress is documented as 'solver made no progress (e.g., iteration limit reached)' but is also returned for hard precondition failures (missing eval values). Consider adding SolveResult::PreconditionFailed { reason } or at minimum update the doc comment on NoProgress to state that precondition violations also use this variant so callers don't treat it as always-retryable.\n\nNOTE: Task 772 previously completed \"Add structured NoProgressKind enum to SolveResult::NoProgress\" — check if that already covers this concern before implementing. If NoProgressKind already has a variant for precondition failures, this task may be a no-op (just verify docs are clear).\n\nmemory_hints: search(\"SolveResult NoProgressKind enum precondition\", project_id=\"reify\"); get_entity(\"NoProgressKind\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17472,7 +17483,7 @@
       ],
       "created": "2026-04-03T23:15:52.967Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:16:09.172Z"
+      "updated": "2026-04-03T23:16:14.490Z"
     }
   }
 }
