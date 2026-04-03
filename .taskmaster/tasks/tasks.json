@@ -17635,7 +17635,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:27:27.655Z"
+        "updatedAt": "2026-04-03T23:27:27.655Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-stdlib",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": 844,
