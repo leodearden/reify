@@ -17374,7 +17374,7 @@
         "description": "Convention violation. reify-lsp/src/bridge.rs:84 uses serde_json::from_value(params).unwrap_or_default() for InitializeParams. If the LSP client sends malformed initialize params, the server silently uses defaults. Should log a warning via tracing::warn! and optionally surface an LSP error.\n\nmemory_hints: search(\"LSP bridge initialize silent default convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17387,7 +17387,7 @@
             "crates/reify-lsp"
           ]
         },
-        "updatedAt": "2026-04-03T23:27:26.327Z"
+        "updatedAt": "2026-04-03T23:35:13.601Z"
       },
       {
         "id": "829",
@@ -17725,9 +17725,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:34:35.500Z",
+      "lastModified": "2026-04-03T23:35:13.605Z",
       "taskCount": 848,
-      "completedCount": 659,
+      "completedCount": 660,
       "tags": [
         "master"
       ]
