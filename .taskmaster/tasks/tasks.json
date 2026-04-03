@@ -5186,7 +5186,12 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler",
+            "crates/reify-eval",
+            "crates/reify-syntax",
+            "crates/reify-test-support",
+            "crates/reify-types",
+            "tree-sitter-reify/grammar.js"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
