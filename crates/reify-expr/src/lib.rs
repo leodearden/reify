@@ -3742,4 +3742,93 @@ mod tests {
             "z.magnitude with +Inf input should return Undef"
         );
     }
+
+    // ── method regressions: finite values still work ──────────────────────────
+
+    #[test]
+    fn magnitude_finite_dimensionless_correct() {
+        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.magnitude == Real(5.0)
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "magnitude".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12, "expected 5.0, got {}", v),
+            other => panic!("expected Real(5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn re_finite_dimensionless_correct() {
+        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.re == Real(3.0)
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "re".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected 3.0, got {}", v),
+            other => panic!("expected Real(3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn im_finite_dimensionless_correct() {
+        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.im == Real(4.0)
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "im".to_string(),
+            vec![],
+            Type::Real,
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12, "expected 4.0, got {}", v),
+            other => panic!("expected Real(4.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn re_finite_dimensioned_correct() {
+        // Complex{re:0.003, im:0.004, LENGTH}.re == Scalar{0.003, LENGTH}
+        let complex_val = Value::Complex {
+            re: 0.003,
+            im: 0.004,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "re".to_string(),
+            vec![],
+            Type::length(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.003).abs() < 1e-12, "expected 0.003, got {}", si_value);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.003, LENGTH}}, got {:?}", other),
+        }
+    }
 }
