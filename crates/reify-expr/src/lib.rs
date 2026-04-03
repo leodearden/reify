@@ -3924,4 +3924,68 @@ mod tests {
             "z.phase with -Inf imaginary part should return Undef"
         );
     }
+
+    // ── method regressions: finite phase values still work ────────────────────
+
+    #[test]
+    fn phase_finite_45_degrees_correct() {
+        // Complex{re:1.0, im:1.0, DIMENSIONLESS}.phase == Scalar{π/4, ANGLE}
+        // atan2(1.0, 1.0) = π/4 ≈ 0.7853981633974483
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Scalar { si_value, dimension } => {
+                let expected = std::f64::consts::FRAC_PI_4;
+                assert!(
+                    (si_value - expected).abs() < 1e-12,
+                    "expected π/4 ≈ {}, got {}",
+                    expected,
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar{{π/4, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn phase_finite_180_degrees_correct() {
+        // Complex{re:-1.0, im:0.0, DIMENSIONLESS}.phase == Scalar{π, ANGLE}
+        // atan2(0.0, -1.0) = π
+        let complex_val = Value::Complex {
+            re: -1.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Scalar { si_value, dimension } => {
+                let expected = std::f64::consts::PI;
+                assert!(
+                    (si_value - expected).abs() < 1e-12,
+                    "expected π ≈ {}, got {}",
+                    expected,
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
 }
