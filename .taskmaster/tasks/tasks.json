@@ -17291,6 +17291,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 826,
+        "title": "Guard collection count re-elaboration against Undef count cells",
+        "description": "In reify-eval/src/lib.rs:2059-2090, the collection count re-elaboration phase defaults missing count cells to Value::Undef. When new_count_val != old_count_val, the match arms at lines 2074 and 2090 treat non-Int values (including Undef) as count=0 via `_ => 0`. If the count cell simply hasn't been evaluated yet during incremental re-eval, this destructively removes all collection sub-instances then recreates them from scratch.\n\nFix: skip the re-elaboration if either count is Undef (cell not yet evaluated), or at minimum log a warning. The `_ => 0` arms should not silently treat Undef as zero count.\n\nLocations:\n- crates/reify-eval/src/lib.rs:2059, 2065, 2074, 2090\n\nmemory_hints: search(\"collection count re-elaboration Undef incremental eval\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17303,7 +17314,7 @@
       ],
       "created": "2026-04-03T22:11:45.614Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T22:18:54.807Z"
+      "updated": "2026-04-03T22:19:02.503Z"
     }
   }
 }
