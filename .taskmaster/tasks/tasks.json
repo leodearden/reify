@@ -10355,7 +10355,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10370,7 +10370,7 @@
             "crates/reify-test-support"
           ]
         },
-        "updatedAt": "2026-04-02T22:09:27.731Z"
+        "updatedAt": "2026-04-03T13:21:23.966Z"
       },
       {
         "id": "508",
@@ -17245,7 +17245,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T13:21:23.749Z",
+      "lastModified": "2026-04-03T13:21:23.966Z",
       "taskCount": 822,
       "completedCount": 647,
       "tags": [
