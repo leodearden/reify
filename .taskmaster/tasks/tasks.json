@@ -6489,7 +6489,7 @@
           "326",
           "330"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
@@ -6498,7 +6498,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T10:26:22.555Z"
+        "updatedAt": "2026-04-03T13:21:22.583Z"
       },
       {
         "id": "332",
@@ -7099,11 +7099,11 @@
         "description": "Fix phase(0+0i) returning Scalar{0.0, ANGLE} instead of Undef (mathematically undefined). Extract complex_component_to_value() helper to deduplicate dimension-to-value conversion pattern across re/im/magnitude (3-way duplication).\n\nMissing tests to add:\n- NaN/Inf in second arg (im) for complex functions (only first arg tested)\n- phase(0+0i) edge case\n- phase() on dimensioned Complex (documents dimension-agnostic behavior)\n- magnitude(0+0i) edge case\n- Negative assertions that re/im are NOT in LSP completions (guards design decision)\n\nMemory hints: search \"phase complex magnitude edge case\", entities: eval_builtin, phase, complex_magnitude",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-02T22:19:51.529Z",
+        "updatedAt": "2026-04-03T13:21:22.622Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17245,7 +17245,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T13:21:22.544Z",
+      "lastModified": "2026-04-03T13:21:22.622Z",
       "taskCount": 822,
       "completedCount": 647,
       "tags": [
