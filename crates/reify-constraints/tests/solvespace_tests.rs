@@ -815,3 +815,82 @@ fn non_numeric_coord_returns_none() {
         ),
     }
 }
+
+/// solve() must return SolveResult::NoProgress when a constraint expression
+/// contains a non-auto ValueRef cell_id that is absent from current_values.
+///
+/// Because extract_coord only accepts auto params and literals, a ValueRef that
+/// is not in auto_params causes recognize_pattern to return None, which means
+/// solve() returns NoProgress with "unrecognized geometric constraint pattern".
+/// This exercises the NoProgress return path in solve() at the constraint-loop level.
+#[test]
+fn solve_returns_no_progress_for_missing_non_auto_value() {
+    let solver = SolveSpaceSolver;
+
+    // A cell_id that is NOT in auto_params — simulates an incomplete eval pass.
+    let fixed_y_id = vcid("Fixed", "y");
+
+    // Auto param for x (present in auto_params so the problem is non-trivial)
+    let x_id = vcid("Auto", "x");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // Point with x=auto, y=non-auto ValueRef (fixed_y_id NOT in auto_params)
+    let pt_x = value_ref_typed("Auto", "x", Type::length());
+    let pt_y = value_ref_typed("Fixed", "y", Type::length());
+    let point_a = geo_fn(
+        "point3d",
+        vec![pt_x, pt_y, zero.clone()],
+        Type::dimensionless_scalar(),
+    );
+
+    // Origin: (0, 0, 0)
+    let origin = geo_fn(
+        "point3d",
+        vec![zero.clone(), zero.clone(), zero],
+        Type::dimensionless_scalar(),
+    );
+
+    let dist_call = geo_fn("pt_pt_distance", vec![point_a, origin], Type::length());
+    let ten_mm = literal(mm(10.0));
+    let constraint_expr = eq(dist_call, ten_mm);
+
+    // fixed_y_id is intentionally absent from both auto_params and current_values.
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }],
+        constraints: vec![(cnid("Test", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            // The non-auto ValueRef (fixed_y_id) causes pattern recognition to fail,
+            // so the reason is "unrecognized geometric constraint pattern".
+            assert!(
+                !reason.is_empty(),
+                "NoProgress reason should be non-empty, got empty string"
+            );
+            // Verify it's not a spurious "no constraints recognized" failure
+            // — we DO have a constraint, it's just unrecognizable.
+            assert!(
+                reason.contains("unrecognized") || reason.contains("missing"),
+                "reason should explain why progress was impossible, got: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "expected NoProgress for constraint with non-auto missing value, got {:?}",
+            other
+        ),
+    }
+}
