@@ -5353,7 +5353,7 @@
         "dependencies": [
           "281"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -5364,7 +5364,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T22:18:55.441Z"
+        "updatedAt": "2026-04-03T06:05:40.769Z"
       },
       {
         "id": "283",
@@ -17230,7 +17230,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:05:40.474Z",
+      "lastModified": "2026-04-03T06:05:40.769Z",
       "taskCount": 822,
       "completedCount": 632,
       "tags": [
