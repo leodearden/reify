@@ -1105,4 +1105,36 @@ mod tests {
             "error message should contain cell_id, got: {err_msg}"
         );
     }
+
+    /// Calling add_auto_coord twice with the same auto-param cell_id must
+    /// return the same Slvs_hParam handle and must NOT grow params on the second call.
+    #[test]
+    fn add_auto_coord_cache_hit_idempotency() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params = vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }];
+        let current_values = ValueMap::new();
+
+        // First call — creates the param and inserts into the mapping
+        let h1 = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("first call should succeed");
+        let len_after_first = builder.params.len();
+
+        // Second call — should hit the cache and return the same handle
+        let h2 = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("second call should succeed");
+
+        assert_eq!(h1, h2, "second call should return the same cached handle");
+        assert_eq!(
+            builder.params.len(),
+            len_after_first,
+            "params.len() should not grow on the second (cache-hit) call"
+        );
+    }
 }
