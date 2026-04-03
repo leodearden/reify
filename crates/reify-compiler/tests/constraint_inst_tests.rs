@@ -308,3 +308,73 @@ structure S {
         "expected 1 guarded constraint, found {total_guarded_constraints}"
     );
 }
+
+// ── Step 1 (task-198): constraint instantiation labels ───────────────────────
+
+/// Single-predicate constraint def instantiation should produce a CompiledConstraint
+/// with label == Some("MinWall[0]").
+#[test]
+fn constraint_inst_label_single_predicate() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 2
+}
+structure S {
+    param thickness: Length
+    constraint MinWall(wall: thickness)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
+
+    let cc = &tmpl.constraints[0];
+    assert_eq!(
+        cc.label,
+        Some("MinWall[0]".to_string()),
+        "expected label Some(\"MinWall[0]\"), got: {:?}",
+        cc.label
+    );
+}
+
+/// Multi-predicate constraint def instantiation should produce labeled constraints
+/// Some("Bounded[0]") and Some("Bounded[1]") respectively.
+#[test]
+fn constraint_inst_label_multi_predicate() {
+    let source = r#"
+constraint def Bounded {
+    param x: Length
+    param lo: Length
+    param hi: Length
+    x >= lo
+    x <= hi
+}
+structure S {
+    param w: Length
+    constraint Bounded(x: w, lo: 1, hi: 10)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
+
+    assert_eq!(
+        tmpl.constraints[0].label,
+        Some("Bounded[0]".to_string()),
+        "expected first constraint label Some(\"Bounded[0]\"), got: {:?}",
+        tmpl.constraints[0].label
+    );
+    assert_eq!(
+        tmpl.constraints[1].label,
+        Some("Bounded[1]".to_string()),
+        "expected second constraint label Some(\"Bounded[1]\"), got: {:?}",
+        tmpl.constraints[1].label
+    );
+}
