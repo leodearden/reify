@@ -818,6 +818,30 @@ fn compute_numerical_gradient_at_point(
     }
 }
 
+/// Convert a Value that carries NaN or Inf to Undef.
+///
+/// Complex component extraction (re, im) and magnitude computation produce
+/// `Value::Real` or `Value::Scalar` by calling `Value::from_component`.  When
+/// the underlying f64 is NaN or Inf the result must be Undef, not a silently
+/// poisoned numeric value.  This helper mirrors the private `sanitize_value`
+/// in `reify-stdlib` — the duplication is intentional (see design decisions in
+/// the task plan: making stdlib's version public would widen its API surface;
+/// moving it to reify-types would add evaluation semantics to a type crate).
+fn sanitize_value(v: Value) -> Value {
+    match &v {
+        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
+        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
+            Value::Undef
+        }
+        Value::Complex { re, im, .. }
+            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
+        {
+            Value::Undef
+        }
+        _ => v,
+    }
+}
+
 /// Evaluate a method call on a collection value.
 fn eval_method_call(
     obj: &Value,
@@ -1157,7 +1181,7 @@ fn eval_method_call(
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let mag = re.hypot(*im);
-                    Value::from_component(mag, *dimension)
+                    sanitize_value(Value::from_component(mag, *dimension))
                 }
                 _ => Value::Undef,
             }
@@ -1200,7 +1224,7 @@ fn eval_method_call(
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let component = if method == "re" { *re } else { *im };
-                    Value::from_component(component, *dimension)
+                    sanitize_value(Value::from_component(component, *dimension))
                 }
                 _ => Value::Undef,
             }
