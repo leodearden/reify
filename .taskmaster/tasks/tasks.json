@@ -2516,7 +2516,7 @@
         "testStrategy": "Unit tests: all 9 Kleene cells, type checking.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -2530,7 +2530,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-28T00:56:39.978Z"
+        "updatedAt": "2026-04-03T06:24:55.471Z"
       },
       {
         "id": "156",
@@ -17230,7 +17230,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T06:24:55.257Z",
+      "lastModified": "2026-04-03T06:24:55.476Z",
       "taskCount": 822,
       "completedCount": 634,
       "tags": [
