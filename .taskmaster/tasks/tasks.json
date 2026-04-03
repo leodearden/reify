@@ -17506,11 +17506,16 @@
         "description": "In gui/src-tauri/src/types.rs, remove DiagnosticData (lines 62-71) since it is structurally identical to DiagnosticInfo in reify-mcp/src/types.rs. Change EngineSession::get_diagnostics() in gui/src-tauri/src/engine.rs to return Vec<DiagnosticInfo> directly (importing reify-mcp types). Remove the field-for-field mapping closure in gui/src-tauri/src/mcp_context.rs:136-148. Also align field naming: SourceLocation.file (types.rs:50) and DiagnosticData.file_path (or the surviving type) should use the same field name within types.rs.\n\nmemory_hints: search(\"DiagnosticData DiagnosticInfo type mapping gui engine\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:18:11.637Z"
+        "updatedAt": "2026-04-03T23:22:09.992Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "836",
@@ -17588,7 +17593,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:22:01.456Z",
+      "lastModified": "2026-04-03T23:22:09.992Z",
       "taskCount": 840,
       "completedCount": 657,
       "tags": [
