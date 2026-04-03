@@ -17348,7 +17348,7 @@
         "description": "gui/src-tauri/src/mcp_context.rs:128-130 returns Ok(Vec::new()) for get_diagnostics(). The GUI's MCP context cannot surface compiler diagnostics to Claude. The CLI's CliToolContext at crates/reify-cli/src/mcp_context.rs:163 has a real implementation that reads from compiled.diagnostics. The GUI needs equivalent wiring — either through GuiState carrying diagnostics, or by querying the LspBridge which already has get_diagnostics(uri).\n\nNote: the test at gui/src-tauri/src/tests/mcp_context_tests.rs:137 asserts empty behavior and will need updating.\n\nmemory_hints: search(\"GUI MCP diagnostics TauriToolContext\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17362,7 +17362,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-03T22:41:43.595Z"
       },
       {
         "id": "828",
@@ -17416,7 +17417,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T22:41:43.513Z",
+      "lastModified": "2026-04-03T22:41:43.595Z",
       "taskCount": 829,
       "completedCount": 655,
       "tags": [
