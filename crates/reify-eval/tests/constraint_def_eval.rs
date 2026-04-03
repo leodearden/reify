@@ -92,6 +92,85 @@ structure S {
     );
 }
 
+// ── step-6: multi-predicate individual violations ────────��────────────────────
+
+/// Two-predicate Bounded constraint: w=15, lo=1, hi=10.
+/// Bounded[0] (x >= lo: 15 >= 1) is Satisfied.
+/// Bounded[1] (x <= hi: 15 <= 10) is Violated.
+/// The violated diagnostic should mention "Bounded[1]" but not "Bounded[0]".
+#[test]
+fn multi_predicate_individual_violations() {
+    let source = r#"
+constraint def Bounded {
+    param x: Length
+    param lo: Length
+    param hi: Length
+    x >= lo
+    x <= hi
+}
+structure S {
+    param w: Length = 15
+    constraint Bounded(x: w, lo: 1, hi: 10)
+}
+"#;
+    let result = check_source(source);
+
+    // Exactly two constraint results
+    assert_eq!(
+        result.constraint_results.len(),
+        2,
+        "expected 2 constraint results, got: {:?}",
+        result.constraint_results
+    );
+
+    // Find by label
+    let bounded0 = result
+        .constraint_results
+        .iter()
+        .find(|e| e.label == Some("Bounded[0]".to_string()))
+        .expect("expected entry with label Bounded[0]");
+    let bounded1 = result
+        .constraint_results
+        .iter()
+        .find(|e| e.label == Some("Bounded[1]".to_string()))
+        .expect("expected entry with label Bounded[1]");
+
+    assert_eq!(
+        bounded0.satisfaction,
+        Satisfaction::Satisfied,
+        "Bounded[0] (x >= lo) should be Satisfied with w=15, lo=1"
+    );
+    assert_eq!(
+        bounded1.satisfaction,
+        Satisfaction::Violated,
+        "Bounded[1] (x <= hi) should be Violated with w=15, hi=10"
+    );
+
+    // Diagnostic should mention Bounded[1] but not Bounded[0]
+    let error_msgs: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        !error_msgs.is_empty(),
+        "expected at least one Error diagnostic"
+    );
+    let has_bounded1 = error_msgs.iter().any(|m| m.contains("Bounded[1]"));
+    let has_bounded0 = error_msgs.iter().any(|m| m.contains("Bounded[0]"));
+    assert!(
+        has_bounded1,
+        "expected diagnostic mentioning 'Bounded[1]', got: {:?}",
+        error_msgs
+    );
+    assert!(
+        !has_bounded0,
+        "expected no diagnostic mentioning 'Bounded[0]' (it is satisfied), got: {:?}",
+        error_msgs
+    );
+}
+
 // ── step-4: satisfied constraint def has label, no error ─────────────────────
 
 /// A satisfied constraint def instantiation should produce:
