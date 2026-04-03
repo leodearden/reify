@@ -3831,4 +3831,94 @@ mod tests {
             other => panic!("expected Scalar{{0.003, LENGTH}}, got {:?}", other),
         }
     }
+
+    // ── method: phase (NaN/Inf sanitization) ─────────────────────────────────
+
+    #[test]
+    fn phase_nan_re_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.phase → Undef
+        // atan2(1.0, NaN) = NaN; phase should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with NaN real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn phase_nan_im_returns_undef() {
+        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.phase → Undef
+        // atan2(NaN, 1.0) = NaN; phase should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with NaN imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn phase_inf_re_returns_undef() {
+        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.phase → Undef
+        // The Complex carries an Inf component, violating sanitization convention
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with +Inf real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn phase_neg_inf_im_returns_undef() {
+        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.phase → Undef
+        // The Complex carries an Inf component, violating sanitization convention
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with -Inf imaginary part should return Undef"
+        );
+    }
 }
