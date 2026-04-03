@@ -17710,16 +17710,22 @@
         "description": "Three missing test scenarios:\n\n1. In crates/reify-eval/tests/incremental.rs, extend `edit_check_preserves_constraint_labels` (or add a new test) to assert that when a labeled constraint is violated through `edit_check`, the returned Diagnostic messages contain the human-readable label string rather than the raw ConstraintNodeId.\n2. In crates/reify-compiler/tests/constraint_inst_tests.rs:368-379, replace positional `tmpl.constraints[0]`/`[1]` access with label-based `.find(|c| c.label == Some(\"Bounded[0]\".to_string()))` to make the test order-independent.\n3. In crates/reify-eval/tests/constraint_def_eval.rs, add a test for the guard=true active case of a guarded constraint def where the constraint is violated, verifying that the entry appears with the expected label and Violated satisfaction.\n\nMemory hints: search for \"edit_check_preserves_constraint_labels\", search for \"constraint_inst_tests label\", search for \"guarded constraint def test\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:29:49.509Z"
+        "updatedAt": "2026-04-03T23:34:35.500Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:31:38.048Z",
+      "lastModified": "2026-04-03T23:34:35.500Z",
       "taskCount": 848,
       "completedCount": 659,
       "tags": [
