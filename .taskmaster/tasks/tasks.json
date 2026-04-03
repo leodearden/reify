@@ -17788,6 +17788,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 852,
+        "title": "Strengthen malformed-initialize test assertions and add downstream-operation coverage",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Tighten initialize_with_malformed_params_emits_warning (lines 70-73) — capture warn_count before calling handle_request and assert it increased by exactly 1 after, so the test actually verifies the malformed-params branch ran rather than any ambient warning. (2) Add a warn-count assertion to initialize_with_malformed_params_still_returns_capabilities (lines 340-366) to confirm the fallback branch actually executed. (3) Add a new test: perform a malformed initialize, then call initialized + textDocument/didOpen + textDocument/completion, and assert the results are valid — confirming that the default-fallback server state supports downstream LSP operations.\n\nmemory_hints: search(\"LSP malformed initialize test assertions coverage\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17800,7 +17811,7 @@
       ],
       "created": "2026-04-03T23:43:59.150Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:44:04.577Z"
+      "updated": "2026-04-03T23:44:10.562Z"
     }
   }
 }
