@@ -8472,7 +8472,7 @@
         "description": "From task 205 performance + robustness reviews: (1) set_max_unfold_depth has no upper bound; depth=10000 risks stack overflow. Add upper bound (e.g., <= 512) or restructure to iterative worklist. (2) set_max_unfold_depth(0) panics via assert at a pub API boundary; consider returning Result or add # Panics doc. (3) Consider renaming is_recursive to has_recursive_structure or documenting dual use. Modules: crates/reify-eval, crates/reify-compiler",
         "details": "",
         "testStrategy": "Existing tests pass. Add test for upper bound rejection.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "205"
         ],
@@ -8485,7 +8485,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T21:10:21.264980+00:00"
+        "updatedAt": "2026-04-03T13:35:03.145Z"
       },
       {
         "id": "425",
@@ -17250,7 +17250,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T13:35:02.946Z",
+      "lastModified": "2026-04-03T13:35:03.146Z",
       "taskCount": 822,
       "completedCount": 649,
       "tags": [
