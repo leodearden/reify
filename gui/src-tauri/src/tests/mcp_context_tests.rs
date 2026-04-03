@@ -133,13 +133,19 @@ fn get_source_location_nonexistent_returns_error() {
     );
 }
 
+/// Regression guard: get_diagnostics returns empty for a clean-compiled module.
+/// Renamed from get_diagnostics_returns_empty to clarify it tests real engine wiring
+/// (step-5 replaced the Ok(Vec::new()) stub with a real EngineSession delegate).
 #[test]
-fn get_diagnostics_returns_empty() {
+fn get_diagnostics_returns_empty_for_clean_source() {
     let ctx = make_tauri_context();
     let diags = ctx
         .get_diagnostics()
         .expect("get_diagnostics should succeed");
-    assert!(diags.is_empty(), "diagnostics should be empty initially");
+    assert!(
+        diags.is_empty(),
+        "bracket source has no warnings → diagnostics should be empty"
+    );
 }
 
 // --- Write method tests ---
