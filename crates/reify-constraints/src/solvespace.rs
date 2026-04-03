@@ -1105,4 +1105,101 @@ mod tests {
             "error message should contain cell_id, got: {err_msg}"
         );
     }
+
+    /// Calling add_auto_coord twice with the same auto-param cell_id must
+    /// return the same Slvs_hParam handle and must NOT grow params on the second call.
+    #[test]
+    fn add_auto_coord_cache_hit_idempotency() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params = vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }];
+        let current_values = ValueMap::new();
+
+        // First call — creates the param and inserts into the mapping
+        let h1 = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("first call should succeed");
+        let len_after_first = builder.params.len();
+
+        // Second call — should hit the cache and return the same handle
+        let h2 = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("second call should succeed");
+
+        assert_eq!(h1, h2, "second call should return the same cached handle");
+        assert_eq!(
+            builder.params.len(),
+            len_after_first,
+            "params.len() should not grow on the second (cache-hit) call"
+        );
+    }
+
+    /// When an auto-param cell_id is present in current_values, add_auto_coord
+    /// must use that value as the warm-start initial value instead of the 0.01 default.
+    #[test]
+    fn add_auto_coord_auto_param_warm_start() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params = vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }];
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            cell_id.clone(),
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let h = builder
+            .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
+            .expect("expected Ok for auto param with current value");
+
+        let param = builder
+            .params
+            .iter()
+            .find(|p| p.h == h)
+            .expect("param not found in builder");
+        assert_eq!(
+            param.val, 5.0,
+            "auto param with current value should use that value as warm-start initial"
+        );
+    }
+
+    /// add_point must propagate the Err returned by add_auto_coord when the
+    /// x-coordinate cell_id is a non-auto param absent from current_values.
+    /// This covers the `?` operator on line 489 of add_point.
+    #[test]
+    fn add_point_propagates_missing_value_error() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Fixed", "y");
+        // cell_id is NOT in auto_params (non-auto)
+        let auto_params: Vec<AutoParam> = vec![];
+        // cell_id is also NOT in current_values — triggers the Err branch
+        let current_values = ValueMap::new();
+
+        let pt = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
+        };
+        let result = builder.add_point(&pt, &auto_params, &current_values);
+
+        assert!(
+            result.is_err(),
+            "add_point should propagate the Err from add_auto_coord, got Ok"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains(&cell_id.to_string()),
+            "error message should contain cell_id, got: {err_msg}"
+        );
+    }
 }
