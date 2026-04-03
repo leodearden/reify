@@ -17163,11 +17163,11 @@
         "description": "Move `count_members_recursive` (and its `_depth` helper) from `crates/reify-lsp/src/analysis.rs` to `crates/reify-syntax/src/lib.rs` alongside `find_named_member_span`, so all `MemberDecl` traversal logic is co-located. The LSP crate should import and call it.\n\nAlso move `find_named_member_span_finds_param_in_nested_else_guarded` test (and `build_nested_else_guarded_members` helper) from the LSP analysis tests to `crates/reify-syntax/tests/member_span_tests.rs` where the analogous depth-limit tests already live.\n\nContext: Task 633 already extracted `for_each_member_recursive` and `MemberCounts`. This continues that consolidation. Having two depth-limited traversals of the same AST in separate crates is a latent duplication concern — if a new `MemberDecl` variant is added, both must be updated independently.\n\nMemory hints: search \"count_members_recursive MemberCounts for_each_member_recursive\" for prior refactoring context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T01:09:32.528Z",
+        "updatedAt": "2026-04-03T01:15:24.408Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp",
@@ -17231,9 +17231,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T01:13:34.205Z",
+      "lastModified": "2026-04-03T01:15:24.408Z",
       "taskCount": 822,
-      "completedCount": 628,
+      "completedCount": 629,
       "tags": [
         "master"
       ]
