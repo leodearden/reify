@@ -17425,11 +17425,11 @@
         "description": "Remove the tracing::warn! call from add_auto_coord (solvespace.rs:559-562) and add it instead at the Err(reason) match arm in ConstraintSolver::solve (solvespace.rs:796-803), consistent with how solver.rs handles its own Err paths. This eliminates double-reporting (once via tracing, once via Diagnostic::warning in reify-eval) and aligns with the established pattern that builders propagate errors and coordinators log.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:20:20.468Z",
+        "updatedAt": "2026-04-03T23:43:44.587Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -17769,7 +17769,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:43:42.744Z",
+      "lastModified": "2026-04-03T23:43:44.587Z",
       "taskCount": 849,
       "completedCount": 661,
       "tags": [
