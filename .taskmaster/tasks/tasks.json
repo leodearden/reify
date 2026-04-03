@@ -17268,7 +17268,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/compiler_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 824,
@@ -17279,7 +17288,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solvespace.rs",
+            "crates/reify-constraints/tests/solvespace_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": 825,
