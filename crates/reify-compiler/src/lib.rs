@@ -5197,7 +5197,7 @@ fn compile_entity(
 
                 // For each predicate in the constraint def, substitute params with args
                 // and compile the resulting expression in the calling entity's scope.
-                for predicate in &def.predicates {
+                for (pred_idx, predicate) in def.predicates.iter().enumerate() {
                     let substituted = substitute_expr(predicate, &arg_map);
                     let compiled_expr =
                         compile_expr(&substituted, &scope, enum_defs, functions, diagnostics);
@@ -5205,7 +5205,7 @@ fn compile_entity(
                     let id = ConstraintNodeId::new(entity_name, constraint_index);
                     let cc = CompiledConstraint {
                         id,
-                        label: None,
+                        label: Some(format!("{}[{}]", ci.name, pred_idx)),
                         expr: compiled_expr,
                         span: ci.span,
                         domain: None,
