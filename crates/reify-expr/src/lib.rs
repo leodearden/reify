@@ -1157,14 +1157,7 @@ fn eval_method_call(
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let mag = re.hypot(*im);
-                    if dimension.is_dimensionless() {
-                        Value::Real(mag)
-                    } else {
-                        Value::Scalar {
-                            si_value: mag,
-                            dimension: *dimension,
-                        }
-                    }
+                    Value::from_component(mag, *dimension)
                 }
                 _ => Value::Undef,
             }
@@ -1207,14 +1200,7 @@ fn eval_method_call(
             match obj {
                 Value::Complex { re, im, dimension } => {
                     let component = if method == "re" { *re } else { *im };
-                    if dimension.is_dimensionless() {
-                        Value::Real(component)
-                    } else {
-                        Value::Scalar {
-                            si_value: component,
-                            dimension: *dimension,
-                        }
-                    }
+                    Value::from_component(component, *dimension)
                 }
                 _ => Value::Undef,
             }
