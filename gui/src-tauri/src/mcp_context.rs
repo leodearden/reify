@@ -126,7 +126,26 @@ impl ReifyToolContext for TauriToolContext {
     }
 
     fn get_diagnostics(&self) -> Result<Vec<DiagnosticInfo>, ToolError> {
-        Ok(Vec::new())
+        let session = self
+            .engine
+            .lock()
+            .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
+
+        let diags = session.get_diagnostics();
+
+        Ok(diags
+            .into_iter()
+            .map(|d| DiagnosticInfo {
+                file_path: d.file_path,
+                line: d.line,
+                column: d.column,
+                end_line: d.end_line,
+                end_column: d.end_column,
+                severity: d.severity,
+                message: d.message,
+                code: d.code,
+            })
+            .collect())
     }
 
     fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {

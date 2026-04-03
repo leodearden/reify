@@ -54,6 +54,22 @@ pub struct SourceLocation {
     pub end_column: u32,
 }
 
+/// A diagnostic (error/warning/info) from the compiler, in GUI-native form.
+///
+/// Follows the pattern of [`ValueData`] and [`ConstraintData`]: defined in types.rs,
+/// produced by [`crate::engine::EngineSession`], mapped to MCP types in mcp_context.rs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagnosticData {
+    pub file_path: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub severity: String,
+    pub message: String,
+    pub code: Option<String>,
+}
+
 /// A source file in the project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileData {
