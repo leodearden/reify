@@ -333,6 +333,23 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
     assert!(has_error, "should have at least one error diagnostic");
 }
 
+/// Malformed (non-object) params should return an Err containing
+/// "initialize params error".
+#[tokio::test]
+async fn initialize_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is clearly malformed for InitializeParams (expects an object)
+    let result = lsp.handle_request("initialize", json!(42)).await;
+
+    assert!(result.is_err(), "server should return Err on malformed params");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("initialize params error"),
+        "error message should contain 'initialize params error', got: {err}"
+    );
+}
+
 /// Regression guard: malformed params must not prevent capabilities from being
 /// returned. Even if InitializeParams can't be deserialized, the server should
 /// fall back to defaults and still advertise its capabilities.
