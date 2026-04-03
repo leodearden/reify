@@ -1,0 +1,321 @@
+//! Compiler-level tests for constraint def features (task 199).
+//!
+//! Tests edge cases, error paths, and cross-module import for constraint defs.
+//! Complements the existing constraint_inst_tests.rs from task 198.
+
+use reify_compiler::*;
+use reify_types::*;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn compile_module(source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    reify_compiler::compile(&parsed)
+}
+
+/// Parse and compile, returning the template with the given name + all diagnostics.
+fn compile_template(source: &str, name: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
+    let module = compile_module(source);
+    let diags = module.diagnostics.clone();
+    let tmpl = module
+        .templates
+        .into_iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("expected template '{name}' in compiled module"));
+    (tmpl, diags)
+}
+
+/// Collect only error diagnostics.
+fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+// ── Test 1: simple def one predicate template ────────────────────────────────
+
+/// Compile a single-predicate constraint def, instantiate in a structure.
+/// Result: exactly 1 constraint in the template.
+#[test]
+fn simple_def_one_predicate_template() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 0
+}
+structure S {
+    param t: Length
+    constraint MinWall(wall: t)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        1,
+        "expected exactly 1 constraint in template, got {}",
+        tmpl.constraints.len()
+    );
+
+    // Label should be MinWall[0]
+    assert_eq!(
+        tmpl.constraints[0].label,
+        Some("MinWall[0]".to_string()),
+        "expected label MinWall[0], got {:?}",
+        tmpl.constraints[0].label
+    );
+}
+
+// ── Test 2: multi-param three args all substituted ───────────────────────────
+
+/// Compile a 3-param constraint def. Verify all 3 param references are substituted.
+#[test]
+fn multi_param_three_args() {
+    let source = r#"
+constraint def Triple {
+    param a: Length
+    param b: Length
+    param c: Length
+    a > b
+    b > c
+    a > c
+}
+structure S {
+    param x: Length
+    param y: Length
+    param z: Length
+    constraint Triple(a: x, b: y, c: z)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // 3 predicates → 3 constraints
+    assert_eq!(
+        tmpl.constraints.len(),
+        3,
+        "expected exactly 3 constraints, got {}",
+        tmpl.constraints.len()
+    );
+
+    // Each constraint should have a BinOp whose operands are ValueRefs (after substitution)
+    for (i, cc) in tmpl.constraints.iter().enumerate() {
+        match &cc.expr.kind {
+            CompiledExprKind::BinOp { left, right, .. } => {
+                assert!(
+                    matches!(&left.kind, CompiledExprKind::ValueRef(_)),
+                    "constraint[{i}] left should be ValueRef after substitution, got {:?}",
+                    left.kind
+                );
+                assert!(
+                    matches!(&right.kind, CompiledExprKind::ValueRef(_)),
+                    "constraint[{i}] right should be ValueRef after substitution, got {:?}",
+                    right.kind
+                );
+            }
+            other => panic!("constraint[{i}] should be BinOp, got {:?}", other),
+        }
+    }
+
+    // Labels: Triple[0], Triple[1], Triple[2]
+    for (i, expected_label) in ["Triple[0]", "Triple[1]", "Triple[2]"].iter().enumerate() {
+        assert_eq!(
+            tmpl.constraints[i].label,
+            Some(expected_label.to_string()),
+            "expected label {expected_label}, got {:?}",
+            tmpl.constraints[i].label
+        );
+    }
+}
+
+// ── Test 3: multiple predicates count ────────────────────────────────────────
+
+/// 3-predicate constraint def produces exactly 3 constraints in the template.
+#[test]
+fn multiple_predicates_conjunction_count() {
+    let source = r#"
+constraint def Trio {
+    param x: Length
+    x > 0
+    x > 1
+    x > 2
+}
+structure S {
+    param v: Length
+    constraint Trio(x: v)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        3,
+        "expected exactly 3 constraints for 3-predicate def, got {}",
+        tmpl.constraints.len()
+    );
+}
+
+// ── Test 4: named args in different order ─────────────────────────────────────
+
+/// Providing args in reverse declaration order must produce correct substitution.
+#[test]
+fn named_args_different_order() {
+    let source = r#"
+constraint def Bounded {
+    param x: Length
+    param lo: Length
+    param hi: Length
+    x >= lo
+    x <= hi
+}
+structure S {
+    param d: Length
+    constraint Bounded(hi: 100mm, lo: 5mm, x: d)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        2,
+        "expected 2 constraints, got {}",
+        tmpl.constraints.len()
+    );
+
+    // First constraint: x >= lo → d >= 5mm
+    // Left operand should be ValueRef(S.d)
+    match &tmpl.constraints[0].expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => {
+            assert_eq!(*op, BinOp::Ge, "first constraint should be Ge (>=)");
+            match &left.kind {
+                CompiledExprKind::ValueRef(id) => {
+                    assert_eq!(id.member, "d", "left should be ValueRef(d), got {}", id.member);
+                }
+                other => panic!("left should be ValueRef, got {:?}", other),
+            }
+        }
+        other => panic!("expected BinOp, got {:?}", other),
+    }
+}
+
+// ── Test 5: multiple defs in same module coexist ─────────────────────────────
+
+/// Two constraint defs can coexist; each instantiation resolves to its own def.
+#[test]
+fn multiple_defs_same_module() {
+    let source = r#"
+constraint def MinA {
+    param a: Length
+    a > 1
+}
+constraint def MinB {
+    param b: Length
+    b > 2
+}
+structure S {
+    param x: Length
+    param y: Length
+    constraint MinA(a: x)
+    constraint MinB(b: y)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        2,
+        "expected 2 constraints (one per def), got {}",
+        tmpl.constraints.len()
+    );
+
+    // First constraint should be labeled MinA[0], second MinB[0]
+    let has_min_a = tmpl
+        .constraints
+        .iter()
+        .any(|c| c.label == Some("MinA[0]".to_string()));
+    let has_min_b = tmpl
+        .constraints
+        .iter()
+        .any(|c| c.label == Some("MinB[0]".to_string()));
+
+    assert!(has_min_a, "expected constraint labeled MinA[0]");
+    assert!(has_min_b, "expected constraint labeled MinB[0]");
+}
+
+// ── Test 6: same def multiple instantiations ─────────────────────────────────
+
+/// One def instantiated twice in the same structure produces 2× predicates.
+#[test]
+fn same_def_multiple_instantiations() {
+    let source = r#"
+constraint def MinWall {
+    param wall: Length
+    wall > 1
+}
+structure S {
+    param t1: Length
+    param t2: Length
+    constraint MinWall(wall: t1)
+    constraint MinWall(wall: t2)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    // 1 predicate × 2 instantiations = 2 constraints
+    assert_eq!(
+        tmpl.constraints.len(),
+        2,
+        "expected 2 constraints from 2 instantiations of single-predicate def, got {}",
+        tmpl.constraints.len()
+    );
+
+    // Both labeled MinWall[0] (each instantiation produces predicate index 0)
+    for (i, cc) in tmpl.constraints.iter().enumerate() {
+        assert_eq!(
+            cc.label,
+            Some("MinWall[0]".to_string()),
+            "constraint[{i}] expected label MinWall[0], got {:?}",
+            cc.label
+        );
+    }
+
+    // But each references a different param (t1 vs t2)
+    let first_param = match &tmpl.constraints[0].expr.kind {
+        CompiledExprKind::BinOp { left, .. } => match &left.kind {
+            CompiledExprKind::ValueRef(id) => id.member.clone(),
+            other => panic!("expected ValueRef, got {:?}", other),
+        },
+        other => panic!("expected BinOp, got {:?}", other),
+    };
+    let second_param = match &tmpl.constraints[1].expr.kind {
+        CompiledExprKind::BinOp { left, .. } => match &left.kind {
+            CompiledExprKind::ValueRef(id) => id.member.clone(),
+            other => panic!("expected ValueRef, got {:?}", other),
+        },
+        other => panic!("expected BinOp, got {:?}", other),
+    };
+
+    assert_ne!(
+        first_param, second_param,
+        "two instantiations should reference different params, both got '{first_param}'"
+    );
+}
