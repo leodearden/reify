@@ -17458,10 +17458,11 @@
         "description": "Add the following tests in the #[cfg(test)] mod tests block (solvespace.rs:1007-1108):\n1. Cache-hit idempotency: call add_auto_coord twice with the same cell_id, assert same handle returned and builder.params.len() unchanged.\n2. Auto-param warm-start: cell_id in both auto_params and current_values (si_value: 5.0), assert created param val == 5.0, not 0.01.\n3. add_point error propagation: call builder.add_point with a PointRef::Auto containing a non-auto cell_id absent from current_values, assert result is Err.\n4. Integration: construct a ResolutionProblem with a non-auto coordinate cell_id absent from current_values, call SolveSpaceSolver::solve(), assert SolveResult::NoProgress with reason containing the cell_id.\n\nmemory_hints: search(\"solvespace builder test helpers test conventions\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:16:28.281Z"
       },
       {
         "id": "834",
@@ -17477,7 +17478,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:16:28.156Z",
+      "lastModified": "2026-04-03T23:16:28.281Z",
       "taskCount": 834,
       "completedCount": 656,
       "tags": [
