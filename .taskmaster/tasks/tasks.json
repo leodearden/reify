@@ -2623,7 +2623,7 @@
         "dependencies": [
           "159"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -2635,6 +2635,7 @@
             "crates/reify-syntax",
             "crates/reify-test-support",
             "crates/reify-types",
+            "gui/src-tauri",
             "tree-sitter-reify/grammar.js"
           ],
           "milestone": "M8",
@@ -2654,7 +2655,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T22:41:43.176Z"
+        "updatedAt": "2026-04-03T22:57:12.233Z"
       },
       {
         "id": "161",
@@ -17419,7 +17420,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T22:51:29.913Z",
+      "lastModified": "2026-04-03T22:57:12.233Z",
       "taskCount": 829,
       "completedCount": 655,
       "tags": [
