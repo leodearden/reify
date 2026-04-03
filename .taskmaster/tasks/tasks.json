@@ -17605,6 +17605,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 842,
+        "title": "Extract complex_phase helper to eliminate duplicated phase zero-guard",
+        "description": "The guard `if *re == 0.0 && *im == 0.0 { return Value::Undef; }` is copy-pasted verbatim into `crates/reify-expr/src/lib.rs` (method-call path) and `crates/reify-stdlib/src/lib.rs` (builtin path). Add a `Value::complex_phase(re: f64, im: f64, dimension: DimensionVector) -> Value` (or free function) in `crates/reify-types/src/value.rs` and have both call sites delegate to it, mirroring the pattern established by `Value::from_component` in the same diff.\n\nMemory hints: search \"from_component complex extraction pattern\", search \"phase zero-guard duplication\", entities: Value::from_component, phase, eval_builtin",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17617,7 +17628,7 @@
       ],
       "created": "2026-04-03T23:26:47.472Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:26:47.493Z"
+      "updated": "2026-04-03T23:26:52.805Z"
     }
   }
 }
