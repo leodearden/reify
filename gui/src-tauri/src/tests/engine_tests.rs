@@ -794,6 +794,95 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
 }
 
+/// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
+/// when the compiled module contains a warning.
+///
+/// Source with `port mount : NonExistentTrait` produces an "unknown port type" warning
+/// (validated by crates/reify-compiler/tests/port_compile_tests.rs:101-124).
+/// load_from_source() succeeds (warnings are not errors), so compiled.diagnostics stores
+/// the warning. get_diagnostics() then surfaces it, exercising:
+///   - the non-empty iteration path
+///   - byte_offset_to_line_col span conversion
+///   - file_path resolution from module_name
+///   - severity Display formatting
+///   - message propagation
+#[test]
+fn engine_get_diagnostics_returns_populated_warning() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let source = r#"structure S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+
+    // load_from_source should succeed — warnings are not errors
+    session
+        .load_from_source(source, "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+
+    assert!(
+        !diags.is_empty(),
+        "expected at least one diagnostic for unknown port type, got empty"
+    );
+
+    let first = &diags[0];
+
+    // severity must be "warning"
+    assert_eq!(
+        first.severity, "warning",
+        "expected severity 'warning', got '{}'",
+        first.severity
+    );
+
+    // message must mention the unknown port type
+    assert!(
+        first.message.contains("unknown port type"),
+        "expected message to contain 'unknown port type', got: '{}'",
+        first.message
+    );
+    assert!(
+        first.message.contains("NonExistentTrait"),
+        "expected message to mention 'NonExistentTrait', got: '{}'",
+        first.message
+    );
+
+    // file_path must be derived from the module name passed to load_from_source
+    assert_eq!(
+        first.file_path, "test_warn.ri",
+        "expected file_path 'test_warn.ri', got '{}'",
+        first.file_path
+    );
+
+    // line and column must be valid 1-based values
+    assert!(
+        first.line >= 1,
+        "expected line >= 1, got {}",
+        first.line
+    );
+    assert!(
+        first.column >= 1,
+        "expected column >= 1, got {}",
+        first.column
+    );
+
+    // end_line and end_column must form a coherent range
+    assert!(
+        first.end_line >= first.line,
+        "expected end_line ({}) >= line ({})",
+        first.end_line,
+        first.line
+    );
+    assert!(
+        first.end_column >= 1,
+        "expected end_column >= 1, got {}",
+        first.end_column
+    );
+}
+
 /// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
 /// Validates the method works end-to-end on a real compiled module.
 #[test]
