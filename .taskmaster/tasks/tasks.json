@@ -8439,7 +8439,7 @@
         "description": "From task 205 architect review (DRY divergence risk): elaborate_child_instance and elaborate_child_params_only/elaborate_child_lets_only are parallel code paths. Refactor elaborate_child_instance to delegate to the helpers. Also: add doc comment on BFS projection invariant, fix ContentHash in sub_component_with_guard (crates/reify-test-support/src/builders.rs). Modules: crates/reify-eval, crates/reify-test-support",
         "details": "",
         "testStrategy": "All existing recursive_unfold and collection_sub_eval tests must pass unchanged.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "205"
         ],
@@ -8453,7 +8453,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T07:05:31.979Z"
+        "updatedAt": "2026-04-03T10:01:22.397Z"
       },
       {
         "id": "424",
@@ -17240,9 +17240,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T07:06:31.615Z",
+      "lastModified": "2026-04-03T10:01:22.397Z",
       "taskCount": 822,
-      "completedCount": 641,
+      "completedCount": 642,
       "tags": [
         "master"
       ]
