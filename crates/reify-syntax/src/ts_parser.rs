@@ -2,6 +2,7 @@
 //!
 //! Parses source text into tree-sitter CST, then lowers to the `ParsedModule` AST.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::*;
@@ -12,10 +13,10 @@ use reify_types::{ContentHash, ModulePath, SourceSpan};
 macro_rules! check_and_lower {
     ($self:ident, $child:ident, $label:expr, $lower:expr) => {
         if $child.is_error() || $child.has_error() {
-            $self.errors.push(ParseError {
-                message: format!("invalid {}: {}", $label, $self.node_text($child)),
-                span: $self.span($child),
-            });
+            $self.push_error(
+                format!("invalid {}: {}", $label, $self.node_text($child)),
+                $self.span($child),
+            );
             None
         } else {
             $lower
@@ -41,7 +42,7 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
     ParsedModule {
         path: module_path,
         declarations: lowering.declarations,
-        errors: lowering.errors,
+        errors: lowering.errors.into_inner(),
         content_hash,
     }
 }
@@ -50,7 +51,8 @@ pub fn parse(source: &str, module_path: ModulePath) -> ParsedModule {
 struct Lowering<'a> {
     source: &'a str,
     declarations: Vec<Declaration>,
-    errors: Vec<ParseError>,
+    /// Interior mutability so that `&self` expression-lowering methods can emit diagnostics.
+    errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<String>,
 }
@@ -60,9 +62,14 @@ impl<'a> Lowering<'a> {
         Self {
             source,
             declarations: Vec::new(),
-            errors: Vec::new(),
+            errors: RefCell::new(Vec::new()),
             known_enums: HashSet::new(),
         }
+    }
+
+    /// Push a parse error diagnostic.
+    fn push_error(&self, message: String, span: SourceSpan) {
+        self.errors.borrow_mut().push(ParseError { message, span });
     }
 
     /// Extract the source text for a node.
@@ -78,6 +85,25 @@ impl<'a> Lowering<'a> {
     /// Compute content hash for a node from its source text.
     fn content_hash(&self, node: tree_sitter::Node) -> ContentHash {
         ContentHash::of_str(self.node_text(node))
+    }
+
+    /// Emit a diagnostic for an unexpected named child in a lowering context.
+    ///
+    /// Skips anonymous tokens and extras (comments). For named, non-extra
+    /// children that don't match any expected arm, pushes an error with the
+    /// child's kind and source text.
+    fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
+        if child.is_named() && !child.is_extra() {
+            self.push_error(
+                format!(
+                    "unexpected '{}' in {}: {}",
+                    child.kind(),
+                    context,
+                    self.node_text(child)
+                ),
+                self.span(child),
+            );
+        }
     }
 
     /// Extract a doc comment from `///` line comments immediately preceding a node.
@@ -186,13 +212,18 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Unit(decl));
                     }
                 }
-                "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!("syntax error: {}", self.node_text(child)),
-                        span: self.span(child),
-                    });
+                "type_alias_declaration" => {
+                    if let Some(decl) = self.lower_type_alias(child) {
+                        self.declarations.push(Declaration::TypeAlias(decl));
+                    }
                 }
-                _ => {}
+                "ERROR" => {
+                    self.push_error(
+                        format!("syntax error: {}", self.node_text(child)),
+                        self.span(child),
+                    );
+                }
+                _ => self.warn_unexpected_child(child, "source file"),
             }
         }
     }
@@ -229,9 +260,9 @@ impl<'a> Lowering<'a> {
             let alias_name = self.node_text(alias).to_string();
             // Check if the last segment looks like an entity (starts with uppercase)
             if segments.len() >= 2
-                && segments.last().is_some_and(|s| {
-                    s.starts_with(|c: char| c.is_uppercase())
-                })
+                && segments
+                    .last()
+                    .is_some_and(|s| s.starts_with(|c: char| c.is_uppercase()))
             {
                 // EntityAliased: `import a.b.Entity as Alias`
                 let entity = segments.pop().unwrap();
@@ -251,9 +282,9 @@ impl<'a> Lowering<'a> {
         } else {
             // No items, no alias — check if last segment is an entity (uppercase)
             if segments.len() >= 2
-                && segments.last().is_some_and(|s| {
-                    s.starts_with(|c: char| c.is_uppercase())
-                })
+                && segments
+                    .last()
+                    .is_some_and(|s| s.starts_with(|c: char| c.is_uppercase()))
             {
                 // Entity: `import a.b.Entity`
                 let entity = segments.pop().unwrap();
@@ -446,7 +477,10 @@ impl<'a> Lowering<'a> {
             if child.kind() == "type_arg_list" {
                 let mut inner_cursor = child.walk();
                 for inner in child.named_children(&mut inner_cursor) {
-                    if inner.kind() == "type_expr" || inner.kind() == "parameterized_type" || inner.kind() == "identifier" {
+                    if inner.kind() == "type_expr"
+                        || inner.kind() == "parameterized_type"
+                        || inner.kind() == "identifier"
+                    {
                         args.push(self.lower_type_expr_node(inner));
                     }
                 }
@@ -489,9 +523,9 @@ impl<'a> Lowering<'a> {
         };
 
         // Extract optional return type
-        let return_type = node.child_by_field_name("return_type").map(|t| {
-            self.lower_type_expr_node(t)
-        });
+        let return_type = node
+            .child_by_field_name("return_type")
+            .map(|t| self.lower_type_expr_node(t));
 
         // Extract fn_body
         let body = {
@@ -653,8 +687,12 @@ impl<'a> Lowering<'a> {
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "param_declaration" => {
-                    let _ = check_and_lower!(self, child, "constraint param",
-                        self.lower_param(child).map(|p| params.push(p)));
+                    let _ = check_and_lower!(
+                        self,
+                        child,
+                        "constraint param",
+                        self.lower_param(child).map(|p| params.push(p))
+                    );
                 }
                 "let_declaration" => {
                     // let declarations in constraint def body are ignored for now
@@ -667,16 +705,19 @@ impl<'a> Lowering<'a> {
                         predicates.push(expr);
                     }
                 }
+                // identifier (name) and type_parameters are already handled
+                // before the loop via child_by_field_name / lower_type_parameters.
+                "identifier" | "type_parameters" => {}
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!(
+                    self.push_error(
+                        format!(
                             "syntax error in constraint body: {}",
                             self.node_text(child)
                         ),
-                        span: self.span(child),
-                    });
+                        self.span(child),
+                    );
                 }
-                _ => {}
+                _ => self.warn_unexpected_child(child, "constraint body"),
             }
         }
 
@@ -717,6 +758,72 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    fn lower_type_alias(&mut self, node: tree_sitter::Node) -> Option<TypeAliasDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let doc = self.extract_doc_comment(node);
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_dimensional_type_expr(type_node);
+
+        Some(TypeAliasDecl {
+            name,
+            doc,
+            is_pub,
+            type_params,
+            type_expr,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower a dimensional_type_expr node. Handles binary operations on types
+    /// (e.g., `Force / Area`, `Mass * Length`) and delegates to `lower_type_expr_node`
+    /// for leaf type expressions.
+    fn lower_dimensional_type_expr(&mut self, node: tree_sitter::Node) -> TypeExpr {
+        if node.kind() == "dimensional_type_expr" {
+            // Check if this is a binary op (has op field) or a passthrough to type_expr
+            if let Some(op_node) = node.child_by_field_name("op") {
+                let op = self.node_text(op_node).to_string();
+                let left_node = match node.child_by_field_name("left") {
+                    Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
+                    _ => {
+                        self.push_error(
+                            "dimensional type expression missing left operand".to_string(),
+                            self.span(node),
+                        );
+                        return self.lower_type_expr_node(node);
+                    }
+                };
+                let right_node = match node.child_by_field_name("right") {
+                    Some(n) if !n.is_missing() && !n.is_error() && !n.has_error() => n,
+                    _ => {
+                        self.push_error(
+                            "dimensional type expression missing right operand".to_string(),
+                            self.span(node),
+                        );
+                        return self.lower_type_expr_node(node);
+                    }
+                };
+                let left = self.lower_dimensional_type_expr(left_node);
+                let right = self.lower_dimensional_type_expr(right_node);
+                return TypeExpr {
+                    name: op,
+                    type_args: vec![left, right],
+                    span: self.span(node),
+                };
+            }
+            // Passthrough: dimensional_type_expr -> type_expr
+            let child = node.child(0).unwrap_or(node);
+            return self.lower_type_expr_node(child);
+        }
+        // Fallback: treat as a regular type expression
+        self.lower_type_expr_node(node)
     }
 
     fn lower_purpose_params(&self, node: tree_sitter::Node) -> Vec<PurposeParam> {
@@ -803,9 +910,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let type_expr = node.child_by_field_name("type").map(|t| {
-            self.lower_type_expr_node(t)
-        });
+        let type_expr = node
+            .child_by_field_name("type")
+            .map(|t| self.lower_type_expr_node(t));
 
         let value_node = node.child_by_field_name("value")?;
         let value = self.lower_expr(value_node)?;
@@ -843,9 +950,9 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
-        let default_type = node.child_by_field_name("default").map(|t| {
-            self.lower_type_expr_node(t)
-        });
+        let default_type = node
+            .child_by_field_name("default")
+            .map(|t| self.lower_type_expr_node(t));
 
         Some(AssociatedTypeDecl {
             name,
@@ -858,36 +965,86 @@ impl<'a> Lowering<'a> {
     /// Lower a single member node (used by both lower_structure and lower_guarded_block).
     fn lower_member(&mut self, child: tree_sitter::Node) -> Option<MemberDecl> {
         match child.kind() {
-            "param_declaration" => check_and_lower!(self, child, "param",
-                self.lower_param(child).map(MemberDecl::Param)),
-            "let_declaration" => check_and_lower!(self, child, "let",
-                self.lower_let(child).map(MemberDecl::Let)),
-            "constraint_declaration" => check_and_lower!(self, child, "constraint",
-                self.lower_constraint(child).map(MemberDecl::Constraint)),
-            "sub_declaration" => check_and_lower!(self, child, "sub",
-                self.lower_sub(child).map(MemberDecl::Sub)),
-            "minimize_declaration" => check_and_lower!(self, child, "minimize",
-                self.lower_minimize(child).map(MemberDecl::Minimize)),
-            "maximize_declaration" => check_and_lower!(self, child, "maximize",
-                self.lower_maximize(child).map(MemberDecl::Maximize)),
-            "guarded_block" => check_and_lower!(self, child, "guarded block",
-                self.lower_guarded_block(child)),
-            "associated_type" => {
-                self.lower_associated_type(child).map(MemberDecl::AssociatedType)
-            }
-            "port_declaration" => check_and_lower!(self, child, "port",
-                self.lower_port(child).map(MemberDecl::Port)),
-            "connect_statement" => check_and_lower!(self, child, "connect",
-                self.lower_connect(child).map(MemberDecl::Connect)),
-            "chain_statement" => check_and_lower!(self, child, "chain",
-                self.lower_chain(child).map(MemberDecl::Chain)),
-            "meta_block" => check_and_lower!(self, child, "meta",
-                self.lower_meta_block(child).map(MemberDecl::MetaBlock)),
+            "param_declaration" => check_and_lower!(
+                self,
+                child,
+                "param",
+                self.lower_param(child).map(MemberDecl::Param)
+            ),
+            "let_declaration" => check_and_lower!(
+                self,
+                child,
+                "let",
+                self.lower_let(child).map(MemberDecl::Let)
+            ),
+            "constraint_declaration" => check_and_lower!(
+                self,
+                child,
+                "constraint",
+                self.lower_constraint(child).map(MemberDecl::Constraint)
+            ),
+            "sub_declaration" => check_and_lower!(
+                self,
+                child,
+                "sub",
+                self.lower_sub(child).map(MemberDecl::Sub)
+            ),
+            "minimize_declaration" => check_and_lower!(
+                self,
+                child,
+                "minimize",
+                self.lower_minimize(child).map(MemberDecl::Minimize)
+            ),
+            "maximize_declaration" => check_and_lower!(
+                self,
+                child,
+                "maximize",
+                self.lower_maximize(child).map(MemberDecl::Maximize)
+            ),
+            "guarded_block" => check_and_lower!(
+                self,
+                child,
+                "guarded block",
+                self.lower_guarded_block(child)
+            ),
+            "associated_type" => self
+                .lower_associated_type(child)
+                .map(MemberDecl::AssociatedType),
+            "port_declaration" => check_and_lower!(
+                self,
+                child,
+                "port",
+                self.lower_port(child).map(MemberDecl::Port)
+            ),
+            "connect_statement" => check_and_lower!(
+                self,
+                child,
+                "connect",
+                self.lower_connect(child).map(MemberDecl::Connect)
+            ),
+            "chain_statement" => check_and_lower!(
+                self,
+                child,
+                "chain",
+                self.lower_chain(child).map(MemberDecl::Chain)
+            ),
+            "constraint_instantiation" => check_and_lower!(
+                self,
+                child,
+                "constraint instantiation",
+                self.lower_constraint_inst(child).map(MemberDecl::ConstraintInst)
+            ),
+            "meta_block" => check_and_lower!(
+                self,
+                child,
+                "meta",
+                self.lower_meta_block(child).map(MemberDecl::MetaBlock)
+            ),
             "ERROR" => {
-                self.errors.push(ParseError {
-                    message: format!("syntax error: {}", self.node_text(child)),
-                    span: self.span(child),
-                });
+                self.push_error(
+                    format!("syntax error: {}", self.node_text(child)),
+                    self.span(child),
+                );
                 None
             }
             _ => None,
@@ -1025,18 +1182,20 @@ impl<'a> Lowering<'a> {
 
         let doc = self.extract_doc_comment(node);
 
-        let type_expr = node.child_by_field_name("type").map(|t| {
-            self.lower_type_expr_node(t)
-        });
+        let type_expr = node
+            .child_by_field_name("type")
+            .map(|t| self.lower_type_expr_node(t));
 
-        let default = node.child_by_field_name("default")
-            .and_then(|d| {
-                if d.kind() == "auto_keyword" {
-                    Some(Expr { kind: ExprKind::Auto, span: self.span(d) })
-                } else {
-                    self.lower_expr(d)
-                }
-            });
+        let default = node.child_by_field_name("default").and_then(|d| {
+            if d.kind() == "auto_keyword" {
+                Some(Expr {
+                    kind: ExprKind::Auto,
+                    span: self.span(d),
+                })
+            } else {
+                self.lower_expr(d)
+            }
+        });
 
         let where_clause = self.lower_where_clause(node);
 
@@ -1060,9 +1219,9 @@ impl<'a> Lowering<'a> {
         // Detect 'pub' keyword by checking anonymous children
         let is_pub = self.has_pub_keyword(node);
 
-        let type_expr = node.child_by_field_name("type").map(|t| {
-            self.lower_type_expr_node(t)
-        });
+        let type_expr = node
+            .child_by_field_name("type")
+            .map(|t| self.lower_type_expr_node(t));
 
         let value_node = node.child_by_field_name("value")?;
         let value = self.lower_expr(value_node)?;
@@ -1190,27 +1349,28 @@ impl<'a> Lowering<'a> {
         let type_name = self.node_text(type_node).to_string();
 
         // Optional inline direction
-        let direction = node.child_by_field_name("direction").map(|d| {
-            match self.node_text(d) {
+        let direction = node
+            .child_by_field_name("direction")
+            .map(|d| match self.node_text(d) {
                 "in" => PortDirection::In,
                 "out" => PortDirection::Out,
                 "bidi" => PortDirection::Bidi,
                 other => {
-                    self.errors.push(ParseError {
-                        message: format!("unknown port direction: {}", other),
-                        span: self.span(d),
-                    });
+                    self.push_error(
+                        format!("unknown port direction: {}", other),
+                        self.span(d),
+                    );
                     PortDirection::Bidi
                 }
-            }
-        });
+            });
 
         // Optional body: port_body node contains members, direction setting, frame setting
-        let (members, body_direction, frame_expr) = if let Some(body_node) = node.child_by_field_name("body") {
-            self.lower_port_body(body_node)
-        } else {
-            (Vec::new(), None, None)
-        };
+        let (members, body_direction, frame_expr) =
+            if let Some(body_node) = node.child_by_field_name("body") {
+                self.lower_port_body(body_node)
+            } else {
+                (Vec::new(), None, None)
+            };
 
         // Body direction overrides inline direction
         let final_direction = body_direction.or(direction);
@@ -1226,7 +1386,10 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_port_body(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Option<PortDirection>, Option<Expr>) {
+    fn lower_port_body(
+        &mut self,
+        node: tree_sitter::Node,
+    ) -> (Vec<MemberDecl>, Option<PortDirection>, Option<Expr>) {
         let mut members = Vec::new();
         let mut body_direction = None;
         let mut frame_expr = None;
@@ -1264,7 +1427,16 @@ impl<'a> Lowering<'a> {
                         frame_expr = self.lower_expr(value_node);
                     }
                 }
-                _ => {}
+                "ERROR" => {
+                    self.push_error(
+                        format!(
+                            "syntax error in port body: {}",
+                            self.node_text(child)
+                        ),
+                        self.span(child),
+                    );
+                }
+                _ => self.warn_unexpected_child(child, "port body"),
             }
         }
 
@@ -1281,10 +1453,10 @@ impl<'a> Lowering<'a> {
             "<-" => ConnectOp::Reverse,
             "<->" => ConnectOp::Bidirectional,
             other => {
-                self.errors.push(ParseError {
-                    message: format!("unknown connect operator: {}", other),
-                    span: self.span(op_node),
-                });
+                self.push_error(
+                    format!("unknown connect operator: {}", other),
+                    self.span(op_node),
+                );
                 ConnectOp::Forward
             }
         };
@@ -1326,7 +1498,10 @@ impl<'a> Lowering<'a> {
     }
 
     #[allow(clippy::type_complexity)]
-    fn lower_connect_body(&mut self, node: tree_sitter::Node) -> (Vec<(String, Expr)>, Vec<(String, String)>) {
+    fn lower_connect_body(
+        &mut self,
+        node: tree_sitter::Node,
+    ) -> (Vec<(String, Expr)>, Vec<(String, String)>) {
         let mut params = Vec::new();
         let mut port_mappings = Vec::new();
 
@@ -1335,51 +1510,48 @@ impl<'a> Lowering<'a> {
             match child.kind() {
                 "connect_param_assignment" => {
                     if child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!(
+                        self.push_error(
+                            format!(
                                 "invalid connect parameter: {}",
                                 self.node_text(child)
                             ),
-                            span: self.span(child),
-                        });
+                            self.span(child),
+                        );
                         continue;
                     }
                     let Some(name_node) = child.child_by_field_name("name") else {
-                        self.errors.push(ParseError {
-                            message: format!(
+                        self.push_error(
+                            format!(
                                 "connect parameter missing name: {}",
                                 self.node_text(child)
                             ),
-                            span: self.span(child),
-                        });
+                            self.span(child),
+                        );
                         continue;
                     };
                     let name = self.node_text(name_node).to_string();
                     let Some(value_node) = child.child_by_field_name("value") else {
-                        self.errors.push(ParseError {
-                            message: format!("connect parameter '{}' missing value", name),
-                            span: self.span(child),
-                        });
+                        self.push_error(
+                            format!("connect parameter '{}' missing value", name),
+                            self.span(child),
+                        );
                         continue;
                     };
                     let Some(value) = self.lower_expr(value_node) else {
-                        self.errors.push(ParseError {
-                            message: format!("invalid value in connect parameter '{}'", name),
-                            span: self.span(value_node),
-                        });
+                        self.push_error(
+                            format!("invalid value in connect parameter '{}'", name),
+                            self.span(value_node),
+                        );
                         continue;
                     };
                     params.push((name, value));
                 }
                 "port_mapping" => {
                     if child.has_error() {
-                        self.errors.push(ParseError {
-                            message: format!(
-                                "invalid port mapping: {}",
-                                self.node_text(child)
-                            ),
-                            span: self.span(child),
-                        });
+                        self.push_error(
+                            format!("invalid port mapping: {}", self.node_text(child)),
+                            self.span(child),
+                        );
                         continue;
                     }
                     match (
@@ -1392,37 +1564,23 @@ impl<'a> Lowering<'a> {
                             port_mappings.push((from, to));
                         }
                         _ => {
-                            self.errors.push(ParseError {
-                                message: format!(
+                            self.push_error(
+                                format!(
                                     "incomplete port mapping: {}",
                                     self.node_text(child)
                                 ),
-                                span: self.span(child),
-                            });
+                                self.span(child),
+                            );
                         }
                     }
                 }
                 "ERROR" => {
-                    self.errors.push(ParseError {
-                        message: format!(
-                            "syntax error in connect body: {}",
-                            self.node_text(child)
-                        ),
-                        span: self.span(child),
-                    });
+                    self.push_error(
+                        format!("syntax error in connect body: {}", self.node_text(child)),
+                        self.span(child),
+                    );
                 }
-                _ => {
-                    if child.is_named() && !child.is_extra() {
-                        self.errors.push(ParseError {
-                            message: format!(
-                                "unexpected '{}' in connect body: {}",
-                                child.kind(),
-                                self.node_text(child)
-                            ),
-                            span: self.span(child),
-                        });
-                    }
-                }
+                _ => self.warn_unexpected_child(child, "connect body"),
             }
         }
 
@@ -1461,15 +1619,45 @@ impl<'a> Lowering<'a> {
         }
 
         if elements.len() < 2 {
-            self.errors.push(ParseError {
-                message: "chain requires at least 2 elements".to_string(),
-                span: self.span(node),
-            });
+            self.push_error(
+                "chain requires at least 2 elements".to_string(),
+                self.span(node),
+            );
             return None;
         }
 
         Some(ChainDecl {
             elements,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    fn lower_constraint_inst(&self, node: tree_sitter::Node) -> Option<ConstraintInstDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let mut args = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "named_argument_list" {
+                let mut arg_cursor = child.walk();
+                for arg_child in child.children(&mut arg_cursor) {
+                    if arg_child.kind() == "named_argument"
+                        && let Some(pair) = self.lower_named_arg(arg_child)
+                    {
+                        args.push(pair);
+                    }
+                }
+            }
+        }
+
+        let where_clause = self.lower_where_clause(node);
+
+        Some(ConstraintInstDecl {
+            name,
+            args,
+            where_clause,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
@@ -1516,6 +1704,7 @@ impl<'a> Lowering<'a> {
         match node.kind() {
             "binary_expression" => self.lower_binary_expr(node),
             "unary_expression" => self.lower_unary_expr(node),
+            "range_expression" => self.lower_range_expr(node),
             "conditional_expression" => self.lower_conditional(node),
             "match_expression" => self.lower_match_expr(node),
             "lambda_expression" => self.lower_lambda_expression(node),
@@ -1532,6 +1721,8 @@ impl<'a> Lowering<'a> {
             "ad_hoc_selector" => self.lower_ad_hoc_selector(node),
             "index_access" => self.lower_index_access(node),
             "member_access" => self.lower_member_access(node),
+            "qualified_access" => self.lower_qualified_access(node),
+            "instance_qualified_access" => self.lower_instance_qualified_access(node),
             "parenthesized_expression" => {
                 // Unwrap parenthesized expression — find the inner expression
                 let mut cursor = node.walk();
@@ -1577,6 +1768,31 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::UnOp {
                 op,
                 operand: Box::new(operand),
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_range_expr(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let lower_node = node.child_by_field_name("lower")?;
+        let upper_node = node.child_by_field_name("upper")?;
+        let lower = self.lower_expr(lower_node)?;
+        let upper = self.lower_expr(upper_node)?;
+        // Determine inclusive/exclusive by checking for "..<" token
+        let mut exclusive_upper = false;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && self.node_text(child) == "..<" {
+                exclusive_upper = true;
+                break;
+            }
+        }
+        Some(Expr {
+            kind: ExprKind::Range {
+                lower: Some(Box::new(lower)),
+                upper: Some(Box::new(upper)),
+                lower_inclusive: true,
+                upper_inclusive: !exclusive_upper,
             },
             span: self.span(node),
         })
@@ -1915,6 +2131,57 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    fn lower_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let qualifier_node = node.child_by_field_name("qualifier")?;
+        let member_node = node.child_by_field_name("member")?;
+
+        let qualifier = self.lower_expr(qualifier_node)?;
+        let member = self.node_text(member_node).to_string();
+
+        Some(Expr {
+            kind: ExprKind::QualifiedAccess {
+                qualifier: Box::new(qualifier),
+                member,
+            },
+            span: self.span(node),
+        })
+    }
+
+    fn lower_instance_qualified_access(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let object_node = node.child_by_field_name("object")?;
+        let qualified_node = node.child_by_field_name("qualified")?;
+
+        // Validate CST node kind — tree-sitter error recovery can violate grammar invariants.
+        // Emit a specific diagnostic so the user knows what went wrong.
+        if qualified_node.kind() != "qualified_access" {
+            self.push_error(
+                "instance qualified access requires a qualified_access (::) inside the parentheses"
+                    .to_string(),
+                self.span(node),
+            );
+            return None;
+        }
+
+        let object = self.lower_expr(object_node)?;
+        let qualified = self.lower_expr(qualified_node)?;
+
+        // If the CST kind check passed, lowering MUST produce QualifiedAccess.
+        // A mismatch here indicates a bug in the lowering code, not invalid user input.
+        debug_assert!(
+            matches!(&qualified.kind, ExprKind::QualifiedAccess { .. }),
+            "CST kind was 'qualified_access' but lowered to {:?}",
+            qualified.kind
+        );
+
+        Some(Expr {
+            kind: ExprKind::InstanceQualifiedAccess {
+                object: Box::new(object),
+                qualified: Box::new(qualified),
+            },
+            span: self.span(node),
+        })
+    }
+
     fn lower_member_access(&self, node: tree_sitter::Node) -> Option<Expr> {
         let object_node = node.child_by_field_name("object")?;
         let member_node = node.child_by_field_name("member")?;
@@ -1954,7 +2221,11 @@ mod tests {
 
     /// Helper: count ERROR nodes in a tree-sitter tree.
     fn count_errors(node: tree_sitter::Node) -> usize {
-        let mut count = if node.is_error() || node.is_missing() { 1 } else { 0 };
+        let mut count = if node.is_error() || node.is_missing() {
+            1
+        } else {
+            0
+        };
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             count += count_errors(child);
@@ -1970,7 +2241,11 @@ mod tests {
     #[test]
     fn ts_parse_produces_correct_structure() {
         let module = parse_bracket();
-        assert!(module.errors.is_empty(), "expected no errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "expected no errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
 
         let structure = match &module.declarations[0] {
@@ -1981,13 +2256,19 @@ mod tests {
         assert_eq!(structure.name, "Bracket");
         assert_eq!(structure.members.len(), 10);
 
-        let params: Vec<_> = structure.members.iter()
+        let params: Vec<_> = structure
+            .members
+            .iter()
             .filter(|m| matches!(m, MemberDecl::Param(_)))
             .collect();
-        let lets: Vec<_> = structure.members.iter()
+        let lets: Vec<_> = structure
+            .members
+            .iter()
             .filter(|m| matches!(m, MemberDecl::Let(_)))
             .collect();
-        let constraints: Vec<_> = structure.members.iter()
+        let constraints: Vec<_> = structure
+            .members
+            .iter()
             .filter(|m| matches!(m, MemberDecl::Constraint(_)))
             .collect();
 
@@ -1996,27 +2277,40 @@ mod tests {
         assert_eq!(constraints.len(), 3, "expected 3 constraints");
 
         // Verify member names in order
-        let names: Vec<String> = structure.members.iter().map(|m| match m {
-            MemberDecl::Param(p) => format!("param:{}", p.name),
-            MemberDecl::Let(l) => format!("let:{}", l.name),
-            MemberDecl::Constraint(_) => "constraint".into(),
-            MemberDecl::Sub(s) => format!("sub:{}", s.name),
-            MemberDecl::Minimize(_) => "minimize".into(),
-            MemberDecl::Maximize(_) => "maximize".into(),
-            MemberDecl::GuardedGroup(_) => "guarded_group".into(),
-            MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
-            MemberDecl::Port(p) => format!("port:{}", p.name),
-            MemberDecl::Connect(_) => "connect".into(),
-            MemberDecl::Chain(_) => "chain".into(),
-            MemberDecl::MetaBlock(_) => "meta".into(),
-        }).collect();
-        assert_eq!(names, vec![
-            "param:width", "param:height", "param:thickness",
-            "param:fillet_radius", "param:hole_diameter",
-            "let:volume",
-            "constraint", "constraint", "constraint",
-            "let:body",
-        ]);
+        let names: Vec<String> = structure
+            .members
+            .iter()
+            .map(|m| match m {
+                MemberDecl::Param(p) => format!("param:{}", p.name),
+                MemberDecl::Let(l) => format!("let:{}", l.name),
+                MemberDecl::Constraint(_) => "constraint".into(),
+                MemberDecl::ConstraintInst(ci) => format!("constraint_inst:{}", ci.name),
+                MemberDecl::Sub(s) => format!("sub:{}", s.name),
+                MemberDecl::Minimize(_) => "minimize".into(),
+                MemberDecl::Maximize(_) => "maximize".into(),
+                MemberDecl::GuardedGroup(_) => "guarded_group".into(),
+                MemberDecl::AssociatedType(a) => format!("type:{}", a.name),
+                MemberDecl::Port(p) => format!("port:{}", p.name),
+                MemberDecl::Connect(_) => "connect".into(),
+                MemberDecl::Chain(_) => "chain".into(),
+                MemberDecl::MetaBlock(_) => "meta".into(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "param:width",
+                "param:height",
+                "param:thickness",
+                "param:fillet_radius",
+                "param:hole_diameter",
+                "let:volume",
+                "constraint",
+                "constraint",
+                "constraint",
+                "let:body",
+            ]
+        );
     }
 
     /// Helper to get structure members from bracket parse.
@@ -2059,14 +2353,14 @@ mod tests {
             ExprKind::BinOp { right, .. } => {
                 // right is `width / 4`
                 match &right.kind {
-                    ExprKind::BinOp { right: inner_right, .. } => {
-                        match &inner_right.kind {
-                            ExprKind::NumberLiteral(v) => {
-                                assert!((v - 4.0).abs() < f64::EPSILON);
-                            }
-                            other => panic!("expected NumberLiteral(4), got {:?}", other),
+                    ExprKind::BinOp {
+                        right: inner_right, ..
+                    } => match &inner_right.kind {
+                        ExprKind::NumberLiteral(v) => {
+                            assert!((v - 4.0).abs() < f64::EPSILON);
                         }
-                    }
+                        other => panic!("expected NumberLiteral(4), got {:?}", other),
+                    },
                     other => panic!("expected BinOp, got {:?}", other),
                 }
             }
@@ -2112,7 +2406,11 @@ mod tests {
                 assert!(matches!(&right.kind, ExprKind::Ident(n) if n == "thickness"));
                 // left is (width * height)
                 match &left.kind {
-                    ExprKind::BinOp { op: inner_op, left: ll, right: lr } => {
+                    ExprKind::BinOp {
+                        op: inner_op,
+                        left: ll,
+                        right: lr,
+                    } => {
                         assert_eq!(inner_op, "*");
                         assert!(matches!(&ll.kind, ExprKind::Ident(n) if n == "width"));
                         assert!(matches!(&lr.kind, ExprKind::Ident(n) if n == "height"));
@@ -2168,6 +2466,7 @@ mod tests {
                 MemberDecl::Param(p) => p.span,
                 MemberDecl::Let(l) => l.span,
                 MemberDecl::Constraint(c) => c.span,
+                MemberDecl::ConstraintInst(ci) => ci.span,
                 MemberDecl::Sub(s) => s.span,
                 MemberDecl::Minimize(m) => m.span,
                 MemberDecl::Maximize(m) => m.span,
@@ -2179,12 +2478,21 @@ mod tests {
                 MemberDecl::MetaBlock(m) => m.span,
             };
             assert!(span.start < span.end, "member {} span empty", i);
-            assert!((span.end as usize) <= source.len(), "member {} span overflows", i);
+            assert!(
+                (span.end as usize) <= source.len(),
+                "member {} span overflows",
+                i
+            );
 
             let text = &source[span.start as usize..span.end as usize];
             match m {
                 MemberDecl::Param(p) => {
-                    assert!(text.starts_with("param"), "param member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("param"),
+                        "param member {} text: {:?}",
+                        i,
+                        text
+                    );
                     assert!(text.contains(&p.name), "param {} name in text", i);
                 }
                 MemberDecl::Let(l) => {
@@ -2192,37 +2500,91 @@ mod tests {
                     assert!(text.contains(&l.name), "let {} name in text", i);
                 }
                 MemberDecl::Constraint(_) => {
-                    assert!(text.starts_with("constraint"), "constraint member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("constraint"),
+                        "constraint member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::Sub(s) => {
                     assert!(text.starts_with("sub"), "sub member {} text: {:?}", i, text);
                     assert!(text.contains(&s.name), "sub {} name in text", i);
                 }
                 MemberDecl::Minimize(_) => {
-                    assert!(text.starts_with("minimize"), "minimize member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("minimize"),
+                        "minimize member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::Maximize(_) => {
-                    assert!(text.starts_with("maximize"), "maximize member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("maximize"),
+                        "maximize member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::GuardedGroup(_) => {
-                    assert!(text.starts_with("where"), "guarded_group member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("where"),
+                        "guarded_group member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::AssociatedType(a) => {
-                    assert!(text.starts_with("type"), "associated_type member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("type"),
+                        "associated_type member {} text: {:?}",
+                        i,
+                        text
+                    );
                     assert!(text.contains(&a.name), "associated_type {} name in text", i);
                 }
                 MemberDecl::Port(p) => {
-                    assert!(text.starts_with("port"), "port member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("port"),
+                        "port member {} text: {:?}",
+                        i,
+                        text
+                    );
                     assert!(text.contains(&p.name), "port {} name in text", i);
                 }
                 MemberDecl::Connect(_) => {
-                    assert!(text.starts_with("connect"), "connect member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("connect"),
+                        "connect member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::Chain(_) => {
-                    assert!(text.starts_with("chain"), "chain member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("chain"),
+                        "chain member {} text: {:?}",
+                        i,
+                        text
+                    );
                 }
                 MemberDecl::MetaBlock(_) => {
-                    assert!(text.starts_with("meta"), "meta member {} text: {:?}", i, text);
+                    assert!(
+                        text.starts_with("meta"),
+                        "meta member {} text: {:?}",
+                        i,
+                        text
+                    );
+                }
+                MemberDecl::ConstraintInst(ci) => {
+                    assert!(
+                        text.starts_with("constraint"),
+                        "constraint_inst member {} text: {:?}",
+                        i,
+                        text
+                    );
+                    assert!(text.contains(&ci.name), "constraint_inst {} name in text", i);
                 }
             }
         }
@@ -2245,7 +2607,11 @@ mod tests {
         let module = parse(source, reify_types::ModulePath::single("bracket"));
 
         // Module content hash = hash of entire source
-        assert_eq!(module.content_hash, ContentHash::of_str(source), "module hash");
+        assert_eq!(
+            module.content_hash,
+            ContentHash::of_str(source),
+            "module hash"
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2253,7 +2619,11 @@ mod tests {
         };
 
         // Structure content hash = hash of structure node's source text (not entire file)
-        assert_ne!(structure.content_hash, ContentHash(0), "structure hash should be non-zero");
+        assert_ne!(
+            structure.content_hash,
+            ContentHash(0),
+            "structure hash should be non-zero"
+        );
 
         // Each member content hash = hash of its source text slice
         for (i, m) in structure.members.iter().enumerate() {
@@ -2261,6 +2631,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.span, p.content_hash),
                 MemberDecl::Let(l) => (l.span, l.content_hash),
                 MemberDecl::Constraint(c) => (c.span, c.content_hash),
+                MemberDecl::ConstraintInst(ci) => (ci.span, ci.content_hash),
                 MemberDecl::Sub(s) => (s.span, s.content_hash),
                 MemberDecl::Minimize(m) => (m.span, m.content_hash),
                 MemberDecl::Maximize(m) => (m.span, m.content_hash),
@@ -2272,11 +2643,18 @@ mod tests {
                 MemberDecl::MetaBlock(m) => (m.span, m.content_hash),
             };
             let text = &source[span.start as usize..span.end as usize];
-            assert_eq!(hash, ContentHash::of_str(text), "member {} hash from source text", i);
+            assert_eq!(
+                hash,
+                ContentHash::of_str(text),
+                "member {} hash from source text",
+                i
+            );
         }
 
         // All param hashes should be unique
-        let param_hashes: Vec<ContentHash> = structure.members.iter()
+        let param_hashes: Vec<ContentHash> = structure
+            .members
+            .iter()
             .filter_map(|m| match m {
                 MemberDecl::Param(p) => Some(p.content_hash),
                 _ => None,
@@ -2301,15 +2679,23 @@ mod tests {
         let module = parse(source, reify_types::ModulePath::single("broken"));
 
         // Should have parse errors
-        assert!(!module.errors.is_empty(), "expected errors for malformed input");
+        assert!(
+            !module.errors.is_empty(),
+            "expected errors for malformed input"
+        );
 
         // Should also have recovered declarations
-        assert!(!module.declarations.is_empty(), "expected partial declarations");
+        assert!(
+            !module.declarations.is_empty(),
+            "expected partial declarations"
+        );
 
         if let Declaration::Structure(s) = &module.declarations[0] {
             assert_eq!(s.name, "Broken");
             // Should have at least some valid members (width and/or height)
-            let valid_params: Vec<_> = s.members.iter()
+            let valid_params: Vec<_> = s
+                .members
+                .iter()
                 .filter_map(|m| match m {
                     MemberDecl::Param(p) => Some(&p.name),
                     _ => None,
@@ -2335,8 +2721,14 @@ mod tests {
         assert_eq!(m1.declarations.len(), m2.declarations.len());
         assert_eq!(m1.errors.len(), m2.errors.len());
 
-        let s1 = match &m1.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
-        let s2 = match &m2.declarations[0] { Declaration::Structure(s) => s, _ => panic!() };
+        let s1 = match &m1.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!(),
+        };
+        let s2 = match &m2.declarations[0] {
+            Declaration::Structure(s) => s,
+            _ => panic!(),
+        };
 
         assert_eq!(s1.name, s2.name);
         assert_eq!(s1.span, s2.span);
@@ -2348,6 +2740,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
@@ -2362,6 +2755,7 @@ mod tests {
                 MemberDecl::Param(p) => (p.content_hash, p.span),
                 MemberDecl::Let(l) => (l.content_hash, l.span),
                 MemberDecl::Constraint(c) => (c.content_hash, c.span),
+                MemberDecl::ConstraintInst(ci) => (ci.content_hash, ci.span),
                 MemberDecl::Sub(s) => (s.content_hash, s.span),
                 MemberDecl::Minimize(m) => (m.content_hash, m.span),
                 MemberDecl::Maximize(m) => (m.content_hash, m.span),
@@ -2384,7 +2778,11 @@ mod tests {
     minimize volume
 }"#;
         let module = parse(source, reify_types::ModulePath::single("test_min"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2409,7 +2807,11 @@ mod tests {
     maximize thickness
 }"#;
         let module = parse(source, reify_types::ModulePath::single("test_max"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2434,7 +2836,11 @@ mod tests {
     minimize width * height
 }"#;
         let module = parse(source, reify_types::ModulePath::single("test_min_complex"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2442,12 +2848,10 @@ mod tests {
         };
 
         match &structure.members[2] {
-            MemberDecl::Minimize(m) => {
-                match &m.expr.kind {
-                    ExprKind::BinOp { op, .. } => assert_eq!(op, "*"),
-                    other => panic!("expected BinOp(*), got {:?}", other),
-                }
-            }
+            MemberDecl::Minimize(m) => match &m.expr.kind {
+                ExprKind::BinOp { op, .. } => assert_eq!(op, "*"),
+                other => panic!("expected BinOp(*), got {:?}", other),
+            },
             other => panic!("expected Minimize, got {:?}", other),
         }
     }
@@ -2462,7 +2866,11 @@ mod tests {
     minimize w
 }"#;
         let module = parse(source, reify_types::ModulePath::single("test_min_mixed"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2474,11 +2882,17 @@ mod tests {
 
         // Verify minimize is present alongside other members
         assert!(
-            structure.members.iter().any(|m| matches!(m, MemberDecl::Minimize(_))),
+            structure
+                .members
+                .iter()
+                .any(|m| matches!(m, MemberDecl::Minimize(_))),
             "should contain a Minimize member"
         );
         assert!(
-            structure.members.iter().any(|m| matches!(m, MemberDecl::Constraint(_))),
+            structure
+                .members
+                .iter()
+                .any(|m| matches!(m, MemberDecl::Constraint(_))),
             "should contain a Constraint member"
         );
     }
@@ -2490,7 +2904,11 @@ mod tests {
     minimize x
 }"#;
         let module = parse(source, reify_types::ModulePath::single("test_min_span"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2502,7 +2920,11 @@ mod tests {
                 // Span should cover the full "minimize x" text
                 let text = &source[m.span.start as usize..m.span.end as usize];
                 assert!(text.starts_with("minimize"), "span text: {:?}", text);
-                assert!(text.contains("x"), "span text should contain 'x': {:?}", text);
+                assert!(
+                    text.contains("x"),
+                    "span text should contain 'x': {:?}",
+                    text
+                );
 
                 // Content hash should match the source text of the node
                 assert_eq!(
@@ -2519,7 +2941,11 @@ mod tests {
     fn parse_enum_declaration() {
         let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
         let module = parse(source, reify_types::ModulePath::single("test_enum"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 2);
 
         match &module.declarations[0] {
@@ -2535,12 +2961,20 @@ mod tests {
     fn parse_enum_access_expression() {
         let source = "enum Direction { In, Out, Bidi }\nstructure S { let d = Direction.In }";
         let module = parse(source, reify_types::ModulePath::single("test_enum_access"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
-        let structure = module.declarations.iter().find_map(|d| match d {
-            Declaration::Structure(s) => Some(s),
-            _ => None,
-        }).expect("expected a structure");
+        let structure = module
+            .declarations
+            .iter()
+            .find_map(|d| match d {
+                Declaration::Structure(s) => Some(s),
+                _ => None,
+            })
+            .expect("expected a structure");
 
         let let_decl = match &structure.members[0] {
             MemberDecl::Let(l) => l,
@@ -2592,7 +3026,11 @@ mod tests {
     /// and return the ExprKind of the let's value.
     fn parse_let_expr(source: &str) -> ExprKind {
         let module = parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
             other => panic!("expected Structure, got {:?}", other),
@@ -2610,9 +3048,15 @@ mod tests {
         match kind {
             ExprKind::ListLiteral(elems) => {
                 assert_eq!(elems.len(), 3);
-                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
-                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
-                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                );
             }
             other => panic!("expected ListLiteral, got {:?}", other),
         }
@@ -2635,9 +3079,15 @@ mod tests {
         match kind {
             ExprKind::SetLiteral(elems) => {
                 assert_eq!(elems.len(), 3);
-                assert!(matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
-                assert!(matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
-                assert!(matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&elems[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&elems[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&elems[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                );
             }
             other => panic!("expected SetLiteral, got {:?}", other),
         }
@@ -2661,9 +3111,13 @@ mod tests {
             ExprKind::MapLiteral(entries) => {
                 assert_eq!(entries.len(), 2);
                 assert!(matches!(&entries[0].0.kind, ExprKind::StringLiteral(s) if s == "a"));
-                assert!(matches!(&entries[0].1.kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&entries[0].1.kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                );
                 assert!(matches!(&entries[1].0.kind, ExprKind::StringLiteral(s) if s == "b"));
-                assert!(matches!(&entries[1].1.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&entries[1].1.kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                );
             }
             other => panic!("expected MapLiteral, got {:?}", other),
         }
@@ -2686,7 +3140,9 @@ mod tests {
         match kind {
             ExprKind::IndexAccess { object, index } => {
                 assert!(matches!(&object.kind, ExprKind::Ident(n) if n == "items"));
-                assert!(matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&index.kind, ExprKind::NumberLiteral(v) if (*v - 0.0).abs() < f64::EPSILON)
+                );
             }
             other => panic!("expected IndexAccess, got {:?}", other),
         }
@@ -2713,16 +3169,24 @@ mod tests {
                 match &outer[0].kind {
                     ExprKind::ListLiteral(inner) => {
                         assert_eq!(inner.len(), 2);
-                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
-                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
+                        assert!(
+                            matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                        );
+                        assert!(
+                            matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                        );
                     }
                     other => panic!("expected inner ListLiteral, got {:?}", other),
                 }
                 match &outer[1].kind {
                     ExprKind::ListLiteral(inner) => {
                         assert_eq!(inner.len(), 2);
-                        assert!(matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
-                        assert!(matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 4.0).abs() < f64::EPSILON));
+                        assert!(
+                            matches!(&inner[0].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                        );
+                        assert!(
+                            matches!(&inner[1].kind, ExprKind::NumberLiteral(v) if (*v - 4.0).abs() < f64::EPSILON)
+                        );
                     }
                     other => panic!("expected inner ListLiteral, got {:?}", other),
                 }
@@ -2735,7 +3199,11 @@ mod tests {
     fn parse_collection_in_let_context() {
         let source = "structure S { let x = [1, 2, 3] }";
         let module = parse(source, reify_types::ModulePath::single("test"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -2753,17 +3221,37 @@ mod tests {
     #[test]
     fn parse_collections_no_regression_on_bracket() {
         let module = parse_bracket();
-        assert!(module.errors.is_empty(), "expected no errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "expected no errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
         let structure = match &module.declarations[0] {
             Declaration::Structure(s) => s,
             other => panic!("expected Structure, got {:?}", other),
         };
         assert_eq!(structure.name, "Bracket");
-        assert_eq!(structure.members.len(), 10, "expected 10 members (5 params, 2 lets, 3 constraints)");
-        let params = structure.members.iter().filter(|m| matches!(m, MemberDecl::Param(_))).count();
-        let lets = structure.members.iter().filter(|m| matches!(m, MemberDecl::Let(_))).count();
-        let constraints = structure.members.iter().filter(|m| matches!(m, MemberDecl::Constraint(_))).count();
+        assert_eq!(
+            structure.members.len(),
+            10,
+            "expected 10 members (5 params, 2 lets, 3 constraints)"
+        );
+        let params = structure
+            .members
+            .iter()
+            .filter(|m| matches!(m, MemberDecl::Param(_)))
+            .count();
+        let lets = structure
+            .members
+            .iter()
+            .filter(|m| matches!(m, MemberDecl::Let(_)))
+            .count();
+        let constraints = structure
+            .members
+            .iter()
+            .filter(|m| matches!(m, MemberDecl::Constraint(_)))
+            .count();
         assert_eq!(params, 5, "expected 5 params");
         assert_eq!(lets, 2, "expected 2 lets");
         assert_eq!(constraints, 3, "expected 3 constraints");
@@ -2775,7 +3263,11 @@ mod tests {
     fn parse_simple_function_definition() {
         let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
         let module = parse(source, reify_types::ModulePath::single("test_fn"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
 
         let f = match &module.declarations[0] {
@@ -2799,7 +3291,11 @@ mod tests {
     fn parse_pub_function_with_conditional() {
         let source = "pub fn clamp(x: Real, lo: Real, hi: Real) -> Real { if x < lo then lo else if x > hi then hi else x }";
         let module = parse(source, reify_types::ModulePath::single("test_pub_fn"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
 
         let f = match &module.declarations[0] {
@@ -2815,14 +3311,21 @@ mod tests {
         assert_eq!(f.params[2].name, "hi");
         assert!(f.return_type.is_some());
         assert_eq!(f.return_type.as_ref().unwrap().name, "Real");
-        assert!(matches!(&f.body.result_expr.kind, ExprKind::Conditional { .. }));
+        assert!(matches!(
+            &f.body.result_expr.kind,
+            ExprKind::Conditional { .. }
+        ));
     }
 
     #[test]
     fn parse_function_with_let_bindings() {
         let source = "fn f(x: Real) -> Real { let y = x * 2; y + 1 }";
         let module = parse(source, reify_types::ModulePath::single("test_fn_let"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
         assert_eq!(module.declarations.len(), 1);
 
         let f = match &module.declarations[0] {
@@ -2832,7 +3335,9 @@ mod tests {
         assert_eq!(f.params.len(), 1);
         assert_eq!(f.body.let_bindings.len(), 1);
         assert_eq!(f.body.let_bindings[0].name, "y");
-        assert!(matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*"));
+        assert!(
+            matches!(&f.body.let_bindings[0].value.kind, ExprKind::BinOp { op, .. } if op == "*")
+        );
         assert!(matches!(&f.body.result_expr.kind, ExprKind::BinOp { op, .. } if op == "+"));
     }
 
@@ -2840,7 +3345,11 @@ mod tests {
     fn parse_function_with_type_parameters() {
         let source = "fn identity<T>(x: T) -> T { x }";
         let module = parse(source, reify_types::ModulePath::single("test_fn_tp"));
-        assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+        assert!(
+            module.errors.is_empty(),
+            "parse errors: {:?}",
+            module.errors
+        );
 
         let f = match &module.declarations[0] {
             Declaration::Function(f) => f,
@@ -2853,7 +3362,11 @@ mod tests {
         // Also test with bounds
         let source2 = "fn add<T: Numeric>(a: T, b: T) -> T { a + b }";
         let module2 = parse(source2, reify_types::ModulePath::single("test_fn_tp2"));
-        assert!(module2.errors.is_empty(), "parse errors: {:?}", module2.errors);
+        assert!(
+            module2.errors.is_empty(),
+            "parse errors: {:?}",
+            module2.errors
+        );
 
         let f2 = match &module2.declarations[0] {
             Declaration::Function(f) => f,
@@ -2870,7 +3383,11 @@ mod tests {
     fn parse_ad_hoc_selector_basic() {
         let kind = parse_let_expr(r#"structure S { let x = port @ face("top") }"#);
         match kind {
-            ExprKind::AdHocSelector { base, selector, args } => {
+            ExprKind::AdHocSelector {
+                base,
+                selector,
+                args,
+            } => {
                 assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
                 assert_eq!(selector, "face");
                 assert_eq!(args.len(), 1);
@@ -2884,7 +3401,11 @@ mod tests {
     fn parse_ad_hoc_selector_no_args() {
         let kind = parse_let_expr("structure S { let x = port @ default() }");
         match kind {
-            ExprKind::AdHocSelector { base, selector, args } => {
+            ExprKind::AdHocSelector {
+                base,
+                selector,
+                args,
+            } => {
                 assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
                 assert_eq!(selector, "default");
                 assert_eq!(args.len(), 0);
@@ -2897,13 +3418,23 @@ mod tests {
     fn parse_ad_hoc_selector_multiple_args() {
         let kind = parse_let_expr("structure S { let x = port @ point(1, 2, 3) }");
         match kind {
-            ExprKind::AdHocSelector { base, selector, args } => {
+            ExprKind::AdHocSelector {
+                base,
+                selector,
+                args,
+            } => {
                 assert!(matches!(base.kind, ExprKind::Ident(ref n) if n == "port"));
                 assert_eq!(selector, "point");
                 assert_eq!(args.len(), 3);
-                assert!(matches!(&args[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON));
-                assert!(matches!(&args[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON));
-                assert!(matches!(&args[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON));
+                assert!(
+                    matches!(&args[0].kind, ExprKind::NumberLiteral(v) if (*v - 1.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&args[1].kind, ExprKind::NumberLiteral(v) if (*v - 2.0).abs() < f64::EPSILON)
+                );
+                assert!(
+                    matches!(&args[2].kind, ExprKind::NumberLiteral(v) if (*v - 3.0).abs() < f64::EPSILON)
+                );
             }
             other => panic!("expected AdHocSelector, got {:?}", other),
         }
@@ -2932,9 +3463,43 @@ mod tests {
         None
     }
 
-    /// Helper: parse source, find the connect_body node, call lower_connect_body
-    /// directly (bypassing check_and_lower!), and return the errors.
-    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+    /// Generic helper: parse source, find the first node of `kind`, run `lower_fn`
+    /// on it via a fresh `Lowering`, and return collected errors.
+    ///
+    /// The closure pattern avoids lifetime issues: `tree_sitter::Node` borrows from
+    /// `Tree`, so both must live inside the same scope — the closure receives them
+    /// without the caller needing to hold the `Tree`.
+    fn lower_node_directly<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
+    where
+        F: FnOnce(&mut Lowering, tree_sitter::Node),
+    {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+        assert!(
+            !root.has_error(),
+            "source '{}' should parse without errors — grammar regression?",
+            source,
+        );
+
+        let node = find_node_by_kind(root, kind)
+            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
+
+        let mut lowering = Lowering::new(source);
+        lower_fn(&mut lowering, node);
+        lowering.errors.into_inner()
+    }
+
+    /// Like `lower_node_directly`, but skips the clean-parse assertion.
+    /// Use for tests that deliberately feed malformed source to exercise
+    /// error-handling code paths.
+    fn lower_node_with_errors<F>(source: &str, kind: &str, lower_fn: F) -> Vec<ParseError>
+    where
+        F: FnOnce(&mut Lowering, tree_sitter::Node),
+    {
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -2942,19 +3507,40 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let body_node = find_node_by_kind(root, "connect_body")
-            .expect("no connect_body node found in parse tree");
+        let node = find_node_by_kind(root, kind)
+            .unwrap_or_else(|| panic!("no {kind} node found in parse tree"));
 
         let mut lowering = Lowering::new(source);
-        lowering.lower_connect_body(body_node);
-        lowering.errors
+        lower_fn(&mut lowering, node);
+        lowering.errors.into_inner()
+    }
+
+    /// Helper: parse source, find the connect_body node, call lower_connect_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_body_directly(source: &str) -> Vec<ParseError> {
+        lower_node_directly(source, "connect_body", |l, n| { l.lower_connect_body(n); })
+    }
+
+    /// Like `lower_body_directly`, but skips the clean-parse assertion.
+    fn lower_body_with_errors(source: &str) -> Vec<ParseError> {
+        lower_node_with_errors(source, "connect_body", |l, n| { l.lower_connect_body(n); })
+    }
+
+    #[test]
+    #[should_panic(expected = "should parse without errors")]
+    fn lower_node_directly_rejects_source_with_parse_errors() {
+        // Deliberately broken source: `{ >= }` produces parse errors.
+        // lower_node_directly should panic because root.has_error() is true.
+        lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
+        );
     }
 
     #[test]
     fn lower_connect_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside connect_body.
         // When lower_connect_body is called directly, the ERROR arm fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
         );
         assert!(
@@ -2974,7 +3560,7 @@ mod tests {
     fn lower_connect_body_malformed_param_emits_diagnostic() {
         // `{ grade = }` produces a connect_param_assignment with has_error().
         // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b : BoltSet { grade = } }",
         );
         assert!(
@@ -2982,7 +3568,9 @@ mod tests {
             "expected body-level diagnostic for malformed param, got none"
         );
         assert!(
-            errors.iter().any(|e| e.message.contains("connect parameter")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("connect parameter")),
             "expected error mentioning 'connect parameter', got: {:?}",
             errors
         );
@@ -2992,7 +3580,7 @@ mod tests {
     fn lower_connect_body_malformed_mapping_emits_diagnostic() {
         // `{ shaft -> }` produces a port_mapping with has_error().
         // When lower_connect_body is called directly, the has_error() guard fires.
-        let errors = lower_body_directly(
+        let errors = lower_body_with_errors(
             "structure S { port a : out T  port b : in T  connect a -> b { shaft -> } }",
         );
         assert!(
@@ -3000,9 +3588,7 @@ mod tests {
             "expected body-level diagnostic for malformed mapping, got none"
         );
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("port mapping")),
+            errors.iter().any(|e| e.message.contains("port mapping")),
             "expected error mentioning 'port mapping', got: {:?}",
             errors
         );
@@ -3011,23 +3597,38 @@ mod tests {
     #[test]
     fn lower_connect_body_extras_not_flagged() {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
-        // diagnostic. Verify that a connect body containing a block comment
-        // produces no errors mentioning "unexpected".
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_body_directly(
             "structure S { port a : out T  port b : in T  connect a -> b { /* comment */ grade = 8.8 }  }",
         );
         assert!(
-            !errors.iter().any(|e| e.message.contains("unexpected")),
-            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            errors.is_empty(),
+            "expected no errors for syntactically valid connect body with comment, got: {:?}",
             errors
         );
     }
 
     #[test]
+    fn lower_connect_body_anonymous_tokens_not_flagged() {
+        // An empty connect body `{ }` has only anonymous tokens (braces).
+        // The named-children iteration must skip them without producing errors.
+        let errors = lower_body_directly(
+            "structure S { port a : out T  port b : in T  connect a -> b { } }",
+        );
+        assert!(
+            errors.is_empty(),
+            "expected no errors for empty connect body (anonymous tokens only), got: {:?}",
+            errors
+        );
+    }
+
+    /// Deliberately passes a `constraint_definition` node to `lower_connect_body`
+    /// to exercise the catch-all branch. The constraint_definition has 3 named
+    /// children (identifier, param_declaration, constraint_def_predicate), none of
+    /// which match any connect_body arm — so the catch-all should fire for each.
+    #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        // Pass a constraint_definition node to lower_connect_body. Its named
-        // children (identifier, param_declaration, constraint_def_predicate)
-        // don't match any connect_body arm and should hit the catch-all.
         let source = "constraint def Eq { param x: Scalar  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
@@ -3036,19 +3637,228 @@ mod tests {
         let tree = ts_parser.parse(source, None).expect("Failed to parse");
         let root = tree.root_node();
 
-        let constraint_node = find_node_by_kind(root, "constraint_definition")
-            .expect("no constraint_definition node found in parse tree");
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
 
         let mut lowering = Lowering::new(source);
         lowering.lower_connect_body(constraint_node);
+        let errors = lowering.errors.borrow();
         assert!(
-            !lowering.errors.is_empty(),
-            "expected diagnostics for unexpected named children in catch-all, got none"
+            errors.len() >= 3,
+            "expected at least 3 diagnostics (one per named child: identifier, \
+             param_declaration, constraint_def_predicate), got {}: {:?}",
+            errors.len(),
+            errors
         );
         assert!(
-            lowering.errors.iter().any(|e| e.message.contains("unexpected")),
+            errors
+                .iter()
+                .any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
-            lowering.errors
+            errors
+        );
+    }
+
+    // ── Port body defensive catch-all tests ────────────────────
+
+    /// Helper: parse source, find the port_body node, call lower_port_body
+    /// directly (bypassing check_and_lower!), and return the errors.
+    fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
+        lower_node_directly(source, "port_body", |l, n| { l.lower_port_body(n); })
+    }
+
+    /// Like `lower_port_body_directly`, but skips the clean-parse assertion.
+    fn lower_port_body_with_errors(source: &str) -> Vec<ParseError> {
+        lower_node_with_errors(source, "port_body", |l, n| { l.lower_port_body(n); })
+    }
+
+    #[test]
+    fn lower_port_body_error_node_emits_diagnostic() {
+        // `{ >= }` produces an ERROR child inside port_body.
+        // When lower_port_body is called directly, the ERROR arm should fire.
+        let errors = lower_port_body_with_errors(
+            "structure S { port a : in T { >= } }",
+        );
+        assert!(
+            !errors.is_empty(),
+            "expected body-level diagnostic for ERROR node, got none"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("syntax error in port body")),
+            "expected 'syntax error in port body', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_port_body_catch_all_emits_for_unexpected_named_children() {
+        // Pass a constraint_definition node to lower_port_body. Its named
+        // children (identifier, param_declaration, constraint_def_predicate)
+        // don't match any port_body arm and should hit the catch-all.
+        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(constraint_node) = find_node_by_kind(root, "constraint_definition") else {
+            panic!("no constraint_definition node found in parse tree — grammar regression?");
+        };
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_port_body(constraint_node);
+        let errors = lowering.errors.borrow();
+        assert!(
+            errors.len() >= 2,
+            "expected at least 2 diagnostics (identifier and constraint_def_predicate \
+             are unexpected in port body; param_declaration is handled), got {}: {:?}",
+            errors.len(),
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_port_body_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
+        let errors = lower_port_body_directly(
+            "structure S { port a : in T { /* comment */ param x: Scalar = 1 } }",
+        );
+        assert!(
+            errors.is_empty(),
+            "expected no errors for syntactically valid port body with comment, got: {:?}",
+            errors
+        );
+    }
+
+    // ── Constraint def defensive catch-all tests ───────────────
+
+    /// Helper: parse source, find the constraint_definition node, call
+    /// lower_constraint_def directly, and return the errors.
+    fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
+        lower_node_directly(source, "constraint_definition", |l, n| { l.lower_constraint_def(n); })
+    }
+
+    #[test]
+    fn lower_constraint_def_catch_all_emits_for_unexpected_named_children() {
+        // Pass a structure_definition node to lower_constraint_def. Its named
+        // children (sub_declaration, port_declaration, connect_declaration)
+        // don't match constraint_def arms and should hit the catch-all.
+        // We use structure_definition because it has a "name" field (required
+        // by lower_constraint_def) and body children outside constraint scope.
+        let source = "structure S { port a : in T { param x: Scalar = 1 }  sub b = T() }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        assert!(
+            !root.has_error(),
+            "source should parse without errors — grammar regression?"
+        );
+
+        let Some(struct_node) = find_node_by_kind(root, "structure_definition") else {
+            panic!("no structure_definition node found in parse tree — grammar regression?");
+        };
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_constraint_def(struct_node);
+        let errors = lowering.errors.borrow();
+        assert!(
+            errors.len() >= 2,
+            "expected at least 2 diagnostics (port_declaration, sub_declaration \
+             at minimum), got {}: {:?}",
+            errors.len(),
+            errors
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_constraint_def_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. The source is syntactically valid, so zero errors is the
+        // correct assertion (not just "no 'unexpected' errors").
+        let errors = lower_constraint_def_directly(
+            "constraint def Eq { /* comment */ param x: Scalar  x > 0 }",
+        );
+        assert!(
+            errors.is_empty(),
+            "expected no errors for syntactically valid constraint def with comment, got: {:?}",
+            errors
+        );
+    }
+
+    // ── Source file defensive catch-all tests ──────────────────
+
+    #[test]
+    fn lower_source_file_catch_all_emits_for_unexpected_named_children() {
+        // Pass a structure_definition node to lower_source_file. Its named
+        // children (identifier, param_declaration, port_declaration, etc.)
+        // don't match any top-level declaration kind and should hit the catch-all.
+        let source = "structure S { param x: Scalar = 1  port a : in T { param y: Scalar = 2 } }";
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        let root = tree.root_node();
+
+        let struct_node = find_node_by_kind(root, "structure_definition")
+            .expect("no structure_definition node found in parse tree");
+
+        let mut lowering = Lowering::new(source);
+        lowering.lower_source_file(struct_node);
+        let errors = lowering.errors.borrow();
+        assert!(
+            !errors.is_empty(),
+            "expected diagnostics for unexpected named children in source file catch-all, got none"
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected at least one error containing 'unexpected', got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn lower_source_file_extras_not_flagged() {
+        // Comments are tree-sitter extras — they must NOT trigger the catch-all
+        // diagnostic. Verify that a source file with a block comment before a
+        // valid structure produces no errors mentioning "unexpected".
+        let source = "/* comment */\nstructure S { param x: Scalar = 1 }";
+        let module = parse(source, ModulePath::single("test"));
+        assert!(
+            !module.errors.iter().any(|e| e.message.contains("unexpected")),
+            "expected no 'unexpected' errors for comment extras, got: {:?}",
+            module.errors
         );
     }
 
@@ -3095,7 +3905,10 @@ mod tests {
             Declaration::Structure(s) => s,
             other => panic!("expected Structure, got: {other:?}"),
         };
-        assert!(decl.doc.is_none(), "regular // comment should not be a doc comment");
+        assert!(
+            decl.doc.is_none(),
+            "regular // comment should not be a doc comment"
+        );
     }
 
     #[test]

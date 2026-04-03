@@ -1,6 +1,6 @@
 // TauriToolContext — bridges MCP tool context to EngineSession for Tauri GUI
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_mcp::{
     ConstraintInfo, DiagnosticInfo, EvalStatusInfo, OpenFileInfo, ParameterInfo, ReifyToolContext,
@@ -20,30 +20,72 @@ type EventEmitter = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 ///
 /// An optional event emitter callback is used for navigation tools (`focus_entity`,
 /// `navigate_to_source`), keeping the struct testable without a Tauri runtime.
+///
+/// Selection state is read from a shared `Arc<RwLock<SelectionInfo>>` that the frontend
+/// updates via the `update_selection` Tauri command.
 pub struct TauriToolContext {
     engine: Arc<Mutex<EngineSession>>,
     event_emitter: Option<EventEmitter>,
+    selection: Arc<RwLock<SelectionInfo>>,
+}
+
+/// Builder for [`TauriToolContext`].
+///
+/// Use [`TauriToolContext::builder`] to create a builder, then chain
+/// `.with_selection(...)` and/or `.with_event_emitter(...)` before calling `.build()`.
+pub struct TauriToolContextBuilder {
+    engine: Arc<Mutex<EngineSession>>,
+    event_emitter: Option<EventEmitter>,
+    selection: Option<Arc<RwLock<SelectionInfo>>>,
+}
+
+impl TauriToolContextBuilder {
+    /// Set a shared selection state for the context.
+    ///
+    /// If not called, `build()` creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields.
+    pub fn with_selection(mut self, selection: Arc<RwLock<SelectionInfo>>) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Set an event emitter for navigation events (`focus_entity`, `navigate_to_source`).
+    ///
+    /// The closure is boxed into an [`EventEmitter`] during `build()`.
+    pub fn with_event_emitter(
+        mut self,
+        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    ) -> Self {
+        self.event_emitter = Some(Box::new(emitter));
+        self
+    }
+
+    /// Finalize the builder and create a [`TauriToolContext`].
+    ///
+    /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
+    /// with empty fields (not connected to the frontend).
+    pub fn build(self) -> TauriToolContext {
+        let selection = self.selection.unwrap_or_else(|| {
+            Arc::new(RwLock::new(SelectionInfo::default()))
+        });
+        TauriToolContext {
+            engine: self.engine,
+            event_emitter: self.event_emitter,
+            selection,
+        }
+    }
 }
 
 impl TauriToolContext {
-    /// Create a new TauriToolContext with no event emitter.
-    pub fn new(engine: Arc<Mutex<EngineSession>>) -> Self {
-        Self {
+    /// Create a [`TauriToolContextBuilder`] with the given engine.
+    pub fn builder(engine: Arc<Mutex<EngineSession>>) -> TauriToolContextBuilder {
+        TauriToolContextBuilder {
             engine,
             event_emitter: None,
+            selection: None,
         }
     }
 
-    /// Create a new TauriToolContext with an event emitter for navigation events.
-    pub fn with_event_emitter(
-        engine: Arc<Mutex<EngineSession>>,
-        emitter: impl Fn(&str, serde_json::Value) + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            engine,
-            event_emitter: Some(Box::new(emitter)),
-        }
-    }
 }
 
 impl ReifyToolContext for TauriToolContext {
@@ -52,9 +94,7 @@ impl ReifyToolContext for TauriToolContext {
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
-        let gui_state = session
-            .build_gui_state()
-            .map_err(ToolError::EngineError)?;
+        let gui_state = session.build_gui_state().map_err(ToolError::EngineError)?;
 
         // Return the first file's content (single-file model for now)
         if let Some(file) = gui_state.files.first() {
@@ -72,9 +112,7 @@ impl ReifyToolContext for TauriToolContext {
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
-        let gui_state = session
-            .build_gui_state()
-            .map_err(ToolError::EngineError)?;
+        let gui_state = session.build_gui_state().map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .files
@@ -96,9 +134,7 @@ impl ReifyToolContext for TauriToolContext {
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
-        let gui_state = session
-            .build_gui_state()
-            .map_err(ToolError::EngineError)?;
+        let gui_state = session.build_gui_state().map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .values
@@ -120,9 +156,7 @@ impl ReifyToolContext for TauriToolContext {
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
-        let gui_state = session
-            .build_gui_state()
-            .map_err(ToolError::EngineError)?;
+        let gui_state = session.build_gui_state().map_err(ToolError::EngineError)?;
 
         Ok(gui_state
             .constraints
@@ -146,10 +180,11 @@ impl ReifyToolContext for TauriToolContext {
     }
 
     fn get_selection(&self) -> Result<SelectionInfo, ToolError> {
-        Ok(SelectionInfo {
-            selected_entity: None,
-            hovered_entity: None,
-        })
+        let sel = self
+            .selection
+            .read()
+            .map_err(|e| ToolError::InternalError(format!("Selection lock poisoned: {}", e)))?;
+        Ok(sel.clone())
     }
 
     fn get_source_location(&self, entity_path: &str) -> Result<SourceLocationInfo, ToolError> {
@@ -158,9 +193,9 @@ impl ReifyToolContext for TauriToolContext {
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
 
-        let loc = session.get_source_location(entity_path).ok_or_else(|| {
-            ToolError::EngineError(format!("entity not found: {}", entity_path))
-        })?;
+        let loc = session
+            .get_source_location(entity_path)
+            .ok_or_else(|| ToolError::EngineError(format!("entity not found: {}", entity_path)))?;
 
         Ok(SourceLocationInfo {
             file: loc.file,
@@ -231,9 +266,7 @@ impl ReifyToolContext for TauriToolContext {
             .engine
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
-        let gui_state = session
-            .build_gui_state()
-            .map_err(ToolError::EngineError)?;
+        let gui_state = session.build_gui_state().map_err(ToolError::EngineError)?;
 
         // Get the first file's content (single-file model)
         let file = gui_state
@@ -255,7 +288,7 @@ impl ReifyToolContext for TauriToolContext {
                 return Err(ToolError::InvalidParams(format!(
                     "Unknown export format: {}",
                     format
-                )))
+                )));
             }
         };
         let mut session = self
@@ -270,20 +303,12 @@ impl ReifyToolContext for TauriToolContext {
 
     fn focus_entity(&self, entity_path: &str) -> Result<bool, ToolError> {
         if let Some(ref emitter) = self.event_emitter {
-            emitter(
-                "focus-entity",
-                serde_json::json!(entity_path),
-            );
+            emitter("focus-entity", serde_json::json!(entity_path));
         }
         Ok(true)
     }
 
-    fn navigate_to_source(
-        &self,
-        file: &str,
-        line: u32,
-        column: u32,
-    ) -> Result<bool, ToolError> {
+    fn navigate_to_source(&self, file: &str, line: u32, column: u32) -> Result<bool, ToolError> {
         if let Some(ref emitter) = self.event_emitter {
             emitter(
                 "navigate-to-source",

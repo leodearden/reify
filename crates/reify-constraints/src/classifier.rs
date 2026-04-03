@@ -3,7 +3,7 @@
 //! Walks a `CompiledExpr` tree and determines which `ConstraintDomain`
 //! applies, based on the leaf value types and operators encountered.
 
-use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type, Value};
+use reify_types::{CompiledExpr, CompiledExprKind, ConstraintDomain, Type};
 
 /// Internal flags collected during expression tree traversal.
 #[derive(Default)]
@@ -73,37 +73,14 @@ impl ConstraintClassifier {
         expr.walk(&mut |node| {
             match &node.kind {
                 CompiledExprKind::Literal(value) => {
-                    match value {
-                        Value::Bool(_) => flags.has_logical = true,
-                        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => {
-                            flags.has_numeric = true;
-                        }
-                        Value::String(_) | Value::Undef => {
-                            // String and Undef don't contribute to domain classification
-                        }
-                        Value::Enum { .. }
-                        | Value::List(_)
-                        | Value::Set(_)
-                        | Value::Map(_)
-                        | Value::Option(_)
-                        | Value::Lambda { .. }
-                        | Value::Field { .. }
-                        | Value::Tensor(_)
-                        | Value::Point(_)
-                        | Value::Vector(_)
-                        | Value::Matrix(_)
-                        | Value::Complex { .. }
-                        | Value::Orientation { .. }
-                        | Value::Frame { .. }
-                        | Value::Transform { .. }
-                        | Value::Plane { .. }
-                        | Value::Axis { .. }
-                        | Value::BoundingBox { .. }
-                        | Value::Range { .. } => {
-                            // Collection, enum, lambda, field, tensor, Point, Vector, Matrix, Complex,
-                            // Orientation, Frame, Transform, Plane, Axis, BoundingBox, and Range types don't contribute to domain classification.
-                        }
+                    // Domain classification is centralised on Value itself so
+                    // that adding a new variant only requires editing value.rs.
+                    if value.is_domain_logical_leaf() {
+                        flags.has_logical = true;
+                    } else if value.is_domain_numeric_leaf() {
+                        flags.has_numeric = true;
                     }
+                    // All other variants don't contribute to domain classification.
                 }
                 CompiledExprKind::ValueRef(_) => {
                     // Classify based on the result type of the reference,
@@ -131,18 +108,24 @@ impl ConstraintClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_types::{BinOp, ContentHash, DimensionVector};
+    use reify_types::{BinOp, ContentHash, DimensionVector, Value};
 
     #[test]
     fn literal_int_is_numeric() {
         let expr = CompiledExpr::literal(Value::Int(42), Type::Int);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
     fn literal_bool_is_logical() {
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Logical);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Logical
+        );
     }
 
     #[test]
@@ -154,14 +137,20 @@ mod tests {
             },
             Type::length(),
         );
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
     fn empty_undef_defaults_to_dimensional() {
         let expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         // Undef doesn't set any flags → default is Dimensional
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
@@ -178,7 +167,10 @@ mod tests {
             result_type: Type::Real,
             content_hash: ContentHash::of(b"test"),
         };
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Geometric);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Geometric
+        );
     }
 
     #[test]
@@ -186,7 +178,10 @@ mod tests {
         let num = CompiledExpr::literal(Value::Int(1), Type::Int);
         let boolean = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, num, boolean, Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::CrossDomain);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::CrossDomain
+        );
     }
 
     #[test]
@@ -202,7 +197,10 @@ mod tests {
             },
             Type::complex(Type::Real),
         );
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Dimensional);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Dimensional
+        );
     }
 
     #[test]
@@ -220,6 +218,9 @@ mod tests {
         );
         let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, complex_expr, bool_expr, Type::Bool);
-        assert_eq!(ConstraintClassifier::classify(&expr), ConstraintDomain::Logical);
+        assert_eq!(
+            ConstraintClassifier::classify(&expr),
+            ConstraintDomain::Logical
+        );
     }
 }

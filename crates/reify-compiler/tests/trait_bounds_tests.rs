@@ -188,9 +188,7 @@ fn composite_bounds_both_checked() {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
     // Should NOT have errors about Full
-    let has_full_error = errors
-        .iter()
-        .any(|e| e.message.contains("Full"));
+    let has_full_error = errors.iter().any(|e| e.message.contains("Full"));
     assert!(
         !has_full_error,
         "Full satisfies A + B, should not have errors, got: {:?}",
@@ -361,7 +359,11 @@ fn sub_component_stores_type_args() {
     assert_eq!(sub.structure_name, "Box");
 
     // The sub component should store the resolved type args
-    assert_eq!(sub.type_args.len(), 1, "expected 1 type arg on sub component");
+    assert_eq!(
+        sub.type_args.len(),
+        1,
+        "expected 1 type arg on sub component"
+    );
     // Concrete structure name should be StructureRef, not TypeParam
     assert_eq!(
         sub.type_args[0],
@@ -504,7 +506,11 @@ fn diamond_refinement_satisfies_bound() {
         structure def Asm { sub part = Box<Obj>() }
     "#;
     let module = compile_module(source);
-    let errors: Vec<_> = module.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -523,10 +529,17 @@ fn multiple_independent_type_params() {
         structure def Bad { sub p = Pair<GoodA, BadB>() }
     "#;
     let module = compile_module(source);
-    let errors: Vec<_> = module.diagnostics.iter()
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 1, "expected exactly 1 error, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error, got: {:?}",
+        errors
+    );
     let msg = &errors[0].message;
     assert!(msg.contains("BadB"), "error should mention BadB: {}", msg);
     assert!(msg.contains("B"), "error should mention trait B: {}", msg);
@@ -544,11 +557,18 @@ fn too_many_type_args_errors() {
         structure def Asm { sub part = Box<Bolt, Steel>() }
     "#;
     let module = compile_module(source);
-    let errors: Vec<_> = module.diagnostics.iter()
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.iter().any(|e| e.message.contains("too many type arguments")),
-        "expected arity error, got: {:?}", errors);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("too many type arguments")),
+        "expected arity error, got: {:?}",
+        errors
+    );
 }
 
 // ── Generic forwarding no false positive (B1 fix validation) ────────
@@ -561,10 +581,16 @@ fn generic_forwarding_no_false_positive() {
         structure def Wrapper<U: Rigid> { sub inner = Box<U>() }
     "#;
     let module = compile_module(source);
-    let errors: Vec<_> = module.diagnostics.iter()
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no errors for generic forwarding, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for generic forwarding, got: {:?}",
+        errors
+    );
 }
 
 // ── Both PendingBoundCheck paths in a single compilation ─────────────

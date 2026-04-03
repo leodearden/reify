@@ -1,60 +1,223 @@
-use std::process::Command;
-
-fn fixture_path(name: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/fixtures/{}", manifest_dir, name)
-}
+mod common;
 
 #[test]
 fn build_parse_error_exits_failure() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_parse_error.ri"),
-            "-o",
-            "/tmp/reify_test_parse_error_out.step",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_parse_error.ri");
 
     assert!(
-        !output.status.success(),
-        "reify build should exit non-zero for file with parse errors.\nstderr: {stderr}"
+        !result.status.success(),
+        "reify build should exit non-zero for file with parse errors.\nstderr: {}",
+        result.stderr
     );
     assert!(
-        stderr.contains("Parse error"),
-        "stderr should contain 'Parse error', got: {stderr}"
+        result.stderr.contains("Parse error"),
+        "stderr should contain 'Parse error', got: {}",
+        result.stderr
+    );
+    assert!(
+        !result.output_path.exists(),
+        "no output file should be written on parse error"
+    );
+}
+
+#[test]
+fn build_violating_bracket_exits_failure() {
+    let result = common::run_build("bracket_violating.ri");
+
+    assert!(
+        !result.status.success(),
+        "reify build should exit non-zero when constraints are violated.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("Some constraints violated."),
+        "stdout should contain summary message, got: {}",
+        result.stdout
+    );
+    // Geometry file should still be written even when constraints are violated
+    assert!(
+        result.output_path.exists(),
+        "geometry file should still be written even with constraint violations"
+    );
+}
+
+#[test]
+fn build_valid_bracket_exits_success() {
+    let result = common::run_build("bracket.ri");
+
+    assert!(
+        result.status.success(),
+        "reify build should exit 0 for valid bracket.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED' for valid bracket, got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "geometry file should be written on success"
     );
 }
 
 #[test]
 fn build_compile_error_exits_failure() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &fixture_path("bracket_compile_error.ri"),
-            "-o",
-            "/tmp/reify_test_compile_error_out.step",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result = common::run_build("bracket_compile_error.ri");
 
     assert!(
-        !output.status.success(),
-        "reify build should exit non-zero for file with compiler errors.\nstderr: {stderr}"
+        !result.status.success(),
+        "reify build should exit non-zero for file with compiler errors.\nstderr: {}",
+        result.stderr
     );
     assert!(
-        stderr.contains("error:"),
-        "stderr should contain 'error:', got: {stderr}"
+        result.stderr.contains("error:"),
+        "stderr should contain 'error:', got: {}",
+        result.stderr
+    );
+    assert!(
+        !result.output_path.exists(),
+        "no output file should be written on compile error"
+    );
+}
+
+#[test]
+fn build_indeterminate_constraint_exits_success() {
+    let result = common::run_build("bracket_indeterminate.ri");
+
+    assert!(
+        result.status.success(),
+        "reify build should exit 0 when constraints are indeterminate (not violated).\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("  OK "),
+        "stdout should contain '  OK ' for the satisfied constraint (thickness > 2mm), got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains("Some constraints violated"),
+        "stdout should NOT contain violation summary, got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "geometry file should be written when constraints are only indeterminate"
+    );
+}
+
+#[test]
+fn build_violated_with_indeterminate_exits_failure() {
+    let result = common::run_build("bracket_violated_with_indeterminate.ri");
+
+    assert!(
+        !result.status.success(),
+        "reify build should exit non-zero when constraints are violated.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("VIOLATED"),
+        "stdout should contain 'VIOLATED', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("Some constraints violated."),
+        "stdout should contain violation summary, got: {}",
+        result.stdout
+    );
+    // Geometry file should still be written even with violations
+    assert!(
+        result.output_path.exists(),
+        "geometry file should still be written even with constraint violations"
+    );
+}
+
+#[test]
+fn build_all_indeterminate_exits_success() {
+    let result = common::run_build("bracket_all_indeterminate.ri");
+
+    assert!(
+        result.status.success(),
+        "reify build should exit 0 when all constraints are indeterminate.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("INDETERMINATE"),
+        "stdout should contain 'INDETERMINATE', got: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains("  OK "),
+        "stdout should NOT contain '  OK ' (no satisfied constraints), got: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains("VIOLATED"),
+        "stdout should NOT contain 'VIOLATED', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("No constraints violated"),
+        "stdout should contain 'No constraints violated', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("indeterminate"),
+        "stdout should contain 'indeterminate', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.stdout.contains("Wrote"),
+        "stdout should contain 'Wrote', got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "geometry file should be written when constraints are only indeterminate"
     );
 }

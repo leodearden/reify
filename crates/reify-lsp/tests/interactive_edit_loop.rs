@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
-use reify_lsp::diagnostics::{compute_diagnostics_with_state, EvalState};
+use reify_lsp::diagnostics::{EvalState, compute_diagnostics_with_state};
 use reify_lsp::server::{NoOpSink, ReifyLanguageServer};
 
 fn test_uri() -> Url {
@@ -48,7 +48,10 @@ fn lsp_stateful_diagnostics_after_edit_detects_violation() {
         .iter()
         .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         .collect();
-    assert!(errors1.is_empty(), "initial valid source should have no errors");
+    assert!(
+        errors1.is_empty(),
+        "initial valid source should have no errors"
+    );
 
     // Second call: violating bracket source (thickness=1mm violates thickness > 2mm)
     let violating_source = reify_test_support::bracket_source_violating();
@@ -67,9 +70,9 @@ fn lsp_stateful_diagnostics_after_edit_detects_violation() {
     );
 
     // At least one error should mention constraint violation
-    let has_violation = errors2.iter().any(|d| {
-        d.message.contains("violated") || d.message.contains("constraint")
-    });
+    let has_violation = errors2
+        .iter()
+        .any(|d| d.message.contains("violated") || d.message.contains("constraint"));
     assert!(
         has_violation,
         "should have a diagnostic mentioning constraint violation, got: {errors2:?}"
@@ -89,13 +92,15 @@ fn lsp_stateful_diagnostics_after_edit_detects_violation() {
 /// 6. shutdown
 #[tokio::test]
 async fn lsp_server_e2e_interactive_edit_loop() {
-    let (service, _socket) = LspService::new(|client| {
-        ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink))
-    });
+    let (service, _socket) =
+        LspService::new(|client| ReifyLanguageServer::with_sink(client, Arc::new(NoOpSink)));
     let server = service.inner();
 
     // 1. Initialize
-    let init_result = server.initialize(InitializeParams::default()).await.unwrap();
+    let init_result = server
+        .initialize(InitializeParams::default())
+        .await
+        .unwrap();
     match init_result.capabilities.text_document_sync {
         Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)) => {}
         other => panic!("Expected FULL sync, got {other:?}"),
@@ -163,9 +168,9 @@ async fn lsp_server_e2e_interactive_edit_loop() {
             !errors.is_empty(),
             "violating source should produce error diagnostics after did_change"
         );
-        let has_violation = errors.iter().any(|d| {
-            d.message.contains("violated") || d.message.contains("constraint")
-        });
+        let has_violation = errors
+            .iter()
+            .any(|d| d.message.contains("violated") || d.message.contains("constraint"));
         assert!(
             has_violation,
             "should have a diagnostic mentioning constraint violation, got: {errors:?}"

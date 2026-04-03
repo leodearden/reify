@@ -1,0 +1,254 @@
+//! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
+
+use reify_compiler::stdlib_loader;
+use reify_types::{ModulePath, Severity};
+
+// ─── step-1: basic loading ──────────────────────────────────────────────
+
+/// load_stdlib() returns a non-empty slice of compiled modules.
+#[test]
+fn load_stdlib_returns_non_empty_slice() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        !modules.is_empty(),
+        "load_stdlib() should return at least one compiled module"
+    );
+}
+
+/// All stdlib modules compile without error-severity diagnostics.
+#[test]
+fn all_stdlib_modules_have_no_errors() {
+    let modules = stdlib_loader::load_stdlib();
+    for module in modules {
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "stdlib module '{}' has error diagnostics: {:?}",
+            module.path,
+            errors
+        );
+    }
+}
+
+/// materials_mechanical.ri traits are present in the stdlib (Material, Elastic,
+/// Strong, Hard, FatigueRated, FractureTough, Ductile, ImpactResistant, Damping).
+#[test]
+fn materials_mechanical_traits_present() {
+    let modules = stdlib_loader::load_stdlib();
+
+    // Collect all trait names across all stdlib modules
+    let all_traits: Vec<&str> = modules
+        .iter()
+        .flat_map(|m| m.trait_defs.iter().map(|t| t.name.as_str()))
+        .collect();
+
+    let expected = [
+        "Material",
+        "Elastic",
+        "Strong",
+        "Hard",
+        "FatigueRated",
+        "FractureTough",
+        "Ductile",
+        "ImpactResistant",
+        "Damping",
+    ];
+
+    for name in &expected {
+        assert!(
+            all_traits.contains(name),
+            "expected trait '{}' in stdlib, found: {:?}",
+            name,
+            all_traits
+        );
+    }
+}
+
+/// Second call to load_stdlib() returns the same pointer (OnceLock cached).
+#[test]
+fn load_stdlib_is_cached() {
+    let first = stdlib_loader::load_stdlib();
+    let second = stdlib_loader::load_stdlib();
+    assert!(
+        std::ptr::eq(first, second),
+        "load_stdlib() should return the same slice reference on repeated calls"
+    );
+}
+
+// ─── step-1b: std.units is the first stdlib module (bootstrap order) ─
+
+/// load_stdlib() returns std.units as the first module in the slice.
+/// This ensures units are available to all subsequent stdlib modules.
+#[test]
+fn std_units_is_first_module() {
+    let modules = stdlib_loader::load_stdlib();
+    assert!(
+        modules.len() >= 2,
+        "expected at least 2 stdlib modules (units + materials), got {}",
+        modules.len()
+    );
+    let first = &modules[0];
+    let path_str = format!("{}", first.path);
+    assert!(
+        path_str.contains("units"),
+        "first stdlib module should be std.units, got path: {}",
+        path_str
+    );
+}
+
+// ─── step-3b: std.units module content validation ───────────────────
+
+/// std.units module has zero error diagnostics and contains at minimum
+/// the 9 hardcoded units: mm, cm, m, in, deg, rad, kg, g, s.
+#[test]
+fn std_units_module_has_expected_units() {
+    let modules = stdlib_loader::load_stdlib();
+    let units_module = &modules[0];
+
+    // No error diagnostics
+    let errors: Vec<_> = units_module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "std.units should have zero error diagnostics, got: {:?}",
+        errors
+    );
+
+    // At least the 9 original hardcoded units
+    assert!(
+        units_module.units.len() >= 9,
+        "expected at least 9 units, got {}",
+        units_module.units.len()
+    );
+
+    let unit_names: Vec<&str> = units_module.units.iter().map(|u| u.name.as_str()).collect();
+
+    let required = ["mm", "cm", "m", "in", "deg", "rad", "kg", "g", "s"];
+    for name in &required {
+        assert!(
+            unit_names.contains(name),
+            "expected unit '{}' in std.units, found: {:?}",
+            name,
+            unit_names
+        );
+    }
+
+    // Verify dimensions for a few key units
+    let mm = units_module.units.iter().find(|u| u.name == "mm").unwrap();
+    assert_eq!(mm.dimension, reify_types::DimensionVector::LENGTH);
+    assert!((mm.factor - 0.001).abs() < 1e-12);
+
+    let deg = units_module.units.iter().find(|u| u.name == "deg").unwrap();
+    assert_eq!(deg.dimension, reify_types::DimensionVector::ANGLE);
+    assert!(
+        (deg.factor - std::f64::consts::PI / 180.0).abs() < 1e-15,
+        "deg factor should be PI/180, got {}",
+        deg.factor
+    );
+
+    let kg = units_module.units.iter().find(|u| u.name == "kg").unwrap();
+    assert_eq!(kg.dimension, reify_types::DimensionVector::MASS);
+    assert!((kg.factor - 1.0).abs() < 1e-12);
+
+    let s = units_module.units.iter().find(|u| u.name == "s").unwrap();
+    assert_eq!(s.dimension, reify_types::DimensionVector::TIME);
+    assert!((s.factor - 1.0).abs() < 1e-12);
+}
+
+// ─── step-3: compile_with_prelude makes prelude traits visible ──────
+
+/// compile_with_prelude() makes prelude traits visible to user code.
+/// A structure conforming to the prelude's Elastic trait compiles without
+/// errors and has 'Elastic' in trait_bounds.
+#[test]
+fn compile_with_prelude_makes_traits_visible() {
+    let source = r#"
+structure def Steel : Elastic {
+    param youngs_modulus : Real = 200.0
+    param poissons_ratio : Real = 0.3
+    param shear_modulus : Real = 77.0
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should produce no errors for Elastic-conforming Steel, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        template.trait_bounds.contains(&"Elastic".to_string()),
+        "Steel should have 'Elastic' trait bound, got: {:?}",
+        template.trait_bounds
+    );
+}
+
+// ─── step-5: compile_with_prelude injects trait constraint defaults ──
+
+/// compile_with_prelude injects trait constraint defaults from the prelude.
+/// A structure conforming to the prelude's Strong trait gets the
+/// `uts >= yield_strength` constraint injected.
+#[test]
+fn compile_with_prelude_injects_trait_constraints() {
+    let source = r#"
+structure def Steel : Strong {
+    param yield_strength : Real = 250.0
+    param uts : Real = 400.0
+    param compressive_strength : Real = 250.0
+}
+"#;
+    let prelude = stdlib_loader::load_stdlib();
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
+
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile_with_prelude should produce no errors for Strong-conforming Steel, got: {:?}",
+        errors
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+    assert!(
+        !template.constraints.is_empty(),
+        "expected constraint from Strong trait (uts >= yield_strength) injected into Steel, but constraints is empty"
+    );
+}

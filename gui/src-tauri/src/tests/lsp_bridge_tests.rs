@@ -69,7 +69,9 @@ async fn lsp_request_impl_completion_returns_items() {
 
     let parsed: serde_json::Value =
         serde_json::from_str(&result).expect("result should be valid JSON");
-    let items = parsed.as_array().expect("completion should return an array");
+    let items = parsed
+        .as_array()
+        .expect("completion should return an array");
     assert!(
         !items.is_empty(),
         "completion should return non-empty items"

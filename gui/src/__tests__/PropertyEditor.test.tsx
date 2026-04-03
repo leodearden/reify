@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
@@ -15,6 +15,11 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     kind: overrides.kind ?? 'Param',
   };
 }
+
+/** Single editable (determined) param — shared fixture for most describe blocks. */
+const EDITABLE_C1: Record<string, ValueData> = {
+  c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
+};
 
 describe('PropertyEditor basic rendering', () => {
   it('renders with data-testid="property-editor"', () => {
@@ -339,21 +344,62 @@ describe('PropertyEditor navigation enhancements', () => {
 });
 
 describe('PropertyEditor blur-commit', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
-  it('blurring a determined input commits the current value via onSetParameter', () => {
+  it.each([
+    ['75', '75', 'plain integer'],
+    ['80mm', '80mm', 'quantity with unit'],
+    ['  75 ', '75', 'whitespace-padded number'],
+    [' 5mm ', '5mm', 'whitespace-padded quantity'],
+    ['1e3', '1e3', 'scientific notation'],
+    ['.5', '.5', 'leading-dot decimal'],
+    ['-3', '-3', 'negative integer'],
+    ['.5mm', '.5mm', 'leading-dot quantity'],
+    ['1e3mm', '1e3mm', 'sci-notation quantity'],
+    ['-10mm', '-10mm', 'negative quantity'],
+    ['1e+3mm', '1e+3mm', 'explicit-plus exponent quantity'],
+  ])("blur '%s' (%s) calls onSetParameter with '%s' and no data-invalid", (input, expected) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
     ));
     const row = screen.getByTestId('prop-row-c1');
-    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
-    fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '75' } });
-    fireEvent.blur(input);
-    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
+    expect(onSetParam).toHaveBeenCalledWith('c1', expected);
+    // In tests the mock doesn't update the prop, so after editing ends the input shows
+    // the original prop value '50'. In production the parent would update values and
+    // the input would show '80mm'.
+    expect(el.value).toBe('50');
+    expect(el.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it.each([
+    ['mm80', 'unit-first quantity'],
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+    ['   ', 'whitespace-only'],
+  ])("blur '%s' (%s) does NOT call onSetParameter, reverts to '50', no data-invalid", (input) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(el);
+    fireEvent.input(el, { target: { value: input } });
+    fireEvent.blur(el);
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(el.value).toBe('50');
+    expect(el.hasAttribute('data-invalid')).toBe(false);
   });
 });
 
@@ -406,9 +452,7 @@ describe('PropertyEditor stale input during editing', () => {
 });
 
 describe('PropertyEditor escape-cancel', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('pressing Escape reverts input to original prop value and does NOT call onSetParameter', () => {
     const onSetParam = vi.fn();
@@ -426,9 +470,7 @@ describe('PropertyEditor escape-cancel', () => {
 });
 
 describe('PropertyEditor validation', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it('empty string on Enter does NOT call onSetParameter and input gets data-invalid', () => {
     const onSetParam = vi.fn();
@@ -446,9 +488,7 @@ describe('PropertyEditor validation', () => {
 });
 
 describe('PropertyEditor validation - non-parseable', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("'abc' on Enter does NOT call onSetParameter and input shows error styling", () => {
     const onSetParam = vi.fn();
@@ -496,11 +536,14 @@ describe('PropertyEditor group header', () => {
 });
 
 describe('PropertyEditor validation - valid number', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
-  it("'42.5' on Enter calls onSetParameter and input does NOT have data-invalid", () => {
+  it.each([
+    ['42.5', 'decimal'],
+    ['-3', 'negative integer'],
+    ['.5', 'leading-dot decimal'],
+    ['-0.5', 'negative decimal'],
+  ])("'%s' (%s) on Enter calls onSetParameter and input does NOT have data-invalid", (validNumber) => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -508,9 +551,9 @@ describe('PropertyEditor validation - valid number', () => {
     const row = screen.getByTestId('prop-row-c1');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
-    fireEvent.input(input, { target: { value: '42.5' } });
+    fireEvent.input(input, { target: { value: validNumber } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', '42.5');
+    expect(onSetParam).toHaveBeenCalledWith('c1', validNumber);
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
@@ -530,11 +573,9 @@ describe('PropertyEditor input tooltip', () => {
 });
 
 describe('PropertyEditor validation - trailing non-numeric characters', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
-  it("'10mm' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+  it("'10mm' on Enter DOES call onSetParameter (quantity literal)", () => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -544,8 +585,8 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: '10mm' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).not.toHaveBeenCalled();
-    expect(input.hasAttribute('data-invalid')).toBe(true);
+    expect(onSetParam).toHaveBeenCalledWith('c1', '10mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
   it("'1.5abc' on Enter does NOT call onSetParameter and sets data-invalid", () => {
@@ -576,7 +617,7 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 
-  it("' 42 ' (whitespace-padded) on Enter DOES call onSetParameter", () => {
+  it("' 42 ' (whitespace-padded) on Enter submits trimmed '42'", () => {
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -586,15 +627,123 @@ describe('PropertyEditor validation - trailing non-numeric characters', () => {
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: ' 42 ' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSetParam).toHaveBeenCalledWith('c1', ' 42 ');
+    expect(onSetParam).toHaveBeenCalledWith('c1', '42');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it("' 5mm ' (whitespace-padded quantity) on Enter submits trimmed '5mm'", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: ' 5mm ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '5mm');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+});
+
+describe('PropertyEditor quantity literal acceptance', () => {
+  const values = EDITABLE_C1;
+
+  it.each([
+    ['80mm'],
+    ['90deg'],
+    ['1.5m'],
+    ['100cm'],
+    ['1rad'],
+    ['-10mm'],
+    ['1e3mm'],
+    ['1e+3mm'],
+    ['1.5e-2deg'],
+    ['.5mm'],
+    ['.25deg'],
+  ])("'%s' on Enter DOES call onSetParameter", (qtyLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: qtyLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', qtyLiteral);
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+
+  it.each([
+    ['10xyz'],
+    ['mm80'],
+    // Leading '+' rejected: QUANTITY_RE uses ^-? (minus-only), so '+10mm' fails even
+    // though the exponent group [eE][+-]? does accept '+' (e.g., '1e+3mm' is valid).
+    // This matches the .ri grammar which only defines unary minus for number literals.
+    ['+10mm'],
+    ['mm'],
+    ['deg'],
+  ])("'%s' on Enter does NOT call onSetParameter", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'10' (plain number, no unit) on Enter DOES call onSetParameter", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '10' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '10');
     expect(input.hasAttribute('data-invalid')).toBe(false);
   });
 });
 
+describe('Design decision: whitespace between number and unit is rejected', () => {
+  // The .ri grammar uses token.immediate to forbid whitespace between number and unit
+  // (see tree-sitter-reify/grammar.js:692-699). The frontend QUANTITY_RE enforces this
+  // stricter rule. The backend parse_value_string is more lenient (accepts '5 mm') but
+  // that is an incidental bug, not a design choice.
+
+  const values = EDITABLE_C1;
+
+  it.each([
+    ['5 mm', 'single space'],
+    ['5  mm', 'double space'],
+    ['5\tmm', 'tab'],
+    [' 5 mm ', 'leading + trailing + internal whitespace'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
 describe('PropertyEditor validation - Infinity rejection', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  const values = EDITABLE_C1;
 
   it("'Infinity' on Enter does NOT call onSetParameter and sets data-invalid", () => {
     const onSetParam = vi.fn();
@@ -637,14 +786,15 @@ describe('PropertyEditor validation - Infinity rejection', () => {
     expect(onSetParam).not.toHaveBeenCalled();
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
-});
 
-describe('PropertyEditor escape clears data-invalid', () => {
-  const values: Record<string, ValueData> = {
-    c1: makeValue({ cell_id: 'c1', name: 'width', value: '50', determinacy: 'determined', entity_path: 'Bracket.width' }),
-  };
+  it('dual-guard: 1e999 passes NUM_RE but fails isFinite, proving both checks are necessary', () => {
+    // Verify the regex alone would accept '1e999' — it's syntactically valid
+    const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+    expect(NUM_RE.test('1e999')).toBe(true);
+    // But Number('1e999') overflows to Infinity, which isFinite rejects
+    expect(Number.isFinite(Number('1e999'))).toBe(false);
 
-  it('Escape after invalid entry reverts value AND clears data-invalid', () => {
+    // Confirm the component correctly rejects it
     const onSetParam = vi.fn();
     render(() => (
       <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
@@ -652,14 +802,175 @@ describe('PropertyEditor escape clears data-invalid', () => {
     const row = screen.getByTestId('prop-row-c1');
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
+  it("'1e999mm' (quantity overflow) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999mm' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
+  it("'-1e999deg' (negative quantity overflow) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '-1e999deg' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor validation - valid sci-notation quantities still accepted', () => {
+  const values = EDITABLE_C1;
+
+  it.each([
+    ['1e2mm', 'scientific notation + mm'],
+    ['-3.14rad', 'negative decimal + rad'],
+    ['0.5cm', 'decimal fraction + cm'],
+    ['100deg', 'integer + deg'],
+  ])("'%s' (%s) on Enter DOES call onSetParameter", (quantity) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: quantity } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', quantity);
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor validation - quantity overflow rejection', () => {
+  const values = EDITABLE_C1;
+
+  it('QUANTITY_RE accepts overflow strings but Number(strip) reveals Infinity — documents the gap', () => {
+    const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+    // The regex happily accepts these — it has no numeric range check
+    expect(QUANTITY_RE.test('1e999mm')).toBe(true);
+    expect(QUANTITY_RE.test('-1e999deg')).toBe(true);
+    expect(QUANTITY_RE.test('1e999m')).toBe(true);
+    // But stripping the unit and converting via Number() reveals Infinity
+    const strip = (v: string) => Number(v.replace(/(mm|cm|deg|rad|m)$/, ''));
+    expect(Number.isFinite(strip('1e999mm'))).toBe(false);
+    expect(Number.isFinite(strip('-1e999deg'))).toBe(false);
+    expect(Number.isFinite(strip('1e999m'))).toBe(false);
+  });
+
+  it("'1e999m' (overflow m) on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '1e999m' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+});
+
+describe('PropertyEditor data-invalid recovery', () => {
+  const values = EDITABLE_C1;
+  let input: HTMLInputElement;
+  let onSetParam: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const el = row.querySelector('input[type="text"]');
+    if (!el) throw new Error('text input not found in prop-row-c1');
+    input = el as HTMLInputElement;
+    fireEvent.focus(input);
     fireEvent.input(input, { target: { value: 'abc' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    // data-invalid should be set after invalid Enter
+  });
+
+  it('Escape reverts value and clears data-invalid', () => {
+    // Precondition: data-invalid should be set after invalid Enter
     expect(input.hasAttribute('data-invalid')).toBe(true);
-    // Now press Escape
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(input.value).toBe('50');
     expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
+  it('blur reverts value and clears data-invalid', () => {
+    // Precondition: data-invalid should be set after invalid Enter
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Typed value is preserved in editing state until blur reverts it
+    expect(input.value).toBe('abc');
+    fireEvent.blur(input);
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    expect(onSetParam).not.toHaveBeenCalled();
+  });
+
+  it('Escape then valid value + Enter calls onSetParam and clears data-invalid', () => {
+    // Precondition: data-invalid should be set from beforeEach
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+    // Step 1: Escape to recover from invalid state
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input.value).toBe('50');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+    // Step 2: Enter a valid new value and submit
+    fireEvent.input(input, { target: { value: '75' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '75');
+    expect(input.hasAttribute('data-invalid')).toBe(false);
+  });
+});
+
+describe('PropertyEditor validation - hex/octal/binary/leading-plus rejection', () => {
+  const values = EDITABLE_C1;
+
+  it.each([
+    ['0x10', 'hex lowercase'],
+    ['0X10', 'hex uppercase'],
+    ['0o10', 'octal lowercase'],
+    ['0O10', 'octal uppercase'],
+    ['0b10', 'binary lowercase'],
+    ['0B10', 'binary uppercase'],
+    ['+5', 'leading plus'],
+    ['+0', 'leading plus zero'],
+    ['+5.5', 'leading plus decimal'],
+    ['+.5', 'leading plus leading-dot'],
+    ['+1e3', 'leading plus scientific'],
+  ])("'%s' (%s) on Enter does NOT call onSetParameter and sets data-invalid", (invalidLiteral) => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: invalidLiteral } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 });
 
@@ -703,4 +1014,23 @@ describe('PropertyEditor accessibility', () => {
     const input = screen.getByPlaceholderText('Filter properties...');
     expect(input.getAttribute('aria-label')).toBe('Filter properties');
   });
+});
+
+describe('PropertyEditor whitespace-only input rejection', () => {
+  const values = EDITABLE_C1;
+
+  it("whitespace-only '   ' on Enter does NOT call onSetParameter and sets data-invalid", () => {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor values={values} selectedEntity={null} onSetParameter={onSetParam} />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).not.toHaveBeenCalled();
+    expect(input.hasAttribute('data-invalid')).toBe(true);
+  });
+
 });

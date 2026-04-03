@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use reify_types::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DimensionVector, QuantifierKind, Type, UnOp, Value, ValueCellId, ValueMap};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
+    DeterminacyState, DimensionVector, FieldSourceKind, PersistentMap, QuantifierKind, Type, UnOp,
+    Value, ValueCellId, ValueMap,
+};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -16,6 +20,10 @@ pub struct EvalContext<'a> {
     /// Meta block entries per entity: entity name → (key → value).
     /// `None` means meta context was not provided — MetaAccess evaluation will panic.
     pub meta: Option<&'a HashMap<String, HashMap<String, String>>>,
+    /// Snapshot determinacy states for DeterminacyPredicate evaluation.
+    /// When `Some`, DeterminacyPredicate nodes resolve to `Bool(true/false)`.
+    /// When `None`, they return `Undef` (no engine context available).
+    pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -26,6 +34,7 @@ impl<'a> EvalContext<'a> {
             functions,
             recursion_depth: 0,
             meta: None,
+            determinacy: None,
         }
     }
 
@@ -36,12 +45,34 @@ impl<'a> EvalContext<'a> {
             functions: &[],
             recursion_depth: 0,
             meta: None,
+            determinacy: None,
+        }
+    }
+
+    /// Create a simple context with an explicit recursion depth — **test-only**.
+    #[doc(hidden)]
+    pub fn _test_at_depth(values: &'a ValueMap, depth: u32) -> Self {
+        Self {
+            values,
+            functions: &[],
+            recursion_depth: depth,
+            meta: None,
+            determinacy: None,
         }
     }
 
     /// Attach meta block data for MetaAccess evaluation.
     pub fn with_meta(mut self, meta: &'a HashMap<String, HashMap<String, String>>) -> Self {
         self.meta = Some(meta);
+        self
+    }
+
+    /// Attach snapshot determinacy states for DeterminacyPredicate evaluation.
+    pub fn with_determinacy(
+        mut self,
+        determinacy: &'a PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    ) -> Self {
+        self.determinacy = Some(determinacy);
         self
     }
 
@@ -55,6 +86,7 @@ impl<'a> EvalContext<'a> {
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
             meta: self.meta,
+            determinacy: self.determinacy,
         }
     }
 }
@@ -72,13 +104,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 
         CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
 
-        CompiledExprKind::BinOp { op, left, right } => {
-            eval_binop(*op, left, right, ctx)
-        }
+        CompiledExprKind::BinOp { op, left, right } => eval_binop(*op, left, right, ctx),
 
-        CompiledExprKind::UnOp { op, operand } => {
-            eval_unop(*op, operand, ctx)
-        }
+        CompiledExprKind::UnOp { op, operand } => eval_unop(*op, operand, ctx),
 
         CompiledExprKind::FunctionCall { function, args } => {
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
@@ -91,25 +119,68 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // so they're handled here rather than in stdlib.
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
-                    if let Value::Field { lambda, .. } = &evaluated_args[0] {
-                        apply_lambda(lambda, &evaluated_args[1..], ctx)
+                    if let Value::Field {
+                        lambda,
+                        source,
+                        domain_type,
+                        ..
+                    } = &evaluated_args[0]
+                    {
+                        match (lambda.as_ref(), source) {
+                            (Value::Lambda { .. }, _) => {
+                                apply_lambda(lambda, &evaluated_args[1..], ctx)
+                            }
+                            // Gradient-produced field: lambda slot contains the
+                            // original field (with its own lambda inside).
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Gradient,
+                            ) => compute_numerical_gradient_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
+                            _ => {
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                                    lambda
+                                );
+                                Value::Undef
+                            }
+                        }
                     } else {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] sample: first argument is not a Field: {:?}",
+                            evaluated_args[0]
+                        );
                         Value::Undef
                     }
                 }
-                "gradient" | "divergence" | "curl" if evaluated_args.len() == 1 => {
+                "gradient" if evaluated_args.len() == 1 => {
+                    compute_gradient(&evaluated_args[0])
+                }
+                "divergence" | "curl" if evaluated_args.len() == 1 => {
+                    if !matches!(&evaluated_args[0], Value::Field { .. }) {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[reify-expr] {}: argument is not a Field: {:?}",
+                            function.name, evaluated_args[0]
+                        );
+                    }
                     // Stub: these field operations are not yet implemented.
-                    // They require numeric differentiation infrastructure.
                     Value::Undef
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
         }
 
-        CompiledExprKind::Match {
-            discriminant,
-            arms,
-        } => {
+        CompiledExprKind::Match { discriminant, arms } => {
             let disc_val = eval_expr(discriminant, ctx);
             if disc_val.is_undef() {
                 return Value::Undef;
@@ -126,7 +197,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 }
                 _ => {
                     #[cfg(debug_assertions)]
-                    eprintln!("[reify-expr] match expression on non-enum value: {:?}", disc_val);
+                    eprintln!(
+                        "[reify-expr] match expression on non-enum value: {:?}",
+                        disc_val
+                    );
                     Value::Undef
                 }
             }
@@ -146,9 +220,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             }
         }
 
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
-            eval_user_function_call(function_name, args, ctx)
-        }
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => eval_user_function_call(function_name, args, ctx),
 
         CompiledExprKind::Lambda {
             params,
@@ -204,14 +279,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     let i = *i as usize;
                     items.get(i).cloned().unwrap_or(Value::Undef)
                 }
-                (Value::Map(entries), key) => {
-                    entries.get(key).cloned().unwrap_or(Value::Undef)
-                }
+                (Value::Map(entries), key) => entries.get(key).cloned().unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
         }
 
-        CompiledExprKind::MethodCall { object, method, args } => {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
                 return Value::Undef;
@@ -243,10 +320,92 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             Value::Option(Some(Box::new(val)))
         }
 
-        // DeterminacyPredicate is engine-level only; eval layer returns Undef.
-        CompiledExprKind::DeterminacyPredicate { .. } => Value::Undef,
+        CompiledExprKind::RangeConstructor {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            let lo = lower.as_ref().map(|e| eval_expr(e, ctx));
+            let hi = upper.as_ref().map(|e| eval_expr(e, ctx));
+            // Undef propagation: if any present bound is Undef, the range is Undef
+            if lo.as_ref().is_some_and(|v| v.is_undef())
+                || hi.as_ref().is_some_and(|v| v.is_undef())
+            {
+                return Value::Undef;
+            }
+            Value::range(lo, hi, *lower_inclusive, *upper_inclusive)
+        }
 
-        CompiledExprKind::Quantifier { kind, variable_id, collection, predicate, .. } => {
+        // DeterminacyPredicate: resolve using snapshot determinacy states if available.
+        // When no determinacy context is provided (eval layer without engine), returns Undef.
+        CompiledExprKind::DeterminacyPredicate { kind, cell } => {
+            if let Some(det_map) = ctx.determinacy {
+                // Missing cell in the snapshot indicates a wiring bug (stale ID,
+                // evaluation ordering violation). DeterminacyPredicate may only
+                // reference cells that are guaranteed to be evaluated before the
+                // current cell (topological ordering requirement).
+                // Return Undef to make it visible rather than silently defaulting
+                // to Undetermined.
+                let Some((_, state)) = det_map.get(cell) else {
+                    debug_assert!(
+                        false,
+                        "DeterminacyPredicate references cell {:?} not in determinacy snapshot — wiring bug or eval-order violation",
+                        cell
+                    );
+                    return Value::Undef;
+                };
+                let state = *state;
+                let result = match kind {
+                    DeterminacyPredicateKind::Determined => state == DeterminacyState::Determined,
+                    DeterminacyPredicateKind::Undetermined => {
+                        state == DeterminacyState::Undetermined
+                    }
+                    // Semantic contract: constrained() checks solver-involvement
+                    // state (Auto || Provisional), NOT constraint-presence.
+                    //
+                    // Rationale: in reify's architecture, the `auto` keyword
+                    // explicitly marks a param for constraint-solver resolution,
+                    // so constrained(auto_param) correctly returns true even
+                    // without explicit constraints. A Determined param with an
+                    // explicit constraint (e.g. `param a = 10mm` + `constraint
+                    // a > 0mm`) returns false because the constraint is a
+                    // validation check on an already-resolved value, not a solver
+                    // directive — use `determined(x)` to check resolved state.
+                    DeterminacyPredicateKind::Constrained => {
+                        state == DeterminacyState::Auto || state == DeterminacyState::Provisional
+                    }
+                    // Semantic contract: partially_determined() checks for the
+                    // solver's intermediate state (Provisional only).
+                    //
+                    // Intentionally narrowed from original spec ("has constraints
+                    // AND state != Determined") to Provisional-only: Auto params
+                    // are already covered by constrained(). The Provisional state
+                    // uniquely represents a value being actively resolved by the
+                    // solver but not yet converged — "partially determined" most
+                    // precisely describes this in-flux state. This gives each
+                    // predicate a distinct, non-overlapping role:
+                    //   determined()           → resolved (Determined)
+                    //   undetermined()         → no value (Undetermined)
+                    //   constrained()          → solver variable (Auto/Provisional)
+                    //   partially_determined() → solver in progress (Provisional)
+                    DeterminacyPredicateKind::PartiallyDetermined => {
+                        state == DeterminacyState::Provisional
+                    }
+                };
+                Value::Bool(result)
+            } else {
+                Value::Undef
+            }
+        }
+
+        CompiledExprKind::Quantifier {
+            kind,
+            variable_id,
+            collection,
+            predicate,
+            ..
+        } => {
             let coll_val = eval_expr(collection, ctx);
             if coll_val.is_undef() {
                 return Value::Undef;
@@ -274,7 +433,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             _ => return Value::Undef, // type error
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(true)
+                    }
                 }
                 QuantifierKind::Exists => {
                     // Kleene exists: true short-circuits, undef tracked
@@ -290,20 +453,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             _ => return Value::Undef, // type error
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(false)
+                    }
                 }
             }
         }
-
     }
 }
 
 /// Evaluate a user-defined function call.
-fn eval_user_function_call(
-    function_name: &str,
-    args: &[CompiledExpr],
-    ctx: &EvalContext,
-) -> Value {
+fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &EvalContext) -> Value {
     // Evaluate arguments
     let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
 
@@ -321,17 +483,14 @@ fn eval_user_function_call(
     // The compiler uses exact type matching during resolution, so the compiled args'
     // result_types exactly equal the selected overload's param types. Matching on
     // these result_types selects the same overload the compiler chose.
-    let func = ctx
-        .functions
-        .iter()
-        .find(|f| {
-            f.name == function_name
-                && f.params.len() == args.len()
-                && f.params
-                    .iter()
-                    .zip(args.iter())
-                    .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
-        });
+    let func = ctx.functions.iter().find(|f| {
+        f.name == function_name
+            && f.params.len() == args.len()
+            && f.params
+                .iter()
+                .zip(args.iter())
+                .all(|((_, param_ty), arg)| *param_ty == arg.result_type)
+    });
 
     let func = match func {
         Some(f) => f,
@@ -341,10 +500,7 @@ fn eval_user_function_call(
     // Build fresh scope with parameter bindings
     let mut scope = ValueMap::new();
     for ((param_name, _param_type), arg_val) in func.params.iter().zip(evaluated_args) {
-        scope.insert(
-            ValueCellId::new(&func.name, param_name),
-            arg_val,
-        );
+        scope.insert(ValueCellId::new(&func.name, param_name), arg_val);
     }
 
     // Evaluate let bindings in order, growing the scope
@@ -366,6 +522,7 @@ fn eval_user_function_call(
 /// Returns Undef if:
 /// - The value is not a Lambda
 /// - Argument count doesn't match param count
+/// - Recursion depth has reached MAX_RECURSION_DEPTH
 pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value {
     match lambda {
         Value::Lambda {
@@ -373,6 +530,11 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
             body,
             captures,
         } => {
+            // Check depth before any work (consistent with eval_user_function_call)
+            if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
+                return Value::Undef;
+            }
+
             if args.len() != params.len() {
                 return Value::Undef;
             }
@@ -388,16 +550,298 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
+/// Compute the gradient of a field value.
+///
+/// Returns a new Field with `FieldSourceKind::Gradient` whose lambda slot stores the
+/// original field. The sample handler detects this pattern and dispatches to
+/// `compute_numerical_gradient_at_point` for central-difference evaluation.
+///
+/// Validation:
+/// - Argument must be a Field with Analytical or Composed source (Gradient fields
+///   are excluded: their lambda slot contains a Value::Field, not a callable Lambda)
+/// - Lambda must be a Lambda (not Undef)
+/// - Domain must have scalar quantity components (Real, Int, Scalar, or Point{n, scalar})
+fn compute_gradient(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] gradient: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    // Only Analytical and Composed fields support gradient.
+    // Gradient fields are excluded: their lambda slot contains a Value::Field (the
+    // original field), not a callable Value::Lambda, so numerical differentiation
+    // via apply_lambda is not possible.
+    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
+        return Value::Undef;
+    }
+
+    // Lambda must be a callable Lambda
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Determine dimensionality and validate scalar domain quantity
+    let n = match domain_type {
+        Type::Real | Type::Int | Type::Scalar { .. } => 1,
+        Type::Point { n, quantity } => {
+            if !matches!(quantity.as_ref(), Type::Real | Type::Int | Type::Scalar { .. }) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => return Value::Undef,
+    };
+
+    // Compute gradient quantity type: R/Q (codomain dimension / domain dimension).
+    // Mirrors the runtime logic in compute_numerical_gradient_at_point (line 756).
+    let gradient_quantity = {
+        // Extract domain dimension from the domain type.
+        let domain_dim = match domain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain dimension.
+        let codomain_dim = match codomain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        };
+
+        // Divide codomain by domain dimension when both are non-trivial.
+        match (codomain_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let grad_dim = cd.div(&dd);
+                if grad_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: grad_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => match codomain_type {
+                Type::Scalar { dimension }
+                    if *dimension == DimensionVector::DIMENSIONLESS =>
+                {
+                    Type::Real
+                }
+                _ => codomain_type.clone(),
+            },
+        }
+    };
+
+    // Construct result codomain type:
+    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
+    // nD → Vector{n, gradient_quantity}
+    let result_codomain = if n == 1 {
+        gradient_quantity
+    } else {
+        Type::Vector {
+            n,
+            quantity: Box::new(gradient_quantity),
+        }
+    };
+
+    // Return a gradient field: source=Gradient, lambda slot stores the original field.
+    // The sample handler detects lambda=Field + source=Gradient and dispatches to
+    // compute_numerical_gradient_at_point.
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::Gradient,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the numerical gradient of a field at a given point via central differences.
+///
+/// For each axis i, perturbs coordinate i by ±h where h = 1e-6 * max(|coord_i|, 1e-3),
+/// evaluates the original lambda, and computes df/dx_i ≈ (f(x+h) - f(x-h)) / (2h).
+///
+/// Returns:
+/// - Scalar (Real) for 1D fields
+/// - Vector for nD fields
+/// - Undef if any perturbation evaluation fails
+fn compute_numerical_gradient_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Decompose point into f64 coordinates.
+    // Guard every extracted value with is_finite() — NaN/Inf coordinates
+    // would produce NaN step sizes and silently corrupt gradient results.
+    let coords: Vec<f64> = match point {
+        Value::Real(r) if r.is_finite() => vec![*r],
+        Value::Real(_) => return Value::Undef, // NaN or Inf
+        Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
+        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
+        Value::Scalar { .. } => return Value::Undef, // NaN or Inf
+        Value::Point(items) | Value::Tensor(items) | Value::Vector(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef, // None (non-numeric) or NaN/Inf
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    // Determine if domain is dimensioned (for constructing perturbed args)
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    // Detect calling convention: single-Point param vs decomposed params.
+    // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
+    // If lambda has n params, pass individual scalar values (current behavior).
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    let mut gradient_components = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let coord_i = coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        // Build perturbed coordinate vectors
+        let mut plus_coords = coords.clone();
+        plus_coords[i] += h;
+        let mut minus_coords = coords.clone();
+        minus_coords[i] -= h;
+
+        // Construct args for apply_lambda: use Scalar with domain dimension
+        // when the domain is dimensioned, otherwise use Real.
+        let make_arg = |val: f64| -> Value {
+            match domain_dim {
+                Some(dim) => Value::Scalar {
+                    si_value: val,
+                    dimension: dim,
+                },
+                None => Value::Real(val),
+            }
+        };
+
+        // Build the argument list based on calling convention
+        let plus_args: Vec<Value>;
+        let minus_args: Vec<Value>;
+        if single_point_param {
+            // Single-Point convention: wrap coords in a Value::Point
+            let plus_point = Value::Point(plus_coords.into_iter().map(&make_arg).collect());
+            let minus_point = Value::Point(minus_coords.into_iter().map(&make_arg).collect());
+            plus_args = vec![plus_point];
+            minus_args = vec![minus_point];
+        } else {
+            // Decomposed convention: pass individual scalar/real values
+            plus_args = plus_coords.into_iter().map(&make_arg).collect();
+            minus_args = minus_coords.into_iter().map(&make_arg).collect();
+        }
+
+        let f_plus = apply_lambda(lambda, &plus_args, ctx);
+        let f_minus = apply_lambda(lambda, &minus_args, ctx);
+
+        // Extract numeric values, propagate Undef.
+        // Guard with is_finite() — as_f64() returns Some(NaN) for
+        // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
+        // the None check alone doesn't catch degenerate values.
+        let fp = match f_plus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+        let fm = match f_minus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+
+        let deriv = (fp - fm) / (2.0 * h);
+        // Guard the derivative: even finite fp/fm can produce
+        // Inf via overflow (e.g., (MAX - (-MAX)) / small_h).
+        if !deriv.is_finite() {
+            return Value::Undef;
+        }
+
+        // Compute gradient component dimension: result_dim / domain_dim.
+        // The gradient is df/dx, so its dimension is [codomain] / [domain].
+        let result_dim = f_plus.dimension();
+        let grad_dim = match domain_dim {
+            Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
+            _ => result_dim,
+        };
+        if grad_dim != DimensionVector::DIMENSIONLESS {
+            gradient_components.push(Value::Scalar {
+                si_value: deriv,
+                dimension: grad_dim,
+            });
+        } else {
+            gradient_components.push(Value::Real(deriv));
+        }
+    }
+
+    if n == 1 {
+        gradient_components.into_iter().next().unwrap()
+    } else {
+        Value::Vector(gradient_components)
+    }
+}
+
 /// Evaluate a method call on a collection value.
-fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Type, ctx: &EvalContext) -> Value {
+fn eval_method_call(
+    obj: &Value,
+    method: &str,
+    args: &[Value],
+    result_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
     match method {
         "count" => match obj {
             Value::List(items) => {
-                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
-            },
+                if items.iter().any(|v| v.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Int(items.len() as i64)
+                }
+            }
             Value::Set(items) => {
-                if items.iter().any(|v| v.is_undef()) { Value::Undef } else { Value::Int(items.len() as i64) }
-            },
+                if items.iter().any(|v| v.is_undef()) {
+                    Value::Undef
+                } else {
+                    Value::Int(items.len() as i64)
+                }
+            }
             Value::Map(entries) => Value::Int(entries.len() as i64),
             _ => Value::Undef,
         },
@@ -409,41 +853,107 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
             match obj {
                 Value::List(items) => Value::Bool(items.contains(needle)),
                 Value::Set(items) => Value::Bool(items.contains(needle)),
+                Value::Range {
+                    lower,
+                    upper,
+                    lower_inclusive,
+                    upper_inclusive,
+                } => {
+                    // Undef needle propagates immediately.
+                    if needle.is_undef() {
+                        return Value::Undef;
+                    }
+                    // Check lower bound (if present).
+                    if let Some(lo) = lower {
+                        let cmp_result = if *lower_inclusive {
+                            eval_cmp(lo, needle, |a, b| a <= b)
+                        } else {
+                            eval_cmp(lo, needle, |a, b| a < b)
+                        };
+                        match cmp_result {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => return Value::Bool(false),
+                            _ => return Value::Undef,
+                        }
+                    }
+                    // Check upper bound (if present).
+                    if let Some(hi) = upper {
+                        let cmp_result = if *upper_inclusive {
+                            eval_cmp(needle, hi, |a, b| a <= b)
+                        } else {
+                            eval_cmp(needle, hi, |a, b| a < b)
+                        };
+                        match cmp_result {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => return Value::Bool(false),
+                            _ => return Value::Undef,
+                        }
+                    }
+                    Value::Bool(true)
+                }
                 _ => Value::Undef,
             }
-        },
+        }
+        "lower" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { lower, .. } => match lower {
+                    Some(lo) => Value::Option(Some(lo.clone())),
+                    None => Value::Option(None),
+                },
+                _ => Value::Undef,
+            }
+        }
+        "upper" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { upper, .. } => match upper {
+                    Some(hi) => Value::Option(Some(hi.clone())),
+                    None => Value::Option(None),
+                },
+                _ => Value::Undef,
+            }
+        }
+        "span" => {
+            if !args.is_empty() {
+                return Value::Undef;
+            }
+            match obj {
+                Value::Range { lower, upper, .. } => match (lower, upper) {
+                    (Some(lo), Some(hi)) => eval_sub(hi, lo),
+                    _ => Value::Undef,
+                },
+                _ => Value::Undef,
+            }
+        }
         "union" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.union(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.union(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "intersection" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.intersection(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.intersection(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "keys" => match obj {
-            Value::Map(entries) => {
-                Value::List(entries.keys().cloned().collect())
-            }
+            Value::Map(entries) => Value::List(entries.keys().cloned().collect()),
             _ => Value::Undef,
         },
         "values" => match obj {
-            Value::Map(entries) => {
-                Value::List(entries.values().cloned().collect())
-            }
+            Value::Map(entries) => Value::List(entries.values().cloned().collect()),
             _ => Value::Undef,
         },
         "contains_key" => {
@@ -454,18 +964,16 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 Value::Map(entries) => Value::Bool(entries.contains_key(&args[0])),
                 _ => Value::Undef,
             }
-        },
+        }
         "difference" => {
             if args.len() != 1 {
                 return Value::Undef;
             }
             match (obj, &args[0]) {
-                (Value::Set(a), Value::Set(b)) => {
-                    Value::Set(a.difference(b).cloned().collect())
-                }
+                (Value::Set(a), Value::Set(b)) => Value::Set(a.difference(b).cloned().collect()),
                 _ => Value::Undef,
             }
-        },
+        }
         "sum" => match obj {
             Value::List(items) => {
                 if items.is_empty() {
@@ -511,7 +1019,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "all" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -528,11 +1036,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             _ => return Value::Undef,
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(true) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(true)
+                    }
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "any" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -549,11 +1061,15 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                             _ => return Value::Undef,
                         }
                     }
-                    if has_undef { Value::Undef } else { Value::Bool(false) }
+                    if has_undef {
+                        Value::Undef
+                    } else {
+                        Value::Bool(false)
+                    }
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "fold" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -579,7 +1095,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "concat" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -592,7 +1108,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "generate" => {
             if args.len() != 2 {
                 return Value::Undef;
@@ -611,7 +1127,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "filter" => {
             if args.len() != 1 {
                 return Value::Undef;
@@ -633,7 +1149,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "magnitude" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -652,7 +1168,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "phase" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -667,7 +1183,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "conjugate" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -680,7 +1196,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 },
                 _ => Value::Undef,
             }
-        },
+        }
         "re" | "im" => {
             if !args.is_empty() {
                 return Value::Undef;
@@ -699,7 +1215,7 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 }
                 _ => Value::Undef,
             }
-        },
+        }
         "x" | "y" | "z" => {
             let index = match method {
                 "x" => 0,
@@ -708,12 +1224,10 @@ fn eval_method_call(obj: &Value, method: &str, args: &[Value], result_type: &Typ
                 _ => unreachable!(),
             };
             match obj {
-                Value::Tensor(components) => {
-                    components.get(index).cloned().unwrap_or(Value::Undef)
-                }
+                Value::Tensor(components) => components.get(index).cloned().unwrap_or(Value::Undef),
                 _ => Value::Undef,
             }
-        },
+        }
         _ => Value::Undef,
     }
 }
@@ -808,61 +1322,190 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
-/// wrapping the result with the given constructor. Returns `Value::Undef` if lengths
-/// differ or any component operation produces `Value::Undef`.
+/// wrapping the result with the given constructor. Returns `Value::Undef` if either
+/// slice is empty, lengths differ, or any component operation produces `Value::Undef`.
 fn componentwise_binop(
     a: &[Value],
     b: &[Value],
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
+    if a.is_empty() {
+        return Value::Undef;
+    }
     if a.len() != b.len() {
         return Value::Undef;
     }
-    let results: Vec<Value> = a.iter().zip(b.iter()).map(|(x, y)| op(x, y)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    match a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| {
+            let r = op(x, y);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
 /// Scale each component of a component slice by a scalar value using the given
 /// binary operation, wrapping the result with the given constructor. Returns
-/// `Value::Undef` if any component operation produces `Value::Undef`.
+/// `Value::Undef` if the scalar is Undef, components are empty, or any
+/// component operation produces `Value::Undef`.
 fn scale_components(
     components: &[Value],
     scalar: &Value,
     op: fn(&Value, &Value) -> Value,
     wrap: fn(Vec<Value>) -> Value,
 ) -> Value {
-    let results: Vec<Value> = components.iter().map(|c| op(c, scalar)).collect();
-    if results.iter().any(|v| v.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+    if scalar.is_undef() {
+        return Value::Undef;
+    }
+    if components.is_empty() {
+        return Value::Undef;
+    }
+    match components
+        .iter()
+        .map(|c| {
+            let r = op(c, scalar);
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
     }
 }
 
-/// Negate each component of a component list, wrapping with the given constructor.
-/// Returns `Value::Undef` if any component cannot be negated.
-fn negate_components(components: Vec<Value>, wrap: fn(Vec<Value>) -> Value) -> Value {
-    let results: Vec<Value> = components
-        .into_iter()
-        .map(|c| match c {
-            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar { si_value, dimension } => {
-                Value::Scalar { si_value: -si_value, dimension }
-            }
-            _ => Value::Undef,
-        })
-        .collect();
-    if results.iter().any(|x| x.is_undef()) {
-        Value::Undef
-    } else {
-        wrap(results)
+/// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
+/// Returns `Value::Undef` for non-negatable types or Int overflow.
+fn neg_scalar(v: Value) -> Value {
+    match v {
+        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Real(r) => Value::Real(-r),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => Value::Scalar {
+            si_value: -si_value,
+            dimension,
+        },
+        Value::Complex { re, im, dimension } => Value::Complex {
+            re: -re,
+            im: -im,
+            dimension,
+        },
+        _ => Value::Undef,
     }
+}
+
+/// Negate each component in a slice, wrapping the result with the given
+/// constructor.  Returns `Value::Undef` if components are empty or any
+/// component negation produces `Value::Undef`.  Uses the Option-collect
+/// pattern for single-pass early exit.
+fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Value {
+    if components.is_empty() {
+        return Value::Undef;
+    }
+    match components
+        .iter()
+        .map(|c| {
+            let r = negate_value(c.clone());
+            if r.is_undef() { None } else { Some(r) }
+        })
+        .collect::<Option<Vec<Value>>>()
+    {
+        Some(results) => wrap(results),
+        None => Value::Undef,
+    }
+}
+
+/// Recursively negate a value.  Handles all negatable variants: Int, Real,
+/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Point negation is explicitly undefined (spec 3.3.1).
+fn negate_value(v: Value) -> Value {
+    match v {
+        Value::Int(_) | Value::Real(_) | Value::Scalar { .. } | Value::Complex { .. } => {
+            neg_scalar(v)
+        }
+        Value::Tensor(components) => negate_components(&components, Value::Tensor),
+        Value::Vector(components) => negate_components(&components, Value::Vector),
+        Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
+        // Affine geometry: point negation is undefined (spec 3.3.1)
+        Value::Point(_) => Value::Undef,
+        _ => Value::Undef,
+    }
+}
+
+/// Check if a tensor slice represents rank-2 data (all elements are Tensor).
+/// Returns `true` if the first element is a Tensor; callers must verify `.all()`.
+fn is_rank2(slice: &[Value]) -> bool {
+    slice
+        .first()
+        .is_some_and(|v| matches!(v, Value::Tensor(_)))
+}
+
+/// Validate rank-2 tensor operands for addition/subtraction.
+/// Returns `Some(Value::Undef)` if validation fails, `None` if tensors are valid
+/// for componentwise operation (or if they are rank-1 and should fall through).
+fn validate_rank2_tensors(a: &[Value], b: &[Value]) -> Option<Value> {
+    let a_rank2 = is_rank2(a);
+    let b_rank2 = is_rank2(b);
+
+    // If neither is rank-2, let componentwise_binop handle it (rank-1 path).
+    if !a_rank2 && !b_rank2 {
+        return None;
+    }
+
+    // Mixed rank (one rank-2, one rank-1) → Undef.
+    if a_rank2 != b_rank2 {
+        return Some(Value::Undef);
+    }
+
+    // Both claim rank-2. Verify ALL rows are Tensor (not just first).
+    if !a.iter().all(|r| matches!(r, Value::Tensor(_)))
+        || !b.iter().all(|r| matches!(r, Value::Tensor(_)))
+    {
+        return Some(Value::Undef);
+    }
+
+    // Empty inner rows (0-column matrix) → Undef.
+    let a_has_empty = a
+        .iter()
+        .any(|r| matches!(r, Value::Tensor(row) if row.is_empty()));
+    let b_has_empty = b
+        .iter()
+        .any(|r| matches!(r, Value::Tensor(row) if row.is_empty()));
+    if a_has_empty || b_has_empty {
+        return Some(Value::Undef);
+    }
+
+    // Jagged validation: all rows in each operand must have the same column count.
+    let a_cols = match &a[0] {
+        Value::Tensor(r) => r.len(),
+        _ => 0,
+    };
+    if !a
+        .iter()
+        .all(|r| matches!(r, Value::Tensor(row) if row.len() == a_cols))
+    {
+        return Some(Value::Undef);
+    }
+    let b_cols = match &b[0] {
+        Value::Tensor(r) => r.len(),
+        _ => 0,
+    };
+    if !b
+        .iter()
+        .all(|r| matches!(r, Value::Tensor(row) if row.len() == b_cols))
+    {
+        return Some(Value::Undef);
+    }
+
+    // Valid rank-2: fall through to componentwise_binop.
+    None
 }
 
 fn eval_add(lv: &Value, rv: &Value) -> Value {
@@ -893,8 +1536,16 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         }
         // Complex + Complex: dimension must match
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => {
             if ad != bd {
                 Value::Undef
@@ -907,8 +1558,13 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             }
         }
         (Value::String(a), Value::String(b)) => Value::String(format!("{}{}", a, b)),
-        // Component-wise Tensor addition
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_add, Value::Tensor),
+        // Component-wise Tensor addition (with rank-2 validation)
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if let Some(undef) = validate_rank2_tensors(a, b) {
+                return undef;
+            }
+            componentwise_binop(a, b, eval_add, Value::Tensor)
+        }
         // Affine geometry: Vector + Vector → Vector
         (Value::Vector(a), Value::Vector(b)) => componentwise_binop(a, b, eval_add, Value::Vector),
         // Affine geometry: Point + Vector or Vector + Point → Point (displacement)
@@ -948,8 +1604,16 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         }
         // Complex - Complex: dimension must match
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => {
             if ad != bd {
                 Value::Undef
@@ -961,8 +1625,13 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
                 }
             }
         }
-        // Component-wise Tensor subtraction
-        (Value::Tensor(a), Value::Tensor(b)) => componentwise_binop(a, b, eval_sub, Value::Tensor),
+        // Component-wise Tensor subtraction (with rank-2 validation)
+        (Value::Tensor(a), Value::Tensor(b)) => {
+            if let Some(undef) = validate_rank2_tensors(a, b) {
+                return undef;
+            }
+            componentwise_binop(a, b, eval_sub, Value::Tensor)
+        }
         // Affine geometry: Point - Point → Vector (displacement)
         (Value::Point(a), Value::Point(b)) => componentwise_binop(a, b, eval_sub, Value::Vector),
         // Affine geometry: Point - Vector → Point (point displaced backwards)
@@ -1007,7 +1676,15 @@ fn vec3_components(items: &[Value]) -> Option<(f64, f64, f64, DimensionVector)> 
     let x = items[0].as_f64()?;
     let y = items[1].as_f64()?;
     let z = items[2].as_f64()?;
+    // Reject NaN and Infinity
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        return None;
+    }
     let dim = items[0].dimension();
+    // All three components must share the same dimension
+    if items[1].dimension() != dim || items[2].dimension() != dim {
+        return None;
+    }
     Some((x, y, z, dim))
 }
 
@@ -1017,9 +1694,18 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
         vec![Value::Real(x), Value::Real(y), Value::Real(z)]
     } else {
         vec![
-            Value::Scalar { si_value: x, dimension: dim },
-            Value::Scalar { si_value: y, dimension: dim },
-            Value::Scalar { si_value: z, dimension: dim },
+            Value::Scalar {
+                si_value: x,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: y,
+                dimension: dim,
+            },
+            Value::Scalar {
+                si_value: z,
+                dimension: dim,
+            },
         ]
     }
 }
@@ -1033,8 +1719,16 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Complex * Complex: (ac-bd) + (ad+bc)i, dimensions multiply
         (
-            Value::Complex { re: ar, im: ai, dimension: ad },
-            Value::Complex { re: br, im: bi, dimension: bd },
+            Value::Complex {
+                re: ar,
+                im: ai,
+                dimension: ad,
+            },
+            Value::Complex {
+                re: br,
+                im: bi,
+                dimension: bd,
+            },
         ) => Value::Complex {
             re: ar * br - ai * bi,
             im: ar * bi + ai * br,
@@ -1055,24 +1749,62 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
             dimension: ad.mul(bd),
         },
         // Scalar * dimensionless numeric
-        (Value::Scalar { si_value, dimension }, Value::Int(n))
-        | (Value::Int(n), Value::Scalar { si_value, dimension }) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        )
+        | (
+            Value::Int(n),
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+        ) => Value::Scalar {
             si_value: si_value * *n as f64,
             dimension: *dimension,
         },
-        (Value::Scalar { si_value, dimension }, Value::Real(r))
-        | (Value::Real(r), Value::Scalar { si_value, dimension }) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Real(r),
+        )
+        | (
+            Value::Real(r),
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+        ) => Value::Scalar {
             si_value: si_value * r,
             dimension: *dimension,
         },
         // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
         (
-            Value::Complex { re, im, dimension: cd },
-            Value::Scalar { si_value, dimension: sd },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
         )
         | (
-            Value::Scalar { si_value, dimension: sd },
-            Value::Complex { re, im, dimension: cd },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
         ) => Value::Complex {
             re: re * si_value,
             im: im * si_value,
@@ -1100,7 +1832,10 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Scalar * Vector or Vector * Scalar: scale each component → Vector
         (Value::Vector(components), scalar) | (scalar, Value::Vector(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }
+            ) =>
         {
             scale_components(components, scalar, eval_mul, Value::Vector)
         }
@@ -1108,21 +1843,26 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         // Pragmatic deviation from strict affine rules: needed for weighted
         // interpolation and barycentric coordinates.
         (Value::Point(components), scalar) | (scalar, Value::Point(components))
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_) | Value::Transform { .. }
+            ) =>
         {
             scale_components(components, scalar, eval_mul, Value::Point)
         }
         // Transform * Vector: apply rotation only (translation is ignored for vectors)
-        (
-            Value::Transform { rotation, .. },
-            Value::Vector(components),
-        ) => {
+        (Value::Transform { rotation, .. }, Value::Vector(components)) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((vx, vy, vz, dim)) = vec3_components(components) {
-                    let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), vx, vy, vz);
+                    let (rx, ry, rz) = quat_rotate(q, vx, vy, vz);
                     Value::Vector(make_components_3(rx, ry, rz, dim))
                 } else {
                     Value::Undef
@@ -1133,13 +1873,21 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Transform * Point: apply rotation then add translation
         (
-            Value::Transform { rotation, translation },
+            Value::Transform {
+                rotation,
+                translation,
+            },
             Value::Point(components),
         ) => {
             if let Value::Orientation { w, x, y, z } = rotation.as_ref() {
                 if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Value::Undef;
                 }
+                let norm = (w * w + x * x + y * y + z * z).sqrt();
+                if norm < f64::EPSILON {
+                    return Value::Undef;
+                }
+                let q = (w / norm, x / norm, y / norm, z / norm);
                 if let Some((px, py, pz, p_dim)) = vec3_components(components) {
                     if let Value::Vector(t_items) = translation.as_ref() {
                         if let Some((tx, ty, tz, t_dim)) = vec3_components(t_items) {
@@ -1147,7 +1895,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                             if p_dim != t_dim {
                                 return Value::Undef;
                             }
-                            let (rx, ry, rz) = quat_rotate((*w, *x, *y, *z), px, py, pz);
+                            let (rx, ry, rz) = quat_rotate(q, px, py, pz);
                             Value::Point(make_components_3(rx + tx, ry + ty, rz + tz, p_dim))
                         } else {
                             Value::Undef
@@ -1164,40 +1912,64 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
         }
         // Transform * Transform: composition (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1)
         (
-            Value::Transform { rotation: r1, translation: t1 },
-            Value::Transform { rotation: r2, translation: t2 },
+            Value::Transform {
+                rotation: r1,
+                translation: t1,
+            },
+            Value::Transform {
+                rotation: r2,
+                translation: t2,
+            },
         ) => {
             if let (
-                Value::Orientation { w: w1, x: x1, y: y1, z: z1 },
-                Value::Orientation { w: w2, x: x2, y: y2, z: z2 },
+                Value::Orientation {
+                    w: w1,
+                    x: x1,
+                    y: y1,
+                    z: z1,
+                },
+                Value::Orientation {
+                    w: w2,
+                    x: x2,
+                    y: y2,
+                    z: z2,
+                },
             ) = (r1.as_ref(), r2.as_ref())
             {
                 if let (Value::Vector(t1_items), Value::Vector(t2_items)) =
                     (t1.as_ref(), t2.as_ref())
                 {
-                    if let (
-                        Some((t1x, t1y, t1z, t1_dim)),
-                        Some((t2x, t2y, t2z, t2_dim)),
-                    ) = (vec3_components(t1_items), vec3_components(t2_items))
+                    if let (Some((t1x, t1y, t1z, t1_dim)), Some((t2x, t2y, t2z, t2_dim))) =
+                        (vec3_components(t1_items), vec3_components(t2_items))
                     {
                         // Dimension check: both translations must share dimension
                         if t1_dim != t2_dim {
                             return Value::Undef;
                         }
+                        // Validate and normalize q1 for translation rotation
+                        if !w1.is_finite() || !x1.is_finite() || !y1.is_finite() || !z1.is_finite()
+                        {
+                            return Value::Undef;
+                        }
+                        let q1_norm = (w1 * w1 + x1 * x1 + y1 * y1 + z1 * z1).sqrt();
+                        if q1_norm < f64::EPSILON {
+                            return Value::Undef;
+                        }
+                        let q1_n = (w1 / q1_norm, x1 / q1_norm, y1 / q1_norm, z1 / q1_norm);
                         // Compose rotations: R = R1 * R2
-                        let q1 = (*w1, *x1, *y1, *z1);
-                        let (rw, rx, ry, rz) = quat_mul_t(q1, (*w2, *x2, *y2, *z2));
+                        let (rw, rx, ry, rz) = quat_mul_t(q1_n, (*w2, *x2, *y2, *z2));
                         // Normalize result quaternion (reject NaN/Inf/zero-length)
-                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+                        if !rw.is_finite() || !rx.is_finite() || !ry.is_finite() || !rz.is_finite()
+                        {
                             return Value::Undef;
                         }
                         let norm = (rw * rw + rx * rx + ry * ry + rz * rz).sqrt();
-                        if norm == 0.0 {
+                        if norm < f64::EPSILON {
                             return Value::Undef;
                         }
                         let (rw, rx, ry, rz) = (rw / norm, rx / norm, ry / norm, rz / norm);
                         // Compose translations: t = R1 * t2 + t1
-                        let (rt2x, rt2y, rt2z) = quat_rotate(q1, t2x, t2y, t2z);
+                        let (rt2x, rt2y, rt2z) = quat_rotate(q1_n, t2x, t2y, t2z);
                         Value::Transform {
                             rotation: Box::new(Value::Orientation {
                                 w: rw,
@@ -1229,7 +2001,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
 fn eval_div(lv: &Value, rv: &Value) -> Value {
     // Check for division by zero
     if let Some(denom) = rv.as_f64()
-        && denom == 0.0
+        && (denom == 0.0 || denom.is_nan())
     {
         return Value::Undef;
     }
@@ -1259,28 +2031,43 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            if result_dim.is_dimensionless() {
-                Value::Real(a / b)
-            } else {
-                Value::Scalar {
-                    si_value: a / b,
-                    dimension: result_dim,
-                }
+            Value::Scalar {
+                si_value: a / b,
+                dimension: result_dim,
             }
         }
         // Scalar / dimensionless
-        (Value::Scalar { si_value, dimension }, Value::Int(n)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        ) => Value::Scalar {
             si_value: si_value / *n as f64,
             dimension: *dimension,
         },
-        (Value::Scalar { si_value, dimension }, Value::Real(r)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Real(r),
+        ) => Value::Scalar {
             si_value: si_value / r,
             dimension: *dimension,
         },
         // Complex / Scalar: divide re/im, combine dimensions
         (
-            Value::Complex { re, im, dimension: cd },
-            Value::Scalar { si_value, dimension: sd },
+            Value::Complex {
+                re,
+                im,
+                dimension: cd,
+            },
+            Value::Scalar {
+                si_value,
+                dimension: sd,
+            },
         ) => Value::Complex {
             re: re / si_value,
             im: im / si_value,
@@ -1304,14 +2091,20 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
         }
         // Vector / Scalar: divide each component by the scalar → Vector
         (Value::Vector(components), scalar)
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_)
+            ) =>
         {
             scale_components(components, scalar, eval_div, Value::Vector)
         }
         // Point / Scalar: divide each component by the scalar → Point
         // Pragmatic deviation from strict affine rules (needed for interpolation).
         (Value::Point(components), scalar)
-            if !matches!(scalar, Value::Vector(_) | Value::Point(_) | Value::Tensor(_)) =>
+            if !matches!(
+                scalar,
+                Value::Vector(_) | Value::Point(_) | Value::Tensor(_)
+            ) =>
         {
             scale_components(components, scalar, eval_div, Value::Point)
         }
@@ -1352,7 +2145,13 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents
-        (Value::Scalar { si_value, dimension }, Value::Int(n)) => Value::Scalar {
+        (
+            Value::Scalar {
+                si_value,
+                dimension,
+            },
+            Value::Int(n),
+        ) => Value::Scalar {
             si_value: si_value.powi(*n as i32),
             dimension: dimension.pow(*n as i8),
         },
@@ -1465,26 +2264,7 @@ fn eval_unop(op: UnOp, operand: &CompiledExpr, ctx: &EvalContext) -> Value {
         return Value::Undef;
     }
     match op {
-        UnOp::Neg => match v {
-            Value::Int(i) => Value::Int(-i),
-            Value::Real(r) => Value::Real(-r),
-            Value::Scalar { si_value, dimension } => Value::Scalar {
-                si_value: -si_value,
-                dimension,
-            },
-            Value::Complex { re, im, dimension } => Value::Complex {
-                re: -re,
-                im: -im,
-                dimension,
-            },
-            // Negate all components of a Tensor
-            Value::Tensor(components) => negate_components(components, Value::Tensor),
-            // Affine geometry: negate all components of a Vector
-            Value::Vector(components) => negate_components(components, Value::Vector),
-            // Affine geometry: point negation is undefined (spec 3.3.1)
-            Value::Point(_) => Value::Undef,
-            _ => Value::Undef,
-        },
+        UnOp::Neg => negate_value(v),
         UnOp::Not => match v {
             Value::Bool(b) => Value::Bool(!b),
             _ => Value::Undef,
@@ -1584,7 +2364,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 0.008).abs() < 1e-12);
                 assert_eq!(*dimension, DimensionVector::AREA);
             }
@@ -1747,7 +2530,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 9e-6).abs() < 1e-15);
                 assert_eq!(*dimension, DimensionVector::AREA);
             }
@@ -1786,7 +2572,10 @@ mod tests {
 
         let result = eval_expr(&volume, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 // 0.08 * 0.1 * 0.005 = 4e-5 m³
                 assert!((si_value - 4e-5).abs() < 1e-15);
                 assert_eq!(*dimension, DimensionVector::VOLUME);
@@ -2075,6 +2864,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn eq_scalar_same_value_different_dimension_is_false() {
+        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} should be false
+        // Regression guard for task 38: different dimensions must never compare equal,
+        // even when the numeric si_value is identical (5mm == 5kg was silently true).
+        let left = lit(
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let right = lit(
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::MASS,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
+        );
+        let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Bool(false) => {}
+            other => panic!("expected Bool(false), got {:?}", other),
+        }
+    }
+
     // ── Enum eval tests ──────────────────────────────────
 
     fn enum_lit(type_name: &str, variant: &str) -> CompiledExpr {
@@ -2185,12 +3003,10 @@ mod tests {
     #[test]
     fn eval_match_undef_discriminant() {
         let discriminant = lit(Value::Undef, Type::Int);
-        let arms = vec![
-            reify_types::CompiledMatchArm {
-                patterns: vec!["In".to_string()],
-                body: lit(Value::Int(1), Type::Int),
-            },
-        ];
+        let arms = vec![reify_types::CompiledMatchArm {
+            patterns: vec!["In".to_string()],
+            body: lit(Value::Int(1), Type::Int),
+        }];
         let expr = CompiledExpr {
             content_hash: reify_types::ContentHash::of(&[101]),
             result_type: Type::Int,
@@ -2263,15 +3079,18 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Real)
+        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
-        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12),
-            other => panic!("expected Real, got {:?}", other),
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 4.0).abs() < 1e-12);
+                assert!(dimension.is_dimensionless());
+            }
+            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
         }
     }
 
@@ -2478,7 +3297,11 @@ mod tests {
         let functions = [infinite_fn];
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
-        assert!(result.is_undef(), "expected Undef for infinite recursion, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for infinite recursion, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2497,7 +3320,11 @@ mod tests {
         let functions = [double_fn];
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
-        assert!(result.is_undef(), "expected Undef for undef arg, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for undef arg, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2556,7 +3383,10 @@ mod tests {
         let ctx = EvalContext::new(&values, &functions);
         let result = eval_expr(&call_expr, &ctx);
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!(
                     (si_value - 0.008).abs() < 1e-12,
                     "expected 0.008, got {}",
@@ -2591,10 +3421,7 @@ mod tests {
         let process2 = CompiledFunction {
             name: "process".to_string(),
             is_pub: false,
-            params: vec![
-                ("x".to_string(), Type::Real),
-                ("y".to_string(), Type::Real),
-            ],
+            params: vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)],
             return_type: Type::Real,
             body: CompiledFnBody {
                 let_bindings: vec![],
@@ -2672,6 +3499,18 @@ mod tests {
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "matching on non-enum value should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_int_min_returns_undef() {
+        let operand = lit(Value::Int(i64::MIN), Type::Int);
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::Int);
+        let values = ValueMap::new();
+        assert_eq!(
+            eval_expr(&expr, &EvalContext::simple(&values)),
+            Value::Undef,
+            "negating i64::MIN should return Undef, not panic"
         );
     }
 }

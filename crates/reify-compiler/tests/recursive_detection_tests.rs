@@ -16,14 +16,20 @@ use reify_types::*;
 /// Helper: parse source and compile, returning all templates and diagnostics.
 fn compile_all(source: &str) -> (Vec<TopologyTemplate>, Vec<Diagnostic>) {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     (compiled.templates, compiled.diagnostics)
 }
 
 /// Helper: find a template by name in a list of templates.
 fn find_template<'a>(templates: &'a [TopologyTemplate], name: &str) -> &'a TopologyTemplate {
-    templates.iter().find(|t| t.name == name)
+    templates
+        .iter()
+        .find(|t| t.name == name)
         .unwrap_or_else(|| panic!("expected template named '{}'", name))
 }
 
@@ -87,8 +93,14 @@ structure B {
     let a = find_template(&templates, "A");
     let b = find_template(&templates, "B");
 
-    assert!(a.is_recursive, "A in A<->B cycle should have is_recursive == true");
-    assert!(b.is_recursive, "B in A<->B cycle should have is_recursive == true");
+    assert!(
+        a.is_recursive,
+        "A in A<->B cycle should have is_recursive == true"
+    );
+    assert!(
+        b.is_recursive,
+        "B in A<->B cycle should have is_recursive == true"
+    );
 }
 
 /// Three-node cycle: A -> B -> C -> A — all three should be tagged recursive.
@@ -114,9 +126,18 @@ structure C {
     let b = find_template(&templates, "B");
     let c = find_template(&templates, "C");
 
-    assert!(a.is_recursive, "A in A->B->C->A cycle should have is_recursive == true");
-    assert!(b.is_recursive, "B in A->B->C->A cycle should have is_recursive == true");
-    assert!(c.is_recursive, "C in A->B->C->A cycle should have is_recursive == true");
+    assert!(
+        a.is_recursive,
+        "A in A->B->C->A cycle should have is_recursive == true"
+    );
+    assert!(
+        b.is_recursive,
+        "B in A->B->C->A cycle should have is_recursive == true"
+    );
+    assert!(
+        c.is_recursive,
+        "C in A->B->C->A cycle should have is_recursive == true"
+    );
 }
 
 // ─── Step 5: non-cyclic graph patterns ───────────────────────────────────────
@@ -135,9 +156,18 @@ structure A { sub b = B() }
     let b = find_template(&templates, "B");
     let c = find_template(&templates, "C");
 
-    assert!(!a.is_recursive, "A in linear chain A->B->C should not be recursive");
-    assert!(!b.is_recursive, "B in linear chain A->B->C should not be recursive");
-    assert!(!c.is_recursive, "C in linear chain A->B->C should not be recursive");
+    assert!(
+        !a.is_recursive,
+        "A in linear chain A->B->C should not be recursive"
+    );
+    assert!(
+        !b.is_recursive,
+        "B in linear chain A->B->C should not be recursive"
+    );
+    assert!(
+        !c.is_recursive,
+        "C in linear chain A->B->C should not be recursive"
+    );
 }
 
 /// Diamond: A->B, A->C, B->D, C->D (shared leaf, no back-edge) — none recursive.
@@ -202,14 +232,21 @@ structure D {
     assert!(d.is_recursive, "D in C<->D cycle should be recursive");
 
     // Expect exactly 2 warning diagnostics (one per SCC)
-    let cycle_warnings: Vec<_> = diagnostics.iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert_eq!(
-        cycle_warnings.len(), 2,
+        cycle_warnings.len(),
+        2,
         "expected 2 cycle warnings (one per SCC), got {}: {:?}",
         cycle_warnings.len(),
-        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -238,7 +275,10 @@ structure C {
 
     assert!(a.is_recursive, "A in A<->B cycle should be recursive");
     assert!(b.is_recursive, "B in A<->B cycle should be recursive");
-    assert!(!c.is_recursive, "C (references A but not in cycle) should NOT be recursive");
+    assert!(
+        !c.is_recursive,
+        "C (references A but not in cycle) should NOT be recursive"
+    );
 }
 
 // ─── Step 9: warning diagnostic content and count ────────────────────────────
@@ -256,15 +296,23 @@ structure S {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let cycle_warnings: Vec<_> = diagnostics.iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle detected"))
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("recursive structure cycle detected")
+        })
         .collect();
 
     assert_eq!(
-        cycle_warnings.len(), 1,
+        cycle_warnings.len(),
+        1,
         "expected exactly 1 cycle warning for self-referencing S, got {}: {:?}",
         cycle_warnings.len(),
-        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 
     // The warning should contain the cycle path "S -> S"
@@ -299,15 +347,23 @@ structure D {
 
     let (_templates, diagnostics) = compile_all(source);
 
-    let cycle_warnings: Vec<_> = diagnostics.iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle detected"))
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.message.contains("recursive structure cycle detected")
+        })
         .collect();
 
     assert_eq!(
-        cycle_warnings.len(), 2,
+        cycle_warnings.len(),
+        2,
         "expected 2 cycle warnings for 2 independent SCCs, got {}: {:?}",
         cycle_warnings.len(),
-        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 

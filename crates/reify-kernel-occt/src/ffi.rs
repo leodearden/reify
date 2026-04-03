@@ -126,10 +126,7 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Thicken / Shell ---
-        fn thicken_shape(
-            shape: &OcctShape,
-            offset: f64,
-        ) -> Result<UniquePtr<OcctShape>>;
+        fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
             shape: &OcctShape,
             thickness: f64,
@@ -139,10 +136,7 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
-        fn loft_two_profiles(
-            wire1: &OcctShape,
-            wire2: &OcctShape,
-        ) -> Result<UniquePtr<OcctShape>>;
+        fn loft_two_profiles(wire1: &OcctShape, wire2: &OcctShape) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,
@@ -154,10 +148,7 @@ pub mod ffi {
         fn loft_profiles(profiles: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
         // --- Sweep ---
-        fn make_pipe(
-            profile: &OcctShape,
-            spine: &OcctShape,
-        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_pipe(profile: &OcctShape, spine: &OcctShape) -> Result<UniquePtr<OcctShape>>;
 
         // --- Sweep / Extrude / Revolve ---
         fn make_prism(
@@ -191,12 +182,7 @@ pub mod ffi {
         fn query_bbox(shape: &OcctShape) -> Result<BBox>;
 
         fn query_distance(shape1: &OcctShape, shape2: &OcctShape) -> Result<f64>;
-        fn query_moment_of_inertia(
-            shape: &OcctShape,
-            ax: f64,
-            ay: f64,
-            az: f64,
-        ) -> Result<f64>;
+        fn query_moment_of_inertia(shape: &OcctShape, ax: f64, ay: f64, az: f64) -> Result<f64>;
 
         // --- Export ---
         fn export_step(shape: &OcctShape) -> Result<String>;

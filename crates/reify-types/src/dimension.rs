@@ -186,6 +186,26 @@ impl DimensionVector {
         DimensionVector(result)
     }
 
+    /// Convert an SI value to the standard engineering display unit for this dimension.
+    ///
+    /// Returns `(converted_value, unit_label)`. For example, LENGTH converts
+    /// metres to millimetres: `to_display_units(0.08)` → `(80.0, "mm")`.
+    pub fn to_display_units(&self, si_value: f64) -> (f64, &'static str) {
+        if *self == DimensionVector::LENGTH {
+            (si_value * 1000.0, "mm")
+        } else if *self == DimensionVector::ANGLE {
+            (si_value * 180.0 / std::f64::consts::PI, "deg")
+        } else if *self == DimensionVector::AREA {
+            (si_value * 1e6, "mm\u{00B2}")
+        } else if *self == DimensionVector::VOLUME {
+            (si_value * 1e9, "mm\u{00B3}")
+        } else if self.is_dimensionless() {
+            (si_value, "")
+        } else {
+            (si_value, "SI")
+        }
+    }
+
     pub fn content_hash(&self) -> ContentHash {
         let mut buf = [0u8; 36]; // 9 * 4 bytes (2 bytes per i16 field)
         for (i, r) in self.0.iter().enumerate() {
@@ -257,7 +277,10 @@ mod tests {
 
     #[test]
     fn rational_arithmetic() {
-        assert_eq!(Rational::new(1, 2) + Rational::new(1, 3), Rational::new(5, 6));
+        assert_eq!(
+            Rational::new(1, 2) + Rational::new(1, 3),
+            Rational::new(5, 6)
+        );
         assert_eq!(Rational::new(1, 1) - Rational::new(1, 1), Rational::ZERO);
         assert_eq!(-Rational::new(3, 4), Rational::new(-3, 4));
     }
@@ -277,13 +300,11 @@ mod tests {
 
     #[test]
     fn dimension_div() {
-        let velocity = DimensionVector::LENGTH.div(&DimensionVector {
-            0: {
-                let mut v = [Rational::ZERO; 9];
-                v[2] = Rational::ONE; // time
-                v
-            },
-        });
+        let velocity = DimensionVector::LENGTH.div(&DimensionVector({
+            let mut v = [Rational::ZERO; 9];
+            v[2] = Rational::ONE; // time
+            v
+        }));
         assert_eq!(velocity.0[0], Rational::ONE); // m
         assert_eq!(velocity.0[2], Rational::new(-1, 1)); // s^-1
     }

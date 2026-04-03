@@ -24,6 +24,12 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
   return groups;
 }
 
+// No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
+// The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
+// intentionally enforces the stricter grammar rule.
+const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
   const [collapsedGroups, setCollapsedGroups] = createSignal<Set<string>>(new Set());
@@ -91,19 +97,37 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   }
 
   function isValidValue(value: string): boolean {
-    return value.trim() !== '' && Number.isFinite(Number(value.trim()));
+    if (value === '') return false;
+    // NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)
+    if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
+    if (QUANTITY_RE.test(value)) {
+      // Strip the unit suffix and check the numeric part for overflow.
+      // Unit alternation must stay in sync with QUANTITY_RE (longest-match-first: mm before m).
+      const numPart = value.replace(/(mm|cm|deg|rad|m)$/, '');
+      return Number.isFinite(Number(numPart));
+    }
+    return false;
+  }
+
+  /** Trim, validate, submit. Returns true on success. */
+  function submitValue(cellId: string, rawValue: string, input: HTMLInputElement): boolean {
+    const trimmed = rawValue.trim();
+    if (!isValidValue(trimmed)) {
+      return false;
+    }
+    input.removeAttribute('data-invalid');
+    props.onSetParameter(cellId, trimmed);
+    setEditingCellId(null);
+    return true;
   }
 
   function handleKeyDown(cellId: string, e: KeyboardEvent) {
     if (e.key === 'Enter') {
       const input = e.target as HTMLInputElement;
-      if (!isValidValue(input.value)) {
+      if (!submitValue(cellId, input.value, input)) {
         input.setAttribute('data-invalid', '');
         return;
       }
-      input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
-      setEditingCellId(null);
       escapingRef = true;
       input.blur();
       escapingRef = false;
@@ -124,16 +148,13 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function handleBlur(cellId: string, e: FocusEvent) {
     if (escapingRef) return;
     const input = e.target as HTMLInputElement;
-    if (!isValidValue(input.value)) {
+    if (!submitValue(cellId, input.value, input)) {
       // Revert to prop value on blur with invalid input
       const propValue = props.values[cellId]?.value ?? '';
       input.value = propValue;
       input.removeAttribute('data-invalid');
-    } else {
-      input.removeAttribute('data-invalid');
-      props.onSetParameter(cellId, input.value);
+      setEditingCellId(null);
     }
-    setEditingCellId(null);
   }
 
   return (

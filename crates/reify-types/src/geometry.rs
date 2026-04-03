@@ -4,7 +4,7 @@ use crate::hash::ContentHash;
 use crate::value::Value;
 
 /// Unique identifier for a geometry handle within a kernel session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GeometryHandleId(pub u64);
 
 impl GeometryHandleId {
@@ -124,9 +124,7 @@ pub enum GeometryOp {
         plane_normal: [f64; 3],
     },
     /// Loft through a sequence of profiles.
-    Loft {
-        profiles: Vec<GeometryHandleId>,
-    },
+    Loft { profiles: Vec<GeometryHandleId> },
     /// Extrude a 2D profile along Z axis by distance.
     Extrude {
         profile: GeometryHandleId,
@@ -308,11 +306,7 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<(), ExportError>;
 
     /// Tessellate a handle into a mesh.
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError>;
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 }
 
 #[cfg(test)]
@@ -378,5 +372,13 @@ mod tests {
             }
             _ => panic!("expected Sweep variant"),
         }
+    }
+
+    #[test]
+    fn geometry_handle_id_is_ordered() {
+        assert!(GeometryHandleId(1) < GeometryHandleId(2));
+        assert!(GeometryHandleId(5) > GeometryHandleId(3));
+        assert!(GeometryHandleId(7) <= GeometryHandleId(7));
+        assert!(GeometryHandleId(7) >= GeometryHandleId(7));
     }
 }

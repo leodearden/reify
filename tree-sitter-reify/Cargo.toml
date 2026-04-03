@@ -11,6 +11,8 @@ tree-sitter-language = "0.1"
 
 [dev-dependencies]
 tree-sitter.workspace = true
+tempfile = "3"
+libc = "0.2"
 
 [build-dependencies]
 cc = "1"

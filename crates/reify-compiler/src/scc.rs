@@ -70,7 +70,8 @@ pub(crate) fn detect_recursive_structures(
                 "recursive structure cycle detected: {}",
                 cycle_path
             )));
-            let scc_names: HashSet<String> = scc.iter().map(|&v| templates[v].name.clone()).collect();
+            let scc_names: HashSet<String> =
+                scc.iter().map(|&v| templates[v].name.clone()).collect();
             cyclic_sccs.push(scc_names);
         }
     }
@@ -174,7 +175,11 @@ fn reconstruct_scc_cycle(
     let start = scc[0];
 
     if let Some(cycle) = find_cycle_back_to(start, &scc_set, adjacency) {
-        cycle.iter().map(|&i| templates[i].name.as_str()).collect::<Vec<_>>().join(" -> ")
+        cycle
+            .iter()
+            .map(|&i| templates[i].name.as_str())
+            .collect::<Vec<_>>()
+            .join(" -> ")
     } else {
         // Invariant: find_cycle_back_to should always succeed for a valid SCC.
         // If it fails, the SCC adjacency is broken — noisy in debug builds,
@@ -241,9 +246,9 @@ fn find_cycle_back_to(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use reify_types::ContentHash;
     use crate::{EntityKind, Visibility};
+    use reify_types::ContentHash;
+    use std::collections::HashMap;
 
     /// Helper: build a minimal TopologyTemplate with just a name.
     fn minimal_template(name: &str) -> TopologyTemplate {

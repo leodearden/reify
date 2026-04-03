@@ -89,7 +89,9 @@ pub fn compute_diagnostics_with_state(
     let check_result = match state.engine.check_snapshot(&compiled) {
         Some(result) => result,
         None => {
-            eprintln!("[reify-lsp] check_snapshot returned None after eval, falling back to full check");
+            eprintln!(
+                "[reify-lsp] check_snapshot returned None after eval, falling back to full check"
+            );
             state.engine.check(&compiled)
         }
     };
@@ -200,7 +202,10 @@ mod tests {
             .iter()
             .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .collect();
-        assert!(errors.is_empty(), "valid source should produce no errors, got: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "valid source should produce no errors, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -209,7 +214,9 @@ mod tests {
         let diags = compute_diagnostics(source, &test_uri());
         assert!(!diags.is_empty(), "syntax error should produce diagnostics");
         assert!(
-            diags.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+            diags
+                .iter()
+                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
             "should have at least one error diagnostic"
         );
     }

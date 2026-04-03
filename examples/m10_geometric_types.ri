@@ -1,0 +1,95 @@
+// M10 geometric types: exercises Point3, Vector3, Orientation, Frame, Transform
+// through the full pipeline with >=12 constraints as assertions.
+//
+// Coverage:
+//   1. Point3<Length> params (scalar Length components for point construction)
+//   2. Vector3<Force> lets via vec3()
+//   3. Point subtraction (Point - Point = Vector)
+//   4. Point + Vector displacement
+//   5. Vector + Vector addition
+//   6. Orientation construction (orient_identity)
+//   7. Transform construction (transform3)
+//   8. Transform application (Transform * Point = Point)
+//   9. Frame construction (frame3)
+//  10. Frame-to-frame transform (frame_to_frame)
+//  11. Component access (scalar params as point components)
+//  12. Dimensional arithmetic on geometric types
+
+structure def GeometricDemo {
+    // ── Feature 1: Point3<Length> params ────────────────────────────────
+    // Scalar components that will be assembled into a Point3.
+    param px : Length = 10mm
+    param py : Length = 20mm
+    param pz : Length = 30mm
+
+    // ── Feature 2: Point3 construction via point3() ────────────────────
+    let origin = point3(px, py, pz)
+    let target = point3(100mm, 200mm, 300mm)
+
+    // ── Feature 3: Vector3<Force> lets ─────────────────────────────────
+    let force = vec3(10N, 20N, 30N)
+
+    // ── Feature 4: Vector3<Length> displacement ────────────────────────
+    let offset = vec3(5mm, 10mm, 15mm)
+
+    // ── Feature 5: Point subtraction → Vector ──────────────────────────
+    let displacement = target - origin
+
+    // ── Feature 6: Point + Vector → Point (displacement) ───────────────
+    let shifted = origin + offset
+
+    // ── Feature 7: Vector + Vector → Vector ────────────────────────────
+    let offset2 = vec3(1mm, 2mm, 3mm)
+    let combined_offset = offset + offset2
+
+    // ── Feature 8: Orientation construction ─────────────────────────────
+    let rot = orient_identity()
+
+    // ── Feature 9: Transform construction ──────────────────────────────
+    let t = transform3(rot, offset)
+
+    // ── Feature 10: Transform application ──────────────────────────────
+    // Transform * Point applies rotation then adds translation.
+    let transformed = t * origin
+
+    // ── Feature 11: Frame construction ─────────────────────────────────
+    let frame_a = frame3(origin, rot)
+    let frame_b = frame3(target, rot)
+
+    // ── Feature 12: Frame-to-frame transform ───────────────────────────
+    let f2f = frame_to_frame(frame_a, frame_b)
+
+    // ── Feature 11b: Component access (scalar param arithmetic) ────────
+    // Dimensional arithmetic on the scalar components of the point.
+    let total_component = px + py + pz
+
+    // ── Feature 12b: Dimensional arithmetic on geometric types ─────────
+    let double_x = px * 2
+
+    // ── Constraints (assertions) ───────────────────────────────────────
+    // All constraints must evaluate to Satisfied.
+
+    // 1-3: Param range checks (component access on scalar params)
+    constraint px > 0mm
+    constraint py > 0mm
+    constraint pz > 0mm
+
+    // 4-5: Upper bounds (dimensional comparison)
+    constraint px < 1000mm
+    constraint py < 1000mm
+
+    // 6: Dimensional arithmetic result check
+    constraint total_component > 0mm
+
+    // 7: Scalar multiplication check
+    constraint double_x > 0mm
+
+    // 8-14: Determinacy of geometric let bindings
+    constraint determined(origin)
+    constraint determined(target)
+    constraint determined(displacement)
+    constraint determined(force)
+    constraint determined(transformed)
+    constraint determined(frame_a)
+    constraint determined(f2f)
+}

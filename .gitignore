@@ -11,6 +11,20 @@ data/escalations/
 node_modules/
 /package.json
 /package-lock.json
+gui/package-lock.json
+gui/pnpm-lock.yaml
+gui/sidecar/package-lock.json
+tree-sitter-reify/package-lock.json
 test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
+*.kate-swp
+.jcodemunch.jsonc
+data/review-checkpoints/
+
+# Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
+tree-sitter-reify/src/parser.c
+tree-sitter-reify/src/grammar.json
+tree-sitter-reify/src/node-types.json
+tree-sitter-reify/src/.grammar_hash.stamp
+tree-sitter-reify/src/.generate.lock

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tower_lsp::lsp_types::Url;
 
 /// State of a single open document.
@@ -38,6 +39,23 @@ impl DocumentStore {
 
     pub fn get(&self, uri: &Url) -> Option<&DocumentState> {
         self.documents.get(uri)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Url, &DocumentState)> {
+        self.documents.iter()
+    }
+
+    /// Return a snapshot of all open documents keyed by filesystem path.
+    ///
+    /// Non-file URIs (e.g. `untitled:`) are silently skipped because they
+    /// have no meaningful [`PathBuf`] representation.
+    pub fn snapshot_as_path_map(&self) -> HashMap<PathBuf, String> {
+        self.documents
+            .iter()
+            .filter_map(|(uri, doc)| {
+                uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
+            })
+            .collect()
     }
 }
 
@@ -122,5 +140,65 @@ mod tests {
         store.open(uri_b.clone(), "bbb".to_string(), 2);
         assert_eq!(store.get(&uri_a).unwrap().text, "aaa");
         assert_eq!(store.get(&uri_b).unwrap().text, "bbb");
+    }
+
+    #[test]
+    fn snapshot_as_path_map_returns_path_keyed_entries() {
+        let mut store = DocumentStore::new();
+        let uri_a = test_uri("alpha");
+        let uri_b = test_uri("beta");
+        store.open(uri_a.clone(), "aaa".to_string(), 1);
+        store.open(uri_b.clone(), "bbb".to_string(), 2);
+
+        let map = store.snapshot_as_path_map();
+
+        assert_eq!(map.len(), 2);
+        let path_a = uri_a.to_file_path().unwrap();
+        let path_b = uri_b.to_file_path().unwrap();
+        assert_eq!(map.get(&path_a).unwrap(), "aaa");
+        assert_eq!(map.get(&path_b).unwrap(), "bbb");
+    }
+
+    #[test]
+    fn snapshot_as_path_map_skips_non_file_uris() {
+        let mut store = DocumentStore::new();
+        let file_uri = test_uri("real");
+        let non_file_uri = Url::parse("untitled:Untitled-1").unwrap();
+        store.open(file_uri.clone(), "file_content".to_string(), 1);
+        store.open(non_file_uri, "untitled_content".to_string(), 2);
+
+        let map = store.snapshot_as_path_map();
+
+        assert_eq!(map.len(), 1);
+        let path = file_uri.to_file_path().unwrap();
+        assert_eq!(map.get(&path).unwrap(), "file_content");
+    }
+
+    #[test]
+    fn snapshot_as_path_map_empty_store_returns_empty() {
+        let store = DocumentStore::new();
+        let map = store.snapshot_as_path_map();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn iter_returns_all_open_documents() {
+        let mut store = DocumentStore::new();
+        let uri_a = test_uri("alpha");
+        let uri_b = test_uri("beta");
+        let uri_c = test_uri("gamma");
+        store.open(uri_a.clone(), "aaa".to_string(), 1);
+        store.open(uri_b.clone(), "bbb".to_string(), 2);
+        store.open(uri_c.clone(), "ccc".to_string(), 3);
+
+        let items: std::collections::HashMap<Url, String> = store
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), doc.text.clone()))
+            .collect();
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.get(&uri_a).unwrap(), "aaa");
+        assert_eq!(items.get(&uri_b).unwrap(), "bbb");
+        assert_eq!(items.get(&uri_c).unwrap(), "ccc");
     }
 }

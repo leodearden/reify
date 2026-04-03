@@ -2,47 +2,18 @@
 # Rust + Tauri/TypeScript (GUI) project
 
 # Concurrency
-max_concurrent_tasks: 12
+max_concurrent_tasks: 48
 max_per_module: 1
 lock_depth: 2
 module_overrides:
   tests: 2
   "gui/src": 4    # frontend tasks create separate subdirs (viewport/, editor/, panels/) — safe to parallelize
 
-# Iteration limits
-max_execute_iterations: 10
-max_verify_attempts: 5
-max_review_cycles: 2
-
-# Models per role
-models:
-  architect: "opus"
-  implementer: "opus"
-  debugger: "opus"
-  reviewer: "sonnet"
-  merger: "opus"
-
-# Budget per invocation (USD)
-budgets:
-  architect: 5.0
-  implementer: 10.0
-  debugger: 5.0
-  reviewer: 2.0
-  merger: 5.0
-
-# Turn limits per invocation
-max_turns:
-  architect: 50
-  implementer: 80
-  debugger: 50
-  reviewer: 30
-  merger: 50
-
 # Verification commands (Rust + GUI frontend)
-# npm ci is fast when node_modules exists; --prefer-offline avoids network hits
-test_command: ". ~/.cargo/env && cargo test --workspace -- --test-threads=1 && (test -d gui && cd gui && npm ci --prefer-offline && npm test || true)"
-lint_command: ". ~/.cargo/env && cargo clippy --workspace -- -D warnings && (test -d gui && cd gui && npm ci --prefer-offline && npx tsc --noEmit || true)"
-type_check_command: ". ~/.cargo/env && cargo check --workspace"
+# package-lock.json is committed — use npm ci for reproducible installs
+test_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo test --workspace -- --test-threads=1 && if test -d gui; then (cd gui && npm ci && npm test); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi"
+lint_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo clippy --workspace -- -D warnings && if test -d gui; then (cd gui && npm ci && npx tsc --noEmit); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi"
+type_check_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo check --workspace"
 
 # Fused memory HTTP server (systemd service on port 8002)
 fused_memory:

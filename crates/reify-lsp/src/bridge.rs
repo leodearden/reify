@@ -11,7 +11,7 @@ use serde_json::Value;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{LanguageServer, LspService};
 
-use crate::server::{NotificationSink, NoOpSink, ReifyLanguageServer};
+use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
@@ -34,9 +34,8 @@ impl InProcessLsp {
 
     /// Create a new in-process LSP server with a custom notification sink.
     pub fn with_sink(sink: Arc<dyn NotificationSink>) -> Self {
-        let (service, socket) = LspService::new(|client| {
-            ReifyLanguageServer::with_sink(client, sink.clone())
-        });
+        let (service, socket) =
+            LspService::new(|client| ReifyLanguageServer::with_sink(client, sink.clone()));
         let server = service.inner().clone();
         Self {
             server,
@@ -77,81 +76,66 @@ impl InProcessLsp {
     /// For requests (initialize, completion, hover, definition, shutdown),
     /// returns the JSON-serialized response. For notifications (didOpen,
     /// didChange, didClose, initialized), returns `Ok(Value::Null)`.
-    pub async fn handle_request(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
+    pub async fn handle_request(&self, method: &str, params: Value) -> Result<Value, String> {
         let server = &self.server;
 
         match method {
             "initialize" => {
-                let p: InitializeParams =
-                    serde_json::from_value(params).unwrap_or_default();
+                let p: InitializeParams = serde_json::from_value(params).unwrap_or_default();
                 let result = server
                     .initialize(p)
                     .await
                     .map_err(|e| format!("initialize error: {e}"))?;
-                serde_json::to_value(result)
-                    .map_err(|e| format!("serialize error: {e}"))
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "initialized" => {
                 server.initialized(InitializedParams {}).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p: DidOpenTextDocumentParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("didOpen params error: {e}"))?;
+                let p: DidOpenTextDocumentParams = serde_json::from_value(params)
+                    .map_err(|e| format!("didOpen params error: {e}"))?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p: DidChangeTextDocumentParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("didChange params error: {e}"))?;
+                let p: DidChangeTextDocumentParams = serde_json::from_value(params)
+                    .map_err(|e| format!("didChange params error: {e}"))?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p: DidCloseTextDocumentParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("didClose params error: {e}"))?;
+                let p: DidCloseTextDocumentParams = serde_json::from_value(params)
+                    .map_err(|e| format!("didClose params error: {e}"))?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p: CompletionParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("completion params error: {e}"))?;
+                let p: CompletionParams = serde_json::from_value(params)
+                    .map_err(|e| format!("completion params error: {e}"))?;
                 let result = server
                     .completion(p)
                     .await
                     .map_err(|e| format!("completion error: {e}"))?;
-                serde_json::to_value(result)
-                    .map_err(|e| format!("serialize error: {e}"))
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p: HoverParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("hover params error: {e}"))?;
+                let p: HoverParams = serde_json::from_value(params)
+                    .map_err(|e| format!("hover params error: {e}"))?;
                 let result = server
                     .hover(p)
                     .await
                     .map_err(|e| format!("hover error: {e}"))?;
-                serde_json::to_value(result)
-                    .map_err(|e| format!("serialize error: {e}"))
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p: GotoDefinitionParams =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("definition params error: {e}"))?;
+                let p: GotoDefinitionParams = serde_json::from_value(params)
+                    .map_err(|e| format!("definition params error: {e}"))?;
                 let result = server
                     .goto_definition(p)
                     .await
                     .map_err(|e| format!("definition error: {e}"))?;
-                serde_json::to_value(result)
-                    .map_err(|e| format!("serialize error: {e}"))
+                serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "shutdown" => {
                 server

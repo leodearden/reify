@@ -1,11 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_mcp::{ReifyToolContext, SelectionInfo};
+use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
-use reify_mcp::ReifyToolContext;
 
 fn make_loaded_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
@@ -20,7 +20,7 @@ fn make_loaded_session() -> EngineSession {
 fn make_tauri_context() -> TauriToolContext {
     let session = make_loaded_session();
     let engine = Arc::new(Mutex::new(session));
-    TauriToolContext::new(engine)
+    TauriToolContext::builder(engine).build()
 }
 
 // --- Read method tests ---
@@ -43,7 +43,7 @@ fn get_open_files_returns_bracket_file() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, "bracket.ri");
     assert_eq!(files[0].language, "reify");
-    assert_eq!(files[0].dirty, false);
+    assert!(!files[0].dirty);
 }
 
 #[test]
@@ -127,7 +127,10 @@ fn get_source_location_for_width() {
 fn get_source_location_nonexistent_returns_error() {
     let ctx = make_tauri_context();
     let result = ctx.get_source_location("Nonexistent.param");
-    assert!(result.is_err(), "should return error for nonexistent entity");
+    assert!(
+        result.is_err(),
+        "should return error for nonexistent entity"
+    );
 }
 
 #[test]
@@ -188,7 +191,7 @@ fn open_file_reads_from_disk() {
         .expect("open_file should succeed");
     assert_eq!(result.path, path.to_str().unwrap());
     assert_eq!(result.language, "reify");
-    assert_eq!(result.dirty, false);
+    assert!(!result.dirty);
 }
 
 #[test]
@@ -229,9 +232,14 @@ fn focus_entity_with_emitter_records_event() {
     let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone.lock().unwrap().push((name.to_string(), payload));
-    });
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
 
     let result = ctx
         .focus_entity("Bracket.width")
@@ -250,9 +258,14 @@ fn navigate_to_source_with_emitter_records_event() {
     let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let ctx = TauriToolContext::with_event_emitter(engine, move |name, payload| {
-        events_clone.lock().unwrap().push((name.to_string(), payload));
-    });
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
 
     let result = ctx
         .navigate_to_source("bracket.ri", 5, 1)
@@ -283,6 +296,186 @@ fn navigate_to_source_without_emitter_succeeds() {
         .navigate_to_source("bracket.ri", 5, 1)
         .expect("navigate_to_source without emitter should succeed");
     assert!(result);
+}
+
+// --- Selection state tests ---
+
+#[test]
+fn get_selection_returns_selected_entity_from_arc() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket".to_string()));
+    assert_eq!(result.hovered_entity, None);
+}
+
+#[test]
+fn get_selection_returns_both_selected_and_hovered() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: Some("Bracket.width".to_string()),
+    }));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket".to_string()));
+    assert_eq!(result.hovered_entity, Some("Bracket.width".to_string()));
+}
+
+#[test]
+fn get_selection_reflects_live_arc_updates() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo::default()));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection.clone()).build();
+
+    // Initially empty
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, None);
+
+    // Update the Arc externally (simulating frontend invoke)
+    {
+        let mut sel = selection.write().unwrap();
+        sel.selected_entity = Some("Bracket.height".to_string());
+        sel.hovered_entity = Some("Bracket.thickness".to_string());
+    }
+
+    // Subsequent call reflects the update
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket.height".to_string()));
+    assert_eq!(
+        result.hovered_entity,
+        Some("Bracket.thickness".to_string())
+    );
+}
+
+// --- Builder tests ---
+
+#[test]
+fn builder_with_no_options_matches_new() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let ctx = TauriToolContext::builder(engine).build();
+
+    // Selection should be empty (matches `new()` behavior)
+    let selection = ctx.get_selection().expect("get_selection should succeed");
+    assert!(selection.selected_entity.is_none());
+    assert!(selection.hovered_entity.is_none());
+
+    // focus_entity should succeed without an emitter (no-op)
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity without emitter should succeed");
+    assert!(result);
+}
+
+#[test]
+fn builder_with_selection_matches_new_with_selection() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
+
+    let result = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(result.selected_entity, Some("Bracket".to_string()));
+    assert_eq!(result.hovered_entity, None);
+}
+
+#[test]
+fn builder_with_event_emitter_records_events() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .build();
+
+    let result = ctx
+        .focus_entity("Bracket.width")
+        .expect("focus_entity should succeed");
+    assert!(result);
+
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "focus-entity");
+}
+
+#[test]
+fn builder_with_both_options() {
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket.height".to_string()),
+        hovered_entity: None,
+    }));
+
+    let ctx = TauriToolContext::builder(engine)
+        .with_event_emitter(move |name, payload| {
+            events_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), payload));
+        })
+        .with_selection(selection)
+        .build();
+
+    // Verify selection
+    let sel = ctx.get_selection().expect("get_selection should succeed");
+    assert_eq!(sel.selected_entity, Some("Bracket.height".to_string()));
+
+    // Verify event emitter
+    ctx.focus_entity("Bracket.width")
+        .expect("focus_entity should succeed");
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "focus-entity");
+}
+
+// --- McpConfig struct tests ---
+
+#[test]
+fn mcp_config_struct_stores_fields() {
+    use crate::claude_bridge::McpConfig;
+
+    let session = make_loaded_session();
+    let engine = Arc::new(Mutex::new(session));
+    let selection = Arc::new(RwLock::new(SelectionInfo::default()));
+    let sink_called = Arc::new(Mutex::new(false));
+    let sink_clone = sink_called.clone();
+
+    let config = McpConfig {
+        engine: engine.clone(),
+        event_emitter: move |_name: String, _payload: serde_json::Value| {
+            *sink_clone.lock().unwrap() = true;
+        },
+        selection: selection.clone(),
+    };
+
+    // Assert all three fields are accessible and hold the right values
+    assert!(Arc::ptr_eq(&config.engine, &engine));
+    assert!(Arc::ptr_eq(&config.selection, &selection));
+    (config.event_emitter)("test".to_string(), serde_json::json!({}));
+    assert!(*sink_called.lock().unwrap());
 }
 
 // --- Compile-time trait assertions ---

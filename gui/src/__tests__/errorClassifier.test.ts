@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyError } from '../utils/errorClassifier';
+import { classifyError, errorMessage } from '../utils/errorClassifier';
 
 describe('errorClassifier', () => {
   describe('auth errors', () => {
@@ -85,6 +85,65 @@ describe('errorClassifier', () => {
       const result = classifyError('Failed to spawn sidecar');
       expect(result.type).toBe('sidecar');
       expect(result.userMessage).toBe('Claude session disconnected. Click to restart.');
+    });
+  });
+
+  describe('errorMessage', () => {
+    it('returns .message for Error instances', () => {
+      expect(errorMessage(new Error('something broke'))).toBe('something broke');
+    });
+
+    it('returns .message for Error subclass instances', () => {
+      expect(errorMessage(new TypeError('bad type'))).toBe('bad type');
+      expect(errorMessage(new RangeError('out of range'))).toBe('out of range');
+    });
+
+    it('returns the string itself for string inputs', () => {
+      expect(errorMessage('plain string error')).toBe('plain string error');
+    });
+
+    it('returns "Unknown error" for Error with empty message', () => {
+      expect(errorMessage(new Error(''))).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for empty string input', () => {
+      expect(errorMessage('')).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for Error with whitespace-only message', () => {
+      expect(errorMessage(new Error('   '))).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for whitespace-only string input', () => {
+      expect(errorMessage('   ')).toBe('Unknown error');
+    });
+
+    it('returns "Unknown error" for plain object with whitespace-only .message', () => {
+      expect(errorMessage({ message: '   ' })).toBe('Unknown error');
+    });
+
+    it('coerces non-Error, non-string values via String()', () => {
+      expect(errorMessage(42)).toBe('42');
+      expect(errorMessage(null)).toBe('null');
+      expect(errorMessage(undefined)).toBe('undefined');
+      expect(errorMessage({ key: 'val' })).toBe('[object Object]');
+    });
+
+    it('returns .message for plain object with string .message property', () => {
+      expect(errorMessage({ code: 404, message: 'Not found' })).toBe('Not found');
+      expect(errorMessage({ message: 'structured error' })).toBe('structured error');
+    });
+
+    it('returns "Unknown error" for plain object with empty string .message', () => {
+      expect(errorMessage({ message: '' })).toBe('Unknown error');
+    });
+
+    it('falls through to String() for plain object with non-string .message', () => {
+      expect(errorMessage({ message: 42 })).toBe('[object Object]');
+    });
+
+    it('falls through to String() for plain object without .message', () => {
+      expect(errorMessage({ code: 500 })).toBe('[object Object]');
     });
   });
 

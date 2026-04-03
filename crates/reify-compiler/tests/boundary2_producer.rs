@@ -81,10 +81,7 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
             assert_no_unresolved(then_branch);
             assert_no_unresolved(else_branch);
         }
-        CompiledExprKind::Match {
-            discriminant,
-            arms,
-        } => {
+        CompiledExprKind::Match { discriminant, arms } => {
             assert_no_unresolved(discriminant);
             for arm in arms {
                 assert_no_unresolved(&arm.body);
@@ -124,7 +121,11 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
                 assert_no_unresolved(arg);
             }
         }
-        CompiledExprKind::Quantifier { collection, predicate, .. } => {
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
             assert_no_unresolved(collection);
             assert_no_unresolved(predicate);
         }
@@ -134,6 +135,16 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         CompiledExprKind::OptionNone => {}
         CompiledExprKind::MetaAccess { .. } => {}
         CompiledExprKind::DeterminacyPredicate { .. } => {}
+        CompiledExprKind::RangeConstructor {
+            lower, upper, ..
+        } => {
+            if let Some(lo) = lower {
+                assert_no_unresolved(lo);
+            }
+            if let Some(hi) = upper {
+                assert_no_unresolved(hi);
+            }
+        }
     }
 }
 
@@ -362,10 +373,18 @@ fn compile_auto_param() {
     param y: Scalar = 5mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
-    assert!(compiled.diagnostics.is_empty(), "compile diagnostics: {:?}", compiled.diagnostics);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
 
     let template = &compiled.templates[0];
     assert_eq!(template.value_cells.len(), 2);
@@ -374,13 +393,19 @@ fn compile_auto_param() {
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
     assert_eq!(x.kind, ValueCellKind::Auto);
-    assert!(x.default_expr.is_none(), "auto param should have no default_expr");
+    assert!(
+        x.default_expr.is_none(),
+        "auto param should have no default_expr"
+    );
 
     // y should be Param with a default_expr
     let y = &template.value_cells[1];
     assert_eq!(y.id, reify_types::ValueCellId::new("S", "y"));
     assert_eq!(y.kind, ValueCellKind::Param);
-    assert!(y.default_expr.is_some(), "normal param should have default_expr");
+    assert!(
+        y.default_expr.is_some(),
+        "normal param should have default_expr"
+    );
 }
 
 /// Auto param ValueCellDecl span should be non-zero and match parsed ParamDecl span.
@@ -392,7 +417,11 @@ fn compiled_auto_param_span_not_zero() {
     param x: Scalar = auto
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_auto_span"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -567,7 +596,11 @@ structure S {
     param w: Scalar = 80mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert_eq!(
@@ -591,7 +624,11 @@ structure S {
     constraint w > 0mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_import_diag"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -720,7 +757,11 @@ fn e2e_stdlib_function_in_let_binding() {
     let half_w = abs(w / 2)
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_stdlib_e2e"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
@@ -749,11 +790,7 @@ fn e2e_stdlib_function_in_let_binding() {
 
     // abs(0.08 / 2) = abs(0.04) = 0.04
     let v = result.as_f64().unwrap();
-    assert!(
-        (v - 0.04).abs() < 1e-10,
-        "expected ~0.04, got {}",
-        v
-    );
+    assert!((v - 0.04).abs() < 1e-10, "expected ~0.04, got {}", v);
 }
 
 /// Comprehensive: import + sub-structure + stdlib function in one module.
@@ -768,8 +805,15 @@ structure Bracket {
     sub base = Base(width: w)
     constraint diag > 0mm
 }"#;
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_comprehensive"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_comprehensive"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -783,14 +827,23 @@ structure Bracket {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let warnings: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Warning)
         .collect();
-    assert_eq!(warnings.len(), 1, "expected 1 warning (import), got: {:?}", warnings);
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected 1 warning (import), got: {:?}",
+        warnings
+    );
     assert!(warnings[0].message.contains("import"));
 
     // Template structure
@@ -808,7 +861,10 @@ structure Bracket {
         .iter()
         .find(|vc| vc.id.member == "diag")
         .expect("should have diag value cell");
-    let diag_expr = diag_cell.default_expr.as_ref().expect("let should have expr");
+    let diag_expr = diag_cell
+        .default_expr
+        .as_ref()
+        .expect("let should have expr");
 
     let mut values = reify_types::ValueMap::new();
     values.insert(
@@ -843,12 +899,20 @@ fn different_content_same_path_different_hash() {
 
     let source_a = reify_test_support::bracket_source_with_width("80mm");
     let parsed_a = reify_syntax::parse(&source_a, path.clone());
-    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    assert!(
+        parsed_a.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_a.errors
+    );
     let compiled_a = reify_compiler::compile(&parsed_a);
 
     let source_b = reify_test_support::bracket_source_with_width("120mm");
     let parsed_b = reify_syntax::parse(&source_b, path.clone());
-    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    assert!(
+        parsed_b.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_b.errors
+    );
     let compiled_b = reify_compiler::compile(&parsed_b);
 
     assert_ne!(
@@ -876,8 +940,7 @@ fn same_content_same_hash_deterministic() {
 
     // Also check template-level hashes
     assert_eq!(
-        compiled_1.templates[0].content_hash,
-        compiled_2.templates[0].content_hash,
+        compiled_1.templates[0].content_hash, compiled_2.templates[0].content_hash,
         "same source compiled twice should produce identical template content_hashes"
     );
 }
@@ -895,11 +958,19 @@ fn param_default_change_changes_hash() {
 }"#;
 
     let parsed_a = reify_syntax::parse(source_a, path.clone());
-    assert!(parsed_a.errors.is_empty(), "parse errors: {:?}", parsed_a.errors);
+    assert!(
+        parsed_a.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_a.errors
+    );
     let compiled_a = reify_compiler::compile(&parsed_a);
 
     let parsed_b = reify_syntax::parse(source_b, path.clone());
-    assert!(parsed_b.errors.is_empty(), "parse errors: {:?}", parsed_b.errors);
+    assert!(
+        parsed_b.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_b.errors
+    );
     let compiled_b = reify_compiler::compile(&parsed_b);
 
     assert_ne!(
@@ -908,8 +979,7 @@ fn param_default_change_changes_hash() {
     );
 
     assert_ne!(
-        compiled_a.templates[0].content_hash,
-        compiled_b.templates[0].content_hash,
+        compiled_a.templates[0].content_hash, compiled_b.templates[0].content_hash,
         "changing a param default value should change the template content_hash"
     );
 }
@@ -934,11 +1004,19 @@ fn add_constraint_changes_hash() {
 }"#;
 
     let parsed_2 = reify_syntax::parse(source_2, path.clone());
-    assert!(parsed_2.errors.is_empty(), "parse errors: {:?}", parsed_2.errors);
+    assert!(
+        parsed_2.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_2.errors
+    );
     let compiled_2 = reify_compiler::compile(&parsed_2);
 
     let parsed_3 = reify_syntax::parse(source_3, path.clone());
-    assert!(parsed_3.errors.is_empty(), "parse errors: {:?}", parsed_3.errors);
+    assert!(
+        parsed_3.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed_3.errors
+    );
     let compiled_3 = reify_compiler::compile(&parsed_3);
 
     assert_ne!(
@@ -947,8 +1025,7 @@ fn add_constraint_changes_hash() {
     );
 
     assert_ne!(
-        compiled_2.templates[0].content_hash,
-        compiled_3.templates[0].content_hash,
+        compiled_2.templates[0].content_hash, compiled_3.templates[0].content_hash,
         "adding a constraint should change the template content_hash"
     );
 }
@@ -962,7 +1039,11 @@ fn compile_minimize_objective() {
     minimize x
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_min_obj"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1003,7 +1084,11 @@ fn compile_maximize_objective() {
     maximize volume
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_max_obj"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1068,7 +1153,11 @@ fn e2e_minimize_round_trip() {
     minimize thickness
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_e2e_min"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1112,7 +1201,10 @@ fn e2e_minimize_round_trip() {
         .filter(|vc| vc.kind == ValueCellKind::Auto)
         .collect();
     assert_eq!(auto_cells.len(), 1, "expected 1 auto param");
-    assert_eq!(auto_cells[0].id, reify_types::ValueCellId::new("Bracket", "thickness"));
+    assert_eq!(
+        auto_cells[0].id,
+        reify_types::ValueCellId::new("Bracket", "thickness")
+    );
 
     let param_cells: Vec<_> = template
         .value_cells
@@ -1135,7 +1227,11 @@ fn compile_enum_populates_registry() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S { param x: Scalar = 5mm }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_reg"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert_eq!(
@@ -1145,10 +1241,7 @@ structure S { param x: Scalar = 5mm }"#;
         compiled.enum_defs.len()
     );
     assert_eq!(compiled.enum_defs[0].name, "Direction");
-    assert_eq!(
-        compiled.enum_defs[0].variants,
-        vec!["In", "Out", "Bidi"]
-    );
+    assert_eq!(compiled.enum_defs[0].variants, vec!["In", "Out", "Bidi"]);
 }
 
 /// Enum access expression should compile to a literal Value::Enum.
@@ -1157,7 +1250,11 @@ fn compile_enum_access_to_literal() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S { let d = Direction.In }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_access"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1167,7 +1264,11 @@ structure S { let d = Direction.In }"#;
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let d_cell = template
@@ -1179,10 +1280,7 @@ structure S { let d = Direction.In }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
-            type_name,
-            variant,
-        }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -1213,7 +1311,11 @@ fn e2e_enum_equality_eval() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S { constraint Direction.In == Direction.In }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_e2e"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1223,13 +1325,20 @@ structure S { constraint Direction.In == Direction.In }"#;
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     assert_eq!(template.constraints.len(), 1);
 
     let constraint_expr = &template.constraints[0].expr;
-    let result = reify_expr::eval_expr(constraint_expr, &reify_expr::EvalContext::simple(&reify_types::ValueMap::new()));
+    let result = reify_expr::eval_expr(
+        constraint_expr,
+        &reify_expr::EvalContext::simple(&reify_types::ValueMap::new()),
+    );
     match result {
         reify_types::Value::Bool(true) => {}
         other => panic!("expected Bool(true), got {:?}", other),
@@ -1243,7 +1352,11 @@ structure S { constraint Direction.In == Direction.In }"#;
 fn compile_simple_function() {
     let source = "fn double(x: Real) -> Real { x + x }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1267,7 +1380,11 @@ fn compile_simple_function() {
 fn compile_function_with_let_bindings() {
     let source = "fn f(x: Real) -> Real { let y = x + x; let z = y * y; z + 1 }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_lets"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1289,7 +1406,11 @@ fn compile_function_with_let_bindings() {
 fn compile_overloaded_functions() {
     let source = "fn convert(x: Real) -> Real { x }\nfn convert(x: Int) -> Int { x }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1301,8 +1422,14 @@ fn compile_overloaded_functions() {
     assert_eq!(compiled.functions.len(), 2);
     assert_eq!(compiled.functions[0].name, "convert");
     assert_eq!(compiled.functions[1].name, "convert");
-    assert_eq!(compiled.functions[0].params, vec![("x".to_string(), reify_types::Type::Real)]);
-    assert_eq!(compiled.functions[1].params, vec![("x".to_string(), reify_types::Type::Int)]);
+    assert_eq!(
+        compiled.functions[0].params,
+        vec![("x".to_string(), reify_types::Type::Real)]
+    );
+    assert_eq!(
+        compiled.functions[1].params,
+        vec![("x".to_string(), reify_types::Type::Int)]
+    );
 }
 
 /// Two functions with identical name AND param types should produce a diagnostic.
@@ -1310,7 +1437,11 @@ fn compile_overloaded_functions() {
 fn compile_duplicate_function_signature_error() {
     let source = "fn f(x: Real) -> Real { x }\nfn f(x: Real) -> Int { x }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_dup"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1348,7 +1479,10 @@ fn compiled_constraint_domain_field() {
     let manual = reify_compiler::CompiledConstraint {
         id: ConstraintNodeId::new("Test", 0),
         label: Some("test".to_string()),
-        expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
+        expr: reify_types::CompiledExpr::literal(
+            reify_types::Value::Bool(true),
+            reify_types::Type::Bool,
+        ),
         span: SourceSpan::new(0, 0),
         domain: Some(ConstraintDomain::Dimensional),
     };
@@ -1358,7 +1492,10 @@ fn compiled_constraint_domain_field() {
     let compat = reify_compiler::CompiledConstraint {
         id: ConstraintNodeId::new("Test", 1),
         label: None,
-        expr: reify_types::CompiledExpr::literal(reify_types::Value::Bool(true), reify_types::Type::Bool),
+        expr: reify_types::CompiledExpr::literal(
+            reify_types::Value::Bool(true),
+            reify_types::Type::Bool,
+        ),
         span: SourceSpan::new(0, 0),
         domain: None,
     };
@@ -1453,7 +1590,11 @@ fn compile_enum_forward_reference_order_independent() {
     let source = r#"structure S { let d = Direction.In }
 enum Direction { In, Out, Bidi }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_fwd"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1463,7 +1604,11 @@ enum Direction { In, Out, Bidi }"#;
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics for forward enum ref, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics for forward enum ref, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let d_cell = template
@@ -1475,10 +1620,7 @@ enum Direction { In, Out, Bidi }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
-            type_name,
-            variant,
-        }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -1503,7 +1645,11 @@ structure B {
 }
 enum Color { Red, Green, Blue }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_enum_multi"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1513,7 +1659,11 @@ enum Color { Red, Green, Blue }"#;
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     // Should have 2 enum_defs
     assert_eq!(compiled.enum_defs.len(), 2, "expected 2 enum_defs");
@@ -1527,10 +1677,7 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'x' value cell");
     let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
     match &x_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
-            type_name,
-            variant,
-        }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }
@@ -1546,14 +1693,14 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'y' value cell");
     let y_expr = y_cell.default_expr.as_ref().expect("let should have expr");
     match &y_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
-            type_name,
-            variant,
-        }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
-        other => panic!("B.y: expected Literal(Enum(Direction, In)), got {:?}", other),
+        other => panic!(
+            "B.y: expected Literal(Enum(Direction, In)), got {:?}",
+            other
+        ),
     }
 
     let z_cell = template_b
@@ -1563,10 +1710,7 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'z' value cell");
     let z_expr = z_cell.default_expr.as_ref().expect("let should have expr");
     match &z_expr.kind {
-        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum {
-            type_name,
-            variant,
-        }) => {
+        reify_types::CompiledExprKind::Literal(reify_types::Value::Enum { type_name, variant }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }
@@ -1579,7 +1723,11 @@ enum Color { Red, Green, Blue }"#;
 fn compile_user_function_call() {
     let source = "fn double(x: Real) -> Real { x + x }\nstructure S { let v = double(1.5) }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_call"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1598,7 +1746,10 @@ fn compile_user_function_call() {
 
     // Should be UserFunctionCall, not stdlib FunctionCall
     match &v_expr.kind {
-        reify_types::CompiledExprKind::UserFunctionCall { function_name, args } => {
+        reify_types::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
             assert_eq!(function_name, "double");
             assert_eq!(args.len(), 1);
         }
@@ -1611,8 +1762,15 @@ fn compile_user_function_call() {
 #[test]
 fn compile_overload_resolution_picks_correct() {
     let source = "fn process(x: Real) -> Real { x + 1 }\nfn process(x: Int) -> Int { x }\nstructure S { let a = process(3.14) }";
-    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_overload_resolve"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("test_fn_overload_resolve"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1644,7 +1802,11 @@ fn compile_overload_resolution_picks_correct() {
 fn compile_function_forward_reference() {
     let source = "structure S { let v = double(1.5) }\nfn double(x: Real) -> Real { x + x }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_fn_fwd"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     assert!(
@@ -1672,7 +1834,8 @@ fn compile_function_forward_reference() {
 /// Fn body calling another user-defined function should produce UserFunctionCall.
 #[test]
 fn compile_fn_body_calls_other_user_fn() {
-    let source = "fn double(x: Real) -> Real { x + x }\nfn quadruple(x: Real) -> Real { double(double(x)) }";
+    let source =
+        "fn double(x: Real) -> Real { x + x }\nfn quadruple(x: Real) -> Real { double(double(x)) }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1719,8 +1882,7 @@ fn compile_fn_body_calls_other_user_fn() {
 /// Fn body let bindings can call other user-defined functions.
 #[test]
 fn compile_fn_body_calls_user_fn_in_let_binding() {
-    let source =
-        "fn double(x: Real) -> Real { x + x }\nfn calc(x: Real) -> Real { let y = double(x); y + 1 }";
+    let source = "fn double(x: Real) -> Real { x + x }\nfn calc(x: Real) -> Real { let y = double(x); y + 1 }";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
     let compiled = reify_compiler::compile(&parsed);
 
@@ -1748,10 +1910,7 @@ fn compile_fn_body_calls_user_fn_in_let_binding() {
                 reify_types::Type::Real
             );
         }
-        other => panic!(
-            "expected UserFunctionCall in let binding, got {:?}",
-            other
-        ),
+        other => panic!("expected UserFunctionCall in let binding, got {:?}", other),
     }
 
     // result expr: y + 1 — should be BinOp with result_type Real

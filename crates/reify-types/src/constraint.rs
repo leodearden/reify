@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use crate::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
 use crate::identity::{ConstraintNodeId, ValueCellId};
+use crate::persistent::PersistentMap;
 use crate::ty::Type;
-use crate::value::{Satisfaction, Value, ValueMap};
+use crate::value::{DeterminacyState, Satisfaction, Value, ValueMap};
 
 /// Input to constraint checking: a batch of constraints with current values.
 #[derive(Debug)]
@@ -15,6 +16,14 @@ pub struct ConstraintInput<'a> {
     pub values: &'a ValueMap,
     /// User-defined functions available for evaluation within constraint expressions.
     pub functions: &'a [CompiledFunction],
+    /// Optional determinacy snapshot for evaluating DeterminacyPredicate expressions
+    /// within constraints. When `Some`, the checker passes this to `EvalContext::with_determinacy()`
+    /// so that `determined()`, `undetermined()`, `constrained()`, and `partially_determined()`
+    /// predicates can look up cell determinacy states.
+    ///
+    /// Defaults to `None` for backward compatibility — existing callers that don't need
+    /// determinacy context can omit this field.
+    pub determinacy: Option<&'a PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
 }
 
 /// Result of checking a single constraint.
@@ -69,6 +78,12 @@ pub struct AutoParam {
 #[derive(Debug, Clone)]
 pub enum SolveResult {
     /// Successfully resolved all auto parameters.
+    ///
+    /// **Note:** `Solved` indicates constraint satisfaction but does not guarantee
+    /// objective optimality. When an optimization objective is present, the
+    /// Nelder-Mead optimizer may have hit the iteration limit without full
+    /// convergence; the returned values satisfy all constraints but the objective
+    /// value may not be globally optimal.
     Solved {
         /// Resolved values for auto parameters.
         values: HashMap<ValueCellId, Value>,
@@ -132,7 +147,7 @@ mod tests {
         let d2 = d; // Copy
         assert_eq!(d, d2); // PartialEq + Eq
 
-        let d3 = d.clone(); // Clone
+        let d3 = Clone::clone(&d); // Clone
         assert_eq!(d, d3);
 
         // Hash: usable as HashMap key
@@ -236,7 +251,10 @@ mod tests {
     fn resolution_problem_populated() {
         use crate::identity::ValueCellId;
         let mut values = crate::value::ValueMap::new();
-        values.insert(ValueCellId::new("Bracket", "width"), crate::value::Value::length(0.08));
+        values.insert(
+            ValueCellId::new("Bracket", "width"),
+            crate::value::Value::length(0.08),
+        );
 
         let problem = ResolutionProblem {
             auto_params: vec![AutoParam {
@@ -244,10 +262,7 @@ mod tests {
                 param_type: Type::length(),
                 bounds: Some((0.01, 1.0)),
             }],
-            constraints: vec![(
-                ConstraintNodeId::new("Bracket", 0),
-                make_literal_expr(),
-            )],
+            constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
             objective: Some(OptimizationObjective::Minimize(make_literal_expr())),
             functions: vec![],

@@ -11,6 +11,7 @@ reify-expr.workspace = true
 argmin = "0.10"
 argmin-math = { version = "0.4", features = ["ndarray_latest-nolinalg"] }
 ndarray = "0.16"
+tracing.workspace = true
 
 [build-dependencies]
 pkg-config = "0.3"

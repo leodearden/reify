@@ -1,7 +1,10 @@
 //! Lambda evaluation tests.
 
-use reify_expr::{eval_expr, EvalContext};
-use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
+use reify_expr::{EvalContext, eval_expr};
+use reify_types::{
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, FieldSourceKind, ResolvedFunction, Type,
+    Value, ValueCellId, ValueMap,
+};
 
 /// Helper to build a Value::Lambda with (name, id) param pairs.
 fn make_value_lambda(
@@ -215,17 +218,17 @@ fn apply_lambda_arity_mismatch_returns_undef() {
         Type::Real,
     );
 
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id)],
-        body,
-        ValueMap::new(),
-    );
+    let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let empty = ValueMap::new();
     let result = apply_lambda(&lambda, &[Value::Int(5)], &EvalContext::simple(&empty));
     assert!(result.is_undef(), "arity mismatch should return Undef");
 
-    let result = apply_lambda(&lambda, &[Value::Int(1), Value::Int(2), Value::Int(3)], &EvalContext::simple(&empty));
+    let result = apply_lambda(
+        &lambda,
+        &[Value::Int(1), Value::Int(2), Value::Int(3)],
+        &EvalContext::simple(&empty),
+    );
     assert!(result.is_undef(), "too many args should return Undef");
 }
 
@@ -241,7 +244,10 @@ fn apply_lambda_zero_params() {
     assert_eq!(result, Value::Bool(true));
 
     let result = apply_lambda(&lambda, &[Value::Int(1)], &EvalContext::simple(&empty));
-    assert!(result.is_undef(), "0-param lambda with args should return Undef");
+    assert!(
+        result.is_undef(),
+        "0-param lambda with args should return Undef"
+    );
 }
 
 /// step-25: Value::Lambda content_hash is deterministic and distinct from other variants.
@@ -272,8 +278,16 @@ fn lambda_content_hash_deterministic_and_distinct() {
     let lambda2 = make_value_lambda(vec![("x", x_id.clone())], body2, ValueMap::new());
     let lambda3 = make_value_lambda(vec![("x", x_id.clone())], body3, ValueMap::new());
 
-    assert_eq!(lambda1.content_hash(), lambda2.content_hash(), "identical lambdas should have same hash");
-    assert_ne!(lambda1.content_hash(), lambda3.content_hash(), "different lambdas should have different hash");
+    assert_eq!(
+        lambda1.content_hash(),
+        lambda2.content_hash(),
+        "identical lambdas should have same hash"
+    );
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda3.content_hash(),
+        "different lambdas should have different hash"
+    );
     assert_ne!(lambda1.content_hash(), Value::Undef.content_hash());
     assert_ne!(lambda1.content_hash(), Value::Int(0).content_hash());
     assert_ne!(lambda1.content_hash(), Value::Bool(false).content_hash());
@@ -290,7 +304,11 @@ fn lambda_content_hash_deterministic_and_distinct() {
         ),
         ValueMap::new(),
     );
-    assert_ne!(lambda1.content_hash(), lambda_y.content_hash(), "different param names should produce different hash");
+    assert_ne!(
+        lambda1.content_hash(),
+        lambda_y.content_hash(),
+        "different param names should produce different hash"
+    );
 }
 
 /// step-29: Two Value::Lambda instances with identical params and body but with
@@ -325,8 +343,15 @@ fn lambda_content_hash_invariant_capture_insertion_order() {
 
     let lambda_b = make_value_lambda(vec![("x", x_id)], body, captures_b);
 
-    assert_eq!(lambda_a, lambda_b, "lambdas with same captures in different insertion order should be equal");
-    assert_eq!(lambda_a.content_hash(), lambda_b.content_hash(), "content_hash invariant violated: equal lambdas must have equal hashes");
+    assert_eq!(
+        lambda_a, lambda_b,
+        "lambdas with same captures in different insertion order should be equal"
+    );
+    assert_eq!(
+        lambda_a.content_hash(),
+        lambda_b.content_hash(),
+        "content_hash invariant violated: equal lambdas must have equal hashes"
+    );
 }
 
 /// step-27: Integration test — full pipeline parse → compile → eval for a structure
@@ -342,7 +367,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_integration"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -366,7 +395,10 @@ structure S {
         .expect("should have 'f'");
 
     let mut values = ValueMap::new();
-    let factor_expr = factor_cell.default_expr.as_ref().expect("factor should have expr");
+    let factor_expr = factor_cell
+        .default_expr
+        .as_ref()
+        .expect("factor should have expr");
     let factor_val = eval_expr(factor_expr, &EvalContext::simple(&values));
     values.insert(factor_cell.id.clone(), factor_val);
 
@@ -383,11 +415,7 @@ structure S {
     let empty = ValueMap::new();
     let result = apply_lambda(&f_val, &[Value::Real(5.0)], &EvalContext::simple(&empty));
     match result {
-        Value::Real(v) => assert!(
-            (v - 15.0).abs() < 1e-12,
-            "expected 15.0, got {}",
-            v
-        ),
+        Value::Real(v) => assert!((v - 15.0).abs() < 1e-12, "expected 15.0, got {}", v),
         other => panic!("expected Real(15.0), got {:?}", other),
     }
 }
@@ -563,7 +591,10 @@ fn nested_lambda_calls_user_function() {
         Value::Lambda { captures, .. } => {
             assert_eq!(captures.get(&x_id), Some(&Value::Int(3)));
         }
-        other => panic!("expected inner Lambda after outer application, got {:?}", other),
+        other => panic!(
+            "expected inner Lambda after outer application, got {:?}",
+            other
+        ),
     }
 
     // Apply inner with y=4 → double(3) + 4 = 6 + 4 = 10
@@ -640,4 +671,124 @@ fn nested_lambda_eval_and_apply() {
     // Apply inner with y=4 → should return 7
     let result = apply_lambda(&inner_val, &[Value::Int(4)], &EvalContext::simple(&empty));
     assert_eq!(result, Value::Int(7));
+}
+
+/// apply_lambda must return Undef when recursion depth is at MAX_RECURSION_DEPTH,
+/// preventing unbounded recursion through the sample→apply_lambda→eval path.
+#[test]
+fn apply_lambda_returns_undef_at_max_depth() {
+    use reify_expr::apply_lambda;
+
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    // |x| x + 1
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(1), Type::Int),
+        Type::Int,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let values = ValueMap::new();
+
+    // At MAX depth: should return Undef (depth limit reached)
+    let ctx_at_max = EvalContext::_test_at_depth(&values, 256);
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &ctx_at_max);
+    assert_eq!(
+        result,
+        Value::Undef,
+        "apply_lambda at MAX_RECURSION_DEPTH must return Undef"
+    );
+
+    // At MAX-1 depth: should still evaluate normally
+    let ctx_below_max = EvalContext::_test_at_depth(&values, 255);
+    let result = apply_lambda(&lambda, &[Value::Int(5)], &ctx_below_max);
+    assert_eq!(
+        result,
+        Value::Int(6),
+        "apply_lambda below MAX_RECURSION_DEPTH must evaluate"
+    );
+}
+
+// ── Field operation diagnostic tests ─────────────────────────────────────
+
+/// Helper to build a FunctionCall expression for stdlib functions.
+fn make_function_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    let hash = ContentHash::of(name.as_bytes());
+    CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{}", name),
+            },
+            args,
+        },
+        result_type,
+        content_hash: hash,
+    }
+}
+
+/// sample(Real, Real) returns Undef when the first arg is not a Field.
+#[test]
+fn sample_non_field_returns_undef() {
+    let expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef, "sample of non-Field must return Undef");
+}
+
+/// sample(Field { lambda: Undef }, point) returns Undef when the lambda is not callable.
+#[test]
+fn sample_field_with_undef_lambda_returns_undef() {
+    let field = Value::Field {
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Sampled,
+        lambda: Box::new(Value::Undef),
+    };
+    let expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(
+                field,
+                Type::Field {
+                    domain: Box::new(Type::Real),
+                    codomain: Box::new(Type::Real),
+                },
+            ),
+            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+        ],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample of Field with Undef lambda must return Undef"
+    );
+}
+
+/// gradient(Real) returns Undef when the argument is not a Field.
+#[test]
+fn gradient_non_field_returns_undef() {
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of non-Field must return Undef"
+    );
 }

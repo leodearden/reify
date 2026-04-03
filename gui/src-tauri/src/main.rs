@@ -7,14 +7,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
-use reify_gui::diff::{compute_delta, delta_to_events, StateDelta};
+use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::EngineSession;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -84,7 +84,10 @@ impl NotificationSink for TauriNotificationSink {
 }
 
 /// Create a FileWatcher for the given file, wired to update the engine and emit events.
-fn create_watcher(app_handle: &tauri::AppHandle, file_path: &std::path::Path) -> Option<FileWatcher> {
+fn create_watcher(
+    app_handle: &tauri::AppHandle,
+    file_path: &std::path::Path,
+) -> Option<FileWatcher> {
     let parent = file_path.parent()?;
     let target = Some(PathBuf::from(file_path.file_name()?));
     let handle = app_handle.clone();
@@ -214,11 +217,7 @@ fn open_file_engine(
 }
 
 #[tauri::command]
-fn export(
-    state: tauri::State<'_, AppState>,
-    format: String,
-    path: String,
-) -> Result<(), String> {
+fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Result<(), String> {
     reify_gui::commands::export_impl(&state.engine, &format, &path)
 }
 
@@ -238,6 +237,21 @@ fn focus_entity(app: tauri::AppHandle, entity_path: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn update_selection(
+    state: tauri::State<'_, AppState>,
+    selected_entity: Option<String>,
+    hovered_entity: Option<String>,
+) -> Result<(), String> {
+    let mut sel = state
+        .selection
+        .write()
+        .map_err(|e| format!("Selection lock poisoned: {}", e))?;
+    sel.selected_entity = selected_entity;
+    sel.hovered_entity = hovered_entity;
+    Ok(())
+}
+
+#[tauri::command]
 fn mcp_tool_call(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -246,12 +260,12 @@ fn mcp_tool_call(
 ) -> Result<serde_json::Value, String> {
     // Clone app before moving into the event_emitter closure
     let app_for_emitter = app.clone();
-    let ctx = reify_gui::mcp_context::TauriToolContext::with_event_emitter(
-        state.engine.clone(),
-        move |event_name, payload| {
+    let ctx = reify_gui::mcp_context::TauriToolContext::builder(state.engine.clone())
+        .with_event_emitter(move |event_name, payload| {
             app_for_emitter.emit(event_name, payload).ok();
-        },
-    );
+        })
+        .with_selection(state.selection.clone())
+        .build();
 
     // Bracket the MCP call with evaluation-status events
     emit_status(&app, "evaluating");
@@ -262,11 +276,11 @@ fn mcp_tool_call(
     // Sync state and emit delta events (conservative: runs even after read-only tools,
     // since build_gui_state is cheap for unchanged state and compute_delta produces
     // an empty delta when nothing changed)
-    if let Ok(mut session) = state.engine.lock() {
-        if let Ok(gui_state) = session.build_gui_state() {
-            let delta = compute_delta(&state.last_state, &gui_state);
-            emit_delta(&app, &delta);
-        }
+    if let Ok(mut session) = state.engine.lock()
+        && let Ok(gui_state) = session.build_gui_state()
+    {
+        let delta = compute_delta(&state.last_state, &gui_state);
+        emit_delta(&app, &delta);
     }
 
     result
@@ -280,7 +294,7 @@ async fn lsp_request(
 ) -> Result<String, String> {
     // Diagnostics are emitted automatically by TauriNotificationSink
     // during didOpen/didChange/didClose processing — no manual polling needed.
-    let result = reify_gui::lsp_bridge::lsp_request_impl(&*bridge, &method, params).await?;
+    let result = reify_gui::lsp_bridge::lsp_request_impl(&bridge, &method, params).await?;
     Ok(result)
 }
 
@@ -313,6 +327,7 @@ async fn claude_send_message(
 
     let app_for_events = app.clone();
     let engine = Arc::clone(&state.engine);
+    let selection = Arc::clone(&state.selection);
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -321,6 +336,7 @@ async fn claude_send_message(
             let path = sidecar_path;
             let app_c = app_for_events;
             let eng = engine;
+            let sel = selection;
             async move {
                 reify_gui::claude_bridge::spawn_sidecar_impl(
                     &path,
@@ -328,6 +344,7 @@ async fn claude_send_message(
                     move |name, payload| {
                         app_c.emit(&name, payload).ok();
                     },
+                    sel,
                 )
                 .await
             }
@@ -366,7 +383,11 @@ fn main() {
         let path = std::path::PathBuf::from(&path_str);
         if path.exists() && path.extension().is_some_and(|ext| ext == "ri") {
             if let Err(e) = session.load_file(&path) {
-                eprintln!("Warning: failed to load initial file {}: {}", path.display(), e);
+                eprintln!(
+                    "Warning: failed to load initial file {}: {}",
+                    path.display(),
+                    e
+                );
             } else {
                 initial_file = Some(path);
             }
@@ -378,10 +399,12 @@ fn main() {
         last_state: std::sync::Mutex::new(None),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
+        selection: Arc::new(RwLock::new(reify_mcp::SelectionInfo::default())),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available
@@ -411,6 +434,7 @@ fn main() {
             export,
             get_source_location,
             focus_entity,
+            update_selection,
             mcp_tool_call,
             lsp_request,
             claude_send_message,

@@ -7,7 +7,11 @@ use reify_syntax::*;
 /// Helper: parse source and return the first declaration.
 fn parse_first_decl(source: &str) -> (Declaration, Vec<ParseError>) {
     let module = reify_syntax::parse(source, reify_types::ModulePath::single("vis_test"));
-    let decl = module.declarations.into_iter().next().expect("expected at least one declaration");
+    let decl = module
+        .declarations
+        .into_iter()
+        .next()
+        .expect("expected at least one declaration");
     (decl, module.errors)
 }
 
@@ -81,10 +85,13 @@ fn parse_let_default_not_pub() {
 }"#;
     let (members, errors) = parse_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
-    let let_decl = members.iter().find_map(|m| match m {
-        MemberDecl::Let(l) => Some(l),
-        _ => None,
-    }).expect("expected a let declaration");
+    let let_decl = members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Let(l) => Some(l),
+            _ => None,
+        })
+        .expect("expected a let declaration");
     assert_eq!(let_decl.name, "y");
     assert!(!let_decl.is_pub, "expected is_pub == false for non-pub let");
 }

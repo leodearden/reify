@@ -1,12 +1,24 @@
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex};
 
 use reify_types::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintNodeId, ConstraintResult,
     ConstraintSolver, Diagnostic, ExportError, ExportFormat, GeometryError, GeometryHandle,
     GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, ReprKind,
-    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId,
+    ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueCellId, ValueMap,
 };
+
+/// Create an empty `ResolutionProblem` with all fields set to empty/default values.
+pub fn empty_problem() -> ResolutionProblem {
+    ResolutionProblem {
+        auto_params: vec![],
+        constraints: vec![],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    }
+}
 
 /// Mock constraint checker that returns predetermined results.
 pub struct MockConstraintChecker {
@@ -114,16 +126,29 @@ impl SequencedMockConstraintSolver {
 
 impl ConstraintSolver for SequencedMockConstraintSolver {
     fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
-        let r = {
+        // Extract the next result (if any) while holding only the results lock.
+        // The results lock is dropped at the end of this block, before we touch `self.last`.
+        let next = {
             let mut results = self.results.lock().unwrap();
             if results.is_empty() {
-                return self.last.lock().unwrap().clone().expect("no results configured");
+                None
+            } else {
+                Some(results.remove(0))
             }
-            results.remove(0)
         };
-        // results lock is released before acquiring last lock
-        *self.last.lock().unwrap() = Some(r.clone());
-        r
+        // results lock is released — safe to acquire last lock
+        match next {
+            Some(r) => {
+                *self.last.lock().unwrap() = Some(r.clone());
+                r
+            }
+            None => self
+                .last
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("no results configured"),
+        }
     }
 }
 
@@ -156,6 +181,15 @@ enum QueryKey {
     },
 }
 
+/// Normalize a distance pair to canonical (min, max) order so that
+/// Distance(A, B) and Distance(B, A) map to the same key.
+fn normalize_distance_pair(
+    a: GeometryHandleId,
+    b: GeometryHandleId,
+) -> (GeometryHandleId, GeometryHandleId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
 impl QueryKey {
     fn from_query(query: &GeometryQuery) -> Self {
         match query {
@@ -163,18 +197,21 @@ impl QueryKey {
             GeometryQuery::SurfaceArea(id) => QueryKey::SurfaceArea(*id),
             GeometryQuery::Centroid(id) => QueryKey::Centroid(*id),
             GeometryQuery::BoundingBox(id) => QueryKey::BoundingBox(*id),
-            GeometryQuery::Distance { from, to } => QueryKey::Distance {
-                from: *from,
-                to: *to,
-            },
-            GeometryQuery::MomentOfInertia { handle, axis } => QueryKey::MomentOfInertia {
-                handle: *handle,
-                axis_bits: [
-                    axis[0].to_bits(),
-                    axis[1].to_bits(),
-                    axis[2].to_bits(),
-                ],
-            },
+            GeometryQuery::Distance { from, to } => {
+                let (lo, hi) = normalize_distance_pair(*from, *to);
+                QueryKey::Distance { from: lo, to: hi }
+            }
+            GeometryQuery::MomentOfInertia { handle, axis } => {
+                debug_assert!(
+                    !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+                    "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+                    axis
+                );
+                QueryKey::MomentOfInertia {
+                    handle: *handle,
+                    axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
+                }
+            }
         }
     }
 }
@@ -207,8 +244,7 @@ impl MockGeometryKernel {
 
     /// Configure a Volume query result for a specific handle.
     pub fn with_volume_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
-        self.typed_queries
-            .insert(QueryKey::Volume(handle), value);
+        self.typed_queries.insert(QueryKey::Volume(handle), value);
         self
     }
 
@@ -221,8 +257,7 @@ impl MockGeometryKernel {
 
     /// Configure a Centroid query result for a specific handle.
     pub fn with_centroid_result(mut self, handle: GeometryHandleId, value: Value) -> Self {
-        self.typed_queries
-            .insert(QueryKey::Centroid(handle), value);
+        self.typed_queries.insert(QueryKey::Centroid(handle), value);
         self
     }
 
@@ -234,32 +269,42 @@ impl MockGeometryKernel {
     }
 
     /// Configure a Distance query result for a specific pair of handles.
+    ///
+    /// The key is normalized to `(min, max)` order so lookups are symmetric —
+    /// `with_distance_result(A, B, v)` matches both `Distance { from: A, to: B }`
+    /// and `Distance { from: B, to: A }`.
     pub fn with_distance_result(
         mut self,
         from: GeometryHandleId,
         to: GeometryHandleId,
         value: Value,
     ) -> Self {
+        let (lo, hi) = normalize_distance_pair(from, to);
         self.typed_queries
-            .insert(QueryKey::Distance { from, to }, value);
+            .insert(QueryKey::Distance { from: lo, to: hi }, value);
         self
     }
 
     /// Configure a MomentOfInertia query result for a specific handle and axis.
+    ///
+    /// # Panics (debug)
+    /// Panics if any axis component is NaN — NaN bits are not equal to themselves,
+    /// which would silently break HashMap lookup.
     pub fn with_inertia_result(
         mut self,
         handle: GeometryHandleId,
         axis: [f64; 3],
         value: Value,
     ) -> Self {
+        debug_assert!(
+            !axis[0].is_nan() && !axis[1].is_nan() && !axis[2].is_nan(),
+            "MomentOfInertia axis contains NaN: {:?} — NaN bits break HashMap lookup",
+            axis
+        );
         self.typed_queries.insert(
             QueryKey::MomentOfInertia {
                 handle,
-                axis_bits: [
-                    axis[0].to_bits(),
-                    axis[1].to_bits(),
-                    axis[2].to_bits(),
-                ],
+                axis_bits: [axis[0].to_bits(), axis[1].to_bits(), axis[2].to_bits()],
             },
             value,
         );
@@ -362,11 +407,7 @@ impl GeometryKernel for MockGeometryKernel {
             .map_err(|e| ExportError::IoError(e.to_string()))
     }
 
-    fn tessellate(
-        &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         // Return a minimal valid mesh (one triangle)
         Ok(Mesh {
             vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
@@ -409,18 +450,105 @@ impl ConstraintSolver for SpyConstraintSolver {
     }
 }
 
+/// Spy constraint solver that captures ALL `ResolutionProblem`s passed to it.
+///
+/// Unlike `SpyConstraintSolver` which only captures the last call, this records
+/// every call in order. Uses a `SequencedMockConstraintSolver` internally to
+/// return per-call results.
+pub struct MultiCallSpyConstraintSolver {
+    captured: Arc<Mutex<Vec<ResolutionProblem>>>,
+    inner: SequencedMockConstraintSolver,
+}
+
+impl MultiCallSpyConstraintSolver {
+    /// Create a multi-call spy with sequenced results.
+    /// Each `solve()` call returns the next result from the sequence (last is repeated).
+    pub fn new(results: Vec<SolveResult>) -> Self {
+        Self {
+            captured: Arc::new(Mutex::new(Vec::new())),
+            inner: SequencedMockConstraintSolver::new(results),
+        }
+    }
+
+    /// Return a shared reference to all captured problems (in call order).
+    pub fn captured_problems(&self) -> Arc<Mutex<Vec<ResolutionProblem>>> {
+        self.captured.clone()
+    }
+
+    /// Return the number of times `solve()` has been called.
+    pub fn call_count(&self) -> usize {
+        self.captured.lock().unwrap().len()
+    }
+}
+
+impl ConstraintSolver for MultiCallSpyConstraintSolver {
+    fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
+        self.captured.lock().unwrap().push(problem.clone());
+        self.inner.solve(problem)
+    }
+}
+
+/// Run a closure on a background thread with a 10-second deadlock timeout.
+///
+/// Wraps `f` in [`std::panic::catch_unwind`] so that a panic inside the closure
+/// is forwarded to the caller thread (via [`std::panic::resume_unwind`]) rather
+/// than being swallowed or misreported as a timeout.  If the closure completes
+/// normally its return value is forwarded to the caller.
+///
+/// # Panics
+///
+/// * Panics with the original payload if the closure panics.
+/// * Panics with a "timed out" message if the closure does not complete within
+///   10 seconds (note: the background thread cannot be cancelled and will leak).
+/// * Panics with "unexpected disconnect" if the background thread terminates
+///   without sending (should not happen in practice).
+pub fn run_with_deadlock_timeout<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<
+        Result<T, Box<dyn std::any::Any + Send>>,
+    >(1);
+    std::thread::spawn(move || {
+        let result = catch_unwind(AssertUnwindSafe(f));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(payload)) => resume_unwind(payload),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // The background thread is still running and cannot be joined.
+            // It will be leaked when the test process exits.
+            panic!("test timed out after 10s — possible deadlock");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("unexpected thread termination without sending result");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::assert_value_approx;
-    use crate::values::{meters, mm3, mm2, point3};
+    use crate::values::{meters, mm2, mm3, point3};
     use reify_types::{CompiledExpr, Type, Value, ValueMap};
+    use std::sync::Barrier;
+
+    #[test]
+    fn empty_problem_has_all_defaults() {
+        let p = empty_problem();
+        assert!(p.auto_params.is_empty());
+        assert!(p.constraints.is_empty());
+        assert!(p.current_values.is_empty());
+        assert!(p.objective.is_none());
+        assert!(p.functions.is_empty());
+    }
 
     #[test]
     fn mock_constraint_checker_predetermined() {
         let cnid = ConstraintNodeId::new("Bracket", 0);
-        let checker = MockConstraintChecker::new()
-            .with_result(cnid.clone(), Satisfaction::Violated);
+        let checker =
+            MockConstraintChecker::new().with_result(cnid.clone(), Satisfaction::Violated);
 
         let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let values = ValueMap::new();
@@ -428,6 +556,7 @@ mod tests {
             constraints: vec![(cnid.clone(), &expr)],
             values: &values,
             functions: &[],
+            determinacy: None,
         };
 
         let results = checker.check(&input);
@@ -467,13 +596,7 @@ mod tests {
         values.insert(ValueCellId::new("S", "x"), Value::length(0.005));
 
         let solver = MockConstraintSolver::new_solved(values.clone());
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::Solved { values: v } => {
@@ -486,16 +609,10 @@ mod tests {
 
     #[test]
     fn mock_constraint_solver_infeasible() {
-        let solver = MockConstraintSolver::new_infeasible(vec![
-            Diagnostic::error("constraints are infeasible"),
-        ]);
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+            "constraints are infeasible",
+        )]);
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::Infeasible { diagnostics } => {
@@ -509,13 +626,7 @@ mod tests {
     #[test]
     fn mock_constraint_solver_no_progress() {
         let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
-        let problem = ResolutionProblem {
-            auto_params: vec![],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
+        let problem = empty_problem();
 
         match solver.solve(&problem) {
             SolveResult::NoProgress { reason } => {
@@ -530,17 +641,15 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<MockConstraintSolver>();
 
-        let _boxed: Box<dyn ConstraintSolver> = Box::new(
-            MockConstraintSolver::new_no_progress("test"),
-        );
+        let _boxed: Box<dyn ConstraintSolver> =
+            Box::new(MockConstraintSolver::new_no_progress("test"));
     }
 
     // step-5: failing tests for per-query-type mock configuration
     #[test]
     fn mock_with_volume_result_returns_for_volume_query() {
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_volume_result(id, mm3(1000.0));
+        let kernel = MockGeometryKernel::new().with_volume_result(id, mm3(1000.0));
 
         let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(result, mm3(1000.0));
@@ -549,8 +658,7 @@ mod tests {
     #[test]
     fn mock_with_surface_area_result_returns_for_surface_area_query() {
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_surface_area_result(id, mm2(600.0));
+        let kernel = MockGeometryKernel::new().with_surface_area_result(id, mm2(600.0));
 
         let result = kernel.query(&GeometryQuery::SurfaceArea(id)).unwrap();
         assert_eq!(result, mm2(600.0));
@@ -560,8 +668,7 @@ mod tests {
     fn mock_with_centroid_result_returns_for_centroid_query() {
         let id = GeometryHandleId(1);
         let centroid = point3(0.5, 0.5, 0.5);
-        let kernel = MockGeometryKernel::new()
-            .with_centroid_result(id, centroid.clone());
+        let kernel = MockGeometryKernel::new().with_centroid_result(id, centroid.clone());
 
         let result = kernel.query(&GeometryQuery::Centroid(id)).unwrap();
         assert_eq!(result, centroid);
@@ -571,8 +678,7 @@ mod tests {
     fn mock_with_bbox_result_returns_for_bounding_box_query() {
         let id = GeometryHandleId(1);
         let bbox = Value::List(vec![point3(0.0, 0.0, 0.0), point3(1.0, 1.0, 1.0)]);
-        let kernel = MockGeometryKernel::new()
-            .with_bbox_result(id, bbox.clone());
+        let kernel = MockGeometryKernel::new().with_bbox_result(id, bbox.clone());
 
         let result = kernel.query(&GeometryQuery::BoundingBox(id)).unwrap();
         assert_eq!(result, bbox);
@@ -582,8 +688,7 @@ mod tests {
     fn mock_with_distance_result_returns_for_distance_query() {
         let from = GeometryHandleId(1);
         let to = GeometryHandleId(2);
-        let kernel = MockGeometryKernel::new()
-            .with_distance_result(from, to, meters(5.0));
+        let kernel = MockGeometryKernel::new().with_distance_result(from, to, meters(5.0));
 
         let result = kernel.query(&GeometryQuery::Distance { from, to }).unwrap();
         assert_eq!(result, meters(5.0));
@@ -593,10 +698,11 @@ mod tests {
     fn mock_with_inertia_result_returns_for_moment_of_inertia_query() {
         let id = GeometryHandleId(1);
         let axis = [0.0, 0.0, 1.0];
-        let kernel = MockGeometryKernel::new()
-            .with_inertia_result(id, axis, Value::Real(42.0));
+        let kernel = MockGeometryKernel::new().with_inertia_result(id, axis, Value::Real(42.0));
 
-        let result = kernel.query(&GeometryQuery::MomentOfInertia { handle: id, axis }).unwrap();
+        let result = kernel
+            .query(&GeometryQuery::MomentOfInertia { handle: id, axis })
+            .unwrap();
         assert_eq!(result, Value::Real(42.0));
     }
 
@@ -618,8 +724,7 @@ mod tests {
     fn mock_per_query_type_falls_back_to_generic() {
         // with_query_result (generic) should be used when no typed config exists
         let id = GeometryHandleId(1);
-        let kernel = MockGeometryKernel::new()
-            .with_query_result(id, mm3(500.0));
+        let kernel = MockGeometryKernel::new().with_query_result(id, mm3(500.0));
 
         let result = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(result, mm3(500.0));
@@ -738,12 +843,7 @@ mod tests {
         let ops = kernel.operations();
         assert_eq!(ops.len(), 2);
         match &ops[1].op {
-            GeometryOp::Translate {
-                target,
-                dx,
-                dy,
-                dz,
-            } => {
+            GeometryOp::Translate { target, dx, dy, dz } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!((dx - 1.0).abs() < 1e-12);
                 assert!((dy - 2.0).abs() < 1e-12);
@@ -1078,7 +1178,11 @@ mod tests {
             GeometryOp::Loft { profiles } => {
                 assert_eq!(
                     *profiles,
-                    vec![GeometryHandleId(1), GeometryHandleId(2), GeometryHandleId(3)]
+                    vec![
+                        GeometryHandleId(1),
+                        GeometryHandleId(2),
+                        GeometryHandleId(3)
+                    ]
                 );
             }
             other => panic!("expected Loft, got {:?}", other),
@@ -1358,8 +1462,8 @@ mod tests {
         // Typed config should take precedence over generic
         let id = GeometryHandleId(1);
         let kernel = MockGeometryKernel::new()
-            .with_query_result(id, mm3(500.0))       // generic
-            .with_volume_result(id, mm3(1000.0));     // typed
+            .with_query_result(id, mm3(500.0)) // generic
+            .with_volume_result(id, mm3(1000.0)); // typed
 
         let vol = kernel.query(&GeometryQuery::Volume(id)).unwrap();
         assert_eq!(vol, mm3(1000.0)); // typed wins
@@ -1473,7 +1577,7 @@ mod tests {
 
     #[test]
     fn mock_find_ops_does_not_poison_mutex_on_closure_panic() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let mut kernel = MockGeometryKernel::new();
         kernel
@@ -1494,9 +1598,132 @@ mod tests {
         assert!(kernel.last_op().is_some());
     }
 
+    // --- Distance query key symmetry tests (task 430) ---
+
+    #[test]
+    fn distance_query_key_is_symmetric() {
+        let from = GeometryHandleId(1);
+        let to = GeometryHandleId(2);
+        // Configure with (1, 2) but query with (2, 1)
+        let kernel = MockGeometryKernel::new().with_distance_result(from, to, meters(5.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: to, to: from })
+            .unwrap();
+        assert_eq!(result, meters(5.0));
+    }
+
+    #[test]
+    fn distance_same_handle_is_identity() {
+        let id = GeometryHandleId(1);
+        let kernel = MockGeometryKernel::new().with_distance_result(id, id, meters(0.0));
+
+        let result = kernel
+            .query(&GeometryQuery::Distance { from: id, to: id })
+            .unwrap();
+        assert_eq!(result, meters(0.0));
+    }
+
+    #[test]
+    fn distance_result_symmetric_via_reversed_config() {
+        // Configure with higher id first: (3, 1), query with lower id first: (1, 3)
+        let kernel = MockGeometryKernel::new().with_distance_result(
+            GeometryHandleId(3),
+            GeometryHandleId(1),
+            meters(7.0),
+        );
+
+        let result = kernel
+            .query(&GeometryQuery::Distance {
+                from: GeometryHandleId(1),
+                to: GeometryHandleId(3),
+            })
+            .unwrap();
+        assert_eq!(result, meters(7.0));
+    }
+
+    // --- SequencedMockConstraintSolver tests (step-1, task 430) ---
+
+    #[test]
+    fn sequenced_solver_returns_results_in_order() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "x"), Value::length(0.001));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "x"), Value::length(0.002));
+        let mut values3 = HashMap::new();
+        values3.insert(ValueCellId::new("S", "x"), Value::length(0.003));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+            SolveResult::Solved {
+                values: values3.clone(),
+            },
+        ]);
+
+        let problem = empty_problem();
+
+        // Each call returns the next result in sequence
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values3),
+            other => panic!("expected Solved #3, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sequenced_solver_repeats_last_after_exhaustion() {
+        let mut values1 = HashMap::new();
+        values1.insert(ValueCellId::new("S", "a"), Value::length(0.01));
+        let mut values2 = HashMap::new();
+        values2.insert(ValueCellId::new("S", "b"), Value::length(0.02));
+
+        let solver = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: values1.clone(),
+            },
+            SolveResult::Solved {
+                values: values2.clone(),
+            },
+        ]);
+
+        let problem = empty_problem();
+
+        // Consume both results
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values1),
+            other => panic!("expected Solved #1, got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #2, got {:?}", other),
+        }
+
+        // 3rd and 4th calls should repeat the last result
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #3 (repeated last), got {:?}", other),
+        }
+        match solver.solve(&problem) {
+            SolveResult::Solved { values } => assert_eq!(values, values2),
+            other => panic!("expected Solved #4 (repeated last), got {:?}", other),
+        }
+    }
+
     #[test]
     fn mock_has_op_does_not_poison_mutex_on_closure_panic() {
-        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
         let mut kernel = MockGeometryKernel::new();
         kernel
@@ -1515,5 +1742,333 @@ mod tests {
         // op_count() and last_op() should still work.
         assert_eq!(kernel.op_count(), 1);
         assert!(kernel.last_op().is_some());
+    }
+
+    #[test]
+    fn mock_unconfigured_handle_query_returns_error() {
+        let mut kernel = MockGeometryKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Sphere {
+                radius: Value::length(0.01),
+            })
+            .unwrap();
+
+        // Query without configuring any result for the handle
+        let result = kernel.query(&GeometryQuery::Volume(handle.id));
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains(&format!("{:?}", handle.id)),
+                    "error message should contain handle id, got: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Err(QueryFailed) for unconfigured handle, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn distance_query_unregistered_pair_returns_error() {
+        // Configure distance for pair (1, 2)
+        let kernel = MockGeometryKernel::new().with_distance_result(
+            GeometryHandleId(1),
+            GeometryHandleId(2),
+            meters(5.0),
+        );
+
+        // Query an unregistered pair (1, 3) — should return Err(QueryFailed)
+        let result = kernel.query(&GeometryQuery::Distance {
+            from: GeometryHandleId(1),
+            to: GeometryHandleId(3),
+        });
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains(&format!("{:?}", GeometryHandleId(1))),
+                    "error message should contain handle id, got: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected Err(QueryFailed) for unregistered distance pair, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn sequenced_solver_concurrent_no_deadlock() {
+        // Pre-load 4 distinct results that threads race to consume
+        // from `results` and writes to `self.last`.  Distinct values let us
+        // verify every slot is consumed exactly once (no double-consumption).
+        // This exercises concurrent acquisition of both locks without any
+        // ordering assumption between threads, verifying the task-430 fix
+        // (separate lock acquisition for `results` and `last`) doesn't
+        // deadlock.
+        let expected_slots: Vec<HashMap<ValueCellId, Value>> = (0..4)
+            .map(|i| {
+                let mut m = HashMap::new();
+                m.insert(
+                    ValueCellId::new("S", "x"),
+                    Value::length(0.001 * (i + 1) as f64),
+                );
+                m
+            })
+            .collect();
+
+        let solver = SequencedMockConstraintSolver::new(
+            expected_slots
+                .iter()
+                .map(|v| SolveResult::Solved { values: v.clone() })
+                .collect(),
+        );
+
+        let problem = empty_problem();
+
+        // Run inside a spawned thread so we can apply a timeout — a real
+        // deadlock would hang CI forever without this.
+        let results = run_with_deadlock_timeout(move || {
+            let collected = Mutex::new(Vec::new());
+            // 4 threads each calling solve() once — threads race to pop
+            // the next available result (order is non-deterministic).
+            std::thread::scope(|s| {
+                for _ in 0..4 {
+                    s.spawn(|| {
+                        let result = solver.solve(&problem);
+                        collected.lock().unwrap().push(result);
+                    });
+                }
+            });
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
+        });
+
+        assert_eq!(results.len(), 4, "all 4 threads should complete");
+
+        // Collect the returned x-values and verify each distinct slot was
+        // consumed exactly once (detects double-consumption races).
+        let mut seen: Vec<f64> = results
+            .iter()
+            .map(|r| match r {
+                SolveResult::Solved { values } => {
+                    let v = values
+                        .get(&ValueCellId::new("S", "x"))
+                        .expect("missing x value");
+                    match v {
+                        Value::Scalar { si_value, .. } => *si_value,
+                        other => panic!("expected Scalar, got {:?}", other),
+                    }
+                }
+                other => panic!("expected Solved variant, got {:?}", other),
+            })
+            .collect();
+        seen.sort_by(f64::total_cmp);
+        let mut expected: Vec<f64> = expected_slots
+            .iter()
+            .map(|m| match m.get(&ValueCellId::new("S", "x")).unwrap() {
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected Scalar, got {:?}", other),
+            })
+            .collect();
+        expected.sort_by(f64::total_cmp);
+        // Exact f64 equality is safe here: the mock stores and returns
+        // values verbatim with no arithmetic transformation, so bit-exact
+        // round-trip equality holds.
+        assert_eq!(
+            seen, expected,
+            "each distinct result slot should be consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn sequenced_solver_concurrent_last_fallback() {
+        // Deterministic test for the `self.last` fallback path under
+        // concurrency.  Phase 1: a single thread consumes the only queued
+        // result and writes `self.last`.  A Barrier ensures phase-1 completes
+        // before phase-2 threads start, so they are guaranteed to see
+        // `self.last == Some(...)` rather than racing with the writer.
+        let mut expected_values = HashMap::new();
+        expected_values.insert(
+            ValueCellId::new("S", "x"),
+            Value::length(0.001),
+        );
+
+        let expected_clone = expected_values.clone();
+
+        // Run inside a spawned thread so we can apply a timeout — a real
+        // deadlock would hang CI forever without this.
+        let (phase1_result, results) = run_with_deadlock_timeout(move || {
+            let solver = SequencedMockConstraintSolver::new(vec![
+                SolveResult::Solved {
+                    values: expected_clone.clone(),
+                },
+            ]);
+
+            let problem = empty_problem();
+
+            // Phase 1: consume the queued result, populating `self.last`.
+            let phase1_result = solver.solve(&problem);
+
+            // Phase 2: 3 threads concurrently hit the `last` fallback path.
+            let barrier = Barrier::new(3);
+            let collected = Mutex::new(Vec::new());
+
+            std::thread::scope(|s| {
+                for _ in 0..3 {
+                    s.spawn(|| {
+                        // Synchronize so all 3 threads contend on `self.last`
+                        // simultaneously, maximizing the chance of exposing any
+                        // deadlock in the two-lock pattern.
+                        barrier.wait();
+                        let result = solver.solve(&problem);
+                        collected.lock().unwrap().push(result);
+                    });
+                }
+            });
+
+            (phase1_result, collected.into_inner().unwrap_or_else(|e| e.into_inner()))
+        });
+
+        match &phase1_result {
+            SolveResult::Solved { values } => {
+                assert_eq!(*values, expected_values);
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+
+        assert_eq!(results.len(), 3, "all 3 fallback threads should complete");
+        for result in &results {
+            match result {
+                SolveResult::Solved { values } => {
+                    assert_eq!(
+                        *values, expected_values,
+                        "fallback threads should return the last result"
+                    );
+                }
+                other => panic!(
+                    "expected Solved variant from fallback, got {:?}",
+                    other
+                ),
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "no results configured")]
+    fn sequenced_solver_panics_on_empty_vec() {
+        let solver = SequencedMockConstraintSolver::new(vec![]);
+        let problem = empty_problem();
+        // Should panic with "no results configured"
+        solver.solve(&problem);
+    }
+
+    #[test]
+    fn normalize_distance_pair_canonical_order() {
+        let lo = GeometryHandleId(1);
+        let hi = GeometryHandleId(5);
+
+        // (high, low) → (low, high)
+        assert_eq!(normalize_distance_pair(hi, lo), (lo, hi));
+        // (low, high) → unchanged
+        assert_eq!(normalize_distance_pair(lo, hi), (lo, hi));
+        // equal IDs → (id, id)
+        assert_eq!(normalize_distance_pair(lo, lo), (lo, lo));
+    }
+
+    #[test]
+    fn multi_call_spy_records_all_calls_and_returns_sequenced_results() {
+        use reify_types::{AutoParam, Type, ValueMap};
+
+        let mut values_a = HashMap::new();
+        values_a.insert(ValueCellId::new("A", "x"), Value::length(0.005));
+        let mut values_b = HashMap::new();
+        values_b.insert(ValueCellId::new("B", "y"), Value::length(0.010));
+
+        let spy = MultiCallSpyConstraintSolver::new(vec![
+            SolveResult::Solved { values: values_a },
+            SolveResult::Solved { values: values_b },
+        ]);
+        let captured = spy.captured_problems();
+
+        // First call
+        let problem1 = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: ValueCellId::new("A", "x"),
+                param_type: Type::length(),
+                bounds: None,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+        let result1 = spy.solve(&problem1);
+        assert!(
+            matches!(&result1, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("A", "x"))),
+            "first call should return values_a"
+        );
+
+        // Second call
+        let problem2 = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: ValueCellId::new("B", "y"),
+                param_type: Type::length(),
+                bounds: None,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+        let result2 = spy.solve(&problem2);
+        assert!(
+            matches!(&result2, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("B", "y"))),
+            "second call should return values_b"
+        );
+
+        // Verify call count and captured problems
+        assert_eq!(spy.call_count(), 2);
+        let problems = captured.lock().unwrap();
+        assert_eq!(problems.len(), 2);
+        assert_eq!(problems[0].auto_params[0].id, ValueCellId::new("A", "x"));
+        assert_eq!(problems[1].auto_params[0].id, ValueCellId::new("B", "y"));
+    }
+
+    // --- run_with_deadlock_timeout helper tests ---
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_value() {
+        let result = run_with_deadlock_timeout(|| 42i32);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "deliberate test panic")]
+    fn run_with_deadlock_timeout_forwards_panic() {
+        run_with_deadlock_timeout(|| {
+            panic!("deliberate test panic");
+        });
+    }
+
+    #[test]
+    fn run_with_deadlock_timeout_returns_from_scoped_threads() {
+        // Validates the exact pattern used by the refactored concurrent tests:
+        // thread::scope + Mutex<Vec<i32>>, recovering the Vec with
+        // unwrap_or_else(|e| e.into_inner()) in case of mutex poisoning.
+        let result: Vec<i32> = run_with_deadlock_timeout(|| {
+            let collected = Mutex::new(Vec::new());
+            std::thread::scope(|s| {
+                for i in 0..4i32 {
+                    let collected_ref = &collected;
+                    s.spawn(move || {
+                        collected_ref.lock().unwrap().push(i);
+                    });
+                }
+            });
+            collected.into_inner().unwrap_or_else(|e| e.into_inner())
+        });
+        assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
     }
 }

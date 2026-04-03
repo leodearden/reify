@@ -1,5 +1,5 @@
-use std::process::Command;
 use serde_json::Value;
+use std::process::Command;
 
 // Test fixture for gui subcommand integration tests.
 // Uses the same pattern as cli_smoke.rs.
@@ -48,7 +48,9 @@ fn gui_nonexistent_file_shows_error() {
         "reify gui with nonexistent file should exit non-zero"
     );
     assert!(
-        stderr.contains("not found") || stderr.contains("does not exist") || stderr.contains("No such file"),
+        stderr.contains("not found")
+            || stderr.contains("does not exist")
+            || stderr.contains("No such file"),
         "should report file not found error, got: {stderr}"
     );
 }
@@ -81,10 +83,10 @@ fn gui_non_ri_file_shows_error() {
 }
 
 #[test]
-fn gui_with_valid_ri_file_attempts_launch() {
+fn gui_with_valid_ri_file_skips_launch_when_env_set() {
     // Use the existing bracket.ri fixture
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/bracket.ri");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -115,8 +117,13 @@ fn gui_with_valid_ri_file_attempts_launch() {
 fn read_tauri_config() -> Value {
     let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../gui/src-tauri/tauri.conf.json");
-    let content = std::fs::read_to_string(&config_path)
-        .unwrap_or_else(|e| panic!("failed to read tauri.conf.json at {}: {}", config_path.display(), e));
+    let content = std::fs::read_to_string(&config_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read tauri.conf.json at {}: {}",
+            config_path.display(),
+            e
+        )
+    });
     serde_json::from_str(&content).expect("tauri.conf.json is not valid JSON")
 }
 
@@ -163,10 +170,7 @@ fn bundler_config_has_platform_targets() {
     let targets = config["bundle"]["targets"]
         .as_array()
         .expect("bundle.targets should be an array");
-    let target_strs: Vec<&str> = targets
-        .iter()
-        .map(|t| t.as_str().unwrap())
-        .collect();
+    let target_strs: Vec<&str> = targets.iter().map(|t| t.as_str().unwrap()).collect();
     assert!(
         target_strs.contains(&"deb"),
         "bundle.targets should include 'deb', got: {:?}",

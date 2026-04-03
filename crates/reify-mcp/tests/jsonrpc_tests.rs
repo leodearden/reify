@@ -1,5 +1,5 @@
 use reify_mcp::context::MockToolContext;
-use reify_mcp::jsonrpc::{McpDispatcher, INVALID_REQUEST};
+use reify_mcp::jsonrpc::{INVALID_REQUEST, McpDispatcher};
 use reify_mcp::registry::ToolRegistry;
 use reify_mcp::types::ToolError;
 
@@ -81,10 +81,12 @@ fn dispatch_unknown_method_returns_method_not_found() {
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 3);
     assert_eq!(response["error"]["code"], -32601);
-    assert!(response["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Method not found"));
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Method not found")
+    );
 }
 
 #[test]
@@ -120,10 +122,12 @@ fn dispatch_tools_call_unknown_tool_returns_error() {
     // MCP returns tool errors as isError content, not JSON-RPC errors
     let content = response["result"]["content"].as_array().unwrap();
     assert_eq!(response["result"]["isError"], true);
-    assert!(content[0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("nonexistent_tool"));
+    assert!(
+        content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("nonexistent_tool")
+    );
 }
 
 #[test]

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-commit hook: universal guards + optional project-specific checks.
+#
+# Universal guards run in every repo.  Project-specific checks live in
+# hooks/project-checks (executable) and only run when that file exists.
+#
+# Only gates commits to the main branch — worktree branches (used by
+# orchestrator agents) are not gated.
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# ── Universal guards (all branches) ────────────────────────────────────
+
+# Unstage tree-sitter generated files — they're gitignored but force-add or
+# old tracking can sneak them back in.  These 63K+ line files cause merge
+# conflicts when committed on task branches.
+ts_generated="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^tree-sitter-reify/src/(parser\.c|grammar\.json|node-types\.json)$')"
+if [ -n "$ts_generated" ]; then
+    echo "pre-commit: unstaging tree-sitter generated files (gitignored):"
+    echo "$ts_generated" | while read -r f; do
+        echo "  $f"
+        git reset HEAD -- "$f" >/dev/null 2>&1
+    done
+    # If nothing else is staged after unstaging, abort the commit.
+    if [ -z "$(git diff --cached --name-only)" ]; then
+        echo "pre-commit: BLOCKED — no files remain staged after removing generated files."
+        exit 1
+    fi
+fi
+
+# Reject .task/ files being added — agent scratch dir must never be committed.
+# Uses --diff-filter=ACMR to allow deletions (cleaning up prior contamination).
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^\.task/'; then
+    echo "pre-commit: BLOCKED — .task/ files are staged."
+    echo "  Run:  git rm -r --cached .task/"
+    echo "  Then: ensure .task/ is in .gitignore"
+    exit 1
+fi
+
+# ── Main-branch gate ──────────────────────────────────────────────────
+# Project-specific checks (lint, test) only run on main.  Worktree branches
+# (used by orchestrator agents) skip them for speed.
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" != "main" ]; then
+    exit 0
+fi
+
+# ── Project-specific checks ────────────────────────────────────────────
+
+if [ -x "$ROOT/hooks/project-checks" ]; then
+    exec "$ROOT/hooks/project-checks" "$ROOT"
+fi
+
+echo "pre-commit: all checks passed."

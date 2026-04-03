@@ -105,6 +105,49 @@ const meshUpdate: MeshUpdate = mesh;
 const valueUpdate: ValueUpdate = value;
 const constraintUpdate: ConstraintUpdate = constraint;
 
+// --- Negative assertions: ChatMessage and SessionStatus must NOT be exported from types.ts ---
+// These @ts-expect-error directives verify the types have been removed.
+// If the types still exist, these directives are "unused" and tsc will error.
+// @ts-expect-error ChatMessage should not exist in types.ts (superseded by claudeStore.ts)
+type _NoChatMessage = import('../types').ChatMessage;
+// @ts-expect-error SessionStatus should not exist in types.ts (superseded by claudeStore.ts)
+type _NoSessionStatus = import('../types').SessionStatus;
+
+// --- ClaudeMessageContext is now a re-export of MessageContext ---
+//
+// ClaudeMessageContext (bridge.ts) was previously a standalone interface kept in
+// sync with MessageContext (claudeStore.ts) via an Equals<A,B> assertion here.
+// Since bridge.ts now re-exports MessageContext directly as ClaudeMessageContext
+// (`export type { MessageContext as ClaudeMessageContext }`), the structural sync
+// guard is trivially satisfied and the Pick+Equals assertion has been removed.
+// The compile-time assertion in claudeBridge.test.ts serves as the ongoing guard.
+
+// --- MESSAGE_CONTEXT_FIELD_MAP exhaustiveness guard ---
+//
+// bridge.ts exports MESSAGE_CONTEXT_FIELD_MAP via `as const satisfies
+// Record<keyof Required<MessageContext>, string>`, narrowing values to
+// literal types while preserving the exhaustiveness guard. WireMessageContext
+// is derived from the map via key remapping. If a field is added to
+// MessageContext but not to the map, tsc will fail in bridge.ts.
+// This import ensures the map is reachable from the type-check file.
+// See: claudeBridge.test.ts for compile-time Equals assertions and
+// runtime Object.keys/values tests.
+import { MESSAGE_CONTEXT_FIELD_MAP, BUILD_CONTEXT_HANDLED_FIELDS } from '../bridge';
+import type { MessageContext } from '../stores/claudeStore';
+void MESSAGE_CONTEXT_FIELD_MAP;
+void BUILD_CONTEXT_HANDLED_FIELDS;
+
+// --- BUILD_CONTEXT_HANDLED_FIELDS exhaustiveness guard ---
+// Compile-time assertion: the tuple must cover every key of MessageContext.
+// If a field is added to MessageContext without updating BUILD_CONTEXT_HANDLED_FIELDS,
+// tsc will fail here.
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type AssertTrue<T extends true> = T;
+type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
+  Equals<(typeof BUILD_CONTEXT_HANDLED_FIELDS)[number], keyof Required<MessageContext>>
+>;
+
 // Suppress unused variable warnings — this file is only for type checking
 void mesh;
 void meshNoNormals;

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{BinOp, CompiledExpr, Type, Value, ValueCellId, ValueMap};
 
 // ─── step-1: List literal evaluation ───
@@ -17,7 +17,10 @@ fn eval_list_literal_ints() {
     let expr = CompiledExpr::list_literal(elems, Type::List(Box::new(Type::Int)));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
 }
 
 #[test]
@@ -99,7 +102,10 @@ fn eval_map_literal() {
             CompiledExpr::literal(Value::Int(2), Type::Int),
         ),
     ];
-    let expr = CompiledExpr::map_literal(entries, Type::Map(Box::new(Type::String), Box::new(Type::Int)));
+    let expr = CompiledExpr::map_literal(
+        entries,
+        Type::Map(Box::new(Type::String), Box::new(Type::Int)),
+    );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     let mut expected = BTreeMap::new();
@@ -325,8 +331,20 @@ fn eval_method_sum_scalars() {
     let dim = reify_types::DimensionVector::LENGTH;
     let list = CompiledExpr::list_literal(
         vec![
-            CompiledExpr::literal(Value::Scalar { si_value: 0.001, dimension: dim }, Type::length()),
-            CompiledExpr::literal(Value::Scalar { si_value: 0.002, dimension: dim }, Type::length()),
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 0.001,
+                    dimension: dim,
+                },
+                Type::length(),
+            ),
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 0.002,
+                    dimension: dim,
+                },
+                Type::length(),
+            ),
         ],
         Type::List(Box::new(Type::length())),
     );
@@ -334,7 +352,10 @@ fn eval_method_sum_scalars() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     match result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!((si_value - 0.003).abs() < 1e-12);
             assert_eq!(dimension, dim);
         }
@@ -358,7 +379,11 @@ fn eval_method_sum_empty_real_list() {
     let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Real(0.0), "empty Real list sum should return Real(0.0)");
+    assert_eq!(
+        result,
+        Value::Real(0.0),
+        "empty Real list sum should return Real(0.0)"
+    );
 }
 
 #[test]
@@ -370,7 +395,10 @@ fn eval_method_sum_empty_scalar_list() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     match result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!((si_value - 0.0).abs() < 1e-12, "si_value should be 0.0");
             assert_eq!(dimension, dim, "dimension should be LENGTH");
         }
@@ -506,10 +534,13 @@ fn lambda_literal(
     captures: ValueMap,
 ) -> CompiledExpr {
     let lambda = make_value_lambda(params, body, captures);
-    CompiledExpr::literal(lambda, Type::Function {
-        params: vec![],
-        return_type: Box::new(Type::Int),
-    })
+    CompiledExpr::literal(
+        lambda,
+        Type::Function {
+            params: vec![],
+            return_type: Box::new(Type::Int),
+        },
+    )
 }
 
 // ─── step-13/14: MethodCall .map ───
@@ -542,7 +573,10 @@ fn eval_method_map_list() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)]));
+    assert_eq!(
+        result,
+        Value::List(vec![Value::Int(2), Value::Int(4), Value::Int(6)])
+    );
 }
 
 // ─── step-15/16: MethodCall .filter ───
@@ -686,7 +720,12 @@ fn eval_method_filter_undef_mixed_results() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::List(vec![Value::Int(1), Value::Undef, Value::Undef, Value::Int(5)]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Undef,
+            Value::Undef,
+            Value::Int(5)
+        ]),
         "[1, undef, -1, undef, 5].filter(|x| x > 0) should return [1, undef, undef, 5]"
     );
 }
@@ -822,12 +861,8 @@ fn eval_method_fold_sum() {
         ],
         Type::List(Box::new(Type::Int)),
     );
-    let expr = CompiledExpr::method_call(
-        list,
-        "fold".to_string(),
-        vec![init, lambda_arg],
-        Type::Int,
-    );
+    let expr =
+        CompiledExpr::method_call(list, "fold".to_string(), vec![init, lambda_arg], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(6));
@@ -855,12 +890,8 @@ fn eval_method_fold_with_initial() {
         ],
         Type::List(Box::new(Type::Int)),
     );
-    let expr = CompiledExpr::method_call(
-        list,
-        "fold".to_string(),
-        vec![init, lambda_arg],
-        Type::Int,
-    );
+    let expr =
+        CompiledExpr::method_call(list, "fold".to_string(), vec![init, lambda_arg], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Int(16));
@@ -882,15 +913,14 @@ fn eval_method_fold_wrong_arity_lambda_empty_list() {
 
     let init = CompiledExpr::literal(Value::Int(0), Type::Int);
     let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
-    let expr = CompiledExpr::method_call(
-        list,
-        "fold".to_string(),
-        vec![init, lambda_arg],
-        Type::Int,
-    );
+    let expr =
+        CompiledExpr::method_call(list, "fold".to_string(), vec![init, lambda_arg], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "fold with wrong-arity lambda should return Undef even on empty list");
+    assert!(
+        result.is_undef(),
+        "fold with wrong-arity lambda should return Undef even on empty list"
+    );
 }
 
 // ─── step-19/20: MethodCall .all and .any ───
@@ -1023,7 +1053,10 @@ fn eval_method_all_kleene_undef() {
     let expr = CompiledExpr::method_call(list, "all".to_string(), vec![lambda_arg], Type::Bool);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), ".all with undef element and no false -> Undef");
+    assert!(
+        result.is_undef(),
+        ".all with undef element and no false -> Undef"
+    );
 }
 
 #[test]
@@ -1068,7 +1101,10 @@ fn eval_method_any_kleene_undef() {
     let expr = CompiledExpr::method_call(list, "any".to_string(), vec![lambda_arg], Type::Bool);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "[undef, false].any(|x| x) should be Undef");
+    assert!(
+        result.is_undef(),
+        "[undef, false].any(|x| x) should be Undef"
+    );
 }
 
 #[test]
@@ -1123,7 +1159,12 @@ fn eval_method_concat_lists() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)])
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4)
+        ])
     );
 }
 
@@ -1311,7 +1352,10 @@ fn eval_method_map_contains_key_found() {
     let expr = CompiledExpr::method_call(
         map,
         "contains_key".to_string(),
-        vec![CompiledExpr::literal(Value::String("a".to_string()), Type::String)],
+        vec![CompiledExpr::literal(
+            Value::String("a".to_string()),
+            Type::String,
+        )],
         Type::Bool,
     );
     let values = ValueMap::new();
@@ -1325,7 +1369,10 @@ fn eval_method_map_contains_key_not_found() {
     let expr = CompiledExpr::method_call(
         map,
         "contains_key".to_string(),
-        vec![CompiledExpr::literal(Value::String("z".to_string()), Type::String)],
+        vec![CompiledExpr::literal(
+            Value::String("z".to_string()),
+            Type::String,
+        )],
         Type::Bool,
     );
     let values = ValueMap::new();
@@ -1361,7 +1408,10 @@ fn eval_list_with_undef_count() {
     let expr = CompiledExpr::method_call(list, "count".to_string(), vec![], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "[1,undef,3].count should be Undef (uncertain membership)");
+    assert!(
+        result.is_undef(),
+        "[1,undef,3].count should be Undef (uncertain membership)"
+    );
 }
 
 #[test]
@@ -1379,7 +1429,10 @@ fn eval_method_count_set_with_undef() {
     let expr = CompiledExpr::method_call(set, "count".to_string(), vec![], Type::Int);
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "{{1,undef,3}}.count should be Undef (uncertain membership)");
+    assert!(
+        result.is_undef(),
+        "{{1,undef,3}}.count should be Undef (uncertain membership)"
+    );
 }
 
 #[test]
@@ -1474,7 +1527,7 @@ fn eval_undef_map_method() {
 fn eval_method_map_with_user_function() {
     // Create a CompiledFunction 'double' that returns x * 2
     // Then create [1, 2, 3].map(|x| double(x)) and verify it produces [2, 4, 6]
-    use reify_types::{CompiledFunction, CompiledFnBody, ContentHash, CompiledExprKind};
+    use reify_types::{CompiledExprKind, CompiledFnBody, CompiledFunction, ContentHash};
 
     let double_fn = CompiledFunction {
         name: "double".to_string(),
@@ -1614,10 +1667,7 @@ fn eval_method_fold_with_user_function() {
     let add_fn = CompiledFunction {
         name: "add".to_string(),
         is_pub: false,
-        params: vec![
-            ("a".to_string(), Type::Int),
-            ("b".to_string(), Type::Int),
-        ],
+        params: vec![("a".to_string(), Type::Int), ("b".to_string(), Type::Int)],
         return_type: Type::Int,
         body: CompiledFnBody {
             let_bindings: vec![],
@@ -1918,7 +1968,10 @@ fn eval_method_concat_string_lists() {
         Type::List(Box::new(Type::String)),
     );
     let right = CompiledExpr::list_literal(
-        vec![CompiledExpr::literal(Value::String("c".to_string()), Type::String)],
+        vec![CompiledExpr::literal(
+            Value::String("c".to_string()),
+            Type::String,
+        )],
         Type::List(Box::new(Type::String)),
     );
     let expr = CompiledExpr::method_call(
@@ -1969,7 +2022,12 @@ fn eval_method_concat_with_undef_elements() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::List(vec![Value::Int(1), Value::Undef, Value::Undef, Value::Int(4)])
+        Value::List(vec![
+            Value::Int(1),
+            Value::Undef,
+            Value::Undef,
+            Value::Int(4)
+        ])
     );
 }
 
@@ -1994,7 +2052,10 @@ fn eval_method_concat_non_list_arg() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert!(result.is_undef(), "concat with non-list arg should be Undef");
+    assert!(
+        result.is_undef(),
+        "concat with non-list arg should be Undef"
+    );
 }
 
 #[test]

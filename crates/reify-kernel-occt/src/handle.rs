@@ -135,11 +135,7 @@ impl OcctKernelHandle {
     ///
     /// Panics if called from within a tokio async execution context. Use
     /// [`tessellate_async`](Self::tessellate_async) instead.
-    pub fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    pub fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .blocking_send(OcctRequest::Tessellate {
@@ -195,9 +191,7 @@ impl OcctKernelHandle {
                         reply,
                     } => {
                         let mut buf = Vec::new();
-                        let result = kernel
-                            .export(handle, format, &mut buf)
-                            .map(|()| buf);
+                        let result = kernel.export(handle, format, &mut buf).map(|()| buf);
                         let _ = reply.send(result);
                     }
                     OcctRequest::Tessellate {
@@ -235,10 +229,7 @@ impl OcctKernelHandle {
     /// Execute a geometry operation on the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
-    pub async fn execute_async(
-        &self,
-        op: &GeometryOp,
-    ) -> Result<GeometryHandle, GeometryError> {
+    pub async fn execute_async(&self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(OcctRequest::Execute {
@@ -255,10 +246,7 @@ impl OcctKernelHandle {
     /// Run a query against a geometry handle on the kernel thread (async version).
     ///
     /// Safe to call from within a tokio async execution context.
-    pub async fn query_async(
-        &self,
-        query: &GeometryQuery,
-    ) -> Result<Value, QueryError> {
+    pub async fn query_async(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(OcctRequest::Query {
@@ -466,11 +454,7 @@ impl GeometryKernel for OcctKernelHandle {
         OcctKernelHandle::export(self, handle, format, writer)
     }
 
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
     }
 }
@@ -529,8 +513,7 @@ mod tests {
     #[test]
     fn query_invalid_handle_returns_error() {
         let handle = super::OcctKernelHandle::spawn();
-        let result =
-            handle.query(&reify_types::GeometryQuery::Volume(GeometryHandleId(999)));
+        let result = handle.query(&reify_types::GeometryQuery::Volume(GeometryHandleId(999)));
         assert!(result.is_err());
         match result.unwrap_err() {
             reify_types::QueryError::InvalidHandle(id) => {
@@ -639,7 +622,11 @@ mod tests {
     fn export_invalid_handle_returns_error() {
         let handle = super::OcctKernelHandle::spawn();
         let mut buf = Vec::new();
-        let result = handle.export(GeometryHandleId(999), reify_types::ExportFormat::Step, &mut buf);
+        let result = handle.export(
+            GeometryHandleId(999),
+            reify_types::ExportFormat::Step,
+            &mut buf,
+        );
         assert!(result.is_err());
         match result.unwrap_err() {
             reify_types::ExportError::InvalidHandle(id) => {
@@ -970,7 +957,7 @@ mod tests {
     #[test]
     fn handle_warm_state_returns_some_after_op() {
         use reify_types::WarmStartable;
-        let mut handle = super::OcctKernelHandle::spawn();
+        let handle = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -989,7 +976,7 @@ mod tests {
     fn cross_handle_warm_start_transfer() {
         use reify_types::WarmStartable;
         // Handle A: create box
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -1010,10 +997,7 @@ mod tests {
             .unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(
-                    (v - 6000.0).abs() < 1.0,
-                    "expected volume ~6000, got {v}"
-                );
+                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -1021,7 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn async_warm_start_roundtrip() {
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -1036,7 +1020,7 @@ mod tests {
             .expect("should have warm state");
 
         // Restore on new handle via async
-        let mut handle_b = super::OcctKernelHandle::spawn();
+        let handle_b = super::OcctKernelHandle::spawn();
         handle_b.with_warm_state_async(state).await;
 
         // Query volume via async
@@ -1046,10 +1030,7 @@ mod tests {
             .unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(
-                    (v - 6000.0).abs() < 1.0,
-                    "expected volume ~6000, got {v}"
-                );
+                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -1070,7 +1051,7 @@ mod tests {
         // Calling the sync WarmStartable trait methods from an async context
         // must not panic (previously used blocking_send/blocking_recv which
         // panicked inside tokio runtime).
-        let mut handle_a = super::OcctKernelHandle::spawn();
+        let handle_a = super::OcctKernelHandle::spawn();
         let op = GeometryOp::Box {
             width: Value::Real(10.0),
             height: Value::Real(20.0),
@@ -1092,10 +1073,7 @@ mod tests {
             .unwrap();
         match vol {
             Value::Real(v) => {
-                assert!(
-                    (v - 6000.0).abs() < 1.0,
-                    "expected volume ~6000, got {v}"
-                );
+                assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
@@ -1167,8 +1145,7 @@ mod tests {
         assert!(zero_result.is_err());
 
         // 4. Query volume on invalid handle — should return Err
-        let query_result =
-            handle.query(&GeometryQuery::Volume(GeometryHandleId(999)));
+        let query_result = handle.query(&GeometryQuery::Volume(GeometryHandleId(999)));
         assert!(query_result.is_err());
 
         // 5. Create another valid box — proves kernel thread is still alive
@@ -1181,9 +1158,7 @@ mod tests {
             .unwrap();
 
         // 6. Query volume of the new box — should return correct value
-        let vol = handle
-            .query(&GeometryQuery::Volume(box2_h.id))
-            .unwrap();
+        let vol = handle.query(&GeometryQuery::Volume(box2_h.id)).unwrap();
         match vol {
             Value::Real(v) => {
                 assert!((v - 6000.0).abs() < 1.0, "expected ~6000, got {v}");

@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -20,7 +21,9 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
         let stdin = child.stdin.as_mut().expect("failed to open stdin");
         for req in requests {
             let line = format!("{}\n", req);
-            stdin.write_all(line.as_bytes()).expect("failed to write to stdin");
+            stdin
+                .write_all(line.as_bytes())
+                .expect("failed to write to stdin");
         }
     }
     // Drop stdin by closing it
@@ -53,12 +56,14 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line: {e}\nline: {l}")))
+        .map(|l| {
+            serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line: {e}\nline: {l}"))
+        })
         .collect()
 }
 
 #[test]
-fn mcp_server_tools_list_returns_16_tools() {
+fn mcp_server_tools_list_includes_core_tools() {
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
 
     let requests = vec![
@@ -80,13 +85,36 @@ fn mcp_server_tools_list_returns_16_tools() {
         .as_array()
         .expect("tools/list should have result.tools array");
 
-    assert_eq!(
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or("?"))
+        .collect();
+
+    // Minimum count to catch catastrophic regressions
+    assert!(
+        tools.len() >= 16,
+        "expected at least 16 tools, got {}: {:?}",
         tools.len(),
-        16,
-        "expected 16 tools, got {}: {:?}",
-        tools.len(),
-        tools.iter().map(|t| t["name"].as_str().unwrap_or("?")).collect::<Vec<_>>()
+        tool_names
     );
+
+    // Core tools exercised by other tests in this file
+    let core_tools = [
+        "reify_get_source",
+        "reify_get_parameters",
+        "reify_set_parameter",
+        "reify_update_source",
+        "reify_get_constraints",
+        "reify_language_reference",
+    ];
+    for core in &core_tools {
+        assert!(
+            tool_names.contains(core),
+            "core tool '{}' missing from tools/list, got: {:?}",
+            core,
+            tool_names
+        );
+    }
 }
 
 #[test]
@@ -110,9 +138,9 @@ fn mcp_server_language_reference_returns_content() {
     assert!(responses.len() >= 2, "expected at least 2 responses");
 
     let call_response = &responses[1];
-    assert_ne!(
+    assert_eq!(
         call_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "language_reference should not return error: {:?}",
         call_response
     );
@@ -122,7 +150,9 @@ fn mcp_server_language_reference_returns_content() {
         .expect("should have content array");
     assert!(!content.is_empty(), "content should not be empty");
 
-    let text = content[0]["text"].as_str().expect("content[0].text should be a string");
+    let text = content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be a string");
     // Geometry-related keywords from the language reference
     let has_geometry_keyword = text.contains("box")
         || text.contains("cylinder")
@@ -156,9 +186,9 @@ fn mcp_server_get_parameters_returns_bracket_params() {
     assert!(responses.len() >= 2, "expected at least 2 responses");
 
     let call_response = &responses[1];
-    assert_ne!(
+    assert_eq!(
         call_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "get_parameters should not return error: {:?}",
         call_response
     );
@@ -166,12 +196,20 @@ fn mcp_server_get_parameters_returns_bracket_params() {
     let content = call_response["result"]["content"]
         .as_array()
         .expect("should have content array");
-    let text = content[0]["text"].as_str().expect("content[0].text should be a string");
+    let text = content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be a string");
     let params: Vec<serde_json::Value> =
         serde_json::from_str(text).expect("content should be JSON array of parameters");
 
     // bracket.ri has 5 params: width, height, thickness, fillet_radius, hole_diameter
-    let expected_names = ["width", "height", "thickness", "fillet_radius", "hole_diameter"];
+    let expected_names = [
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+    ];
     let param_names: Vec<&str> = params
         .iter()
         .filter(|p| p["kind"].as_str() == Some("Param"))
@@ -238,9 +276,9 @@ fn mcp_server_set_parameter_changes_value() {
 
     // set_parameter response
     let set_response = &responses[1];
-    assert_ne!(
+    assert_eq!(
         set_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "set_parameter should not return error: {:?}",
         set_response
     );
@@ -272,7 +310,8 @@ fn mcp_server_set_parameter_changes_value() {
         .as_array()
         .expect("should have content array");
     let get_text = get_content[0]["text"].as_str().expect("should be string");
-    let params: Vec<serde_json::Value> = serde_json::from_str(get_text).expect("should be JSON array");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(get_text).expect("should be JSON array");
 
     let width_param = params
         .iter()
@@ -343,9 +382,9 @@ fn mcp_server_update_source_invalid_preserves_state() {
     // This is the key assertion: if update_source mutates files before validation,
     // get_source will return the broken content instead of the original.
     let source_response = &responses[2];
-    assert_ne!(
+    assert_eq!(
         source_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "get_source should not return error after failed update: {:?}",
         source_response
     );
@@ -371,9 +410,9 @@ fn mcp_server_update_source_invalid_preserves_state() {
 
     // get_parameters should still return original bracket.ri parameters
     let get_response = &responses[3];
-    assert_ne!(
+    assert_eq!(
         get_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "get_parameters should not return error after failed update: {:?}",
         get_response
     );
@@ -386,7 +425,13 @@ fn mcp_server_update_source_invalid_preserves_state() {
         serde_json::from_str(get_text).expect("should be JSON array of parameters");
 
     // All 5 original params should be present
-    let expected_names = ["width", "height", "thickness", "fillet_radius", "hole_diameter"];
+    let expected_names = [
+        "width",
+        "height",
+        "thickness",
+        "fillet_radius",
+        "hole_diameter",
+    ];
     let param_names: Vec<&str> = params
         .iter()
         .filter(|p| p["kind"].as_str() == Some("Param"))
@@ -437,9 +482,9 @@ fn mcp_server_set_parameter_reports_new_value_accurately() {
 
     // set_parameter response should report success
     let set_response = &responses[1];
-    assert_ne!(
+    assert_eq!(
         set_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "set_parameter should not return error: {:?}",
         set_response
     );
@@ -515,16 +560,18 @@ fn mcp_server_set_parameter_constraint_verified_after_change() {
 
     // set_parameter should return success=true (constraints are soft, not blocking)
     let set_response = &responses[1];
-    assert_ne!(
+    assert_eq!(
         set_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "set_parameter should not return error even with constraint violation: {:?}",
         set_response
     );
     let set_content = set_response["result"]["content"]
         .as_array()
         .expect("should have content array");
-    let set_text = set_content[0]["text"].as_str().expect("content[0].text should be string");
+    let set_text = set_content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be string");
     let set_result: serde_json::Value =
         serde_json::from_str(set_text).expect("set_parameter result should be JSON");
     assert_eq!(
@@ -554,9 +601,9 @@ fn mcp_server_set_parameter_constraint_verified_after_change() {
 
     // get_constraints should return all 3 bracket constraints (confirming constraint evaluator runs)
     let constraints_response = &responses[3];
-    assert_ne!(
+    assert_eq!(
         constraints_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "get_constraints should not return error: {:?}",
         constraints_response
     );
@@ -620,9 +667,9 @@ fn mcp_server_set_parameter_error_preserves_state() {
 
     // get_parameters should still return all 5 original parameters with original values
     let get_response = &responses[2];
-    assert_ne!(
+    assert_eq!(
         get_response["result"]["isError"],
-        true,
+        Value::Bool(false),
         "get_parameters should not return error after failed set_parameter: {:?}",
         get_response
     );
@@ -646,7 +693,12 @@ fn mcp_server_set_parameter_error_preserves_state() {
         let param = params
             .iter()
             .find(|p| p["name"].as_str() == Some(name))
-            .unwrap_or_else(|| panic!("parameter '{}' should be present after failed set_parameter", name));
+            .unwrap_or_else(|| {
+                panic!(
+                    "parameter '{}' should be present after failed set_parameter",
+                    name
+                )
+            });
         assert_eq!(
             param["value"].as_str().unwrap_or(""),
             *original_value,

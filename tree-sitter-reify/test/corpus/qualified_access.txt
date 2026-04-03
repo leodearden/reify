@@ -1,0 +1,82 @@
+================================================================================
+Simple qualified access Foo::bar
+================================================================================
+
+structure S {
+  let x = Foo::bar
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (qualified_access
+        qualifier: (identifier)
+        member: (identifier)))))
+
+================================================================================
+Chained qualified access A::B::c (left-associative)
+================================================================================
+
+structure S {
+  let x = A::B::c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (qualified_access
+        qualifier: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))
+        member: (identifier)))))
+
+================================================================================
+Instance qualified access obj.(Foo::bar)
+================================================================================
+
+structure S {
+  let x = obj.(Foo::bar)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (instance_qualified_access
+        object: (identifier)
+        qualified: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))))))
+
+================================================================================
+Qualified access in binary expression with correct precedence
+================================================================================
+
+structure S {
+  constraint Foo::bar && Baz::qux
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (constraint_declaration
+      expr: (binary_expression
+        left: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))
+        right: (qualified_access
+          qualifier: (identifier)
+          member: (identifier))))))

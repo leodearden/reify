@@ -1992,6 +1992,7 @@ impl Engine {
                 constraints: constraint_pairs,
                 values,
                 functions: &self.functions,
+                determinacy: None,
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2373,6 +2374,7 @@ impl Engine {
                 constraints: constraint_pairs,
                 values: &values,
                 functions: &module.functions,
+                determinacy: None,
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2464,6 +2466,7 @@ impl Engine {
                 constraints: constraint_pairs,
                 values: &eval_result.values,
                 functions: &module.functions,
+                determinacy: None,
             };
 
             let results = self.constraint_checker.check(&input);
@@ -2523,6 +2526,7 @@ impl Engine {
                     constraints: constraint_pairs,
                     values: &values,
                     functions: &module.functions,
+                    determinacy: None,
                 };
 
                 let results = self.constraint_checker.check(&input);
@@ -2821,6 +2825,7 @@ impl Engine {
                     constraints: constraint_pairs,
                     values: &values,
                     functions: &module.functions,
+                    determinacy: None,
                 };
 
                 let results = self.constraint_checker.check(&input);

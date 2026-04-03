@@ -24,6 +24,7 @@ pub enum Declaration {
     Purpose(PurposeDef),
     Constraint(ConstraintDef),
     Unit(UnitDecl),
+    TypeAlias(TypeAliasDecl),
 }
 
 /// A structure definition (the primary entity type in Reify).
@@ -67,6 +68,7 @@ pub enum MemberDecl {
     Param(ParamDecl),
     Let(LetDecl),
     Constraint(ConstraintDecl),
+    ConstraintInst(ConstraintInstDecl),
     Sub(SubDecl),
     Minimize(MinimizeDecl),
     Maximize(MaximizeDecl),
@@ -130,6 +132,21 @@ pub struct ConstraintDecl {
     pub content_hash: ContentHash,
 }
 
+/// `constraint MinWall(wall: thickness)` inside a structure body.
+///
+/// Instantiates a named constraint definition, binding named arguments to
+/// the constraint def's parameters. During compilation each predicate from
+/// the constraint def is substituted with the bound arguments and compiled
+/// in the calling entity's scope.
+#[derive(Debug, Clone)]
+pub struct ConstraintInstDecl {
+    pub name: String,
+    pub args: Vec<(String, Expr)>,
+    pub where_clause: Option<WhereClause>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
 /// `sub mount_hole = Hole(diameter: 6mm)` or `sub part = Box<Bolt>()`
 #[derive(Debug, Clone)]
 pub struct SubDecl {
@@ -171,6 +188,79 @@ pub struct PortDecl {
     pub frame_expr: Option<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// Information about a named member's source span and doc comment.
+///
+/// Returned by [`find_named_member_span`] — a named alternative to a bare tuple.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemberSpanInfo<'a> {
+    pub span: SourceSpan,
+    pub doc: Option<&'a str>,
+}
+
+/// Maximum nesting depth for recursive member lookups. Prevents stack
+/// overflow on pathological input with deeply nested guarded groups or ports.
+/// 32 is generous for any realistic Reify source (typical nesting is 2-3 levels).
+pub const MAX_MEMBER_NESTING_DEPTH: usize = 32;
+
+/// Recursively search a member list for a named param or let declaration.
+///
+/// Returns [`MemberSpanInfo`] for the first match. Recurses into
+/// `GuardedGroup.members`, `GuardedGroup.else_members`, and `Port.members`
+/// so that declarations inside `where cond { ... } else { ... }` blocks
+/// and port bodies are found. Recursion is bounded by
+/// [`MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on pathological input.
+pub fn find_named_member_span<'a>(
+    members: &'a [MemberDecl],
+    name: &str,
+) -> Option<MemberSpanInfo<'a>> {
+    find_named_member_span_depth(members, name, 0)
+}
+
+fn find_named_member_span_depth<'a>(
+    members: &'a [MemberDecl],
+    name: &str,
+    depth: usize,
+) -> Option<MemberSpanInfo<'a>> {
+    if depth > MAX_MEMBER_NESTING_DEPTH {
+        return None;
+    }
+    for member in members {
+        match member {
+            MemberDecl::Param(p) if p.name == name => {
+                return Some(MemberSpanInfo {
+                    span: p.span,
+                    doc: p.doc.as_deref(),
+                });
+            }
+            MemberDecl::Let(l) if l.name == name => {
+                return Some(MemberSpanInfo {
+                    span: l.span,
+                    doc: l.doc.as_deref(),
+                });
+            }
+            MemberDecl::GuardedGroup(g) => {
+                if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
+                    return Some(result);
+                }
+                if let Some(result) =
+                    find_named_member_span_depth(&g.else_members, name, depth + 1)
+                {
+                    return Some(result);
+                }
+            }
+            MemberDecl::Port(port) => {
+                if let Some(result) =
+                    find_named_member_span_depth(&port.members, name, depth + 1)
+                {
+                    return Some(result);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// `connect a -> b : BoltSet { grade = 8.8  shaft -> input_bore }`
@@ -356,6 +446,22 @@ pub struct UnitDecl {
     pub content_hash: ContentHash,
 }
 
+/// A type alias declaration: `type Pressure = Force / Area`
+///
+/// Declares a named type alias, optionally with type parameters.
+/// The `type_expr` is the aliased type, which can be a simple type, parameterized type,
+/// or a dimensional type expression using `*` and `/` operators.
+#[derive(Debug, Clone)]
+pub struct TypeAliasDecl {
+    pub name: String,
+    pub doc: Option<String>,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    pub type_expr: TypeExpr,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+}
+
 /// The source kind for a field declaration.
 #[derive(Debug, Clone)]
 pub enum FieldSource {
@@ -415,10 +521,7 @@ pub enum ExprKind {
     /// Numeric literal: `42`, `3.14`
     NumberLiteral(f64),
     /// Quantity literal: `80mm`, `45deg`
-    QuantityLiteral {
-        value: f64,
-        unit: String,
-    },
+    QuantityLiteral { value: f64, unit: String },
     /// String literal: `"hello"`
     StringLiteral(String),
     /// Boolean literal: `true`, `false`
@@ -432,25 +535,13 @@ pub enum ExprKind {
         right: Box<Expr>,
     },
     /// Unary operation: `-a`, `!b`
-    UnOp {
-        op: String,
-        operand: Box<Expr>,
-    },
+    UnOp { op: String, operand: Box<Expr> },
     /// Function call: `sin(x)`
-    FunctionCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FunctionCall { name: String, args: Vec<Expr> },
     /// Member access: `self.width`
-    MemberAccess {
-        object: Box<Expr>,
-        member: String,
-    },
+    MemberAccess { object: Box<Expr>, member: String },
     /// Enum variant access: `Direction.In`
-    EnumAccess {
-        type_name: String,
-        variant: String,
-    },
+    EnumAccess { type_name: String, variant: String },
     /// Conditional: `if cond then a else b`
     Conditional {
         condition: Box<Expr>,
@@ -464,10 +555,7 @@ pub enum ExprKind {
     /// Map literal: `map{"a" => 1, "b" => 2}`
     MapLiteral(Vec<(Expr, Expr)>),
     /// Index access: `expr[index]`
-    IndexAccess {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    IndexAccess { object: Box<Expr>, index: Box<Expr> },
     /// Match expression: `match d { In => 1, Out => 2 }`
     Match {
         discriminant: Box<Expr>,
@@ -492,6 +580,23 @@ pub enum ExprKind {
         base: Box<Expr>,
         selector: String,
         args: Vec<Expr>,
+    },
+    /// Qualified access: `Foo::bar` — access a member through a qualified path
+    QualifiedAccess {
+        qualifier: Box<Expr>,
+        member: String,
+    },
+    /// Instance qualified access: `obj.(Foo::bar)` — trait-qualified member access on an instance
+    InstanceQualifiedAccess {
+        object: Box<Expr>,
+        qualified: Box<Expr>,
+    },
+    /// Range expression: `1..10`, `1..<10`, `>2mm`, `>=2mm`, `<10mm`, `<=10mm`
+    Range {
+        lower: Option<Box<Expr>>,
+        upper: Option<Box<Expr>>,
+        lower_inclusive: bool,
+        upper_inclusive: bool,
     },
 }
 

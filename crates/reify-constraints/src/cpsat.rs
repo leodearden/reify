@@ -4,7 +4,7 @@
 //! cardinality, and all-different via forward-checking backtracking search
 //! with eval_expr as the constraint checker.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{
     AutoParam, CompiledExpr, CompiledExprKind, ConstraintNodeId, ConstraintSolver, Diagnostic,
     ResolutionProblem, SolveResult, Type, Value, ValueCellId, ValueMap,
@@ -98,7 +98,8 @@ fn build_variable_domain(
                         type_name: tn,
                         variant,
                     }) = &node.kind
-                        && tn == type_name && seen.insert(variant.clone())
+                        && tn == type_name
+                        && seen.insert(variant.clone())
                     {
                         variants.push(Value::Enum {
                             type_name: tn.clone(),

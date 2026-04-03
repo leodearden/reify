@@ -1,10 +1,14 @@
-use crate::diff::{diff_gui_state, StateDelta};
+use crate::diff::{StateDelta, diff_gui_state};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
     ValueData {
         cell_id: cell_id.to_string(),
-        name: cell_id.split('.').next_back().unwrap_or(cell_id).to_string(),
+        name: cell_id
+            .split('.')
+            .next_back()
+            .unwrap_or(cell_id)
+            .to_string(),
         value: value.to_string(),
         unit: "mm".to_string(),
         determinacy: "determined".to_string(),
@@ -45,10 +49,16 @@ fn diff_identical_states_returns_empty_delta() {
 
     assert!(delta.changed_meshes.is_empty(), "no meshes changed");
     assert!(delta.changed_values.is_empty(), "no values changed");
-    assert!(delta.changed_constraints.is_empty(), "no constraints changed");
+    assert!(
+        delta.changed_constraints.is_empty(),
+        "no constraints changed"
+    );
     assert!(delta.removed_mesh_paths.is_empty(), "no meshes removed");
     assert!(delta.removed_value_ids.is_empty(), "no values removed");
-    assert!(delta.removed_constraint_ids.is_empty(), "no constraints removed");
+    assert!(
+        delta.removed_constraint_ids.is_empty(),
+        "no constraints removed"
+    );
 }
 
 #[test]
@@ -182,8 +192,8 @@ fn full_delta_contains_all_items_from_state() {
 
 #[test]
 fn compute_delta_none_last_state_returns_full_then_diff() {
-    use std::sync::Mutex;
     use crate::diff::compute_delta;
+    use std::sync::Mutex;
 
     let last_state: Mutex<Option<GuiState>> = Mutex::new(None);
 
@@ -231,34 +241,55 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
     assert_eq!(events.len(), 6, "expected 6 events, got {}", events.len());
 
     // Check mesh-update event
-    let mesh_events: Vec<_> = events.iter().filter(|(name, _)| name == "mesh-update").collect();
+    let mesh_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-update")
+        .collect();
     assert_eq!(mesh_events.len(), 1);
     assert_eq!(mesh_events[0].1["entity_path"], "Bracket.body");
 
     // Check value-update event
-    let value_events: Vec<_> = events.iter().filter(|(name, _)| name == "value-update").collect();
+    let value_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "value-update")
+        .collect();
     assert_eq!(value_events.len(), 1);
     assert_eq!(value_events[0].1["cell_id"], "Bracket.width");
 
     // Check constraint-update event
-    let constraint_events: Vec<_> = events.iter().filter(|(name, _)| name == "constraint-update").collect();
+    let constraint_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "constraint-update")
+        .collect();
     assert_eq!(constraint_events.len(), 1);
     assert_eq!(constraint_events[0].1["node_id"], "Bracket.0");
 
     // Check mesh-removed event
-    let mesh_removed: Vec<_> = events.iter().filter(|(name, _)| name == "mesh-removed").collect();
+    let mesh_removed: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-removed")
+        .collect();
     assert_eq!(mesh_removed.len(), 1);
     assert_eq!(mesh_removed[0].1.as_str().unwrap(), "Bracket.old_body");
 
     // Check value-removed event
-    let value_removed: Vec<_> = events.iter().filter(|(name, _)| name == "value-removed").collect();
+    let value_removed: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "value-removed")
+        .collect();
     assert_eq!(value_removed.len(), 1);
     assert_eq!(value_removed[0].1.as_str().unwrap(), "Bracket.old_param");
 
     // Check constraint-removed event
-    let constraint_removed: Vec<_> = events.iter().filter(|(name, _)| name == "constraint-removed").collect();
+    let constraint_removed: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "constraint-removed")
+        .collect();
     assert_eq!(constraint_removed.len(), 1);
-    assert_eq!(constraint_removed[0].1.as_str().unwrap(), "Bracket.old_constraint");
+    assert_eq!(
+        constraint_removed[0].1.as_str().unwrap(),
+        "Bracket.old_constraint"
+    );
 }
 
 #[test]

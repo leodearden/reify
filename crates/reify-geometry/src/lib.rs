@@ -78,11 +78,7 @@ impl GeometryKernel for DispatchPlanner {
         }
     }
 
-    fn tessellate(
-        &self,
-        handle: GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<Mesh, TessError> {
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         match self.kernel.as_ref() {
             Some(k) => k.tessellate(handle, tolerance),
             None => Err(TessError::TessellationFailed(
@@ -296,7 +292,9 @@ mod tests {
             dy: 0.0,
             dz: 0.0,
         };
-        let translate_handle = planner.execute(&translate_op).expect("translate should succeed");
+        let translate_handle = planner
+            .execute(&translate_op)
+            .expect("translate should succeed");
         assert_eq!(translate_handle.id, GeometryHandleId(2));
 
         // Verify both operations were recorded
@@ -324,7 +322,9 @@ mod tests {
         let op = GeometryOp::Sphere {
             radius: Value::length(0.05),
         };
-        let handle = kernel.execute(&op).expect("execute through trait object should succeed");
+        let handle = kernel
+            .execute(&op)
+            .expect("execute through trait object should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
         assert_eq!(handle.repr, ReprKind::Solid);
     }

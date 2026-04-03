@@ -9,14 +9,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "abs" => unary(args, |v| match v {
             Value::Int(i) => Value::Int(i.abs()),
             Value::Real(r) => Value::Real(r.abs()),
-            Value::Scalar { si_value, dimension } => Value::Scalar {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => Value::Scalar {
                 si_value: si_value.abs(),
                 dimension: *dimension,
             },
             _ => Value::Undef,
         }),
         "sqrt" => unary(args, |v| match v {
-            Value::Scalar { si_value, dimension } => sanitize_value(Value::Scalar {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => sanitize_value(Value::Scalar {
                 si_value: si_value.sqrt(),
                 dimension: dimension.root(2),
             }),
@@ -37,26 +43,44 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "min" => binary(args, |a, b| match (a, b) {
             (Value::Int(x), Value::Int(y)) => Value::Int(*x.min(y)),
             (Value::Real(x), Value::Real(y)) => Value::Real(x.min(*y)),
-            (Value::Scalar { si_value: x, dimension: d1 }, Value::Scalar { si_value: y, dimension: d2 })
-                if d1 == d2 => Value::Scalar { si_value: x.min(*y), dimension: *d1 },
-            _ => {
-                match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => Value::Real(x.min(y)),
-                    _ => Value::Undef,
-                }
-            }
+            (
+                Value::Scalar {
+                    si_value: x,
+                    dimension: d1,
+                },
+                Value::Scalar {
+                    si_value: y,
+                    dimension: d2,
+                },
+            ) if d1 == d2 => Value::Scalar {
+                si_value: x.min(*y),
+                dimension: *d1,
+            },
+            _ => match (a.as_f64(), b.as_f64()) {
+                (Some(x), Some(y)) => Value::Real(x.min(y)),
+                _ => Value::Undef,
+            },
         }),
         "max" => binary(args, |a, b| match (a, b) {
             (Value::Int(x), Value::Int(y)) => Value::Int(*x.max(y)),
             (Value::Real(x), Value::Real(y)) => Value::Real(x.max(*y)),
-            (Value::Scalar { si_value: x, dimension: d1 }, Value::Scalar { si_value: y, dimension: d2 })
-                if d1 == d2 => Value::Scalar { si_value: x.max(*y), dimension: *d1 },
-            _ => {
-                match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => Value::Real(x.max(y)),
-                    _ => Value::Undef,
-                }
-            }
+            (
+                Value::Scalar {
+                    si_value: x,
+                    dimension: d1,
+                },
+                Value::Scalar {
+                    si_value: y,
+                    dimension: d2,
+                },
+            ) if d1 == d2 => Value::Scalar {
+                si_value: x.max(*y),
+                dimension: *d1,
+            },
+            _ => match (a.as_f64(), b.as_f64()) {
+                (Some(x), Some(y)) => Value::Real(x.max(y)),
+                _ => Value::Undef,
+            },
         }),
         "pow" => binary_f64(args, |x, y| Value::Real(x.powf(y))),
         "mod" => binary(args, |a, b| match (a, b) {
@@ -87,9 +111,18 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
             }
             (
-                Value::Scalar { si_value: xv, dimension: dx },
-                Value::Scalar { si_value: lov, dimension: dlo },
-                Value::Scalar { si_value: hiv, dimension: dhi },
+                Value::Scalar {
+                    si_value: xv,
+                    dimension: dx,
+                },
+                Value::Scalar {
+                    si_value: lov,
+                    dimension: dlo,
+                },
+                Value::Scalar {
+                    si_value: hiv,
+                    dimension: dhi,
+                },
             ) => {
                 if dx != dlo || dx != dhi {
                     return Value::Undef;
@@ -145,8 +178,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     sanitize_value(Value::Real(lerp_f64(*av, *bv, tv)))
                 }
                 (
-                    Value::Scalar { si_value: av, dimension: da },
-                    Value::Scalar { si_value: bv, dimension: db },
+                    Value::Scalar {
+                        si_value: av,
+                        dimension: da,
+                    },
+                    Value::Scalar {
+                        si_value: bv,
+                        dimension: db,
+                    },
                 ) => {
                     if da != db {
                         return Value::Undef;
@@ -207,8 +246,11 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 }
                 // Extract si_values via as_f64()
                 let (xv, flov, fhiv, tlov, thiv) = match (
-                    x.as_f64(), from_lo.as_f64(), from_hi.as_f64(),
-                    to_lo.as_f64(), to_hi.as_f64(),
+                    x.as_f64(),
+                    from_lo.as_f64(),
+                    from_hi.as_f64(),
+                    to_lo.as_f64(),
+                    to_hi.as_f64(),
                 ) {
                     (Some(a), Some(b), Some(c), Some(d), Some(e)) => (a, b, c, d, e),
                     _ => return Value::Undef,
@@ -217,7 +259,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     return Value::Undef; // early-exit: division by zero
                 }
                 let result = tlov + (xv - flov) * (thiv - tlov) / (fhiv - flov);
-                return sanitize_value(Value::Scalar { si_value: result, dimension: to_dim });
+                return sanitize_value(Value::Scalar {
+                    si_value: result,
+                    dimension: to_dim,
+                });
             }
 
             // Non-Scalar path: use quinary_f64 helper
@@ -231,9 +276,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
-        "sin" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))),
-        "cos" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))),
-        "tan" => unary(args, |v| trig_input(v).map_or(Value::Undef, |r| Value::Real(r.tan()))),
+        "sin" => unary(args, |v| {
+            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))
+        }),
+        "cos" => unary(args, |v| {
+            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))
+        }),
+        "tan" => unary(args, |v| {
+            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.tan()))
+        }),
 
         // --- Inverse trig: accept Real, return Angle Scalar ---
         "asin" => unary_f64(args, |x| Value::Scalar {
@@ -259,7 +310,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
 
         // --- Linear algebra: dot, cross, magnitude, normalize ---
-
         "normalize" => unary(args, |v| {
             // Determine the output wrapper based on input variant.
             let wrap: fn(Vec<Value>) -> Value = match v {
@@ -300,7 +350,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if dim == DimensionVector::DIMENSIONLESS {
                 sanitize_value(Value::Real(mag))
             } else {
-                sanitize_value(Value::Scalar { si_value: mag, dimension: dim })
+                sanitize_value(Value::Scalar {
+                    si_value: mag,
+                    dimension: dim,
+                })
             }
         }),
 
@@ -333,10 +386,17 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 if result_dim == DimensionVector::DIMENSIONLESS {
                     sanitize_value(Value::Real(v))
                 } else {
-                    sanitize_value(Value::Scalar { si_value: v, dimension: result_dim })
+                    sanitize_value(Value::Scalar {
+                        si_value: v,
+                        dimension: result_dim,
+                    })
                 }
             };
-            wrap(vec![make_component(cx), make_component(cy), make_component(cz)])
+            wrap(vec![
+                make_component(cx),
+                make_component(cy),
+                make_component(cz),
+            ])
         }),
 
         "dot" => binary(args, |a, b| {
@@ -356,7 +416,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if result_dim == DimensionVector::DIMENSIONLESS {
                 sanitize_value(Value::Real(sum))
             } else {
-                sanitize_value(Value::Scalar { si_value: sum, dimension: result_dim })
+                sanitize_value(Value::Scalar {
+                    si_value: sum,
+                    dimension: result_dim,
+                })
             }
         }),
 
@@ -385,38 +448,50 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if !re.is_finite() || !im.is_finite() {
                 return Value::Undef;
             }
-            Value::Complex { re, im, dimension: dim_re }
+            Value::Complex {
+                re,
+                im,
+                dimension: dim_re,
+            }
         }
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" | "real" => unary(args, |v| match v {
+        "re" | "real" => unary(args, |v| sanitize_value(match v {
             Value::Complex { re, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*re)
                 } else {
-                    Value::Scalar { si_value: *re, dimension: *dimension }
+                    Value::Scalar {
+                        si_value: *re,
+                        dimension: *dimension,
+                    }
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" | "imag" => unary(args, |v| match v {
+        "im" | "imag" => unary(args, |v| sanitize_value(match v {
             Value::Complex { im, dimension, .. } => {
                 if *dimension == DimensionVector::DIMENSIONLESS {
                     Value::Real(*im)
                 } else {
-                    Value::Scalar { si_value: *im, dimension: *dimension }
+                    Value::Scalar {
+                        si_value: *im,
+                        dimension: *dimension,
+                    }
                 }
             }
             _ => Value::Undef,
-        }),
+        })),
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
-            Value::Complex { re, im, dimension } => {
-                Value::Complex { re: *re, im: -im, dimension: *dimension }
-            }
+            Value::Complex { re, im, dimension } => sanitize_value(Value::Complex {
+                re: *re,
+                im: -im,
+                dimension: *dimension,
+            }),
             _ => Value::Undef,
         }),
 
@@ -424,7 +499,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "phase" => unary(args, |v| match v {
             Value::Complex { re, im, .. } => {
                 let angle = im.atan2(*re);
-                sanitize_value(Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE })
+                sanitize_value(Value::Scalar {
+                    si_value: angle,
+                    dimension: DimensionVector::ANGLE,
+                })
             }
             _ => Value::Undef,
         }),
@@ -440,13 +518,25 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // complex_add(a, b): add two complex numbers with matching dimensions.
         "complex_add" => binary(args, |a, b| match (a, b) {
             (
-                Value::Complex { re: ar, im: ai, dimension: ad },
-                Value::Complex { re: br, im: bi, dimension: bd },
+                Value::Complex {
+                    re: ar,
+                    im: ai,
+                    dimension: ad,
+                },
+                Value::Complex {
+                    re: br,
+                    im: bi,
+                    dimension: bd,
+                },
             ) => {
                 if ad != bd {
                     return Value::Undef;
                 }
-                sanitize_value(Value::Complex { re: ar + br, im: ai + bi, dimension: *ad })
+                sanitize_value(Value::Complex {
+                    re: ar + br,
+                    im: ai + bi,
+                    dimension: *ad,
+                })
             }
             _ => Value::Undef,
         }),
@@ -455,8 +545,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
         "complex_mul" => binary(args, |a, b| match (a, b) {
             (
-                Value::Complex { re: ar, im: ai, dimension: ad },
-                Value::Complex { re: br, im: bi, dimension: bd },
+                Value::Complex {
+                    re: ar,
+                    im: ai,
+                    dimension: ad,
+                },
+                Value::Complex {
+                    re: br,
+                    im: bi,
+                    dimension: bd,
+                },
             ) => {
                 let re = ar * br - ai * bi;
                 let im = ar * bi + ai * br;
@@ -485,7 +583,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         Value::length(0.0),
                         Value::length(0.0),
                     ])),
-                    basis: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                    basis: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
                 }
             } else {
                 Value::Undef
@@ -536,7 +639,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "transform3_identity" => {
             if args.is_empty() {
                 Value::Transform {
-                    rotation: Box::new(Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }),
+                    rotation: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
                     translation: Box::new(Value::Vector(vec![
                         Value::length(0.0),
                         Value::length(0.0),
@@ -571,11 +679,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Value::Undef,
             };
-            // Extract origin points as f64 triples
+            // Extract origin points as f64 triples with finiteness and dimension validation
             let (fx, fy, fz, f_dim) = match origin_from {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
@@ -584,7 +701,16 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let (tx, ty, tz, t_dim) = match origin_to {
                 Value::Point(comps) if comps.len() == 3 => {
                     match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => (x, y, z, comps[0].dimension()),
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Value::Undef;
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Value::Undef;
+                            }
+                            (x, y, z, dim)
+                        }
                         _ => return Value::Undef,
                     }
                 }
@@ -608,9 +734,18 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                     };
                     let (rfx, rfy, rfz) = quat_rotate(r_norm, fx, fy, fz);
                     let trans = Value::Vector(vec![
-                        Value::Scalar { si_value: tx - rfx, dimension: dim },
-                        Value::Scalar { si_value: ty - rfy, dimension: dim },
-                        Value::Scalar { si_value: tz - rfz, dimension: dim },
+                        Value::Scalar {
+                            si_value: tx - rfx,
+                            dimension: dim,
+                        },
+                        Value::Scalar {
+                            si_value: ty - rfy,
+                            dimension: dim,
+                        },
+                        Value::Scalar {
+                            si_value: tz - rfz,
+                            dimension: dim,
+                        },
                     ]);
                     Value::Transform {
                         rotation: Box::new(rot_val),
@@ -648,8 +783,14 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 _ => return Value::Undef,
             };
             // Dimensions must match
-            let min_dim = min_comps.first().map(|v| v.dimension()).unwrap_or(DimensionVector::DIMENSIONLESS);
-            let max_dim = max_comps.first().map(|v| v.dimension()).unwrap_or(DimensionVector::DIMENSIONLESS);
+            let min_dim = min_comps
+                .first()
+                .map(|v| v.dimension())
+                .unwrap_or(DimensionVector::DIMENSIONLESS);
+            let max_dim = max_comps
+                .first()
+                .map(|v| v.dimension())
+                .unwrap_or(DimensionVector::DIMENSIONLESS);
             if min_dim != max_dim {
                 return Value::Undef;
             }
@@ -681,7 +822,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         if dim.is_dimensionless() {
                             Value::Real(v)
                         } else {
-                            Value::Scalar { si_value: v, dimension: dim }
+                            Value::Scalar {
+                                si_value: v,
+                                dimension: dim,
+                            }
                         }
                     };
                     Value::Vector(vec![
@@ -714,7 +858,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                         if dim.is_dimensionless() {
                             Value::Real(v)
                         } else {
-                            Value::Scalar { si_value: v, dimension: dim }
+                            Value::Scalar {
+                                si_value: v,
+                                dimension: dim,
+                            }
                         }
                     };
                     Value::Point(vec![
@@ -730,7 +877,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // --- Orientation constructors ---
         "orient_identity" => {
             if args.is_empty() {
-                Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }
             } else {
                 Value::Undef
             }
@@ -739,7 +891,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             if args.len() != 4 {
                 return Value::Undef;
             }
-            match (args[0].as_f64(), args[1].as_f64(), args[2].as_f64(), args[3].as_f64()) {
+            // Quaternion components are pure numbers — reject dimensioned Scalars.
+            if args[0].dimension() != DimensionVector::DIMENSIONLESS
+                || args[1].dimension() != DimensionVector::DIMENSIONLESS
+                || args[2].dimension() != DimensionVector::DIMENSIONLESS
+                || args[3].dimension() != DimensionVector::DIMENSIONLESS
+            {
+                return Value::Undef;
+            }
+            match (
+                args[0].as_f64(),
+                args[1].as_f64(),
+                args[2].as_f64(),
+                args[3].as_f64(),
+            ) {
                 (Some(w), Some(x), Some(y), Some(z)) => {
                     normalize_quaternion(w, x, y, z).unwrap_or(Value::Undef)
                 }
@@ -806,17 +971,25 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 Some(c) if c.0.len() == 3 => c,
                 _ => return Value::Undef,
             };
+            // Defense-in-depth: reject NaN/Inf early (NaN bypasses IEEE 754 comparisons)
+            if xc.iter()
+                .chain(yc.iter())
+                .chain(zc.iter())
+                .any(|v| !v.is_finite())
+            {
+                return Value::Undef;
+            }
             // Verify approximate orthonormality
             let tol = 1e-6;
-            let mag_x = (xc[0]*xc[0] + xc[1]*xc[1] + xc[2]*xc[2]).sqrt();
-            let mag_y = (yc[0]*yc[0] + yc[1]*yc[1] + yc[2]*yc[2]).sqrt();
-            let mag_z = (zc[0]*zc[0] + zc[1]*zc[1] + zc[2]*zc[2]).sqrt();
+            let mag_x = vec3_norm(xc[0], xc[1], xc[2]);
+            let mag_y = vec3_norm(yc[0], yc[1], yc[2]);
+            let mag_z = vec3_norm(zc[0], zc[1], zc[2]);
             if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
                 return Value::Undef;
             }
-            let dot_xy = xc[0]*yc[0] + xc[1]*yc[1] + xc[2]*yc[2];
-            let dot_xz = xc[0]*zc[0] + xc[1]*zc[1] + xc[2]*zc[2];
-            let dot_yz = yc[0]*zc[0] + yc[1]*zc[1] + yc[2]*zc[2];
+            let dot_xy = xc[0] * yc[0] + xc[1] * yc[1] + xc[2] * yc[2];
+            let dot_xz = xc[0] * zc[0] + xc[1] * zc[1] + xc[2] * zc[2];
+            let dot_yz = yc[0] * zc[0] + yc[1] * zc[1] + yc[2] * zc[2];
             if dot_xy.abs() > tol || dot_xz.abs() > tol || dot_yz.abs() > tol {
                 return Value::Undef;
             }
@@ -824,8 +997,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             // det(R) = x · (y × z). For a proper rotation (SO(3)), det ≈ +1.
             // Left-handed orthonormal bases have det = -1 and must be rejected.
             let det = xc[0] * (yc[1] * zc[2] - yc[2] * zc[1])
-                    + xc[1] * (yc[2] * zc[0] - yc[0] * zc[2])
-                    + xc[2] * (yc[0] * zc[1] - yc[1] * zc[0]);
+                + xc[1] * (yc[2] * zc[0] - yc[0] * zc[2])
+                + xc[2] * (yc[0] * zc[1] - yc[1] * zc[0]);
             if (det - 1.0).abs() > tol {
                 return Value::Undef;
             }
@@ -834,9 +1007,15 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             // R[0][0]=xc[0], R[1][0]=xc[1], R[2][0]=xc[2]
             // R[0][1]=yc[0], R[1][1]=yc[1], R[2][1]=yc[2]
             // R[0][2]=zc[0], R[1][2]=zc[1], R[2][2]=zc[2]
-            let r00 = xc[0]; let r01 = yc[0]; let r02 = zc[0];
-            let r10 = xc[1]; let r11 = yc[1]; let r12 = zc[1];
-            let r20 = xc[2]; let r21 = yc[2]; let r22 = zc[2];
+            let r00 = xc[0];
+            let r01 = yc[0];
+            let r02 = zc[0];
+            let r10 = xc[1];
+            let r11 = yc[1];
+            let r12 = zc[1];
+            let r20 = xc[2];
+            let r21 = yc[2];
+            let r22 = zc[2];
             // Shepperd's method: find the largest of the 4 diagonal sums
             let trace = r00 + r11 + r22;
             let (w, x, y, z) = if trace > 0.0 {
@@ -870,7 +1049,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
             let ax = comps[0];
             let ay = comps[1];
             let az = comps[2];
-            let axis_norm = (ax * ax + ay * ay + az * az).sqrt();
+            let axis_norm = vec3_norm(ax, ay, az);
             if axis_norm == 0.0 || !axis_norm.is_finite() {
                 return Value::Undef;
             }
@@ -886,17 +1065,263 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         // --- Point/Vector constructors ---
         "point2" => construct_point_or_vector(args, 2, true),
         "point3" => construct_point_or_vector(args, 3, true),
-        "vec2"   => construct_point_or_vector(args, 2, false),
-        "vec3"   => construct_point_or_vector(args, 3, false),
+        "vec2" => construct_point_or_vector(args, 2, false),
+        "vec3" => construct_point_or_vector(args, 3, false),
 
         // --- Field operations (stubs) ---
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
         // and fallback for direct stdlib calls.
-        "sample" => Value::Undef,     // Requires EvalContext for lambda application
-        "gradient" => Value::Undef,   // Numeric differentiation not yet implemented
+        "sample" => Value::Undef, // Requires EvalContext for lambda application
+        "gradient" => Value::Undef, // Numeric differentiation not yet implemented
         "divergence" => Value::Undef, // Numeric differentiation not yet implemented
-        "curl" => Value::Undef,       // Numeric differentiation not yet implemented
+        "curl" => Value::Undef,   // Numeric differentiation not yet implemented
+
+        // --- Advanced linear algebra: determinant, inverse, transpose, outer, trace, eigenvalues ---
+
+        "determinant" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef; // must be square
+            }
+            let det = match n {
+                1 => data[0],
+                2 => data[0] * data[3] - data[1] * data[2],
+                3 => {
+                    // Sarrus / cofactor expansion along first row
+                    let (a, b, c) = (data[0], data[1], data[2]);
+                    let (d, e, f) = (data[3], data[4], data[5]);
+                    let (g, h, i) = (data[6], data[7], data[8]);
+                    a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+                }
+                _ => return Value::Undef, // only 1×1, 2×2, 3×3 supported
+            };
+            let result_dim = dim.pow(n as i8);
+            if result_dim == DimensionVector::DIMENSIONLESS {
+                sanitize_value(Value::Real(det))
+            } else {
+                sanitize_value(Value::Scalar {
+                    si_value: det,
+                    dimension: result_dim,
+                })
+            }
+        }),
+
+        "inverse" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef;
+            }
+            let inv_dim = if dim == DimensionVector::DIMENSIONLESS {
+                DimensionVector::DIMENSIONLESS
+            } else {
+                DimensionVector::DIMENSIONLESS.div(&dim)
+            };
+            match n {
+                1 => {
+                    if data[0] == 0.0 {
+                        return Value::Undef;
+                    }
+                    build_matrix_value(1, 1, &[1.0 / data[0]], inv_dim)
+                }
+                2 => {
+                    let det = data[0] * data[3] - data[1] * data[2];
+                    if det == 0.0 {
+                        return Value::Undef;
+                    }
+                    let inv_det = 1.0 / det;
+                    let inv_data = [
+                        data[3] * inv_det,
+                        -data[1] * inv_det,
+                        -data[2] * inv_det,
+                        data[0] * inv_det,
+                    ];
+                    build_matrix_value(2, 2, &inv_data, inv_dim)
+                }
+                3 => {
+                    let (a, b, c) = (data[0], data[1], data[2]);
+                    let (d, e, f) = (data[3], data[4], data[5]);
+                    let (g, h, i) = (data[6], data[7], data[8]);
+                    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+                    if det == 0.0 {
+                        return Value::Undef;
+                    }
+                    let inv_det = 1.0 / det;
+                    // Cofactor matrix transposed (adjugate), divided by det
+                    let inv_data = [
+                        (e * i - f * h) * inv_det,
+                        (c * h - b * i) * inv_det,
+                        (b * f - c * e) * inv_det,
+                        (f * g - d * i) * inv_det,
+                        (a * i - c * g) * inv_det,
+                        (c * d - a * f) * inv_det,
+                        (d * h - e * g) * inv_det,
+                        (b * g - a * h) * inv_det,
+                        (a * e - b * d) * inv_det,
+                    ];
+                    build_matrix_value(3, 3, &inv_data, inv_dim)
+                }
+                _ => Value::Undef,
+            }
+        }),
+
+        "transpose" => unary(args, |v| {
+            let (nrows, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            let mut transposed = vec![0.0; nrows * ncols];
+            for r in 0..nrows {
+                for c in 0..ncols {
+                    transposed[c * nrows + r] = data[r * ncols + c];
+                }
+            }
+            build_matrix_value(ncols, nrows, &transposed, dim)
+        }),
+
+        "outer" => binary(args, |a, b| {
+            let (a_vals, a_dim) = match tensor_components_f64(a) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let (b_vals, b_dim) = match tensor_components_f64(b) {
+                Some(v) => v,
+                None => return Value::Undef,
+            };
+            let nrows = a_vals.len();
+            let ncols = b_vals.len();
+            let result_dim = a_dim.mul(&b_dim);
+            let mut data = Vec::with_capacity(nrows * ncols);
+            for ai in &a_vals {
+                for bj in &b_vals {
+                    data.push(ai * bj);
+                }
+            }
+            build_matrix_value(nrows, ncols, &data, result_dim)
+        }),
+
+        "trace" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef; // must be square
+            }
+            let tr: f64 = (0..n).map(|i| data[i * n + i]).sum();
+            if dim == DimensionVector::DIMENSIONLESS {
+                sanitize_value(Value::Real(tr))
+            } else {
+                sanitize_value(Value::Scalar {
+                    si_value: tr,
+                    dimension: dim,
+                })
+            }
+        }),
+
+        "eigenvalues" => unary(args, |v| {
+            let (n, ncols, data, dim) = match matrix_components_f64(v) {
+                Some(c) => c,
+                None => return Value::Undef,
+            };
+            if n != ncols {
+                return Value::Undef;
+            }
+            let make_val = |x: f64| -> Value {
+                if dim == DimensionVector::DIMENSIONLESS {
+                    sanitize_value(Value::Real(x))
+                } else {
+                    sanitize_value(Value::Scalar {
+                        si_value: x,
+                        dimension: dim,
+                    })
+                }
+            };
+            match n {
+                1 => Value::List(vec![make_val(data[0])]),
+                2 => {
+                    // char poly: λ² - (a+d)λ + (ad-bc) = 0
+                    let (a, b) = (data[0], data[1]);
+                    let (c, d) = (data[2], data[3]);
+                    let tr = a + d;
+                    let det = a * d - b * c;
+                    let disc = tr * tr - 4.0 * det;
+                    if disc < 0.0 {
+                        return Value::Undef; // complex eigenvalues
+                    }
+                    let sqrt_disc = disc.sqrt();
+                    let mut eigs = vec![(tr + sqrt_disc) / 2.0, (tr - sqrt_disc) / 2.0];
+                    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    Value::List(eigs.into_iter().map(make_val).collect())
+                }
+                3 => {
+                    // Characteristic polynomial: λ³ - pλ² + qλ - r = 0
+                    // where p = tr(A), q = sum of 2×2 principal minor dets, r = det(A)
+                    let (a, b, c) = (data[0], data[1], data[2]);
+                    let (d, e, f) = (data[3], data[4], data[5]);
+                    let (g, h, i) = (data[6], data[7], data[8]);
+
+                    let p = a + e + i; // trace
+                    let q = (a * e - b * d) + (a * i - c * g) + (e * i - f * h);
+                    let r = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g); // det
+
+                    // Depressed cubic: t³ + αt + β = 0 where λ = t + p/3
+                    let p3 = p / 3.0;
+                    let alpha = q - p * p / 3.0;
+                    let beta = -2.0 * p * p * p / 27.0 + p * q / 3.0 - r;
+
+                    // Discriminant for three real roots: 4α³ + 27β² ≤ 0
+                    // Use trigonometric (Viète) method for the all-real-roots case
+                    if alpha >= 0.0 {
+                        // At most one real root when α ≥ 0 and β ≠ 0
+                        if alpha == 0.0 && beta == 0.0 {
+                            // Triple root
+                            let root = p3;
+                            Value::List(vec![make_val(root), make_val(root), make_val(root)])
+                        } else if alpha == 0.0 {
+                            // t³ = -β → single real cube root
+                            let t = (-beta).cbrt();
+                            // One real root + two complex; return Undef
+                            // Actually: t³ + 0*t + β = 0 has one real root t = (-β)^(1/3)
+                            // and two complex conjugate roots. But if beta = 0 handled above.
+                            // For non-zero beta with alpha=0, we have a triple-like scenario
+                            // returning only the real eigenvalue as Undef for now.
+                            let _ = t;
+                            Value::Undef
+                        } else {
+                            // General case with α > 0: complex eigenvalues possible
+                            Value::Undef
+                        }
+                    } else {
+                        // α < 0: use trigonometric method for three real roots
+                        let neg_alpha = -alpha;
+                        let m = (neg_alpha / 3.0).sqrt(); // sqrt(-α/3)
+                        let cos_arg = -beta / (2.0 * m * m * m);
+                        // Clamp for numerical stability
+                        let cos_arg = cos_arg.clamp(-1.0, 1.0);
+                        let theta = cos_arg.acos();
+                        let two_m = 2.0 * m;
+
+                        let mut eigs = vec![
+                            two_m * (theta / 3.0).cos() + p3,
+                            two_m * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos() + p3,
+                            two_m * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos() + p3,
+                        ];
+                        eigs.sort_by(|a, b| {
+                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        Value::List(eigs.into_iter().map(make_val).collect())
+                    }
+                }
+                _ => Value::Undef,
+            }
+        }),
 
         _ => Value::Undef,
     }
@@ -944,17 +1369,31 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 
 /// Compute the absolute value (modulus) of a complex number.
 ///
-/// Returns `Value::Real(mag)` when `dimension` is dimensionless, or
-/// `Value::Scalar { si_value: mag, dimension }` otherwise. Non-finite
-/// results are converted to `Undef` by [`sanitize_value`].
-#[inline(always)]
+/// Uses [`f64::hypot`] for overflow-resistant magnitude computation,
+/// avoiding premature overflow when components are large but the true
+/// magnitude is still representable. Returns `Value::Real(mag)` when
+/// `dimension` is dimensionless, or `Value::Scalar { si_value: mag,
+/// dimension }` otherwise. Non-finite results are converted to `Undef`
+/// by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
-    let mag = (re * re + im * im).sqrt();
+    let mag = re.hypot(im);
     if dimension == DimensionVector::DIMENSIONLESS {
         sanitize_value(Value::Real(mag))
     } else {
-        sanitize_value(Value::Scalar { si_value: mag, dimension })
+        sanitize_value(Value::Scalar {
+            si_value: mag,
+            dimension,
+        })
     }
+}
+
+/// Compute the Euclidean norm (magnitude) of a 3D vector.
+///
+/// Pure mathematical function — callers are responsible for checking finiteness
+/// of the result if needed.
+#[inline]
+fn vec3_norm(x: f64, y: f64, z: f64) -> f64 {
+    (x * x + y * y + z * z).sqrt()
 }
 
 /// Normalize a quaternion (w, x, y, z) to unit length.
@@ -965,7 +1404,7 @@ fn normalize_quaternion(w: f64, x: f64, y: f64, z: f64) -> Option<Value> {
         return None;
     }
     let norm = (w * w + x * x + y * y + z * z).sqrt();
-    if norm == 0.0 {
+    if norm < f64::EPSILON {
         return None;
     }
     Some(Value::Orientation {
@@ -1027,7 +1466,9 @@ fn sanitize_value(v: Value) -> Value {
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
             Value::Undef
         }
-        Value::Complex { re, im, .. } if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() => {
+        Value::Complex { re, im, .. }
+            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
+        {
             Value::Undef
         }
         _ => v,
@@ -1058,14 +1499,17 @@ fn binary(args: &[Value], f: impl FnOnce(&Value, &Value) -> Value) -> Value {
 /// Rejects: non-ANGLE Scalar (dimension error).
 fn trig_input(v: &Value) -> Option<f64> {
     match v {
-        Value::Scalar { si_value, dimension } => {
-            if *dimension == DimensionVector::ANGLE {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            if *dimension == DimensionVector::ANGLE && si_value.is_finite() {
                 Some(*si_value)
             } else {
-                None // dimension error: sin(5mm) is meaningless
+                None // dimension error or non-finite value
             }
         }
-        Value::Real(r) => Some(*r),
+        Value::Real(r) if r.is_finite() => Some(*r),
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
@@ -1133,7 +1577,10 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
         if dim.is_dimensionless() {
             Value::Real(0.0)
         } else {
-            Value::Scalar { si_value: 0.0, dimension: dim }
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            }
         }
     };
     let offset_component = offset_val.clone();
@@ -1177,8 +1624,9 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
 
 fn tensor_components_f64(v: &Value) -> Option<(Vec<f64>, DimensionVector)> {
     let items = match v {
-        Value::Tensor(items) | Value::Point(items) | Value::Vector(items)
-            if !items.is_empty() => items,
+        Value::Tensor(items) | Value::Point(items) | Value::Vector(items) if !items.is_empty() => {
+            items
+        }
         _ => return None,
     };
     let first_dim = items[0].dimension();
@@ -1215,6 +1663,119 @@ fn quinary_f64(args: &[Value], f: impl FnOnce(f64, f64, f64, f64, f64) -> Value)
     }
 }
 
+/// Extract a square or rectangular matrix from a `Value` into `(nrows, ncols, flat_data, element_dim)`.
+///
+/// Handles both `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
+/// All elements must share the same dimension and be numeric.
+fn matrix_components_f64(v: &Value) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+    enum Rows<'a> {
+        Matrix(&'a [Vec<Value>]),
+        Tensor(&'a [Value]),
+    }
+    let rows = match v {
+        Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
+        Value::Tensor(items)
+            if !items.is_empty()
+                && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+        {
+            Rows::Tensor(items)
+        }
+        _ => return None,
+    };
+    let (nrows, ncols) = match &rows {
+        Rows::Matrix(r) => {
+            let nc = r[0].len();
+            if nc == 0 || r.iter().any(|row| row.len() != nc) {
+                return None;
+            }
+            (r.len(), nc)
+        }
+        Rows::Tensor(items) => {
+            let nc = match &items[0] {
+                Value::Tensor(elems) => elems.len(),
+                _ => return None,
+            };
+            if nc == 0
+                || items.iter().any(|r| match r {
+                    Value::Tensor(elems) => elems.len() != nc,
+                    _ => true,
+                })
+            {
+                return None;
+            }
+            (items.len(), nc)
+        }
+    };
+    // Flatten and extract f64 values, checking uniform dimension.
+    let first_elem = match &rows {
+        Rows::Matrix(r) => &r[0][0],
+        Rows::Tensor(items) => match &items[0] {
+            Value::Tensor(elems) => &elems[0],
+            _ => return None,
+        },
+    };
+    let first_dim = first_elem.dimension();
+    let mut data = Vec::with_capacity(nrows * ncols);
+    let check_and_push = |elem: &Value, data: &mut Vec<f64>| -> bool {
+        if elem.dimension() != first_dim {
+            return false;
+        }
+        match elem.as_f64() {
+            Some(x) => {
+                data.push(x);
+                true
+            }
+            None => false,
+        }
+    };
+    match &rows {
+        Rows::Matrix(r) => {
+            for row in *r {
+                for elem in row {
+                    if !check_and_push(elem, &mut data) {
+                        return None;
+                    }
+                }
+            }
+        }
+        Rows::Tensor(items) => {
+            for item in *items {
+                if let Value::Tensor(elems) = item {
+                    for elem in elems {
+                        if !check_and_push(elem, &mut data) {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some((nrows, ncols, data, first_dim))
+}
+
+/// Build a nested `Value::Tensor` (rank-2) from flat f64 data.
+fn build_matrix_value(nrows: usize, ncols: usize, data: &[f64], dim: DimensionVector) -> Value {
+    let rows: Vec<Value> = (0..nrows)
+        .map(|i| {
+            let row: Vec<Value> = (0..ncols)
+                .map(|j| {
+                    let v = data[i * ncols + j];
+                    if dim == DimensionVector::DIMENSIONLESS {
+                        sanitize_value(Value::Real(v))
+                    } else {
+                        sanitize_value(Value::Scalar {
+                            si_value: v,
+                            dimension: dim,
+                        })
+                    }
+                })
+                .collect();
+            Value::Tensor(row)
+        })
+        .collect();
+    Value::Tensor(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1240,7 +1801,10 @@ mod tests {
     macro_rules! assert_scalar_approx {
         ($expr:expr, $expected_si:expr, $expected_dim:expr) => {
             match $expr {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         (si_value - $expected_si).abs() < 1e-12,
                         "expected si_value={}, got {}",
@@ -1255,6 +1819,63 @@ mod tests {
                 ),
             }
         };
+    }
+
+    /// Assert that an expression evaluates to a 3-component wrapper variant
+    /// (`Value::Tensor`, `Value::Vector`, or `Value::Point`) where each component
+    /// is approximately equal to the expected `[x, y, z]` values within 1e-12.
+    macro_rules! assert_vector3_approx {
+        ($variant:ident, $expr:expr, [$ex:expr, $ey:expr, $ez:expr]) => {
+            match $expr {
+                Value::$variant(items) => {
+                    assert_eq!(
+                        items.len(),
+                        3,
+                        "expected 3-component {}",
+                        stringify!($variant)
+                    );
+                    let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
+                    assert!(
+                        (vals[0] - $ex).abs() < 1e-12,
+                        "x: expected {}, got {}",
+                        $ex,
+                        vals[0]
+                    );
+                    assert!(
+                        (vals[1] - $ey).abs() < 1e-12,
+                        "y: expected {}, got {}",
+                        $ey,
+                        vals[1]
+                    );
+                    assert!(
+                        (vals[2] - $ez).abs() < 1e-12,
+                        "z: expected {}, got {}",
+                        $ez,
+                        vals[2]
+                    );
+                }
+                other => panic!(
+                    "expected {}([{}, {}, {}]), got {:?}",
+                    stringify!($variant),
+                    $ex,
+                    $ey,
+                    $ez,
+                    other
+                ),
+            }
+        };
+    }
+
+    /// Build a `Value::Vector` of 3 `Value::Scalar` components from `[f64; 3]` and a dimension.
+    fn make_scalar_vec3(vals: [f64; 3], dim: DimensionVector) -> Value {
+        Value::Vector(
+            vals.iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: dim,
+                })
+                .collect(),
+        )
     }
 
     #[test]
@@ -1517,43 +2138,71 @@ mod tests {
     #[test]
     fn sqrt_negative_returns_undef() {
         let result = eval_builtin("sqrt", &[Value::Real(-1.0)]);
-        assert!(result.is_undef(), "sqrt(-1) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "sqrt(-1) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn log_zero_returns_undef() {
         let result = eval_builtin("log", &[Value::Real(0.0)]);
-        assert!(result.is_undef(), "log(0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "log(0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn log_negative_returns_undef() {
         let result = eval_builtin("log", &[Value::Real(-1.0)]);
-        assert!(result.is_undef(), "log(-1) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "log(-1) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn log10_zero_returns_undef() {
         let result = eval_builtin("log10", &[Value::Real(0.0)]);
-        assert!(result.is_undef(), "log10(0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "log10(0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn log10_negative_returns_undef() {
         let result = eval_builtin("log10", &[Value::Real(-1.0)]);
-        assert!(result.is_undef(), "log10(-1) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "log10(-1) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn exp_overflow_returns_undef() {
         let result = eval_builtin("exp", &[Value::Real(1000.0)]);
-        assert!(result.is_undef(), "exp(1000) should be Undef (inf), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "exp(1000) should be Undef (inf), got {:?}",
+            result
+        );
     }
 
     #[test]
     fn pow_negative_base_fractional_exp_returns_undef() {
         let result = eval_builtin("pow", &[Value::Real(-2.0), Value::Real(0.5)]);
-        assert!(result.is_undef(), "pow(-2, 0.5) should be Undef (NaN), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "pow(-2, 0.5) should be Undef (NaN), got {:?}",
+            result
+        );
     }
 
     // --- Inverse-trig domain errors and hyperbolic overflow (step-23) ---
@@ -1561,37 +2210,61 @@ mod tests {
     #[test]
     fn asin_out_of_range_positive() {
         let result = eval_builtin("asin", &[Value::Real(2.0)]);
-        assert!(result.is_undef(), "asin(2.0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "asin(2.0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn asin_out_of_range_negative() {
         let result = eval_builtin("asin", &[Value::Real(-2.0)]);
-        assert!(result.is_undef(), "asin(-2.0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "asin(-2.0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn acos_out_of_range_positive() {
         let result = eval_builtin("acos", &[Value::Real(2.0)]);
-        assert!(result.is_undef(), "acos(2.0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "acos(2.0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn acos_out_of_range_negative() {
         let result = eval_builtin("acos", &[Value::Real(-2.0)]);
-        assert!(result.is_undef(), "acos(-2.0) should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "acos(-2.0) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn sinh_overflow_returns_undef() {
         let result = eval_builtin("sinh", &[Value::Real(1000.0)]);
-        assert!(result.is_undef(), "sinh(1000) should be Undef (inf), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "sinh(1000) should be Undef (inf), got {:?}",
+            result
+        );
     }
 
     #[test]
     fn cosh_overflow_returns_undef() {
         let result = eval_builtin("cosh", &[Value::Real(1000.0)]);
-        assert!(result.is_undef(), "cosh(1000) should be Undef (inf), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "cosh(1000) should be Undef (inf), got {:?}",
+            result
+        );
     }
 
     // Boundary valid inputs: confirm no regressions on valid inputs
@@ -1600,7 +2273,10 @@ mod tests {
     fn asin_boundary_valid() {
         let result = eval_builtin("asin", &[Value::Real(1.0)]);
         match result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
@@ -1621,7 +2297,10 @@ mod tests {
             }],
         );
         match result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 2.0).abs() < 1e-12);
                 assert_eq!(dimension, DimensionVector::LENGTH);
             }
@@ -1641,7 +2320,10 @@ mod tests {
             }],
         );
         match result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 3.0).abs() < 1e-12);
                 assert_eq!(dimension, DimensionVector::AREA); // LENGTH^2 == AREA
             }
@@ -1661,7 +2343,10 @@ mod tests {
             }],
         );
         match result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 2.0).abs() < 1e-12);
                 assert_eq!(dimension.0[0], Rational::new(1, 2));
                 for i in 1..9 {
@@ -1682,14 +2367,21 @@ mod tests {
                 dimension: DimensionVector::AREA,
             }],
         );
-        assert!(result.is_undef(), "sqrt of negative Scalar should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "sqrt of negative Scalar should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn acos_boundary_valid() {
         let result = eval_builtin("acos", &[Value::Real(-1.0)]);
         match result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - std::f64::consts::PI).abs() < 1e-12);
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
@@ -1704,25 +2396,41 @@ mod tests {
         // determined() is handled at the eval layer where DeterminacyState is available.
         // The stdlib stub returns Undef as a fallback.
         let result = eval_builtin("determined", &[Value::Real(42.0)]);
-        assert!(result.is_undef(), "determined stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "determined stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn undetermined_stub_returns_undef() {
         let result = eval_builtin("undetermined", &[Value::Real(42.0)]);
-        assert!(result.is_undef(), "undetermined stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "undetermined stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn constrained_stub_returns_undef() {
         let result = eval_builtin("constrained", &[Value::Real(42.0)]);
-        assert!(result.is_undef(), "constrained stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "constrained stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn partially_determined_stub_returns_undef() {
         let result = eval_builtin("partially_determined", &[Value::Real(42.0)]);
-        assert!(result.is_undef(), "partially_determined stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "partially_determined stub should return Undef, got {:?}",
+            result
+        );
     }
 
     // --- Field operation stubs (step-25) ---
@@ -1737,7 +2445,11 @@ mod tests {
             lambda: Box::new(Value::Undef),
         };
         let result = eval_builtin("gradient", &[field]);
-        assert!(result.is_undef(), "gradient stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "gradient stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1749,7 +2461,11 @@ mod tests {
             lambda: Box::new(Value::Undef),
         };
         let result = eval_builtin("divergence", &[field]);
-        assert!(result.is_undef(), "divergence stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "divergence stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1761,7 +2477,11 @@ mod tests {
             lambda: Box::new(Value::Undef),
         };
         let result = eval_builtin("curl", &[field]);
-        assert!(result.is_undef(), "curl stub should return Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "curl stub should return Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1775,7 +2495,11 @@ mod tests {
             lambda: Box::new(Value::Undef),
         };
         let result = eval_builtin("sample", &[field, Value::Int(42)]);
-        assert!(result.is_undef(), "sample in stdlib should return Undef (handled in eval_expr), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "sample in stdlib should return Undef (handled in eval_expr), got {:?}",
+            result
+        );
     }
 
     // --- mod builtin tests (step-1) ---
@@ -1821,26 +2545,42 @@ mod tests {
     #[test]
     fn mod_by_zero_returns_undef() {
         let result = eval_builtin("mod", &[Value::Int(7), Value::Int(0)]);
-        assert!(result.is_undef(), "mod by zero should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "mod by zero should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn mod_non_int_returns_undef() {
         let result = eval_builtin("mod", &[Value::Real(3.5), Value::Real(2.0)]);
-        assert!(result.is_undef(), "mod on Real should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "mod on Real should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn mod_wrong_arg_count_returns_undef() {
         let result = eval_builtin("mod", &[Value::Int(7)]);
-        assert!(result.is_undef(), "mod with 1 arg should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "mod with 1 arg should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn mod_i64_min_neg1_returns_undef() {
         // i64::MIN % -1 overflows in Rust (panics in debug mode)
         let result = eval_builtin("mod", &[Value::Int(i64::MIN), Value::Int(-1)]);
-        assert!(result.is_undef(), "mod(i64::MIN, -1) should be Undef (overflow), got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "mod(i64::MIN, -1) should be Undef (overflow), got {:?}",
+            result
+        );
     }
 
     // --- clamp Real tests (step-3) ---
@@ -1848,7 +2588,10 @@ mod tests {
     #[test]
     fn clamp_real_within_range() {
         assert_real_approx!(
-            eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]),
+            eval_builtin(
+                "clamp",
+                &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
             5.0
         );
     }
@@ -1856,7 +2599,10 @@ mod tests {
     #[test]
     fn clamp_real_below_lo() {
         assert_real_approx!(
-            eval_builtin("clamp", &[Value::Real(-3.0), Value::Real(0.0), Value::Real(10.0)]),
+            eval_builtin(
+                "clamp",
+                &[Value::Real(-3.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
             0.0
         );
     }
@@ -1864,7 +2610,10 @@ mod tests {
     #[test]
     fn clamp_real_above_hi() {
         assert_real_approx!(
-            eval_builtin("clamp", &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]),
+            eval_builtin(
+                "clamp",
+                &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
             10.0
         );
     }
@@ -1872,7 +2621,10 @@ mod tests {
     #[test]
     fn clamp_at_lo_boundary() {
         assert_real_approx!(
-            eval_builtin("clamp", &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]),
+            eval_builtin(
+                "clamp",
+                &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
             0.0
         );
     }
@@ -1880,7 +2632,10 @@ mod tests {
     #[test]
     fn clamp_at_hi_boundary() {
         assert_real_approx!(
-            eval_builtin("clamp", &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]),
+            eval_builtin(
+                "clamp",
+                &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0)]
+            ),
             10.0
         );
     }
@@ -1888,27 +2643,55 @@ mod tests {
     #[test]
     fn clamp_nan_x_returns_undef() {
         // x is NaN — explicit x.is_nan() guard
-        let result = eval_builtin("clamp", &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)]);
-        assert!(result.is_undef(), "clamp(NaN, 0, 10) should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert!(
+            result.is_undef(),
+            "clamp(NaN, 0, 10) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn clamp_nan_lo_returns_undef() {
-        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)]);
-        assert!(result.is_undef(), "clamp(5, NaN, 10) should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(f64::NAN), Value::Real(10.0)],
+        );
+        assert!(
+            result.is_undef(),
+            "clamp(5, NaN, 10) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn clamp_nan_hi_returns_undef() {
-        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)]);
-        assert!(result.is_undef(), "clamp(5, 0, NaN) should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(0.0), Value::Real(f64::NAN)],
+        );
+        assert!(
+            result.is_undef(),
+            "clamp(5, 0, NaN) should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn clamp_inverted_range_real_returns_undef() {
         // lo > hi is invalid
-        let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)]);
-        assert!(result.is_undef(), "clamp with inverted range should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "clamp",
+            &[Value::Real(5.0), Value::Real(10.0), Value::Real(0.0)],
+        );
+        assert!(
+            result.is_undef(),
+            "clamp with inverted range should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- clamp Int tests (step-5) ---
@@ -1944,7 +2727,11 @@ mod tests {
     #[test]
     fn clamp_inverted_range_int_returns_undef() {
         let result = eval_builtin("clamp", &[Value::Int(5), Value::Int(10), Value::Int(0)]);
-        assert!(result.is_undef(), "clamp Int with inverted range should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "clamp Int with inverted range should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- clamp Scalar + fallback tests (step-7) ---
@@ -1956,9 +2743,18 @@ mod tests {
             eval_builtin(
                 "clamp",
                 &[
-                    Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+                    Value::Scalar {
+                        si_value: 0.005,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.001,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.010,
+                        dimension: DimensionVector::LENGTH
+                    },
                 ]
             ),
             0.005,
@@ -1972,12 +2768,25 @@ mod tests {
         let result = eval_builtin(
             "clamp",
             &[
-                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 10.0, dimension: DimensionVector::TIME },
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::TIME,
+                },
             ],
         );
-        assert!(result.is_undef(), "clamp with dimension mismatch should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "clamp with dimension mismatch should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1985,12 +2794,25 @@ mod tests {
         let result = eval_builtin(
             "clamp",
             &[
-                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 5.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
-        assert!(result.is_undef(), "clamp Scalar with inverted range should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "clamp Scalar with inverted range should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1998,18 +2820,35 @@ mod tests {
         let result = eval_builtin(
             "clamp",
             &[
-                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
-        assert!(result.is_undef(), "clamp Scalar NaN x should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "clamp Scalar NaN x should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn clamp_wrong_arg_count_returns_undef() {
         let result = eval_builtin("clamp", &[Value::Real(5.0), Value::Real(0.0)]);
-        assert!(result.is_undef(), "clamp with 2 args should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "clamp with 2 args should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2020,8 +2859,14 @@ mod tests {
             "clamp",
             &[
                 Value::Real(5.0),
-                Value::Scalar { si_value: 0.001, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 0.001,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.010,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
         assert!(
@@ -2047,7 +2892,10 @@ mod tests {
     fn lerp_midpoint() {
         // lerp(0, 10, 0.5) = 5
         assert_real_approx!(
-            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]),
+            eval_builtin(
+                "lerp",
+                &[Value::Real(0.0), Value::Real(10.0), Value::Real(0.5)]
+            ),
             5.0
         );
     }
@@ -2056,7 +2904,10 @@ mod tests {
     fn lerp_t_zero() {
         // lerp(a, b, 0) = a
         assert_real_approx!(
-            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(0.0)]),
+            eval_builtin(
+                "lerp",
+                &[Value::Real(3.0), Value::Real(7.0), Value::Real(0.0)]
+            ),
             3.0
         );
     }
@@ -2065,7 +2916,10 @@ mod tests {
     fn lerp_t_one() {
         // lerp(a, b, 1) = b
         assert_real_approx!(
-            eval_builtin("lerp", &[Value::Real(3.0), Value::Real(7.0), Value::Real(1.0)]),
+            eval_builtin(
+                "lerp",
+                &[Value::Real(3.0), Value::Real(7.0), Value::Real(1.0)]
+            ),
             7.0
         );
     }
@@ -2074,7 +2928,10 @@ mod tests {
     fn lerp_negative_t_extrapolation() {
         // lerp(0, 10, -0.5) = -5 (extrapolation below)
         assert_real_approx!(
-            eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]),
+            eval_builtin(
+                "lerp",
+                &[Value::Real(0.0), Value::Real(10.0), Value::Real(-0.5)]
+            ),
             -5.0
         );
     }
@@ -2082,8 +2939,15 @@ mod tests {
     #[test]
     fn lerp_nan_t_returns_undef() {
         // t is NaN — explicit NaN check after extraction
-        let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)]);
-        assert!(result.is_undef(), "lerp with NaN t should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "lerp",
+            &[Value::Real(0.0), Value::Real(10.0), Value::Real(f64::NAN)],
+        );
+        assert!(
+            result.is_undef(),
+            "lerp with NaN t should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- lerp Scalar + dimension tests (step-11) ---
@@ -2095,8 +2959,14 @@ mod tests {
             eval_builtin(
                 "lerp",
                 &[
-                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::LENGTH
+                    },
                     Value::Real(0.5),
                 ]
             ),
@@ -2111,12 +2981,22 @@ mod tests {
         let result = eval_builtin(
             "lerp",
             &[
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 1.0, dimension: DimensionVector::TIME },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::TIME,
+                },
                 Value::Real(0.5),
             ],
         );
-        assert!(result.is_undef(), "lerp dimension mismatch a/b should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "lerp dimension mismatch a/b should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2127,10 +3007,17 @@ mod tests {
             &[
                 Value::Real(0.0),
                 Value::Real(10.0),
-                Value::Scalar { si_value: 0.5, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 0.5,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
-        assert!(result.is_undef(), "lerp with dimensioned t should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "lerp with dimensioned t should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2139,12 +3026,22 @@ mod tests {
         let result = eval_builtin(
             "lerp",
             &[
-                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
                 Value::Real(0.5),
             ],
         );
-        assert!(result.is_undef(), "lerp with NaN a should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "lerp with NaN a should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2153,12 +3050,22 @@ mod tests {
         let result = eval_builtin(
             "lerp",
             &[
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
                 Value::Real(0.5),
             ],
         );
-        assert!(result.is_undef(), "lerp with NaN b should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "lerp with NaN b should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- lerp Int/edge tests (step-13) ---
@@ -2176,7 +3083,11 @@ mod tests {
     #[test]
     fn lerp_wrong_arg_count_returns_undef() {
         let result = eval_builtin("lerp", &[Value::Real(0.0), Value::Real(10.0)]);
-        assert!(result.is_undef(), "lerp with 2 args should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "lerp with 2 args should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- lerp fallback tests (step-21) ---
@@ -2188,7 +3099,10 @@ mod tests {
         let result = eval_builtin(
             "lerp",
             &[
-                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 5.0,
+                    dimension: DimensionVector::LENGTH,
+                },
                 Value::Real(3.0),
                 Value::Real(0.5),
             ],
@@ -2207,7 +3121,10 @@ mod tests {
             "lerp",
             &[
                 Value::Real(3.0),
-                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 5.0,
+                    dimension: DimensionVector::LENGTH,
+                },
                 Value::Real(0.5),
             ],
         );
@@ -2240,7 +3157,13 @@ mod tests {
         assert_real_approx!(
             eval_builtin(
                 "remap",
-                &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+                &[
+                    Value::Real(5.0),
+                    Value::Real(0.0),
+                    Value::Real(10.0),
+                    Value::Real(0.0),
+                    Value::Real(100.0)
+                ]
             ),
             50.0
         );
@@ -2252,7 +3175,13 @@ mod tests {
         assert_real_approx!(
             eval_builtin(
                 "remap",
-                &[Value::Real(0.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+                &[
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(10.0),
+                    Value::Real(20.0),
+                    Value::Real(30.0)
+                ]
             ),
             20.0
         );
@@ -2264,7 +3193,13 @@ mod tests {
         assert_real_approx!(
             eval_builtin(
                 "remap",
-                &[Value::Real(10.0), Value::Real(0.0), Value::Real(10.0), Value::Real(20.0), Value::Real(30.0)]
+                &[
+                    Value::Real(10.0),
+                    Value::Real(0.0),
+                    Value::Real(10.0),
+                    Value::Real(20.0),
+                    Value::Real(30.0)
+                ]
             ),
             30.0
         );
@@ -2276,7 +3211,13 @@ mod tests {
         assert_real_approx!(
             eval_builtin(
                 "remap",
-                &[Value::Real(15.0), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)]
+                &[
+                    Value::Real(15.0),
+                    Value::Real(0.0),
+                    Value::Real(10.0),
+                    Value::Real(0.0),
+                    Value::Real(100.0)
+                ]
             ),
             150.0
         );
@@ -2288,7 +3229,13 @@ mod tests {
         assert_real_approx!(
             eval_builtin(
                 "remap",
-                &[Value::Real(50.0), Value::Real(0.0), Value::Real(100.0), Value::Real(0.0), Value::Real(10.0)]
+                &[
+                    Value::Real(50.0),
+                    Value::Real(0.0),
+                    Value::Real(100.0),
+                    Value::Real(0.0),
+                    Value::Real(10.0)
+                ]
             ),
             5.0
         );
@@ -2299,24 +3246,51 @@ mod tests {
         // from_lo == from_hi -> division by zero -> Undef (early-exit)
         let result = eval_builtin(
             "remap",
-            &[Value::Real(5.0), Value::Real(3.0), Value::Real(3.0), Value::Real(0.0), Value::Real(10.0)],
+            &[
+                Value::Real(5.0),
+                Value::Real(3.0),
+                Value::Real(3.0),
+                Value::Real(0.0),
+                Value::Real(10.0),
+            ],
         );
-        assert!(result.is_undef(), "remap with from_lo==from_hi should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "remap with from_lo==from_hi should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn remap_nan_returns_undef() {
         let result = eval_builtin(
             "remap",
-            &[Value::Real(f64::NAN), Value::Real(0.0), Value::Real(10.0), Value::Real(0.0), Value::Real(100.0)],
+            &[
+                Value::Real(f64::NAN),
+                Value::Real(0.0),
+                Value::Real(10.0),
+                Value::Real(0.0),
+                Value::Real(100.0),
+            ],
         );
-        assert!(result.is_undef(), "remap with NaN x should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "remap with NaN x should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn remap_wrong_arg_count_returns_undef() {
-        let result = eval_builtin("remap", &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)]);
-        assert!(result.is_undef(), "remap with 3 args should be Undef, got {:?}", result);
+        let result = eval_builtin(
+            "remap",
+            &[Value::Real(5.0), Value::Real(0.0), Value::Real(10.0)],
+        );
+        assert!(
+            result.is_undef(),
+            "remap with 3 args should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- remap Scalar tests (step-17) ---
@@ -2330,11 +3304,26 @@ mod tests {
             eval_builtin(
                 "remap",
                 &[
-                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+                    Value::Scalar {
+                        si_value: 5.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 10.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 100.0,
+                        dimension: DimensionVector::LENGTH
+                    },
                 ]
             ),
             50.0,
@@ -2350,11 +3339,26 @@ mod tests {
             eval_builtin(
                 "remap",
                 &[
-                    Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
-                    Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
-                    Value::Scalar { si_value: 100.0, dimension: DimensionVector::TIME },
+                    Value::Scalar {
+                        si_value: 5.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 10.0,
+                        dimension: DimensionVector::LENGTH
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::TIME
+                    },
+                    Value::Scalar {
+                        si_value: 100.0,
+                        dimension: DimensionVector::TIME
+                    },
                 ]
             ),
             50.0,
@@ -2368,14 +3372,33 @@ mod tests {
         let result = eval_builtin(
             "remap",
             &[
-                Value::Scalar { si_value: 5.0, dimension: DimensionVector::TIME },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 5.0,
+                    dimension: DimensionVector::TIME,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 100.0,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
-        assert!(result.is_undef(), "remap with x dim != from dim should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "remap with x dim != from dim should be Undef, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -2384,14 +3407,33 @@ mod tests {
         let result = eval_builtin(
             "remap",
             &[
-                Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 10.0, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.0, dimension: DimensionVector::TIME },
-                Value::Scalar { si_value: 100.0, dimension: DimensionVector::LENGTH }, // mismatch
+                Value::Scalar {
+                    si_value: 5.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 10.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.0,
+                    dimension: DimensionVector::TIME,
+                },
+                Value::Scalar {
+                    si_value: 100.0,
+                    dimension: DimensionVector::LENGTH,
+                }, // mismatch
             ],
         );
-        assert!(result.is_undef(), "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "remap with to_lo/to_hi dim mismatch should be Undef, got {:?}",
+            result
+        );
     }
 
     // --- dot() tests: dimensionless vectors (step-1) ---
@@ -2416,7 +3458,10 @@ mod tests {
     fn dot_mismatched_lengths_returns_undef() {
         let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
         let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        assert!(eval_builtin("dot", &[a, b]).is_undef(), "mismatched lengths should be Undef");
+        assert!(
+            eval_builtin("dot", &[a, b]).is_undef(),
+            "mismatched lengths should be Undef"
+        );
     }
 
     #[test]
@@ -2434,52 +3479,37 @@ mod tests {
         // normalize([3,4,0]) ≈ [0.6, 0.8, 0.0]
         let v = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
-                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
-                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
-                // Components must be Real (dimensionless)
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
     fn normalize_zero_vector_returns_undef() {
         let v = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        assert!(eval_builtin("normalize", &[v]).is_undef(), "normalize of zero vector should be Undef");
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of zero vector should be Undef"
+        );
     }
 
     #[test]
     fn normalize_dimensioned_vector_returns_real_components() {
         // normalize([3m,4m,0m]) should return Real components (dimensionless direction)
         let v = Value::Tensor(vec![
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
-                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
-                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Tensor, got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -2566,11 +3596,24 @@ mod tests {
     fn magnitude_dimensioned_vector() {
         // magnitude([3mm,4mm,0mm]) == 5mm = 0.005m as Scalar{LENGTH}
         let v = Value::Tensor(vec![
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.000, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.004,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.000,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
-        assert_scalar_approx!(eval_builtin("magnitude", &[v]), 0.005, DimensionVector::LENGTH);
+        assert_scalar_approx!(
+            eval_builtin("magnitude", &[v]),
+            0.005,
+            DimensionVector::LENGTH
+        );
     }
 
     #[test]
@@ -2588,13 +3631,19 @@ mod tests {
 
     #[test]
     fn magnitude_non_tensor_returns_undef() {
-        assert!(eval_builtin("magnitude", &[Value::Real(5.0)]).is_undef(), "magnitude of non-Tensor should be Undef");
+        assert!(
+            eval_builtin("magnitude", &[Value::Real(5.0)]).is_undef(),
+            "magnitude of non-Tensor should be Undef"
+        );
     }
 
     #[test]
     fn magnitude_empty_tensor_returns_undef() {
         let v = Value::Tensor(vec![]);
-        assert!(eval_builtin("magnitude", &[v]).is_undef(), "magnitude of empty Tensor should be Undef");
+        assert!(
+            eval_builtin("magnitude", &[v]).is_undef(),
+            "magnitude of empty Tensor should be Undef"
+        );
     }
 
     // --- cross() tests: dimensionless vectors (step-4) ---
@@ -2605,16 +3654,7 @@ mod tests {
         let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Tensor(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.0).abs() < 1e-12, "x component: expected 0.0, got {}", v[0]);
-                assert!((v[1] - 0.0).abs() < 1e-12, "y component: expected 0.0, got {}", v[1]);
-                assert!((v[2] - 1.0).abs() < 1e-12, "z component: expected 1.0, got {}", v[2]);
-            }
-            other => panic!("expected Tensor([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -2629,7 +3669,12 @@ mod tests {
                 for (ai, bi) in ab_items.iter().zip(ba_items.iter()) {
                     let av = ai.as_f64().unwrap();
                     let bv = bi.as_f64().unwrap();
-                    assert!((av + bv).abs() < 1e-12, "anti-commutativity failed: {} + {} != 0", av, bv);
+                    assert!(
+                        (av + bv).abs() < 1e-12,
+                        "anti-commutativity failed: {} + {} != 0",
+                        av,
+                        bv
+                    );
                 }
             }
             other => panic!("expected two Tensors, got {:?}", other),
@@ -2650,14 +3695,30 @@ mod tests {
     fn cross_length_2_tensor_returns_undef() {
         let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0)]);
         let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0)]);
-        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 2-element Tensor should be Undef");
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross on 2-element Tensor should be Undef"
+        );
     }
 
     #[test]
     fn cross_length_4_tensor_returns_undef() {
-        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross on 4-element Tensor should be Undef");
+        let a = Value::Tensor(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Real(0.0),
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross on 4-element Tensor should be Undef"
+        );
     }
 
     #[test]
@@ -2675,14 +3736,32 @@ mod tests {
         // cross([1m,0,0], [0,1N,0]) == [0,0,1 m·N] each component has Length*Force dimension
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
         let a = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         let b = Value::Tensor(vec![
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_types::dimension::FORCE,
+            },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::dimension::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_types::dimension::FORCE,
+            },
         ]);
         let result = eval_builtin("cross", &[a, b]);
         match result {
@@ -2691,12 +3770,22 @@ mod tests {
                 // [1,0,0] x [0,1,0] = [0*0-0*1, 0*0-1*0, 1*1-0*0] = [0, 0, 1]
                 for (i, item) in items.iter().enumerate() {
                     match item {
-                        Value::Scalar { si_value, dimension } => {
-                            assert_eq!(*dimension, length_force, "component {} dimension mismatch", i);
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
+                            assert_eq!(
+                                *dimension, length_force,
+                                "component {} dimension mismatch",
+                                i
+                            );
                             let expected = if i == 2 { 1.0 } else { 0.0 };
                             assert!(
                                 (si_value - expected).abs() < 1e-12,
-                                "component {}: expected {}, got {}", i, expected, si_value
+                                "component {}: expected {}, got {}",
+                                i,
+                                expected,
+                                si_value
                             );
                         }
                         other => panic!("expected Scalar at component {}, got {:?}", i, other),
@@ -2714,14 +3803,32 @@ mod tests {
         // dot([1m, 0, 0], [1N, 0, 0]) -> Scalar { si_value: 1.0, dimension: Length*Force }
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
         let a = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         let b = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_types::dimension::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_types::dimension::FORCE,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_types::dimension::FORCE,
+            },
         ]);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
@@ -2740,16 +3847,8 @@ mod tests {
     fn dot_vector_dimensioned() {
         // dot(Vector([1m,0,0]), Vector([1N,0,0])) -> Scalar{1.0, Length*Force}
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([1.0, 0.0, 0.0], reify_types::dimension::FORCE);
         assert_scalar_approx!(eval_builtin("dot", &[a, b]), 1.0, length_force);
     }
 
@@ -2762,32 +3861,15 @@ mod tests {
         let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let result = eval_builtin("cross", &[a, b]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "cross product must have 3 components");
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.0).abs() < 1e-12, "x: expected 0.0, got {}", v[0]);
-                assert!((v[1] - 0.0).abs() < 1e-12, "y: expected 0.0, got {}", v[1]);
-                assert!((v[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Vector([0,0,1]), got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.0, 0.0, 1.0]);
     }
 
     #[test]
     fn cross_vector_dimensioned_preserves_dimension() {
         // cross(Vector([1m,0,0]), Vector([0,1N,0])) each component has Length*Force dimension
         let length_force = DimensionVector::LENGTH.mul(&reify_types::dimension::FORCE);
-        let a = Value::Vector(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-        ]);
-        let b = Value::Vector(vec![
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 1.0, dimension: reify_types::dimension::FORCE },
-            Value::Scalar { si_value: 0.0, dimension: reify_types::dimension::FORCE },
-        ]);
+        let a = make_scalar_vec3([1.0, 0.0, 0.0], DimensionVector::LENGTH);
+        let b = make_scalar_vec3([0.0, 1.0, 0.0], reify_types::dimension::FORCE);
         let result = eval_builtin("cross", &[a, b]);
         match result {
             Value::Vector(items) => {
@@ -2796,15 +3878,25 @@ mod tests {
                 for item in &items {
                     match item {
                         Value::Scalar { dimension, .. } => {
-                            assert_eq!(*dimension, length_force, "cross component dimension mismatch");
+                            assert_eq!(
+                                *dimension, length_force,
+                                "cross component dimension mismatch"
+                            );
                         }
                         other => panic!("expected Scalar component, got {:?}", other),
                     }
                 }
                 let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((vals[2] - 1.0).abs() < 1e-12, "z: expected 1.0, got {}", vals[2]);
+                assert!(
+                    (vals[2] - 1.0).abs() < 1e-12,
+                    "z: expected 1.0, got {}",
+                    vals[2]
+                );
             }
-            other => panic!("expected Value::Vector for dimensioned cross, got {:?}", other),
+            other => panic!(
+                "expected Value::Vector for dimensioned cross, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2813,7 +3905,10 @@ mod tests {
         // cross of 2-element Value::Vector returns Undef (cross is only defined for 3-vectors)
         let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]);
         let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0)]);
-        assert!(eval_builtin("cross", &[a, b]).is_undef(), "cross of 2-element Vector should be Undef");
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross of 2-element Vector should be Undef"
+        );
     }
 
     // ── normalize() with Value::Vector inputs (step-5) ──────────────────────
@@ -2824,52 +3919,25 @@ mod tests {
         // NOT Value::Tensor — verifies wrapper-preservation at line 266
         let v = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3, "normalize must return 3 components");
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
-                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
-                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize must return Real (dimensionless) components"
-                );
-            }
-            other => panic!("expected Value::Vector, got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
     fn normalize_zero_vector_input_returns_undef() {
         // normalize(Vector([0,0,0])) -> Undef
         let v = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        assert!(eval_builtin("normalize", &[v]).is_undef(), "normalize of zero Vector should be Undef");
+        assert!(
+            eval_builtin("normalize", &[v]).is_undef(),
+            "normalize of zero Vector should be Undef"
+        );
     }
 
     #[test]
     fn normalize_dimensioned_vector_input() {
         // normalize(Vector([3m,4m,0m])) -> Value::Vector with dimensionless Real components
-        let v = Value::Vector(vec![
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
-        ]);
+        let v = make_scalar_vec3([3.0, 4.0, 0.0], DimensionVector::LENGTH);
         let result = eval_builtin("normalize", &[v]);
-        match result {
-            Value::Vector(items) => {
-                assert_eq!(items.len(), 3);
-                let vals: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((vals[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", vals[0]);
-                assert!((vals[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", vals[1]);
-                assert!((vals[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", vals[2]);
-                assert!(
-                    items.iter().all(|x| matches!(x, Value::Real(_))),
-                    "normalize of dimensioned Vector must return Real components"
-                );
-            }
-            other => panic!("expected Value::Vector for dimensioned normalize, got {:?}", other),
-        }
+        assert_vector3_approx!(Vector, result, [0.6, 0.8, 0.0]);
     }
 
     // ── magnitude() with Value::Vector inputs (step-7) ──────────────────────
@@ -2886,11 +3954,24 @@ mod tests {
         // magnitude(Vector([3mm,4mm,0])) == Scalar{0.005, LENGTH}
         // 3mm=0.003m, 4mm=0.004m -> magnitude=0.005m
         let v = Value::Vector(vec![
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.004,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
-        assert_scalar_approx!(eval_builtin("magnitude", &[v]), 0.005, DimensionVector::LENGTH);
+        assert_scalar_approx!(
+            eval_builtin("magnitude", &[v]),
+            0.005,
+            DimensionVector::LENGTH
+        );
     }
 
     /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }` where each
@@ -2900,12 +3981,19 @@ mod tests {
             match $expr {
                 Value::Orientation { w, x, y, z } => {
                     assert!(
-                        (w - $ew).abs() < 1e-12 &&
-                        (x - $ex).abs() < 1e-12 &&
-                        (y - $ey).abs() < 1e-12 &&
-                        (z - $ez).abs() < 1e-12,
+                        (w - $ew).abs() < 1e-12
+                            && (x - $ex).abs() < 1e-12
+                            && (y - $ey).abs() < 1e-12
+                            && (z - $ez).abs() < 1e-12,
                         "expected Orientation({}, {}, {}, {}), got Orientation({}, {}, {}, {})",
-                        $ew, $ex, $ey, $ez, w, x, y, z
+                        $ew,
+                        $ex,
+                        $ey,
+                        $ez,
+                        w,
+                        x,
+                        y,
+                        z
                     );
                 }
                 other => panic!(
@@ -2920,10 +4008,7 @@ mod tests {
 
     #[test]
     fn orient_identity_no_args() {
-        assert_orientation_approx!(
-            eval_builtin("orient_identity", &[]),
-            1.0, 0.0, 0.0, 0.0
-        );
+        assert_orientation_approx!(eval_builtin("orient_identity", &[]), 1.0, 0.0, 0.0, 0.0);
     }
 
     #[test]
@@ -2937,20 +4022,38 @@ mod tests {
     fn orient_quaternion_normalizes_unnormalized() {
         // (2,0,0,0) should normalize to (1,0,0,0)
         assert_orientation_approx!(
-            eval_builtin("orient_quaternion", &[
-                Value::Real(2.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
-            ]),
-            1.0, 0.0, 0.0, 0.0
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(2.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0)
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
         );
     }
 
     #[test]
     fn orient_quaternion_preserves_normalized() {
         assert_orientation_approx!(
-            eval_builtin("orient_quaternion", &[
-                Value::Real(1.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
-            ]),
-            1.0, 0.0, 0.0, 0.0
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0)
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
         );
     }
 
@@ -2958,32 +4061,68 @@ mod tests {
     fn orient_quaternion_arbitrary_normalizes() {
         // (1,1,1,1) norm = 2, normalized = (0.5, 0.5, 0.5, 0.5)
         assert_orientation_approx!(
-            eval_builtin("orient_quaternion", &[
-                Value::Real(1.0), Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)
-            ]),
-            0.5, 0.5, 0.5, 0.5
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(1.0),
+                    Value::Real(1.0),
+                    Value::Real(1.0),
+                    Value::Real(1.0)
+                ]
+            ),
+            0.5,
+            0.5,
+            0.5,
+            0.5
         );
     }
 
     #[test]
     fn orient_quaternion_zero_returns_undef() {
-        assert!(eval_builtin("orient_quaternion", &[
-            Value::Real(0.0), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0)
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
     fn orient_quaternion_nan_returns_undef() {
-        assert!(eval_builtin("orient_quaternion", &[
-            Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0)
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
     fn orient_quaternion_inf_returns_undef() {
-        assert!(eval_builtin("orient_quaternion", &[
-            Value::Real(f64::INFINITY), Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Real(f64::INFINITY),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0)
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
@@ -3003,7 +4142,10 @@ mod tests {
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
             eval_builtin("orient_axis_angle", &[axis, angle]),
-            cos_pi_4, 0.0, 0.0, sin_pi_4
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
         );
     }
 
@@ -3014,7 +4156,10 @@ mod tests {
         let angle = Value::Real(std::f64::consts::PI);
         assert_orientation_approx!(
             eval_builtin("orient_axis_angle", &[axis, angle]),
-            0.0, 1.0, 0.0, 0.0
+            0.0,
+            1.0,
+            0.0,
+            0.0
         );
     }
 
@@ -3030,7 +4175,10 @@ mod tests {
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
             eval_builtin("orient_axis_angle", &[axis, angle]),
-            cos_pi_4, 0.0, 0.0, sin_pi_4
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
         );
     }
 
@@ -3053,7 +4201,13 @@ mod tests {
         assert!(eval_builtin("orient_axis_angle", &[]).is_undef());
         assert!(eval_builtin("orient_axis_angle", &[Value::Real(1.0)]).is_undef());
         let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        assert!(eval_builtin("orient_axis_angle", &[axis.clone(), Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_axis_angle",
+                &[axis.clone(), Value::Real(1.0), Value::Real(2.0)]
+            )
+            .is_undef()
+        );
     }
 
     // ── orient_euler tests (step-12) ──────────────────────────────────────
@@ -3065,13 +4219,19 @@ mod tests {
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("xyz".into()),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]),
-            cos_pi_4, sin_pi_4, 0.0, 0.0
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            ),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
         );
     }
 
@@ -3082,47 +4242,71 @@ mod tests {
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("zyx".into()),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]),
-            cos_pi_4, 0.0, 0.0, sin_pi_4
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("zyx".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            ),
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
         );
     }
 
     #[test]
     fn orient_euler_zero_angles_is_identity() {
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("xyz".into()),
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]),
-            1.0, 0.0, 0.0, 0.0
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
         );
     }
 
     #[test]
     fn orient_euler_invalid_convention_returns_undef() {
-        assert!(eval_builtin("orient_euler", &[
-            Value::String("abc".into()),
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("abc".into()),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
     fn orient_euler_non_string_convention_returns_undef() {
-        assert!(eval_builtin("orient_euler", &[
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
@@ -3131,26 +4315,35 @@ mod tests {
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("xyz".into()),
-                Value::Scalar {
-                    si_value: std::f64::consts::FRAC_PI_2,
-                    dimension: DimensionVector::ANGLE,
-                },
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]),
-            cos_pi_4, sin_pi_4, 0.0, 0.0
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Scalar {
+                        si_value: std::f64::consts::FRAC_PI_2,
+                        dimension: DimensionVector::ANGLE,
+                    },
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            ),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
         );
     }
 
     #[test]
     fn orient_euler_wrong_arg_count_returns_undef() {
         assert!(eval_builtin("orient_euler", &[]).is_undef());
-        assert!(eval_builtin("orient_euler", &[
-            Value::String("xyz".into()),
-            Value::Real(0.0),
-        ]).is_undef());
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[Value::String("xyz".into()), Value::Real(0.0),]
+            )
+            .is_undef()
+        );
     }
 
     // ── orient_euler compound rotation tests (step-16) ───────────────────
@@ -3161,13 +4354,19 @@ mod tests {
         // Two non-zero angles exercise quat_mul with non-identity operands.
         // Expected: (0.5, 0.5, 0.5, 0.5)
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("xyz".into()),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(0.0),
-            ]),
-            0.5, 0.5, 0.5, 0.5
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(0.0),
+                ]
+            ),
+            0.5,
+            0.5,
+            0.5,
+            0.5
         );
     }
 
@@ -3177,16 +4376,19 @@ mod tests {
         // Three non-zero angles exercise full three-way quat_mul composition.
         // Analytically computed via Hamilton product of elementary rotations.
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("zyx".into()),
-                Value::Real(std::f64::consts::FRAC_PI_3),
-                Value::Real(std::f64::consts::FRAC_PI_4),
-                Value::Real(std::f64::consts::FRAC_PI_6),
-            ]),
-            0.82236317190599939,
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("zyx".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_3),
+                    Value::Real(std::f64::consts::FRAC_PI_4),
+                    Value::Real(std::f64::consts::FRAC_PI_6),
+                ]
+            ),
+            0.822_363_171_905_999_4,
             0.02226002671473384,
             0.43967973954090955,
-            0.36042340565035591
+            0.360_423_405_650_355_9
         );
     }
 
@@ -3196,13 +4398,19 @@ mod tests {
         // Proper Euler convention with compound rotation.
         // Expected: (0.5, 0.5, -0.5, 0.5)
         assert_orientation_approx!(
-            eval_builtin("orient_euler", &[
-                Value::String("xzx".into()),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(std::f64::consts::FRAC_PI_2),
-                Value::Real(0.0),
-            ]),
-            0.5, 0.5, -0.5, 0.5
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xzx".into()),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(std::f64::consts::FRAC_PI_2),
+                    Value::Real(0.0),
+                ]
+            ),
+            0.5,
+            0.5,
+            -0.5,
+            0.5
         );
     }
 
@@ -3214,10 +4422,7 @@ mod tests {
         let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        assert_orientation_approx!(
-            eval_builtin("orient_basis", &[x, y, z]),
-            1.0, 0.0, 0.0, 0.0
-        );
+        assert_orientation_approx!(eval_builtin("orient_basis", &[x, y, z]), 1.0, 0.0, 0.0, 0.0);
     }
 
     #[test]
@@ -3231,7 +4436,10 @@ mod tests {
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
         assert_orientation_approx!(
             eval_builtin("orient_basis", &[x, y, z]),
-            cos_pi_4, 0.0, 0.0, sin_pi_4
+            cos_pi_4,
+            0.0,
+            0.0,
+            sin_pi_4
         );
     }
 
@@ -3299,8 +4507,16 @@ mod tests {
         // A valid right-handed basis that's slightly off from exact (within tolerance).
         // Should still produce a valid orientation.
         let eps = 1e-8; // well within the 1e-6 tolerance
-        let x = Value::Tensor(vec![Value::Real(1.0 - eps), Value::Real(eps), Value::Real(0.0)]);
-        let y = Value::Tensor(vec![Value::Real(-eps), Value::Real(1.0 - eps), Value::Real(0.0)]);
+        let x = Value::Tensor(vec![
+            Value::Real(1.0 - eps),
+            Value::Real(eps),
+            Value::Real(0.0),
+        ]);
+        let y = Value::Tensor(vec![
+            Value::Real(-eps),
+            Value::Real(1.0 - eps),
+            Value::Real(0.0),
+        ]);
         let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         let result = eval_builtin("orient_basis", &[x, y, z]);
         assert!(
@@ -3310,16 +4526,337 @@ mod tests {
         );
     }
 
+    // ── orient NaN/Inf/edge-case tests (task-359) ─────────────────────────
+
+    #[test]
+    fn orient_euler_uppercase_convention_returns_undef() {
+        // Convention matching is case-sensitive: 'XYZ' is not recognized, only 'xyz'.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("XYZ".into()),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "uppercase convention 'XYZ' should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_nan_component_returns_undef() {
+        // NaN in a basis vector must be rejected — NaN bypasses IEEE 754 comparisons.
+        let x = Value::Tensor(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "NaN component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_nan_angle_returns_undef() {
+        // NaN angle must be rejected — trig_input should guard against non-finite values.
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::NAN);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_inf_angle_returns_undef() {
+        // Inf angle must be rejected — cos/sin of Inf produce NaN.
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Real(f64::INFINITY);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_euler_nan_angle_returns_undef() {
+        // NaN angle must be rejected in orient_euler.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(f64::NAN),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "NaN euler angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_non_unit_axis_normalizes() {
+        // orient_axis_angle normalizes the axis vector — [2,0,0] with π/2 should
+        // produce the same rotation as [1,0,0] with π/2: q = (cos(π/4), sin(π/4), 0, 0)
+        let axis_scaled = Value::Tensor(vec![
+            Value::Real(2.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let axis_unit = Value::Tensor(vec![
+            Value::Real(1.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+        let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis_scaled, angle.clone()]),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
+        );
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis_unit, angle]),
+            cos_pi_4,
+            sin_pi_4,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
+    fn orient_quaternion_dimensioned_scalar_returns_undef() {
+        // Dimensioned Scalars (e.g. LENGTH) must be rejected — quaternion components
+        // are pure numbers and should not carry physical dimensions.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
+    }
+
+    #[test]
+    fn orient_quaternion_accepts_dimensionless_scalar() {
+        // Dimensionless Scalars should be accepted — they are pure numbers.
+        assert_orientation_approx!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                    Value::Scalar {
+                        si_value: 0.0,
+                        dimension: DimensionVector::DIMENSIONLESS,
+                    },
+                ]
+            ),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
+    #[test]
+    fn orient_quaternion_rejects_angle_dimension() {
+        // ANGLE-dimensioned Scalars must also be rejected — quaternion components
+        // are dimensionless, not angles.
+        assert!(eval_builtin(
+            "orient_quaternion",
+            &[
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::ANGLE,
+                },
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ]
+        )
+        .is_undef());
+    }
+
+    #[test]
+    fn orient_euler_inf_angle_returns_undef() {
+        // Inf angle must be rejected in orient_euler.
+        assert!(
+            eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String("xyz".into()),
+                    Value::Real(f64::INFINITY),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef(),
+            "Inf euler angle should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_inf_component_returns_undef() {
+        // Inf in a basis vector must be rejected — magnitude would be Inf, not ≈1.
+        let x = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Inf component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_nan_axis_returns_undef() {
+        // NaN in axis must be rejected — vec3_norm(NaN, 0, 0) = sqrt(NaN) = NaN, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "NaN axis component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_inf_axis_returns_undef() {
+        // Inf in axis must be rejected — vec3_norm(Inf, 0, 0) = sqrt(Inf) = Inf, not finite.
+        let axis = Value::Tensor(vec![
+            Value::Real(f64::INFINITY),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let angle = Value::Real(std::f64::consts::FRAC_PI_2);
+        assert!(
+            eval_builtin("orient_axis_angle", &[axis, angle]).is_undef(),
+            "Inf axis component should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_unit_vector_returns_undef() {
+        // Orthogonal but non-unit x=[2,0,0] must be rejected — isolates the magnitude
+        // check (|x|=2.0, |2.0-1.0|=1.0 > 1e-6) from the orthogonality check.
+        let x = Value::Tensor(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit basis vector should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_unit_y_returns_undef() {
+        // Orthogonal but non-unit y=[0,2,0] must be rejected — isolates the mag_y
+        // branch of the unit-length guard (|y|=2.0, |2.0-1.0|=1.0 > 1e-6).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit y basis vector should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_basis_non_unit_z_returns_undef() {
+        // Orthogonal but non-unit z=[0,0,2] must be rejected — isolates the mag_z
+        // branch of the unit-length guard (|z|=2.0, |2.0-1.0|=1.0 > 1e-6).
+        let x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        assert!(
+            eval_builtin("orient_basis", &[x, y, z]).is_undef(),
+            "Non-unit z basis vector should be rejected"
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_integer_angle_accepted() {
+        // Value::Int(1) = 1 radian, exercises the Value::Int(i) => Some(*i as f64) arm
+        // in trig_input. Expected: half=0.5, q=(cos(0.5), 0, 0, sin(0.5)).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(1);
+        let half = 0.5_f64;
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            half.cos(),
+            0.0,
+            0.0,
+            half.sin()
+        );
+    }
+
+    #[test]
+    fn orient_axis_angle_integer_angle_zero_is_identity() {
+        // Value::Int(0) = 0 radians, exercises the zero-angle boundary of
+        // half-angle trig: cos(0)=1, sin(0)=0 → identity quaternion (1,0,0,0).
+        let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let angle = Value::Int(0);
+        assert_orientation_approx!(
+            eval_builtin("orient_axis_angle", &[axis, angle]),
+            1.0,
+            0.0,
+            0.0,
+            0.0
+        );
+    }
+
     #[test]
     fn dot_mixed_component_dimensions_returns_undef() {
         // A Tensor with mixed dimensions is not a valid physical vector
         let a = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::MASS },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::MASS,
+            },
         ]);
         let b = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
         assert!(
             eval_builtin("dot", &[a, b]).is_undef(),
@@ -3379,8 +4916,14 @@ mod tests {
         let result = eval_builtin(
             "complex",
             &[
-                Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 0.005,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 0.003,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
         match result {
@@ -3401,11 +4944,21 @@ mod tests {
         let result = eval_builtin(
             "complex",
             &[
-                Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-                Value::Scalar { si_value: 4.0, dimension: DimensionVector::TIME },
+                Value::Scalar {
+                    si_value: 0.003,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 4.0,
+                    dimension: DimensionVector::TIME,
+                },
             ],
         );
-        assert!(result.is_undef(), "expected Undef for dimension mismatch, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for dimension mismatch, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -3416,41 +4969,70 @@ mod tests {
             "complex",
             &[
                 Value::Real(3.0),
-                Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
+                Value::Scalar {
+                    si_value: 4.0,
+                    dimension: DimensionVector::LENGTH,
+                },
             ],
         );
-        assert!(result.is_undef(), "expected Undef for Real+Scalar mismatch, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for Real+Scalar mismatch, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn complex_zero_args_returns_undef() {
         let result = eval_builtin("complex", &[]);
-        assert!(result.is_undef(), "expected Undef for 0 args, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for 0 args, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn complex_three_args_returns_undef() {
-        let result =
-            eval_builtin("complex", &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-        assert!(result.is_undef(), "expected Undef for 3 args, got {:?}", result);
+        let result = eval_builtin(
+            "complex",
+            &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)],
+        );
+        assert!(
+            result.is_undef(),
+            "expected Undef for 3 args, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn complex_non_numeric_re_returns_undef() {
         let result = eval_builtin("complex", &[Value::Bool(true), Value::Real(3.0)]);
-        assert!(result.is_undef(), "expected Undef for non-numeric re, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for non-numeric re, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn complex_nan_arg_returns_undef() {
         let result = eval_builtin("complex", &[Value::Real(f64::NAN), Value::Real(3.0)]);
-        assert!(result.is_undef(), "expected Undef for NaN re, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for NaN re, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn complex_inf_arg_returns_undef() {
         let result = eval_builtin("complex", &[Value::Real(f64::INFINITY), Value::Real(3.0)]);
-        assert!(result.is_undef(), "expected Undef for Inf re, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for Inf re, got {:?}",
+            result
+        );
     }
 
     // ── re() and im() accessor tests (step-7) ────────────────────────────────
@@ -3458,28 +5040,44 @@ mod tests {
     #[test]
     fn re_dimensionless_returns_real() {
         // re(Complex{3,4,DIMLESS}) → Real(3.0)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("re", &[z]), 3.0);
     }
 
     #[test]
     fn im_dimensionless_returns_real() {
         // im(Complex{3,4,DIMLESS}) → Real(4.0)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("im", &[z]), 4.0);
     }
 
     #[test]
     fn re_dimensioned_returns_scalar() {
         // re(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}
-        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let z = Value::Complex {
+            re: 5.0,
+            im: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_scalar_approx!(eval_builtin("re", &[z]), 5.0, DimensionVector::LENGTH);
     }
 
     #[test]
     fn im_dimensioned_returns_scalar() {
         // im(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}
-        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let z = Value::Complex {
+            re: 5.0,
+            im: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_scalar_approx!(eval_builtin("im", &[z]), 3.0, DimensionVector::LENGTH);
     }
 
@@ -3498,7 +5096,11 @@ mod tests {
     #[test]
     fn conjugate_dimensionless_negates_im() {
         // conjugate(Complex{3,4,DIMLESS}) → Complex{3,-4,DIMLESS}
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let result = eval_builtin("conjugate", &[z]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3513,7 +5115,11 @@ mod tests {
     #[test]
     fn conjugate_dimensioned_preserves_dimension() {
         // conjugate(Complex{5,3,LENGTH}) → Complex{5,-3,LENGTH}
-        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let z = Value::Complex {
+            re: 5.0,
+            im: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         let result = eval_builtin("conjugate", &[z]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3530,20 +5136,96 @@ mod tests {
         assert!(eval_builtin("conjugate", &[Value::Real(3.0)]).is_undef());
     }
 
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with NaN im must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        let z = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with Inf re must return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_im_returns_undef() {
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("conjugate", &[z]).is_undef(),
+            "conjugate of Complex with -Inf im must return Undef"
+        );
+    }
+
     // ── magnitude on Complex tests (step-11) ─────────────────────────────────
 
     #[test]
     fn magnitude_complex_dimensionless_3_4_returns_5() {
         // magnitude(Complex{3,4,DIMLESS}) → Real(5.0) (3-4-5 Pythagorean triple)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("magnitude", &[z]), 5.0);
     }
 
     #[test]
     fn magnitude_complex_dimensioned_3_4_returns_scalar_5() {
         // magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
-        assert_scalar_approx!(eval_builtin("magnitude", &[z]), 5.0, DimensionVector::LENGTH);
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("magnitude", &[z]),
+            5.0,
+            DimensionVector::LENGTH
+        );
+    }
+
+    #[test]
+    fn magnitude_large_representable_complex_no_overflow() {
+        // magnitude(Complex{1e200, 0, DIMLESS}) must return Real(1e200), not Undef.
+        // Covers the generic 'magnitude' builtin path to complex_abs.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 1e200);
     }
 
     // ── phase() tests (step-13) ───────────────────────────────────────────────
@@ -3551,7 +5233,11 @@ mod tests {
     #[test]
     fn phase_complex_1_1_returns_pi_over_4() {
         // phase(1+1i) = π/4
-        let z = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_scalar_approx!(
             eval_builtin("phase", &[z]),
             std::f64::consts::FRAC_PI_4,
@@ -3562,14 +5248,22 @@ mod tests {
     #[test]
     fn phase_complex_1_0_returns_0() {
         // phase(1+0i) = 0
-        let z = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 1.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_scalar_approx!(eval_builtin("phase", &[z]), 0.0, DimensionVector::ANGLE);
     }
 
     #[test]
     fn phase_complex_0_1_returns_pi_over_2() {
         // phase(0+1i) = π/2
-        let z = Value::Complex { re: 0.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 0.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_scalar_approx!(
             eval_builtin("phase", &[z]),
             std::f64::consts::FRAC_PI_2,
@@ -3587,8 +5281,16 @@ mod tests {
     #[test]
     fn complex_add_dimensionless() {
         // complex_add(1+2i, 3+4i) = 4+6i
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let result = eval_builtin("complex_add", &[a, b]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3603,8 +5305,16 @@ mod tests {
     #[test]
     fn complex_add_dimensioned_preserves_dimension() {
         // complex_add(a+bi [LENGTH], c+di [LENGTH]) = (a+c)+(b+d)i [LENGTH]
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
         let result = eval_builtin("complex_add", &[a, b]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3618,14 +5328,26 @@ mod tests {
 
     #[test]
     fn complex_add_dimension_mismatch_returns_undef() {
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::LENGTH };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert!(eval_builtin("complex_add", &[a, b]).is_undef());
     }
 
     #[test]
     fn complex_add_non_complex_arg_returns_undef() {
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert!(eval_builtin("complex_add", &[a, Value::Real(3.0)]).is_undef());
     }
 
@@ -3634,8 +5356,16 @@ mod tests {
     #[test]
     fn complex_mul_dimensionless() {
         // (1+2i)(3+4i) = (3-8) + (4+6)i = -5 + 10i
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
-        let b = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         let result = eval_builtin("complex_mul", &[a, b]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3651,8 +5381,16 @@ mod tests {
     fn complex_mul_dimensioned_combines_dimensions() {
         // complex_mul(LENGTH, LENGTH) → result dimension is LENGTH^2 (AREA)
         let area_dim = DimensionVector::LENGTH.mul(&DimensionVector::LENGTH);
-        let a = Value::Complex { re: 1.0, im: 0.0, dimension: DimensionVector::LENGTH };
-        let b = Value::Complex { re: 2.0, im: 0.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Complex {
+            re: 2.0,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
         let result = eval_builtin("complex_mul", &[a, b]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3666,7 +5404,11 @@ mod tests {
 
     #[test]
     fn complex_mul_non_complex_returns_undef() {
-        let a = Value::Complex { re: 1.0, im: 2.0, dimension: DimensionVector::DIMENSIONLESS };
+        let a = Value::Complex {
+            re: 1.0,
+            im: 2.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert!(eval_builtin("complex_mul", &[a, Value::Real(3.0)]).is_undef());
     }
 
@@ -3689,8 +5431,14 @@ mod tests {
         let z = eval_builtin(
             "complex",
             &[
-                Value::Scalar { si_value: 50.0, dimension: impedance },
-                Value::Scalar { si_value: -25.0, dimension: impedance },
+                Value::Scalar {
+                    si_value: 50.0,
+                    dimension: impedance,
+                },
+                Value::Scalar {
+                    si_value: -25.0,
+                    dimension: impedance,
+                },
             ],
         );
         match &z {
@@ -3703,17 +5451,29 @@ mod tests {
         }
 
         // re accessor → Scalar{50, IMPEDANCE}
-        assert_scalar_approx!(eval_builtin("re", &[z.clone()]), 50.0, impedance);
+        assert_scalar_approx!(
+            eval_builtin("re", std::slice::from_ref(&z)),
+            50.0,
+            impedance
+        );
 
         // im accessor → Scalar{-25, IMPEDANCE}
-        assert_scalar_approx!(eval_builtin("im", &[z.clone()]), -25.0, impedance);
+        assert_scalar_approx!(
+            eval_builtin("im", std::slice::from_ref(&z)),
+            -25.0,
+            impedance
+        );
 
         // magnitude → Scalar{sqrt(50²+25²), IMPEDANCE} = Scalar{sqrt(3125), IMPEDANCE}
         let expected_mag = (50.0_f64 * 50.0 + 25.0 * 25.0).sqrt();
-        assert_scalar_approx!(eval_builtin("magnitude", &[z.clone()]), expected_mag, impedance);
+        assert_scalar_approx!(
+            eval_builtin("magnitude", std::slice::from_ref(&z)),
+            expected_mag,
+            impedance
+        );
 
         // conjugate → Complex{50, 25, IMPEDANCE}
-        let conj = eval_builtin("conjugate", &[z.clone()]);
+        let conj = eval_builtin("conjugate", std::slice::from_ref(&z));
         match &conj {
             Value::Complex { re, im, dimension } => {
                 assert!((re - 50.0).abs() < 1e-12);
@@ -3725,7 +5485,11 @@ mod tests {
 
         // phase → Scalar{atan2(-25, 50), ANGLE}
         let expected_phase = (-25.0_f64).atan2(50.0);
-        assert_scalar_approx!(eval_builtin("phase", &[z.clone()]), expected_phase, DimensionVector::ANGLE);
+        assert_scalar_approx!(
+            eval_builtin("phase", std::slice::from_ref(&z)),
+            expected_phase,
+            DimensionVector::ANGLE
+        );
     }
 
     // ── Voltage dimension spec tests (step-7) ────────────────────────────────
@@ -3748,8 +5512,14 @@ mod tests {
         let z = eval_builtin(
             "complex",
             &[
-                Value::Scalar { si_value: 3.0, dimension: v },
-                Value::Scalar { si_value: 4.0, dimension: v },
+                Value::Scalar {
+                    si_value: 3.0,
+                    dimension: v,
+                },
+                Value::Scalar {
+                    si_value: 4.0,
+                    dimension: v,
+                },
             ],
         );
         match &z {
@@ -3766,7 +5536,11 @@ mod tests {
     fn real_voltage_returns_scalar() {
         // real(complex_voltage) → Scalar{3, V}
         let v = voltage_dim();
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: v,
+        };
         assert_scalar_approx!(eval_builtin("real", &[z]), 3.0, v);
     }
 
@@ -3774,7 +5548,11 @@ mod tests {
     fn imag_voltage_returns_scalar() {
         // imag(complex_voltage) → Scalar{4, V}
         let v = voltage_dim();
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: v,
+        };
         assert_scalar_approx!(eval_builtin("imag", &[z]), 4.0, v);
     }
 
@@ -3782,7 +5560,11 @@ mod tests {
     fn complex_magnitude_voltage() {
         // complex_magnitude(Complex{3,4,V}) → Scalar{5.0, V}
         let v = voltage_dim();
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: v,
+        };
         assert_scalar_approx!(eval_builtin("complex_magnitude", &[z]), 5.0, v);
     }
 
@@ -3790,7 +5572,11 @@ mod tests {
     fn conjugate_voltage_preserves_dim() {
         // conjugate flips im sign, preserves voltage dimension
         let v = voltage_dim();
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: v };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: v,
+        };
         let result = eval_builtin("conjugate", &[z]);
         match result {
             Value::Complex { re, im, dimension } => {
@@ -3813,11 +5599,21 @@ mod tests {
         let result = eval_builtin(
             "complex",
             &[
-                Value::Scalar { si_value: 3.0, dimension: voltage },
-                Value::Scalar { si_value: 4.0, dimension: current },
+                Value::Scalar {
+                    si_value: 3.0,
+                    dimension: voltage,
+                },
+                Value::Scalar {
+                    si_value: 4.0,
+                    dimension: current,
+                },
             ],
         );
-        assert!(result.is_undef(), "expected Undef for V/A mismatch, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for V/A mismatch, got {:?}",
+            result
+        );
     }
 
     // ── Phase degree-equivalent spec test (step-9) ───────────────────────────
@@ -3825,7 +5621,11 @@ mod tests {
     #[test]
     fn phase_1_plus_i_approx_45_deg() {
         // phase(1+i) = atan2(1,1) = π/4 ≈ 0.7854 rad (45°)
-        let z = Value::Complex { re: 1.0, im: 1.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 1.0,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_scalar_approx!(
             eval_builtin("phase", &[z]),
             std::f64::consts::FRAC_PI_4, // π/4 ≈ 0.7854 rad ≈ 45°
@@ -3875,19 +5675,85 @@ mod tests {
         );
     }
 
+    // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
+
+    #[test]
+    fn re_nan_re_component_returns_undef() {
+        // re(Complex{NaN, 1.0, DIMLESS}) → Undef (NaN must not propagate)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with NaN real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn re_inf_re_component_returns_undef() {
+        // re(Complex{+Inf, 1.0, DIMLESS}) → Undef (Inf must not propagate)
+        let z = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with Inf real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn re_nan_dimensioned_returns_undef() {
+        // re(Complex{NaN, 1.0, LENGTH}) → Undef (dimensioned Scalar path)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("re", &[z]).is_undef(),
+            "re() with NaN dimensioned real component must return Undef"
+        );
+    }
+
+    #[test]
+    fn real_nan_re_component_returns_undef() {
+        // real(Complex{NaN, 1.0, DIMLESS}) → Undef (alias coverage)
+        let z = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("real", &[z]).is_undef(),
+            "real() with NaN real component must return Undef"
+        );
+    }
+
     // ── real() alias tests (step-1) ───────────────────────────────────────────
 
     #[test]
     fn real_dimensionless_returns_real() {
         // real(Complex{3,4,DIMLESS}) → Real(3.0)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("real", &[z]), 3.0);
     }
 
     #[test]
     fn real_dimensioned_returns_scalar() {
         // real(Complex{5,3,LENGTH}) → Scalar{5.0, LENGTH}
-        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let z = Value::Complex {
+            re: 5.0,
+            im: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_scalar_approx!(eval_builtin("real", &[z]), 5.0, DimensionVector::LENGTH);
     }
 
@@ -3896,19 +5762,85 @@ mod tests {
         assert!(eval_builtin("real", &[Value::Real(3.0)]).is_undef());
     }
 
+    // ── im/imag sanitize_value tests (task-358 step-3) ─────────────────────────
+
+    #[test]
+    fn im_nan_im_component_returns_undef() {
+        // im(Complex{1.0, NaN, DIMLESS}) → Undef (NaN must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with NaN imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_im_component_returns_undef() {
+        // im(Complex{1.0, +Inf, DIMLESS}) → Undef (Inf must not propagate)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn im_inf_dimensioned_returns_undef() {
+        // im(Complex{1.0, +Inf, LENGTH}) → Undef (dimensioned Scalar path)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            eval_builtin("im", &[z]).is_undef(),
+            "im() with Inf dimensioned imaginary component must return Undef"
+        );
+    }
+
+    #[test]
+    fn imag_nan_im_component_returns_undef() {
+        // imag(Complex{1.0, NaN, DIMLESS}) → Undef (alias coverage)
+        let z = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("imag", &[z]).is_undef(),
+            "imag() with NaN imaginary component must return Undef"
+        );
+    }
+
     // ── imag() alias tests (step-3) ───────────────────────────────────────────
 
     #[test]
     fn imag_dimensionless_returns_real() {
         // imag(Complex{3,4,DIMLESS}) → Real(4.0)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("imag", &[z]), 4.0);
     }
 
     #[test]
     fn imag_dimensioned_returns_scalar() {
         // imag(Complex{5,3,LENGTH}) → Scalar{3.0, LENGTH}
-        let z = Value::Complex { re: 5.0, im: 3.0, dimension: DimensionVector::LENGTH };
+        let z = Value::Complex {
+            re: 5.0,
+            im: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         assert_scalar_approx!(eval_builtin("imag", &[z]), 3.0, DimensionVector::LENGTH);
     }
 
@@ -3917,20 +5849,204 @@ mod tests {
         assert!(eval_builtin("imag", &[Value::Real(3.0)]).is_undef());
     }
 
-    // ── complex_magnitude() tests (step-5) ───────────────────────────────────
+    // ── magnitude / complex_magnitude edge-case tests: overflow, NaN, dimensioned ──
+
+    /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
+    /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
+    fn assert_complex_builtin_undef(
+        builtin: &str,
+        re: f64,
+        im: f64,
+        dimension: DimensionVector,
+    ) {
+        let z = Value::Complex {
+            re,
+            im,
+            dimension,
+        };
+        assert!(
+            eval_builtin(builtin, &[z]).is_undef(),
+            "{builtin} with Complex{{re={re}, im={im}, dimension={dimension:?}}} must return Undef"
+        );
+    }
+
+    #[test]
+    fn complex_overflow_returns_undef_both_builtins() {
+        // Both `magnitude` and `complex_magnitude` delegate to complex_abs for Complex
+        // inputs; f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_overflow_dimensioned_returns_undef_both_builtins() {
+        // Same overflow but through the Scalar branch (non-dimensionless).
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::MAX,
+                f64::MAX,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_nan_component_returns_undef_both_builtins() {
+        // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            // re=NaN
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NAN,
+                1.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            // im=NaN (symmetric case)
+            assert_complex_builtin_undef(
+                builtin,
+                1.0,
+                f64::NAN,
+                DimensionVector::DIMENSIONLESS,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_nan_dimensioned_returns_undef_both_builtins() {
+        // NaN component with non-dimensionless input exercises the Value::Scalar arm of
+        // sanitize_value (rather than Value::Real). Ensures the Scalar path is covered.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            // re=NaN, im=1.0, LENGTH dimension → hits Scalar arm
+            assert_complex_builtin_undef(builtin, f64::NAN, 1.0, DimensionVector::LENGTH);
+            // im=NaN, re=1.0, LENGTH dimension → symmetric case
+            assert_complex_builtin_undef(builtin, 1.0, f64::NAN, DimensionVector::LENGTH);
+        }
+    }
+
+    #[test]
+    fn complex_both_nan_returns_undef_both_builtins() {
+        // hypot(NaN, NaN) = NaN per IEEE 754; test both dimensionless and dimensioned paths.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NAN,
+                f64::NAN,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(builtin, f64::NAN, f64::NAN, DimensionVector::LENGTH);
+        }
+    }
+
+    #[test]
+    fn complex_direct_infinity_returns_undef_both_builtins() {
+        // Direct ±Infinity inputs (not computed overflow) are also caught by sanitize_value.
+        // hypot(±Inf, x) = +Inf for any finite x per IEEE 754.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                0.0,
+                DimensionVector::LENGTH,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::NEG_INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::NEG_INFINITY,
+                DimensionVector::LENGTH,
+            );
+            // im=+Inf (symmetric of re=+Inf)
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                0.0,
+                f64::INFINITY,
+                DimensionVector::LENGTH,
+            );
+            // re=-Inf (symmetric of im=-Inf)
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NEG_INFINITY,
+                0.0,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::NEG_INFINITY,
+                0.0,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    #[test]
+    fn complex_both_infinite_returns_undef_both_builtins() {
+        // hypot(Inf, Inf) = +Inf per IEEE 754; sanitize_value must catch it.
+        for builtin in ["magnitude", "complex_magnitude"] {
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                f64::INFINITY,
+                DimensionVector::DIMENSIONLESS,
+            );
+            assert_complex_builtin_undef(
+                builtin,
+                f64::INFINITY,
+                f64::INFINITY,
+                DimensionVector::LENGTH,
+            );
+        }
+    }
+
+    // ── complex_magnitude() tests ─────────────────────────────────────────────
 
     #[test]
     fn complex_magnitude_3_4_returns_5() {
         // complex_magnitude(Complex{3,4,DIMLESS}) → Real(5.0)
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::DIMENSIONLESS };
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 5.0);
     }
 
     #[test]
     fn complex_magnitude_dimensioned_returns_scalar() {
         // complex_magnitude(Complex{3,4,LENGTH}) → Scalar{5.0, LENGTH}
-        let z = Value::Complex { re: 3.0, im: 4.0, dimension: DimensionVector::LENGTH };
-        assert_scalar_approx!(eval_builtin("complex_magnitude", &[z]), 5.0, DimensionVector::LENGTH);
+        let z = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            5.0,
+            DimensionVector::LENGTH
+        );
     }
 
     #[test]
@@ -3940,17 +6056,54 @@ mod tests {
     }
 
     #[test]
-    fn complex_magnitude_overflow_returns_undef() {
-        // f64::MAX² + f64::MAX² overflows to +Inf; sanitize_value must catch it.
+    fn complex_magnitude_large_representable_no_overflow() {
+        // 1e200 is representable as f64, so |1e200 + 0i| = 1e200 must NOT overflow.
+        // The naive (re*re + im*im).sqrt() formula fails because 1e200² = Inf.
         let z = Value::Complex {
-            re: f64::MAX,
-            im: f64::MAX,
+            re: 1e200,
+            im: 0.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        assert!(
-            eval_builtin("complex_magnitude", &[z]).is_undef(),
-            "complex_magnitude with f64::MAX components must return Undef (Inf overflow)"
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 1e200);
+    }
+
+    #[test]
+    fn complex_magnitude_large_dimensioned_no_overflow() {
+        // |1e200 + 0i| with LENGTH dimension must return Scalar{1e200, LENGTH}, not Undef.
+        // Covers the dimensioned (Scalar) branch of complex_abs with large values.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 0.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_scalar_approx!(
+            eval_builtin("complex_magnitude", &[z]),
+            1e200,
+            DimensionVector::LENGTH
         );
+    }
+
+    #[test]
+    fn complex_magnitude_large_both_components() {
+        // |1e200 + 1e200i| = 1e200 * sqrt(2) ≈ 1.4142e200, fully representable.
+        // The naive formula fails because 1e200² + 1e200² overflows.
+        let z = Value::Complex {
+            re: 1e200,
+            im: 1e200,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let result = eval_builtin("complex_magnitude", &[z]);
+        let expected = 1e200 * std::f64::consts::SQRT_2;
+        match result {
+            Value::Real(v) => {
+                let rel_err = ((v - expected) / expected).abs();
+                assert!(
+                    rel_err < 1e-14,
+                    "expected Real({expected}) got Real({v}), relative error {rel_err}"
+                );
+            }
+            other => panic!("expected Real({expected}), got {other:?}"),
+        }
     }
 
     // --- non-numeric args → Undef ---
@@ -3960,17 +6113,29 @@ mod tests {
         // point3(String, Scalar, Scalar) → Undef
         let args = vec![
             Value::String("hello".to_string()),
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
-        assert!(eval_builtin("point3", &args).is_undef(), "non-numeric first arg must return Undef");
+        assert!(
+            eval_builtin("point3", &args).is_undef(),
+            "non-numeric first arg must return Undef"
+        );
     }
 
     #[test]
     fn vec2_non_numeric_undef() {
         // vec2(Bool, Bool) → Undef
         let args = vec![Value::Bool(true), Value::Bool(false)];
-        assert!(eval_builtin("vec2", &args).is_undef(), "Bool args must return Undef");
+        assert!(
+            eval_builtin("vec2", &args).is_undef(),
+            "Bool args must return Undef"
+        );
     }
 
     // --- wrong arg count → Undef ---
@@ -3979,40 +6144,76 @@ mod tests {
     fn point3_wrong_arg_count_undef() {
         // point3 with 2 args → Undef
         let args2 = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
-        assert!(eval_builtin("point3", &args2).is_undef(), "point3 with 2 args must be Undef");
+        assert!(
+            eval_builtin("point3", &args2).is_undef(),
+            "point3 with 2 args must be Undef"
+        );
         // point3 with 0 args → Undef
-        assert!(eval_builtin("point3", &[]).is_undef(), "point3 with 0 args must be Undef");
+        assert!(
+            eval_builtin("point3", &[]).is_undef(),
+            "point3 with 0 args must be Undef"
+        );
         // point3 with 4 args → Undef
         let args4 = vec![
-            Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0),
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(4.0),
         ];
-        assert!(eval_builtin("point3", &args4).is_undef(), "point3 with 4 args must be Undef");
+        assert!(
+            eval_builtin("point3", &args4).is_undef(),
+            "point3 with 4 args must be Undef"
+        );
     }
 
     #[test]
     fn point2_wrong_arg_count_undef() {
         // point2 with 3 args → Undef
         let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
-        assert!(eval_builtin("point2", &args3).is_undef(), "point2 with 3 args must be Undef");
+        assert!(
+            eval_builtin("point2", &args3).is_undef(),
+            "point2 with 3 args must be Undef"
+        );
         // point2 with 1 arg → Undef
-        assert!(eval_builtin("point2", &[Value::Real(1.0)]).is_undef(), "point2 with 1 arg must be Undef");
+        assert!(
+            eval_builtin("point2", &[Value::Real(1.0)]).is_undef(),
+            "point2 with 1 arg must be Undef"
+        );
     }
 
     #[test]
     fn vec3_wrong_arg_count_undef() {
-        assert!(eval_builtin("vec3", &[]).is_undef(), "vec3 with 0 args must be Undef");
+        assert!(
+            eval_builtin("vec3", &[]).is_undef(),
+            "vec3 with 0 args must be Undef"
+        );
         let args2 = vec![Value::Real(1.0), Value::Real(2.0)];
-        assert!(eval_builtin("vec3", &args2).is_undef(), "vec3 with 2 args must be Undef");
+        assert!(
+            eval_builtin("vec3", &args2).is_undef(),
+            "vec3 with 2 args must be Undef"
+        );
     }
 
     #[test]
     fn vec2_wrong_arg_count_undef() {
-        assert!(eval_builtin("vec2", &[]).is_undef(), "vec2 with 0 args must be Undef");
+        assert!(
+            eval_builtin("vec2", &[]).is_undef(),
+            "vec2 with 0 args must be Undef"
+        );
         let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
-        assert!(eval_builtin("vec2", &args3).is_undef(), "vec2 with 3 args must be Undef");
+        assert!(
+            eval_builtin("vec2", &args3).is_undef(),
+            "vec2 with 3 args must be Undef"
+        );
     }
 
     // --- dimension mismatch → Undef ---
@@ -4021,39 +6222,81 @@ mod tests {
     fn point3_dimension_mismatch_undef() {
         // point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) → Undef
         let args = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
-        assert!(eval_builtin("point3", &args).is_undef(), "mixed dimensions must return Undef");
+        assert!(
+            eval_builtin("point3", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
     }
 
     #[test]
     fn vec3_dimension_mismatch_undef() {
         let args = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::MASS,
+            },
         ];
-        assert!(eval_builtin("vec3", &args).is_undef(), "mixed dimensions must return Undef");
+        assert!(
+            eval_builtin("vec3", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
     }
 
     #[test]
     fn point2_dimension_mismatch_undef() {
         let args = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::MASS },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
         ];
-        assert!(eval_builtin("point2", &args).is_undef(), "mixed dimensions must return Undef");
+        assert!(
+            eval_builtin("point2", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
     }
 
     #[test]
     fn vec2_dimension_mismatch_undef() {
         let args = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
-        assert!(eval_builtin("vec2", &args).is_undef(), "mixed dimensions must return Undef");
+        assert!(
+            eval_builtin("vec2", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
     }
 
     // --- dimensionless components ---
@@ -4097,8 +6340,14 @@ mod tests {
     fn point2_basic() {
         // point2(7m, 8m) → Value::Point([Scalar(7,L), Scalar(8,L)])
         let args = vec![
-            Value::Scalar { si_value: 7.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 8.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 7.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 8.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
         let result = eval_builtin("point2", &args);
         match result {
@@ -4117,9 +6366,18 @@ mod tests {
     fn vec3_basic() {
         // vec3(4m, 5m, 6m) → Value::Vector([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
         let args = vec![
-            Value::Scalar { si_value: 4.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 6.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
         let result = eval_builtin("vec3", &args);
         match result {
@@ -4139,9 +6397,18 @@ mod tests {
     fn point3_basic() {
         // point3(1m, 2m, 3m) → Value::Point([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
         let args = vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ];
         let result = eval_builtin("point3", &args);
         match result {
@@ -4160,11 +6427,17 @@ mod tests {
     #[test]
     fn point_vector_semantic_distinction() {
         // point2 and vec2 with identical args must produce distinct Value variants
-        let a = Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH };
-        let b = Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH };
+        let a = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
 
         let p2 = eval_builtin("point2", &[a.clone(), b.clone()]);
-        let v2 = eval_builtin("vec2",   &[a.clone(), b.clone()]);
+        let v2 = eval_builtin("vec2", &[a.clone(), b.clone()]);
 
         // point2 must produce Value::Point
         assert!(
@@ -4184,9 +6457,12 @@ mod tests {
         assert_ne!(p2, v2, "point2 and vec2 with identical args must differ");
 
         // point3 vs vec3
-        let c = Value::Scalar { si_value: 3.0, dimension: DimensionVector::LENGTH };
+        let c = Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
         let p3 = eval_builtin("point3", &[a.clone(), b.clone(), c.clone()]);
-        let v3 = eval_builtin("vec3",   &[a.clone(), b.clone(), c.clone()]);
+        let v3 = eval_builtin("vec3", &[a.clone(), b.clone(), c.clone()]);
 
         assert!(
             matches!(&p3, Value::Point(items) if items.len() == 3),
@@ -4202,11 +6478,13 @@ mod tests {
 
         // content_hash: Point and Vector with same components produce different hashes
         assert_ne!(
-            p2.content_hash(), v2.content_hash(),
+            p2.content_hash(),
+            v2.content_hash(),
             "point2 and vec2 content_hash must differ"
         );
         assert_ne!(
-            p3.content_hash(), v3.content_hash(),
+            p3.content_hash(),
+            v3.content_hash(),
             "point3 and vec3 content_hash must differ"
         );
 
@@ -4232,11 +6510,24 @@ mod tests {
         // magnitude(Point([3m,4m,0m])) ≈ Scalar{0.005, LENGTH}
         // 3mm=0.003m, 4mm=0.004m → |v|=0.005m
         let p = Value::Point(vec![
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.004, dimension: DimensionVector::LENGTH },
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.004,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
         ]);
-        assert_scalar_approx!(eval_builtin("magnitude", &[p]), 0.005, DimensionVector::LENGTH);
+        assert_scalar_approx!(
+            eval_builtin("magnitude", &[p]),
+            0.005,
+            DimensionVector::LENGTH
+        );
     }
 
     #[test]
@@ -4244,16 +6535,7 @@ mod tests {
         // normalize(Point([3,4,0])) → Point([0.6,0.8,0.0])
         let p = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
         let result = eval_builtin("normalize", &[p]);
-        match result {
-            Value::Point(items) => {
-                assert_eq!(items.len(), 3);
-                let v: Vec<f64> = items.iter().map(|x| x.as_f64().unwrap()).collect();
-                assert!((v[0] - 0.6).abs() < 1e-12, "x: expected 0.6, got {}", v[0]);
-                assert!((v[1] - 0.8).abs() < 1e-12, "y: expected 0.8, got {}", v[1]);
-                assert!((v[2] - 0.0).abs() < 1e-12, "z: expected 0.0, got {}", v[2]);
-            }
-            other => panic!("expected Value::Point([0.6,0.8,0.0]), got {:?}", other),
-        }
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
     }
 
     #[test]
@@ -4275,16 +6557,103 @@ mod tests {
         );
     }
 
+    // ── mixed-type contract tests (task 379) ─────────────────────────────────
+
+    #[test]
+    fn cross_vector_tensor_returns_tensor_wrapper() {
+        // cross(Vector, Tensor) falls through to Tensor wrapper (line 366: _ => Value::Tensor)
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_tensor_vector_returns_tensor_wrapper() {
+        // cross(Tensor, Vector) also falls through to Tensor wrapper
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let result = eval_builtin("cross", &[a, b]);
+        assert_vector3_approx!(Tensor, result, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn cross_point_vector_returns_undef() {
+        // ANY Point input to cross returns Undef (line 364)
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Point, Vector) should return Undef"
+        );
+    }
+
+    #[test]
+    fn cross_vector_point_returns_undef() {
+        // Second-arg Point also returns Undef
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let b = Value::Point(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        assert!(
+            eval_builtin("cross", &[a, b]).is_undef(),
+            "cross(Vector, Point) should return Undef"
+        );
+    }
+
+    #[test]
+    fn dot_point_vector_returns_scalar() {
+        // dot accepts mixed Point+Vector inputs via tensor_components_f64
+        let a = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Vector(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn dot_vector_point_returns_scalar() {
+        // Argument order symmetry for mixed dot
+        let a = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+        let b = Value::Point(vec![Value::Real(4.0), Value::Real(5.0), Value::Real(6.0)]);
+        assert_real_approx!(eval_builtin("dot", &[a, b]), 32.0);
+    }
+
+    #[test]
+    fn normalize_point_dimensioned_returns_point() {
+        // normalize(Point([3m,4m,0m])) → Point([0.6, 0.8, 0.0]) with Real components
+        let p = Value::Point(vec![
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ]);
+        let result = eval_builtin("normalize", &[p]);
+        assert_vector3_approx!(Point, result, [0.6, 0.8, 0.0]);
+    }
+
     // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
 
     #[test]
     fn construct_point_or_vector_empty_args_returns_undef() {
         // When expected_n=0 and args=[], should return Undef, not panic.
         let result = construct_point_or_vector(&[], 0, true);
-        assert!(result.is_undef(), "expected Undef for empty args with expected_n=0, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for empty args with expected_n=0, got {:?}",
+            result
+        );
 
         let result = construct_point_or_vector(&[], 0, false);
-        assert!(result.is_undef(), "expected Undef for empty vector args with expected_n=0, got {:?}", result);
+        assert!(
+            result.is_undef(),
+            "expected Undef for empty vector args with expected_n=0, got {:?}",
+            result
+        );
     }
 
     // ── frame3 tests (step-5) ────────────────────────────────────────────────
@@ -4298,7 +6667,12 @@ mod tests {
     }
 
     fn make_identity_orientation() -> Value {
-        Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 
     #[test]
@@ -4307,7 +6681,10 @@ mod tests {
         let basis = make_identity_orientation();
         let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
         match result {
-            Value::Frame { origin: o, basis: b } => {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
                 assert_eq!(*o, origin);
                 assert_eq!(*b, basis);
             }
@@ -4322,10 +6699,18 @@ mod tests {
             Value::length(6.0),
             Value::length(7.0),
         ]);
-        let basis = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let basis = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
         match result {
-            Value::Frame { origin: o, basis: b } => {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
                 assert_eq!(*o, origin, "origin should be stored exactly");
                 assert_eq!(*b, basis, "basis should be stored exactly");
             }
@@ -4373,13 +6758,22 @@ mod tests {
     }
 
     #[test]
+    fn frame3_point4_origin_returns_undef() {
+        // Point4 (wrong component count) should be rejected
+        let origin_4d = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0),
+        ]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_4d, basis]).is_undef());
+    }
+
+    #[test]
     fn frame3_dimensionless_point3_is_accepted() {
         // Point3 with dimensionless (Real) components is accepted
-        let origin = Value::Point(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
         let basis = make_identity_orientation();
         let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
         assert!(
@@ -4411,7 +6805,10 @@ mod tests {
                     Value::length(0.0),
                     Value::length(0.0),
                 ]);
-                assert_eq!(*origin, expected_origin, "identity origin should be zero Point3<Length>");
+                assert_eq!(
+                    *origin, expected_origin,
+                    "identity origin should be zero Point3<Length>"
+                );
             }
             other => panic!("expected Value::Frame, got {:?}", other),
         }
@@ -4422,8 +6819,16 @@ mod tests {
         let result = eval_builtin("frame3_identity", &[]);
         match result {
             Value::Frame { basis, .. } => {
-                let expected_basis = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-                assert_eq!(*basis, expected_basis, "identity basis should be (w:1,x:0,y:0,z:0)");
+                let expected_basis = Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                };
+                assert_eq!(
+                    *basis, expected_basis,
+                    "identity basis should be (w:1,x:0,y:0,z:0)"
+                );
             }
             other => panic!("expected Value::Frame, got {:?}", other),
         }
@@ -4433,6 +6838,13 @@ mod tests {
     fn frame3_identity_with_any_args_returns_undef() {
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
         assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
     }
 
     // ── transform3 tests (step-5) ─────────────────────────────────────────────
@@ -4451,7 +6863,10 @@ mod tests {
         let translation = make_vec3_length();
         let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
         match result {
-            Value::Transform { rotation: r, translation: t } => {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
                 assert_eq!(*r, rotation);
                 assert_eq!(*t, translation);
             }
@@ -4461,7 +6876,12 @@ mod tests {
 
     #[test]
     fn transform3_stores_rotation_and_translation_correctly() {
-        let rotation = Value::Orientation { w: 0.0, x: 1.0, y: 0.0, z: 0.0 };
+        let rotation = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
         let translation = Value::Vector(vec![
             Value::length(5.0),
             Value::length(6.0),
@@ -4469,7 +6889,10 @@ mod tests {
         ]);
         let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
         match result {
-            Value::Transform { rotation: r, translation: t } => {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
                 assert_eq!(*r, rotation, "rotation should be stored exactly");
                 assert_eq!(*t, translation, "translation should be stored exactly");
             }
@@ -4503,20 +6926,36 @@ mod tests {
     #[test]
     fn transform3_non_vector_second_arg_returns_undef() {
         // Second arg is Real, not Vector
-        assert!(eval_builtin("transform3", &[make_identity_orientation(), Value::Real(1.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "transform3",
+                &[make_identity_orientation(), Value::Real(1.0)]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
     fn transform3_point3_second_arg_returns_undef() {
         // Second arg is Point3, not Vector3
-        let pt3 = Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let pt3 = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
         assert!(eval_builtin("transform3", &[make_identity_orientation(), pt3]).is_undef());
     }
 
     #[test]
     fn transform3_orientation_second_arg_returns_undef() {
         // Second arg is Orientation, not Vector3
-        assert!(eval_builtin("transform3", &[make_identity_orientation(), make_identity_orientation()]).is_undef());
+        assert!(
+            eval_builtin(
+                "transform3",
+                &[make_identity_orientation(), make_identity_orientation()]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
@@ -4529,12 +6968,11 @@ mod tests {
     #[test]
     fn transform3_dimensionless_vector3_is_accepted() {
         // Vector3 with dimensionless (Real) components is accepted
-        let translation = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let result = eval_builtin("transform3", &[make_identity_orientation(), translation.clone()]);
+        let translation = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin(
+            "transform3",
+            &[make_identity_orientation(), translation.clone()],
+        );
         assert!(
             matches!(&result, Value::Transform { .. }),
             "expected Value::Transform for dimensionless Vector3 translation, got {:?}",
@@ -4559,8 +6997,16 @@ mod tests {
         let result = eval_builtin("transform3_identity", &[]);
         match result {
             Value::Transform { rotation, .. } => {
-                let expected = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-                assert_eq!(*rotation, expected, "identity rotation should be (w:1,x:0,y:0,z:0)");
+                let expected = Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                };
+                assert_eq!(
+                    *rotation, expected,
+                    "identity rotation should be (w:1,x:0,y:0,z:0)"
+                );
             }
             other => panic!("expected Value::Transform, got {:?}", other),
         }
@@ -4576,7 +7022,10 @@ mod tests {
                     Value::length(0.0),
                     Value::length(0.0),
                 ]);
-                assert_eq!(*translation, expected, "identity translation should be zero Vector3<Length>");
+                assert_eq!(
+                    *translation, expected,
+                    "identity translation should be zero Vector3<Length>"
+                );
             }
             other => panic!("expected Value::Transform, got {:?}", other),
         }
@@ -4585,13 +7034,19 @@ mod tests {
     #[test]
     fn transform3_identity_with_any_args_returns_undef() {
         assert!(eval_builtin("transform3_identity", &[Value::Real(1.0)]).is_undef());
-        assert!(eval_builtin("transform3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin("transform3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef()
+        );
     }
 
     // ── axis_z tests (step-5) ────────────────────────────────────────────────
 
     fn make_point3_length() -> Value {
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
     }
 
     fn make_point2_length() -> Value {
@@ -4601,14 +7056,18 @@ mod tests {
     #[test]
     fn axis_z_with_point3_returns_axis() {
         let origin = make_point3_length();
-        let result = eval_builtin("axis_z", &[origin.clone()]);
-        assert!(matches!(result, Value::Axis { .. }), "expected Value::Axis, got {:?}", result);
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
+        assert!(
+            matches!(result, Value::Axis { .. }),
+            "expected Value::Axis, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn axis_z_stores_origin_correctly() {
         let origin = make_point3_length();
-        let result = eval_builtin("axis_z", &[origin.clone()]);
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
         match result {
             Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
             other => panic!("expected Value::Axis, got {:?}", other),
@@ -4620,17 +7079,15 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_z", &[origin]);
         match result {
-            Value::Axis { direction, .. } => {
-                match *direction {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps.len(), 3);
-                        assert_eq!(comps[0], Value::Real(0.0));
-                        assert_eq!(comps[1], Value::Real(0.0));
-                        assert_eq!(comps[2], Value::Real(1.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps.len(), 3);
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(1.0));
                 }
-            }
+                other => panic!("expected Vector, got {:?}", other),
+            },
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -4652,7 +7109,11 @@ mod tests {
 
     #[test]
     fn axis_z_vector3_returns_undef() {
-        let vec3 = Value::Vector(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)]);
+        let vec3 = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
         assert!(eval_builtin("axis_z", &[vec3]).is_undef());
     }
 
@@ -4663,16 +7124,14 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_x", &[origin]);
         match result {
-            Value::Axis { direction, .. } => {
-                match *direction {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(1.0));
-                        assert_eq!(comps[1], Value::Real(0.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps[0], Value::Real(1.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
                 }
-            }
+                other => panic!("expected Vector, got {:?}", other),
+            },
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -4682,16 +7141,14 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_y", &[origin]);
         match result {
-            Value::Axis { direction, .. } => {
-                match *direction {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(0.0));
-                        assert_eq!(comps[1], Value::Real(1.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(1.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
                 }
-            }
+                other => panic!("expected Vector, got {:?}", other),
+            },
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -4709,7 +7166,7 @@ mod tests {
     #[test]
     fn axis_x_with_dimensionless_point3() {
         let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
-        let result = eval_builtin("axis_x", &[origin.clone()]);
+        let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
         match result {
             Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
             other => panic!("expected Axis, got {:?}", other),
@@ -4719,17 +7176,29 @@ mod tests {
     // ── bbox tests (step-9) ──────────────────────────────────────────────────
 
     fn make_point3_min() -> Value {
-        Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
     }
 
     fn make_point3_max() -> Value {
-        Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)])
+        Value::Point(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ])
     }
 
     #[test]
     fn bbox_with_two_point3_returns_bounding_box() {
         let result = eval_builtin("bbox", &[make_point3_min(), make_point3_max()]);
-        assert!(matches!(result, Value::BoundingBox { .. }), "expected BoundingBox, got {:?}", result);
+        assert!(
+            matches!(result, Value::BoundingBox { .. }),
+            "expected BoundingBox, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4748,18 +7217,35 @@ mod tests {
 
     #[test]
     fn bbox_mismatched_dimensions_returns_undef() {
-        let min = Value::Point(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let min = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let max = Value::Point(vec![
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
         ]);
         assert!(eval_builtin("bbox", &[min, max]).is_undef());
     }
 
     #[test]
     fn bbox_non_point_arg_returns_undef() {
-        let vec3 = Value::Vector(vec![Value::length(0.0), Value::length(0.0), Value::length(0.0)]);
+        let vec3 = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
         let pt3 = make_point3_min();
         assert!(eval_builtin("bbox", &[vec3, pt3]).is_undef());
     }
@@ -4775,13 +7261,23 @@ mod tests {
     fn bbox_wrong_arg_count_returns_undef() {
         assert!(eval_builtin("bbox", &[]).is_undef());
         assert!(eval_builtin("bbox", &[make_point3_min()]).is_undef());
-        assert!(eval_builtin("bbox", &[make_point3_min(), make_point3_max(), make_point3_min()]).is_undef());
+        assert!(
+            eval_builtin(
+                "bbox",
+                &[make_point3_min(), make_point3_max(), make_point3_min()]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
     fn bbox_one_point_one_vector_returns_undef() {
         let pt3 = make_point3_min();
-        let vec3 = Value::Vector(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)]);
+        let vec3 = Value::Vector(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ]);
         assert!(eval_builtin("bbox", &[pt3, vec3]).is_undef());
     }
 
@@ -4789,8 +7285,16 @@ mod tests {
 
     fn make_bbox() -> Value {
         Value::BoundingBox {
-            min: Box::new(Value::Point(vec![Value::length(1.0), Value::length(2.0), Value::length(3.0)])),
-            max: Box::new(Value::Point(vec![Value::length(4.0), Value::length(6.0), Value::length(9.0)])),
+            min: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::length(2.0),
+                Value::length(3.0),
+            ])),
+            max: Box::new(Value::Point(vec![
+                Value::length(4.0),
+                Value::length(6.0),
+                Value::length(9.0),
+            ])),
         }
     }
 
@@ -4851,8 +7355,16 @@ mod tests {
     #[test]
     fn bbox_size_dimensionless_bbox() {
         let bbox = Value::BoundingBox {
-            min: Box::new(Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)])),
-            max: Box::new(Value::Point(vec![Value::Real(2.0), Value::Real(4.0), Value::Real(6.0)])),
+            min: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            max: Box::new(Value::Point(vec![
+                Value::Real(2.0),
+                Value::Real(4.0),
+                Value::Real(6.0),
+            ])),
         };
         let result = eval_builtin("bbox_size", &[bbox]);
         match result {
@@ -4870,7 +7382,11 @@ mod tests {
     #[test]
     fn plane_xz_with_length_offset_returns_plane() {
         let result = eval_builtin("plane_xz", &[Value::length(0.003)]);
-        assert!(matches!(result, Value::Plane { .. }), "expected Value::Plane, got {:?}", result);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4904,7 +7420,11 @@ mod tests {
     #[test]
     fn plane_yz_with_length_offset_returns_plane() {
         let result = eval_builtin("plane_yz", &[Value::length(0.007)]);
-        assert!(matches!(result, Value::Plane { .. }), "expected Value::Plane, got {:?}", result);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4962,7 +7482,11 @@ mod tests {
         // plane_xy(5mm) → Plane with origin=(0m,0m,5mm) and normal=(0,0,1)
         let offset = Value::length(0.005); // 5mm in SI (meters)
         let result = eval_builtin("plane_xy", &[offset]);
-        assert!(matches!(result, Value::Plane { .. }), "expected Value::Plane, got {:?}", result);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -4991,17 +7515,15 @@ mod tests {
         let offset = Value::length(0.005);
         let result = eval_builtin("plane_xy", &[offset]);
         match result {
-            Value::Plane { normal, .. } => {
-                match *normal {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps.len(), 3, "normal should be 3D");
-                        assert_eq!(comps[0], Value::Real(0.0), "normal.x should be 0");
-                        assert_eq!(comps[1], Value::Real(0.0), "normal.y should be 0");
-                        assert_eq!(comps[2], Value::Real(1.0), "normal.z should be 1");
-                    }
-                    other => panic!("normal should be Vector, got {:?}", other),
+            Value::Plane { normal, .. } => match *normal {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps.len(), 3, "normal should be 3D");
+                    assert_eq!(comps[0], Value::Real(0.0), "normal.x should be 0");
+                    assert_eq!(comps[1], Value::Real(0.0), "normal.y should be 0");
+                    assert_eq!(comps[2], Value::Real(1.0), "normal.z should be 1");
                 }
-            }
+                other => panic!("normal should be Vector, got {:?}", other),
+            },
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
@@ -5036,17 +7558,15 @@ mod tests {
         // plane_xy(Real(0.0)) → dimensionless origin with Real(0.0) components
         let result = eval_builtin("plane_xy", &[Value::Real(0.0)]);
         match result {
-            Value::Plane { origin, .. } => {
-                match *origin {
-                    Value::Point(ref comps) => {
-                        assert_eq!(comps.len(), 3);
-                        assert_eq!(comps[0], Value::Real(0.0));
-                        assert_eq!(comps[1], Value::Real(0.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Point, got {:?}", other),
+            Value::Plane { origin, .. } => match *origin {
+                Value::Point(ref comps) => {
+                    assert_eq!(comps.len(), 3);
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
                 }
-            }
+                other => panic!("expected Point, got {:?}", other),
+            },
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
@@ -5068,7 +7588,12 @@ mod tests {
     /// Helper: 90-degree Z rotation quaternion.
     fn make_rot90z() -> Value {
         let s = std::f64::consts::FRAC_1_SQRT_2;
-        Value::Orientation { w: s, x: 0.0, y: 0.0, z: s }
+        Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        }
     }
 
     /// frame_to_frame(F, F) should return an identity transform.
@@ -5077,7 +7602,10 @@ mod tests {
         let f = make_frame(5.0, 3.0, 1.0, make_identity_orientation());
         let result = eval_builtin("frame_to_frame", &[f.clone(), f]);
         match result {
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 // Identity rotation
                 match *rotation {
                     Value::Orientation { w, x, y, z } => {
@@ -5089,7 +7617,10 @@ mod tests {
                             && x.abs() < 1e-10
                             && y.abs() < 1e-10
                             && z.abs() < 1e-10;
-                        assert!(pos_ok || neg_ok, "expected identity rotation, got ({w},{x},{y},{z})");
+                        assert!(
+                            pos_ok || neg_ok,
+                            "expected identity rotation, got ({w},{x},{y},{z})"
+                        );
                     }
                     ref other => panic!("expected Orientation, got {:?}", other),
                 }
@@ -5115,7 +7646,10 @@ mod tests {
         let to = make_frame(5.0, 0.0, 0.0, make_identity_orientation());
         let result = eval_builtin("frame_to_frame", &[from, to]);
         match result {
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 // Identity rotation
                 match *rotation {
                     Value::Orientation { w, x, y, z } => {
@@ -5127,7 +7661,10 @@ mod tests {
                             && x.abs() < 1e-10
                             && y.abs() < 1e-10
                             && z.abs() < 1e-10;
-                        assert!(pos_ok || neg_ok, "expected identity rotation, got ({w},{x},{y},{z})");
+                        assert!(
+                            pos_ok || neg_ok,
+                            "expected identity rotation, got ({w},{x},{y},{z})"
+                        );
                     }
                     ref other => panic!("expected Orientation, got {:?}", other),
                 }
@@ -5155,7 +7692,10 @@ mod tests {
         let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
         let result = eval_builtin("frame_to_frame", &[from, to]);
         match result {
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 // 90Z rotation
                 let s = std::f64::consts::FRAC_1_SQRT_2;
                 match *rotation {
@@ -5168,7 +7708,10 @@ mod tests {
                             && x.abs() < 1e-10
                             && y.abs() < 1e-10
                             && (z + s).abs() < 1e-10;
-                        assert!(pos_ok || neg_ok, "expected 90Z rotation, got ({w},{x},{y},{z})");
+                        assert!(
+                            pos_ok || neg_ok,
+                            "expected 90Z rotation, got ({w},{x},{y},{z})"
+                        );
                     }
                     ref other => panic!("expected Orientation, got {:?}", other),
                 }
@@ -5198,7 +7741,10 @@ mod tests {
         let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
         let result = eval_builtin("frame_to_frame", &[from, to]);
         match result {
-            Value::Transform { rotation, translation } => {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
                 let s = std::f64::consts::FRAC_1_SQRT_2;
                 match *rotation {
                     Value::Orientation { w, x, y, z } => {
@@ -5210,7 +7756,10 @@ mod tests {
                             && x.abs() < 1e-10
                             && y.abs() < 1e-10
                             && (z + s).abs() < 1e-10;
-                        assert!(pos_ok || neg_ok, "expected 90Z rotation, got ({w},{x},{y},{z})");
+                        assert!(
+                            pos_ok || neg_ok,
+                            "expected 90Z rotation, got ({w},{x},{y},{z})"
+                        );
                     }
                     ref other => panic!("expected Orientation, got {:?}", other),
                 }
@@ -5237,12 +7786,72 @@ mod tests {
         assert!(eval_builtin("frame_to_frame", &[]).is_undef());
         // One arg
         let f = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
-        assert!(eval_builtin("frame_to_frame", &[f.clone()]).is_undef());
+        assert!(eval_builtin("frame_to_frame", std::slice::from_ref(&f)).is_undef());
         // Three args
         assert!(eval_builtin("frame_to_frame", &[f.clone(), f.clone(), f.clone()]).is_undef());
         // Non-Frame args
         assert!(eval_builtin("frame_to_frame", &[Value::Real(1.0), f.clone()]).is_undef());
         assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
+    }
+
+    /// frame_to_frame with NaN in origin_from x-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_from_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_from should return Undef"
+        );
+    }
+
+    /// frame_to_frame with NaN in origin_to y-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_to_returns_undef() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_to should return Undef"
+        );
+    }
+
+    /// frame_to_frame with mixed-dimension origin (length, angle, length) should return Undef.
+    #[test]
+    fn frame_to_frame_mixed_dimension_origin_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::angle(0.0),  // dimension mismatch within same origin
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "mixed-dimension origin should return Undef"
+        );
     }
 
     /// frame_to_frame with mismatched origin dimensions (LENGTH vs ANGLE) returns Undef.
@@ -5267,5 +7876,413 @@ mod tests {
             basis: Box::new(make_identity_orientation()),
         };
         assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
+    }
+
+    // ── normalize_quaternion near-zero tests ────────────────────────────────
+
+    /// normalize_quaternion with near-zero norm (1e-17 < f64::EPSILON) should return None.
+    /// Currently passes because norm != 0.0 is true for 1e-17.
+    #[test]
+    fn normalize_quaternion_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-17, 0.0, 0.0, 0.0).is_none(),
+            "near-zero quaternion (norm=1e-17) should return None"
+        );
+    }
+
+    /// normalize_quaternion with all near-zero components should return None.
+    #[test]
+    fn normalize_quaternion_all_near_zero_returns_none() {
+        assert!(
+            normalize_quaternion(1e-18, 1e-18, 1e-18, 1e-18).is_none(),
+            "all near-zero components should return None"
+        );
+    }
+
+    // ── Advanced linalg tests (task 337) ─────────────────────────────────────
+
+    /// Helper: build a nested Tensor matrix from a slice of rows.
+    fn make_matrix(rows: &[&[f64]]) -> Value {
+        Value::Tensor(
+            rows.iter()
+                .map(|row| Value::Tensor(row.iter().map(|&v| Value::Real(v)).collect()))
+                .collect(),
+        )
+    }
+
+    /// Helper: build a Tensor matrix with all elements having a given dimension.
+    fn make_dimensioned_matrix(rows: &[&[f64]], dim: DimensionVector) -> Value {
+        Value::Tensor(
+            rows.iter()
+                .map(|row| {
+                    Value::Tensor(
+                        row.iter()
+                            .map(|&v| Value::Scalar {
+                                si_value: v,
+                                dimension: dim,
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    // --- determinant tests ---
+
+    #[test]
+    fn det_identity_2x2() {
+        let m = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 1.0);
+    }
+
+    #[test]
+    fn det_identity_3x3() {
+        let m = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 1.0);
+    }
+
+    #[test]
+    fn det_2_times_identity_3x3() {
+        // det(2*I₃) = 2³ = 8
+        let m = make_matrix(&[&[2.0, 0.0, 0.0], &[0.0, 2.0, 0.0], &[0.0, 0.0, 2.0]]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 8.0);
+    }
+
+    #[test]
+    fn det_singular_matrix() {
+        // Singular: rows are linearly dependent
+        let m = make_matrix(&[&[1.0, 2.0], &[2.0, 4.0]]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 0.0);
+    }
+
+    #[test]
+    fn det_dimensioned_3x3() {
+        // det(Force_mat) has dimension Force³ for 3×3
+        let force_dim = reify_types::dimension::FORCE;
+        let m = make_dimensioned_matrix(
+            &[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]],
+            force_dim,
+        );
+        let result = eval_builtin("determinant", &[m]);
+        let expected_dim = force_dim.pow(3);
+        assert_scalar_approx!(result, 1.0, expected_dim);
+    }
+
+    #[test]
+    fn det_1x1() {
+        let m = make_matrix(&[&[42.0]]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 42.0);
+    }
+
+    #[test]
+    fn det_non_square_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        assert!(eval_builtin("determinant", &[m]).is_undef());
+    }
+
+    // --- inverse tests ---
+
+    #[test]
+    fn inverse_2x2_identity() {
+        let m = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&m));
+        // inv(I) = I — check all four elements
+        if let Value::Tensor(rows) = &inv {
+            assert_eq!(rows.len(), 2);
+            for (i, row) in rows.iter().enumerate() {
+                if let Value::Tensor(elems) = row {
+                    assert_eq!(elems.len(), 2);
+                    for (j, elem) in elems.iter().enumerate() {
+                        let expected = if i == j { 1.0 } else { 0.0 };
+                        let val = elem.as_f64().unwrap();
+                        assert!(
+                            (val - expected).abs() < 1e-12,
+                            "inv[{i}][{j}]: expected {expected}, got {val}"
+                        );
+                    }
+                } else {
+                    panic!("expected Tensor row");
+                }
+            }
+        } else {
+            panic!("expected Tensor, got {:?}", inv);
+        }
+    }
+
+    #[test]
+    fn inverse_times_original_approx_identity() {
+        // A = [[1,2],[3,4]], verify inv(A)*A ≈ I via manual multiply
+        let a = make_matrix(&[&[1.0, 2.0], &[3.0, 4.0]]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&a));
+        // Extract inv as flat
+        let inv_data = matrix_components_f64(&inv).unwrap();
+        let a_data = matrix_components_f64(&a).unwrap();
+        // Manual 2×2 multiply: product = inv * a
+        let (ai, ad) = (inv_data.2, a_data.2);
+        let p00 = ai[0] * ad[0] + ai[1] * ad[2];
+        let p01 = ai[0] * ad[1] + ai[1] * ad[3];
+        let p10 = ai[2] * ad[0] + ai[3] * ad[2];
+        let p11 = ai[2] * ad[1] + ai[3] * ad[3];
+        assert!((p00 - 1.0).abs() < 1e-10, "p00={p00}");
+        assert!((p01).abs() < 1e-10, "p01={p01}");
+        assert!((p10).abs() < 1e-10, "p10={p10}");
+        assert!((p11 - 1.0).abs() < 1e-10, "p11={p11}");
+    }
+
+    #[test]
+    fn inverse_3x3() {
+        let a = make_matrix(&[&[1.0, 2.0, 3.0], &[0.0, 1.0, 4.0], &[5.0, 6.0, 0.0]]);
+        let inv = eval_builtin("inverse", std::slice::from_ref(&a));
+        let inv_d = matrix_components_f64(&inv).unwrap();
+        let a_d = matrix_components_f64(&a).unwrap();
+        // 3×3 multiply to verify ≈ identity
+        let (ai, ad) = (inv_d.2, a_d.2);
+        for r in 0..3 {
+            for c in 0..3 {
+                let sum: f64 = (0..3).map(|k| ai[r * 3 + k] * ad[k * 3 + c]).sum();
+                let expected = if r == c { 1.0 } else { 0.0 };
+                assert!(
+                    (sum - expected).abs() < 1e-10,
+                    "product[{r}][{c}] = {sum}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_singular_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0], &[2.0, 4.0]]);
+        assert!(
+            eval_builtin("inverse", &[m]).is_undef(),
+            "inverse of singular matrix should be Undef"
+        );
+    }
+
+    // --- transpose tests ---
+
+    #[test]
+    fn transpose_symmetric_unchanged() {
+        // Symmetric matrix: transpose should equal original
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[2.0, 5.0, 6.0], &[3.0, 6.0, 9.0]]);
+        let t = eval_builtin("transpose", std::slice::from_ref(&m));
+        let orig_d = matrix_components_f64(&m).unwrap();
+        let t_d = matrix_components_f64(&t).unwrap();
+        assert_eq!(orig_d.0, t_d.0);
+        assert_eq!(orig_d.1, t_d.1);
+        for (a, b) in orig_d.2.iter().zip(t_d.2.iter()) {
+            assert!((a - b).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn transpose_2x3() {
+        // [[1,2,3],[4,5,6]] → [[1,4],[2,5],[3,6]]
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        let t = eval_builtin("transpose", &[m]);
+        let t_d = matrix_components_f64(&t).unwrap();
+        assert_eq!(t_d.0, 3); // rows
+        assert_eq!(t_d.1, 2); // cols
+        assert!((t_d.2[0] - 1.0).abs() < 1e-12);
+        assert!((t_d.2[1] - 4.0).abs() < 1e-12);
+        assert!((t_d.2[2] - 2.0).abs() < 1e-12);
+        assert!((t_d.2[3] - 5.0).abs() < 1e-12);
+        assert!((t_d.2[4] - 3.0).abs() < 1e-12);
+        assert!((t_d.2[5] - 6.0).abs() < 1e-12);
+    }
+
+    // --- trace tests ---
+
+    #[test]
+    fn trace_identity_3x3() {
+        let m = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
+        assert_real_approx!(eval_builtin("trace", &[m]), 3.0);
+    }
+
+    #[test]
+    fn trace_general_2x2() {
+        let m = make_matrix(&[&[5.0, 3.0], &[7.0, 2.0]]);
+        assert_real_approx!(eval_builtin("trace", &[m]), 7.0);
+    }
+
+    #[test]
+    fn trace_non_square_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        assert!(eval_builtin("trace", &[m]).is_undef());
+    }
+
+    // --- outer product tests ---
+
+    #[test]
+    fn outer_two_vectors() {
+        let a = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]);
+        let b = Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(5.0)]);
+        let result = eval_builtin("outer", &[a, b]);
+        let d = matrix_components_f64(&result).unwrap();
+        assert_eq!(d.0, 2);
+        assert_eq!(d.1, 3);
+        // [[3,4,5],[6,8,10]]
+        let expected = [3.0, 4.0, 5.0, 6.0, 8.0, 10.0];
+        for (got, exp) in d.2.iter().zip(expected.iter()) {
+            assert!((got - exp).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn outer_dimensioned_vectors() {
+        let length_dim = DimensionVector::LENGTH;
+        let force_dim = reify_types::dimension::FORCE;
+        let a = Value::Tensor(vec![
+            Value::Scalar { si_value: 1.0, dimension: length_dim },
+            Value::Scalar { si_value: 2.0, dimension: length_dim },
+        ]);
+        let b = Value::Tensor(vec![
+            Value::Scalar { si_value: 3.0, dimension: force_dim },
+            Value::Scalar { si_value: 4.0, dimension: force_dim },
+        ]);
+        let result = eval_builtin("outer", &[a, b]);
+        let d = matrix_components_f64(&result).unwrap();
+        assert_eq!(d.3, length_dim.mul(&force_dim));
+    }
+
+    // --- eigenvalues tests ---
+
+    #[test]
+    fn eigenvalues_diagonal_2x2() {
+        let m = make_matrix(&[&[3.0, 0.0], &[0.0, 7.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 2);
+            // Sorted: [3, 7]
+            assert!((items[0].as_f64().unwrap() - 3.0).abs() < 1e-10);
+            assert!((items[1].as_f64().unwrap() - 7.0).abs() < 1e-10);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn eigenvalues_diagonal_3x3() {
+        let m = make_matrix(&[&[2.0, 0.0, 0.0], &[0.0, 5.0, 0.0], &[0.0, 0.0, 8.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            // Sorted: [2, 5, 8]
+            assert!((items[0].as_f64().unwrap() - 2.0).abs() < 1e-10);
+            assert!((items[1].as_f64().unwrap() - 5.0).abs() < 1e-10);
+            assert!((items[2].as_f64().unwrap() - 8.0).abs() < 1e-10);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn eigenvalues_symmetric_3x3() {
+        // Symmetric matrix always has real eigenvalues
+        let m = make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            // Eigenvalues of this matrix: 1, 2, 4
+            let eigs: Vec<f64> = items.iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!((eigs[0] - 1.0).abs() < 1e-10, "eig0={}", eigs[0]);
+            assert!((eigs[1] - 2.0).abs() < 1e-10, "eig1={}", eigs[1]);
+            assert!((eigs[2] - 4.0).abs() < 1e-10, "eig2={}", eigs[2]);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn eigenvalues_1x1() {
+        let m = make_matrix(&[&[42.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 1);
+            assert!((items[0].as_f64().unwrap() - 42.0).abs() < 1e-12);
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn eigenvalues_identity_3x3() {
+        let m = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            for item in &items {
+                assert!((item.as_f64().unwrap() - 1.0).abs() < 1e-10);
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn inverse_non_square_returns_undef() {
+        let m = make_matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+        assert!(eval_builtin("inverse", &[m]).is_undef());
+    }
+
+    #[test]
+    fn determinant_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("determinant", &[]).is_undef());
+    }
+
+    #[test]
+    fn inverse_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("inverse", &[]).is_undef());
+    }
+
+    #[test]
+    fn transpose_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("transpose", &[]).is_undef());
+    }
+
+    #[test]
+    fn trace_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("trace", &[]).is_undef());
+    }
+
+    #[test]
+    fn eigenvalues_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("eigenvalues", &[]).is_undef());
+    }
+
+    #[test]
+    fn outer_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("outer", &[]).is_undef());
+    }
+
+    #[test]
+    fn determinant_non_matrix_returns_undef() {
+        assert!(eval_builtin("determinant", &[Value::Real(5.0)]).is_undef());
+    }
+
+    #[test]
+    fn inverse_dimensioned_2x2() {
+        // inverse of dimensioned matrix has inverse dimension
+        let length_dim = DimensionVector::LENGTH;
+        let m = make_dimensioned_matrix(&[&[1.0, 0.0], &[0.0, 2.0]], length_dim);
+        let inv = eval_builtin("inverse", &[m]);
+        let d = matrix_components_f64(&inv).unwrap();
+        let expected_dim = DimensionVector::DIMENSIONLESS.div(&length_dim);
+        assert_eq!(d.3, expected_dim);
+        // Check values: inv of diag(1,2) = diag(1, 0.5)
+        assert!((d.2[0] - 1.0).abs() < 1e-12);
+        assert!((d.2[1]).abs() < 1e-12);
+        assert!((d.2[2]).abs() < 1e-12);
+        assert!((d.2[3] - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn matrix_value_form_works() {
+        // Test that Value::Matrix is also accepted
+        let m = Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ]);
+        assert_real_approx!(eval_builtin("determinant", &[m]), 1.0);
     }
 }

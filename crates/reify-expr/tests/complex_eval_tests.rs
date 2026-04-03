@@ -1,6 +1,6 @@
 //! Complex<Q> arithmetic and method evaluation tests.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -43,12 +43,7 @@ fn eval_unop(op: UnOp, v: Value, vt: Type, result_ty: Type) -> Value {
 
 /// Build and evaluate a zero-arg method call.
 fn eval_method(obj: Value, obj_ty: Type, method: &str, result_ty: Type) -> Value {
-    let expr = CompiledExpr::method_call(
-        lit(obj, obj_ty),
-        method.to_string(),
-        vec![],
-        result_ty,
-    );
+    let expr = CompiledExpr::method_call(lit(obj, obj_ty), method.to_string(), vec![], result_ty);
     let values = ValueMap::new();
     eval_expr(&expr, &EvalContext::simple(&values))
 }
@@ -126,7 +121,10 @@ fn complex_mul_dimensionless() {
         Type::complex(Type::Real),
         Type::complex(Type::Real),
     );
-    assert_eq!(result, complex_val(-5.0, 10.0, DimensionVector::DIMENSIONLESS));
+    assert_eq!(
+        result,
+        complex_val(-5.0, 10.0, DimensionVector::DIMENSIONLESS)
+    );
 }
 
 /// Complex<Length> * Complex<Time> combines dimensions via mul().

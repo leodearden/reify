@@ -17,6 +17,15 @@ import type {
   FileData,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
+import type {
+  OutboundMessage,
+  TextDelta,
+  ThinkingDelta,
+  ToolCall,
+  ToolResult,
+  Done,
+  ErrorMessage,
+} from '../sidecar/src/types';
 
 // ── Commands (invoke wrappers) ──────────────────────────────────────
 
@@ -105,6 +114,188 @@ export async function focusEntity(entityPath: string): Promise<void> {
 /** Send an LSP request to the backend. */
 export async function lspRequest(method: string, params: unknown): Promise<unknown> {
   return invoke('lsp_request', { method, params });
+}
+
+// ── Claude commands ─────────────────────────────────────────────────
+
+/**
+ * Re-export MessageContext as ClaudeMessageContext for backward compatibility.
+ * The canonical definition lives in stores/claudeStore.ts — this alias preserves
+ * the existing export name so all downstream imports continue to work.
+ */
+import type { MessageContext } from './stores/claudeStore';
+export type { MessageContext as ClaudeMessageContext } from './stores/claudeStore';
+
+/**
+ * Exhaustive camelCase→snake_case mapping for MessageContext fields.
+ * Uses `as const satisfies` so that:
+ *  - Values are narrowed to their literal string types (e.g. 'selected_entity', not string)
+ *  - Adding a new field to MessageContext without updating this table still causes a tsc error
+ *
+ * SYNC: When adding a field to MessageContext, update this table AND
+ * ChatPanel.tsx buildMessageContext(). See gui/src/__tests__/types.typecheck.ts.
+ */
+export const MESSAGE_CONTEXT_FIELD_MAP = {
+  selectedEntity: 'selected_entity',
+  diagnostics: 'diagnostics',
+  constraints: 'constraints',
+  currentFile: 'current_file',
+  attachedContexts: 'attached_contexts',
+} as const satisfies Record<keyof Required<MessageContext>, string>;
+
+/**
+ * Every MessageContext key that buildMessageContext() in ChatPanel.tsx is
+ * expected to handle.  The `satisfies` clause ensures each element is a valid
+ * MessageContext key; an Equals<> assertion in types.typecheck.ts ensures
+ * completeness against the full MessageContext interface.
+ */
+export const BUILD_CONTEXT_HANDLED_FIELDS = [
+  'selectedEntity',
+  'diagnostics',
+  'constraints',
+  'currentFile',
+  'attachedContexts',
+] as const satisfies readonly (keyof Required<MessageContext>)[];
+
+/**
+ * Snake_case wire representation of MessageContext, derived from
+ * MESSAGE_CONTEXT_FIELD_MAP via key remapping. Adding a field to MessageContext
+ * and the map automatically extends this type.
+ */
+export type WireMessageContext = {
+  [K in keyof Required<MessageContext> as (typeof MESSAGE_CONTEXT_FIELD_MAP)[K]]?: MessageContext[K];
+};
+
+/** Convert a camelCase MessageContext to its snake_case wire representation using MESSAGE_CONTEXT_FIELD_MAP. */
+export function mapContextToWire(ctx: MessageContext): WireMessageContext {
+  const wire: Record<string, unknown> = {};
+  for (const [camel, snake] of Object.entries(MESSAGE_CONTEXT_FIELD_MAP)) {
+    if (ctx[camel as keyof MessageContext] !== undefined) {
+      wire[snake] = ctx[camel as keyof MessageContext];
+    }
+  }
+  return wire as WireMessageContext;
+}
+
+/** Send a message to the Claude sidecar. Maps camelCase context to snake_case for Rust. */
+export async function claudeSendMessage(text: string, context?: MessageContext): Promise<void> {
+  return invoke('claude_send_message', {
+    text,
+    context: context && Object.values(context).some(v => v !== undefined)
+      ? mapContextToWire(context)
+      : undefined,
+  });
+}
+
+/** Abort the current Claude response. */
+export async function claudeAbort(): Promise<void> {
+  return invoke('claude_abort');
+}
+
+/** Clear the Claude session. */
+export async function claudeClearSession(): Promise<void> {
+  return invoke('claude_clear_session');
+}
+
+// ── Claude event subscription ───────────────────────────────────────
+
+/**
+ * Validate that a Tauri event payload is a non-null plain object with all
+ * required keys present and of type string.
+ * Returns the payload as a Record on success, or null on failure (with a console.warn).
+ */
+function validatePayload(
+  eventName: string,
+  payload: unknown,
+  requiredKeys: string[],
+): Record<string, unknown> | null {
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    console.warn(`${eventName}: payload is not a plain object`, payload);
+    return null;
+  }
+  const rec = payload as Record<string, unknown>;
+  for (const key of requiredKeys) {
+    if (typeof rec[key] !== 'string') {
+      console.warn(`${eventName}: invalid payload, expected ${key} to be a string`, rec);
+      return null;
+    }
+  }
+  return rec;
+}
+
+/** Required-key arrays for validatePayload, hoisted to avoid per-call allocations. */
+const KEYS_ID_CONTENT: string[] = ['id', 'content'];
+const KEYS_ID_TOOL_NAME: string[] = ['id', 'tool_name'];
+const KEYS_ID: string[] = ['id'];
+const KEYS_ID_MESSAGE: string[] = ['id', 'message'];
+
+/**
+ * Subscribe to all Claude sidecar events and map payloads to OutboundMessage.
+ * Returns a combined unlisten function that tears down all 7 subscriptions.
+ *
+ * Uses sequential registration with rollback: if any listen() call fails,
+ * all previously-registered listeners are torn down before the error propagates.
+ */
+export async function subscribeToClaudeEvents(
+  handler: (msg: OutboundMessage) => void,
+): Promise<() => void> {
+  type EventEntry = [string, (event: { payload: unknown }) => void];
+
+  const entries: EventEntry[] = [
+    ['claude-text-delta', (event) => {
+      const p = validatePayload('claude-text-delta', event.payload, KEYS_ID_CONTENT);
+      if (!p) return;
+      handler({ type: 'text_delta', id: p.id as string, content: p.content as string });
+    }],
+    ['claude-thinking-delta', (event) => {
+      const p = validatePayload('claude-thinking-delta', event.payload, KEYS_ID_CONTENT);
+      if (!p) return;
+      handler({ type: 'thinking_delta', id: p.id as string, content: p.content as string });
+    }],
+    ['claude-tool-call', (event) => {
+      const p = validatePayload('claude-tool-call', event.payload, KEYS_ID_TOOL_NAME);
+      if (!p) return;
+      const toolInput = (p.tool_input != null && typeof p.tool_input === 'object' && !Array.isArray(p.tool_input))
+        ? p.tool_input as Record<string, unknown>
+        : {};
+      handler({ type: 'tool_call', id: p.id as string, tool_name: p.tool_name as string, tool_input: toolInput });
+    }],
+    ['claude-tool-result', (event) => {
+      const p = validatePayload('claude-tool-result', event.payload, KEYS_ID_TOOL_NAME);
+      if (!p) return;
+      handler({ type: 'tool_result', id: p.id as string, tool_name: p.tool_name as string, result: p.result });
+    }],
+    ['claude-done', (event) => {
+      const p = validatePayload('claude-done', event.payload, KEYS_ID);
+      if (!p) return;
+      handler({ type: 'done', id: p.id as string });
+    }],
+    ['claude-error', (event) => {
+      const p = validatePayload('claude-error', event.payload, KEYS_ID_MESSAGE);
+      if (!p) return;
+      handler({ type: 'error', id: p.id as string, message: p.message as string });
+    }],
+    ['claude-ready', () => handler({ type: 'ready' })],
+  ];
+
+  const unlisteners: UnlistenFn[] = [];
+  try {
+    for (const [name, mapper] of entries) {
+      unlisteners.push(await listen(name, mapper));
+    }
+  } catch (err) {
+    // Roll back all already-registered listeners before re-throwing
+    for (const unsub of unlisteners) {
+      unsub();
+    }
+    throw err;
+  }
+
+  return () => {
+    for (const unsub of unlisteners) {
+      unsub();
+    }
+  };
 }
 
 // ── Event listeners (listen wrappers) ───────────────────────────────

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_types::{CompiledExpr, Value, ValueMap};
 
 // ── step-13: MetaAccess returns string value ────────────────────────────────
@@ -59,13 +59,22 @@ fn eval_meta_access_multiple_keys() {
     let ctx = EvalContext::simple(&values).with_meta(&meta_map);
 
     let expr_name = CompiledExpr::meta_access("Widget".into(), "name".into());
-    assert_eq!(eval_expr(&expr_name, &ctx), Value::String("Gear".to_string()));
+    assert_eq!(
+        eval_expr(&expr_name, &ctx),
+        Value::String("Gear".to_string())
+    );
 
     let expr_version = CompiledExpr::meta_access("Widget".into(), "version".into());
-    assert_eq!(eval_expr(&expr_version, &ctx), Value::String("2.0".to_string()));
+    assert_eq!(
+        eval_expr(&expr_version, &ctx),
+        Value::String("2.0".to_string())
+    );
 
     let expr_material = CompiledExpr::meta_access("Widget".into(), "material".into());
-    assert_eq!(eval_expr(&expr_material, &ctx), Value::String("steel".to_string()));
+    assert_eq!(
+        eval_expr(&expr_material, &ctx),
+        Value::String("steel".to_string())
+    );
 }
 
 // ── step-17: No meta context panics (silent-defaults convention) ────────────

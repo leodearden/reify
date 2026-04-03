@@ -31,8 +31,7 @@ impl FileWatcher {
     where
         F: Fn(PathBuf) + Send + 'static,
     {
-        let last_seen: Arc<Mutex<HashMap<PathBuf, Instant>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let last_seen: Arc<Mutex<HashMap<PathBuf, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {

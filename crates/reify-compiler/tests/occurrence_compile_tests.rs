@@ -8,14 +8,22 @@ use reify_types::*;
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("occ_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: parse source and compile, returning first template + diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected 1 template");
+    let template = module
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected 1 template");
     (template, module.diagnostics)
 }
 
@@ -35,7 +43,10 @@ fn compile_occurrence_basic() {
 
     assert_eq!(template.name, "Welding");
     assert_eq!(template.entity_kind, EntityKind::Occurrence);
-    assert!(!template.value_cells.is_empty(), "expected at least 1 value cell");
+    assert!(
+        !template.value_cells.is_empty(),
+        "expected at least 1 value cell"
+    );
 }
 
 // ── step-11: compile occurrence with ports ────────────────────────────
@@ -201,10 +212,6 @@ structure def Assembly {
         .find(|t| t.name == "Assembly")
         .expect("expected Assembly template");
     assert_eq!(assembly.entity_kind, EntityKind::Structure);
-    assert_eq!(
-        assembly.sub_components.len(),
-        1,
-        "expected 1 sub-component"
-    );
+    assert_eq!(assembly.sub_components.len(), 1, "expected 1 sub-component");
     assert_eq!(assembly.sub_components[0].structure_name, "Welding");
 }

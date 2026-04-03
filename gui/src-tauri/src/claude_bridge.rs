@@ -5,8 +5,8 @@
 // Tauri frontend events.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,10 @@ pub struct MessageContext {
     pub diagnostics: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub constraints: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached_contexts: Option<Vec<String>>,
 }
 
 /// Inbound messages sent from the GUI to the sidecar (over sidecar stdin).
@@ -129,6 +133,16 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
     on_exit();
 }
 
+/// Named configuration for MCP tool interception in the sidecar reader task.
+///
+/// Replaces the anonymous 3-tuple `(Arc<Mutex<EngineSession>>, F, Arc<RwLock<SelectionInfo>>)`
+/// that previously required `#[allow(clippy::type_complexity)]`.
+pub struct McpConfig<F> {
+    pub(crate) engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
+    pub(crate) event_emitter: F,
+    pub(crate) selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
+}
+
 // --- Sidecar lifecycle management ---
 
 /// State of the sidecar subprocess.
@@ -174,14 +188,17 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
+        Self::new_inner::<
+            R,
+            fn(String, Value),
+        >(stdin, reader, state, None)
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
     ///
     /// The reader task will:
     /// - Transition state to Ready on ready message
-    /// - Emit all outbound messages to `event_sink` via [`outbound_to_event`]
+    /// - Emit all outbound messages to `event_emitter` via [`outbound_to_event`]
     /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
     ///   and write the result back to the sidecar as a `tool_result` inbound message
     pub fn from_parts_with_mcp<W, R, F>(
@@ -189,7 +206,8 @@ impl SidecarHandle {
         reader: R,
         state: Arc<Mutex<SidecarState>>,
         engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-        event_sink: F,
+        event_emitter: F,
+        selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
     ) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
@@ -197,7 +215,12 @@ impl SidecarHandle {
         F: Fn(String, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner(stdin, reader, state, Some((engine, event_sink)))
+        let mcp_config = McpConfig {
+            engine,
+            event_emitter,
+            selection,
+        };
+        Self::new_inner(stdin, reader, state, Some(mcp_config))
     }
 
     /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
@@ -205,7 +228,7 @@ impl SidecarHandle {
         stdin: SharedStdin,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
-        mcp_config: Option<(Arc<std::sync::Mutex<crate::engine::EngineSession>>, F)>,
+        mcp_config: Option<McpConfig<F>>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
@@ -233,38 +256,46 @@ impl SidecarHandle {
                     }
 
                     // 2. Event emission and MCP interception
-                    if let Some((ref engine, ref sink)) = mcp_config {
+                    if let Some(ref mcp) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
-                        sink(event_name, payload);
+                        (mcp.event_emitter)(event_name, payload);
 
                         // 3. MCP tool interception for reify_ prefixed tool calls
-                        if let OutboundMessage::ToolCall { id, tool_name, tool_input } = &msg
-                            && tool_name.starts_with("reify_") {
-                                let id = id.clone();
-                                let tool_name = tool_name.clone();
-                                let tool_input = tool_input.clone();
-                                let engine_clone = Arc::clone(engine);
-                                let stdin_clone = Arc::clone(&stdin_for_reader);
-                                tokio::spawn(async move {
-                                    let ctx = crate::mcp_context::TauriToolContext::new(engine_clone);
-                                    let result = crate::mcp_context::mcp_tool_call_impl(
-                                        &tool_name,
-                                        tool_input,
-                                        &ctx,
-                                    );
-                                    let result_val = match result {
-                                        Ok(v) => v,
-                                        Err(e) => serde_json::json!({ "error": e }),
-                                    };
-                                    let response = InboundMessage::ToolResult {
-                                        id,
-                                        tool_name,
-                                        result: result_val,
-                                    };
-                                    let mut writer = stdin_clone.lock().await;
-                                    write_to_sidecar(&mut *writer, &response).await.ok();
-                                });
-                            }
+                        if let OutboundMessage::ToolCall {
+                            id,
+                            tool_name,
+                            tool_input,
+                        } = &msg
+                            && tool_name.starts_with("reify_")
+                        {
+                            let id = id.clone();
+                            let tool_name = tool_name.clone();
+                            let tool_input = tool_input.clone();
+                            let engine_clone = Arc::clone(&mcp.engine);
+                            let selection_clone = Arc::clone(&mcp.selection);
+                            let stdin_clone = Arc::clone(&stdin_for_reader);
+                            tokio::spawn(async move {
+                                let ctx = crate::mcp_context::TauriToolContext::builder(
+                                    engine_clone,
+                                )
+                                .with_selection(selection_clone)
+                                .build();
+                                let result = crate::mcp_context::mcp_tool_call_impl(
+                                    &tool_name, tool_input, &ctx,
+                                );
+                                let result_val = match result {
+                                    Ok(v) => v,
+                                    Err(e) => serde_json::json!({ "error": e }),
+                                };
+                                let response = InboundMessage::ToolResult {
+                                    id,
+                                    tool_name,
+                                    result: result_val,
+                                };
+                                let mut writer = stdin_clone.lock().await;
+                                write_to_sidecar(&mut *writer, &response).await.ok();
+                            });
+                        }
                     }
                 },
                 move || {
@@ -285,7 +316,13 @@ impl SidecarHandle {
             .await;
         });
 
-        SidecarHandle { stdin, reader_handle, state, ready_notify, child: None }
+        SidecarHandle {
+            stdin,
+            reader_handle,
+            state,
+            ready_notify,
+            child: None,
+        }
     }
 
     /// Get a reference to the state mutex.
@@ -328,9 +365,12 @@ impl SidecarHandle {
             return Ok(());
         }
 
-        tokio::time::timeout(timeout, notified)
-            .await
-            .map_err(|_| format!("Timeout waiting for sidecar ready after {}ms", timeout.as_millis()))?;
+        tokio::time::timeout(timeout, notified).await.map_err(|_| {
+            format!(
+                "Timeout waiting for sidecar ready after {}ms",
+                timeout.as_millis()
+            )
+        })?;
 
         // Re-check state: notification may have been triggered by a crash, not Ready.
         let state = self.state.lock().await;
@@ -401,6 +441,21 @@ impl SidecarHandle {
     }
 }
 
+impl Drop for SidecarHandle {
+    fn drop(&mut self) {
+        // Abort the reader task so it doesn't continue running detached.
+        // JoinHandle::abort() is sync and marks the task for cancellation
+        // at its next .await point.
+        self.reader_handle.abort();
+        // Kill the OS child process if one was attached via set_child().
+        // start_kill() is sync and sends SIGKILL without waiting for exit —
+        // best-effort OS cleanup in a Drop context where async is unavailable.
+        if let Some(ref mut child) = self.child {
+            let _ = child.start_kill();
+        }
+    }
+}
+
 // --- High-level command implementations ---
 
 /// Send a message to the sidecar. Returns the generated message ID.
@@ -462,7 +517,8 @@ pub async fn claude_clear_session_impl(
 pub async fn spawn_sidecar_impl<F>(
     path: &Path,
     engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-    event_sink: F,
+    event_emitter: F,
+    selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 ) -> Result<SidecarHandle, String>
 where
     F: Fn(String, Value) + Send + Sync + 'static,
@@ -491,7 +547,14 @@ where
 
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
-    let mut handle = SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, engine, event_sink);
+    let mut handle = SidecarHandle::from_parts_with_mcp(
+        stdin,
+        reader,
+        sidecar_state,
+        engine,
+        event_emitter,
+        selection,
+    );
     handle.set_child(proc);
     Ok(handle)
 }
@@ -570,7 +633,7 @@ where
     // concurrently during slow OS process creation.
     let mut handle = spawn_fn().await?;
     let notify_arc = Arc::clone(handle.ready_notify());
-    let state = Arc::clone(handle.state());
+    let spawned_state = Arc::clone(handle.state());
 
     // Subscribe to the ready notification BEFORE re-locking.  On a multi-thread
     // executor the reader task can call `notify_waiters()` immediately after
@@ -616,19 +679,30 @@ where
         // Guard dropped here — lock released.
     }
 
-    // Re-check: the reader task may have already set Ready and called
-    // notify_waiters() before our notified()/enable() subscription was set up
-    // (e.g., during spawn_fn's internal await points).  Without this check,
-    // a lost notification would cause a spurious timeout.  This mirrors the
-    // re-check in wait_ready (line 329).
-    if matches!(*state.lock().await, SidecarState::Ready) {
+    // Re-check: handles the *pre-creation* race window — Ready set during
+    // spawn_fn's internal await points, BEFORE `notified()` is created at
+    // the `spawn_fn().await` call in Phase 2.  In that window no `Notified`
+    // future exists, so the `notify_waiters()` call is irretrievably lost.
+    //
+    // This is distinct from the *post-creation* window (notified() created
+    // but waiter not yet registered), which is handled by the `pin! +
+    // enable()` call below Phase 2 eagerly registering the waiter.
+    //
+    // Together, enable() + re-check provide defense-in-depth against both
+    // windows.  This mirrors the `pin! + enable()` sequence in `wait_ready`.
+    if matches!(*spawned_state.lock().await, SidecarState::Ready) {
         return Ok(());
     }
 
     // Phase 4: wait for the ready notification with timeout.
-    let wait_result = tokio::time::timeout(ready_timeout, notified).await.map_err(|_| {
-        format!("Sidecar did not become ready within {}ms", ready_timeout.as_millis())
-    });
+    let wait_result = tokio::time::timeout(ready_timeout, notified)
+        .await
+        .map_err(|_| {
+            format!(
+                "Sidecar did not become ready within {}ms",
+                ready_timeout.as_millis()
+            )
+        });
 
     if let Err(e) = wait_result {
         // Timeout: compare-and-kill+clear — only kill/remove the handle if it
@@ -648,7 +722,7 @@ where
 
     // Phase 5: check state after notification — the notify may have been
     // triggered by a crash rather than the Ready message.
-    let state_val = state.lock().await.clone();
+    let state_val = spawned_state.lock().await.clone();
     match state_val {
         SidecarState::Ready => Ok(()),
         SidecarState::Crashed(msg) => {
@@ -690,25 +764,79 @@ pub fn outbound_to_event(msg: &OutboundMessage) -> (String, Value) {
             "claude-thinking-delta".to_string(),
             serde_json::json!({ "id": id, "content": content }),
         ),
-        OutboundMessage::ToolCall { id, tool_name, tool_input } => (
+        OutboundMessage::ToolCall {
+            id,
+            tool_name,
+            tool_input,
+        } => (
             "claude-tool-call".to_string(),
             serde_json::json!({ "id": id, "tool_name": tool_name, "tool_input": tool_input }),
         ),
-        OutboundMessage::ToolResult { id, tool_name, result } => (
+        OutboundMessage::ToolResult {
+            id,
+            tool_name,
+            result,
+        } => (
             "claude-tool-result".to_string(),
             serde_json::json!({ "id": id, "tool_name": tool_name, "result": result }),
         ),
-        OutboundMessage::Done { id } => (
-            "claude-done".to_string(),
-            serde_json::json!({ "id": id }),
-        ),
+        OutboundMessage::Done { id } => {
+            ("claude-done".to_string(), serde_json::json!({ "id": id }))
+        }
         OutboundMessage::ErrorMessage { id, message } => (
             "claude-error".to_string(),
             serde_json::json!({ "id": id, "message": message }),
         ),
-        OutboundMessage::Ready => (
-            "claude-ready".to_string(),
-            serde_json::json!({}),
-        ),
+        OutboundMessage::Ready => ("claude-ready".to_string(), serde_json::json!({})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::BufReader;
+    use tokio::process::Command;
+
+    /// Verify that dropping a SidecarHandle kills the OS child process and
+    /// aborts the reader task. Without a custom Drop impl, tokio's
+    /// Child::drop does NOT send any signal (kill_on_drop defaults to false),
+    /// so the spawned `sleep` process would continue running.
+    #[tokio::test]
+    async fn test_drop_kills_child_process() {
+        let mut child = Command::new("sleep")
+            .arg("100")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn sleep");
+
+        let pid = child.id().expect("child must have pid");
+
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let reader = BufReader::new(stdout);
+
+        let state = Arc::new(Mutex::new(SidecarState::NotStarted));
+        let mut handle = SidecarHandle::from_parts(stdin, reader, state);
+        handle.set_child(child);
+
+        // Drop the handle — should kill the child process and abort reader.
+        drop(handle);
+
+        // Give the OS a moment to reap the process.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Verify the process is no longer running.
+        let probe = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .expect("kill -0 probe failed");
+
+        assert!(
+            !probe.success(),
+            "sleep process (pid {}) should have been killed by Drop but is still running",
+            pid
+        );
     }
 }

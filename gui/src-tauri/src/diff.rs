@@ -160,13 +160,22 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
         }
     }
     for path in &delta.removed_mesh_paths {
-        events.push(("mesh-removed".to_string(), serde_json::Value::String(path.clone())));
+        events.push((
+            "mesh-removed".to_string(),
+            serde_json::Value::String(path.clone()),
+        ));
     }
     for id in &delta.removed_value_ids {
-        events.push(("value-removed".to_string(), serde_json::Value::String(id.clone())));
+        events.push((
+            "value-removed".to_string(),
+            serde_json::Value::String(id.clone()),
+        ));
     }
     for id in &delta.removed_constraint_ids {
-        events.push(("constraint-removed".to_string(), serde_json::Value::String(id.clone())));
+        events.push((
+            "constraint-removed".to_string(),
+            serde_json::Value::String(id.clone()),
+        ));
     }
 
     events

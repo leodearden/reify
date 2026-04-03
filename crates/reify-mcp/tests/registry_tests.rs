@@ -36,7 +36,10 @@ fn tool_error_all_variants_roundtrip_display() {
 
     for err in &variants {
         let display = format!("{err}");
-        assert!(!display.is_empty(), "Display should not be empty for {err:?}");
+        assert!(
+            !display.is_empty(),
+            "Display should not be empty for {err:?}"
+        );
     }
 }
 
@@ -283,7 +286,10 @@ fn mock_context_returns_canned_data() {
 
     let mock = MockToolContext::default();
     let files = mock.get_open_files().unwrap();
-    assert!(files.is_empty(), "Default mock should return empty open files");
+    assert!(
+        files.is_empty(),
+        "Default mock should return empty open files"
+    );
 
     let status = mock.get_eval_status().unwrap();
     assert_eq!(status.phase, "idle");
@@ -332,7 +338,10 @@ fn registry_call_unknown_tool_returns_error() {
     assert!(result.is_err());
     match result.unwrap_err() {
         ToolError::InvalidParams(msg) => {
-            assert!(msg.contains("nonexistent"), "Error should mention tool name: {msg}");
+            assert!(
+                msg.contains("nonexistent"),
+                "Error should mention tool name: {msg}"
+            );
         }
         other => panic!("Expected InvalidParams, got: {other:?}"),
     }

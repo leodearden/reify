@@ -3,8 +3,8 @@
 use reify_constraints::SolveSpaceSolver;
 use reify_test_support::*;
 use reify_types::{
-    AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
-    DimensionVector, ResolutionProblem, ResolvedFunction, SolveResult, Type, Value, ValueMap,
+    AutoParam, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash, DimensionVector,
+    ResolutionProblem, ResolvedFunction, SolveResult, Type, Value, ValueMap,
 };
 
 // --- Helpers ---
@@ -400,17 +400,57 @@ fn solve_coincident_constraint() {
     let constraint_expr = geo_fn("coincident", vec![pt1, pt2], Type::Bool);
 
     let mut current = ValueMap::new();
-    current.insert(x1_id.clone(), Value::Scalar { si_value: 0.01, dimension: DimensionVector::LENGTH });
-    current.insert(y1_id.clone(), Value::Scalar { si_value: 0.02, dimension: DimensionVector::LENGTH });
-    current.insert(x2_id.clone(), Value::Scalar { si_value: 0.03, dimension: DimensionVector::LENGTH });
-    current.insert(y2_id.clone(), Value::Scalar { si_value: 0.04, dimension: DimensionVector::LENGTH });
+    current.insert(
+        x1_id.clone(),
+        Value::Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        y1_id.clone(),
+        Value::Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        x2_id.clone(),
+        Value::Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    current.insert(
+        y2_id.clone(),
+        Value::Scalar {
+            si_value: 0.04,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x1_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: y1_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: x2_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: y2_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam {
+                id: x1_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y1_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: x2_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y2_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
         ],
         constraints: vec![(cnid("Coin", 0), constraint_expr)],
         current_values: current,
@@ -428,7 +468,10 @@ fn solve_coincident_constraint() {
             assert!(
                 (x1 - x2).abs() < 1e-6 && (y1 - y2).abs() < 1e-6,
                 "points should be coincident: ({}, {}) vs ({}, {})",
-                x1, y1, x2, y2,
+                x1,
+                y1,
+                x2,
+                y2,
             );
         }
         other => panic!("expected Solved for coincident, got {:?}", other),
@@ -464,7 +507,11 @@ fn solve_overconstrained_returns_infeasible() {
     );
 
     // distance(pt, origin) == 10mm
-    let dist1 = geo_fn("pt_pt_distance", vec![pt.clone(), origin.clone()], Type::length());
+    let dist1 = geo_fn(
+        "pt_pt_distance",
+        vec![pt.clone(), origin.clone()],
+        Type::length(),
+    );
     let c1 = eq(dist1, literal(mm(10.0)));
 
     // distance(pt, origin) == 20mm — contradicts c1
@@ -473,13 +520,18 @@ fn solve_overconstrained_returns_infeasible() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
         ],
-        constraints: vec![
-            (cnid("Over", 0), c1),
-            (cnid("Over", 1), c2),
-        ],
+        constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
         current_values: ValueMap::new(),
         objective: None,
         functions: vec![],
@@ -490,7 +542,10 @@ fn solve_overconstrained_returns_infeasible() {
         SolveResult::Infeasible { diagnostics } => {
             assert!(!diagnostics.is_empty(), "should have diagnostics");
         }
-        other => panic!("overconstrained system should be Infeasible, got {:?}", other),
+        other => panic!(
+            "overconstrained system should be Infeasible, got {:?}",
+            other
+        ),
     }
 }
 
@@ -528,9 +583,21 @@ fn solve_underconstrained_solves_with_dof() {
 
     let problem = ResolutionProblem {
         auto_params: vec![
-            AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: None },
-            AutoParam { id: z_id.clone(), param_type: Type::length(), bounds: None },
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
+            AutoParam {
+                id: z_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+            },
         ],
         constraints: vec![(cnid("Under", 0), constraint_expr)],
         current_values: ValueMap::new(),
@@ -593,8 +660,16 @@ fn solve_never_panics_on_valid_input() {
 
         let problem = ResolutionProblem {
             auto_params: vec![
-                AutoParam { id: x_id, param_type: Type::length(), bounds: None },
-                AutoParam { id: y_id, param_type: Type::length(), bounds: None },
+                AutoParam {
+                    id: x_id,
+                    param_type: Type::length(),
+                    bounds: None,
+                },
+                AutoParam {
+                    id: y_id,
+                    param_type: Type::length(),
+                    bounds: None,
+                },
             ],
             constraints: vec![(cnid("NoPanic", 0), constraint_expr)],
             current_values: ValueMap::new(),
@@ -605,7 +680,10 @@ fn solve_never_panics_on_valid_input() {
         solver.solve(&problem)
     });
 
-    assert!(result.is_ok(), "SolveSpaceSolver.solve() panicked on valid input");
+    assert!(
+        result.is_ok(),
+        "SolveSpaceSolver.solve() panicked on valid input"
+    );
     // Also verify it actually solved
     match result.unwrap() {
         SolveResult::Solved { .. } => {} // expected
@@ -662,7 +740,10 @@ fn solve_unrecognized_pattern_falls_through() {
                 reason,
             );
         }
-        other => panic!("expected NoProgress for unrecognized pattern, got {:?}", other),
+        other => panic!(
+            "expected NoProgress for unrecognized pattern, got {:?}",
+            other
+        ),
     }
 }
 

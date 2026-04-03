@@ -16,14 +16,14 @@ use std::sync::Mutex;
 
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, Diagnostic,
-    DimensionVector, ResolutionProblem, SolveResult, Severity, Type, Value, ValueCellId, ValueMap,
+    DimensionVector, ResolutionProblem, Severity, SolveResult, Type, Value, ValueCellId, ValueMap,
 };
 
 use crate::slvs_sys::{
-    self, Slvs_Constraint, Slvs_Entity, Slvs_Param, Slvs_System, Slvs_hConstraint, Slvs_hEntity,
-    Slvs_hGroup, Slvs_hParam, SLVS_C_ANGLE, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR,
-    SLVS_C_POINTS_COINCIDENT, SLVS_C_PT_PT_DISTANCE, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE,
-    SLVS_RESULT_INCONSISTENT, SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS,
+    self, SLVS_C_ANGLE, SLVS_C_PARALLEL, SLVS_C_PERPENDICULAR, SLVS_C_POINTS_COINCIDENT,
+    SLVS_C_PT_PT_DISTANCE, SLVS_FREE_IN_3D, SLVS_RESULT_DIDNT_CONVERGE, SLVS_RESULT_INCONSISTENT,
+    SLVS_RESULT_OKAY, SLVS_RESULT_TOO_MANY_UNKNOWNS, Slvs_Constraint, Slvs_Entity, Slvs_Param,
+    Slvs_System, Slvs_hConstraint, Slvs_hEntity, Slvs_hGroup, Slvs_hParam,
 };
 
 /// Global mutex to serialize access to the libslvs solver.
@@ -104,10 +104,7 @@ struct LineRef {
 }
 
 /// Try to recognize a geometric constraint pattern from an expression tree.
-fn recognize_pattern(
-    expr: &CompiledExpr,
-    auto_params: &[AutoParam],
-) -> Option<GeometricPattern> {
+fn recognize_pattern(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<GeometricPattern> {
     match &expr.kind {
         // eq(distance_call, literal) or eq(literal, distance_call)
         CompiledExprKind::BinOp {
@@ -136,17 +133,19 @@ fn recognize_pattern(
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
             if qn.contains("parallel") {
-                try_line_pair_constraint(args, auto_params)
-                    .map(|(a, b)| GeometricPattern::Parallel {
+                try_line_pair_constraint(args, auto_params).map(|(a, b)| {
+                    GeometricPattern::Parallel {
                         line_a: a,
                         line_b: b,
-                    })
+                    }
+                })
             } else if qn.contains("perpendicular") {
-                try_line_pair_constraint(args, auto_params)
-                    .map(|(a, b)| GeometricPattern::Perpendicular {
+                try_line_pair_constraint(args, auto_params).map(|(a, b)| {
+                    GeometricPattern::Perpendicular {
                         line_a: a,
                         line_b: b,
-                    })
+                    }
+                })
             } else if qn.contains("coincident") {
                 if args.len() == 2 {
                     let pt_a = extract_point_ref(&args[0], auto_params)?;
@@ -232,10 +231,7 @@ fn try_line_pair_constraint(
 /// Handles:
 /// - FunctionCall("point3d", [x, y, z]): extracts coords from args
 /// - ValueRef to an auto param: treats as a single-dimension point (x only)
-fn extract_point_ref(
-    expr: &CompiledExpr,
-    auto_params: &[AutoParam],
-) -> Option<PointRef> {
+fn extract_point_ref(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<PointRef> {
     match &expr.kind {
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
@@ -268,10 +264,7 @@ fn extract_point_ref(
 }
 
 /// Extract a LineRef from a line_segment expression or two-point expression.
-fn extract_line_ref(
-    expr: &CompiledExpr,
-    auto_params: &[AutoParam],
-) -> Option<LineRef> {
+fn extract_line_ref(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<LineRef> {
     match &expr.kind {
         CompiledExprKind::FunctionCall { function, args } => {
             let qn = &function.qualified_name;
@@ -313,13 +306,11 @@ fn extract_coord(expr: &CompiledExpr, auto_params: &[AutoParam]) -> Option<Coord
 
 fn make_point_ref(x: CoordRef, y: CoordRef, z: CoordRef) -> PointRef {
     match (&x, &y, &z) {
-        (CoordRef::Fixed(fx), CoordRef::Fixed(fy), CoordRef::Fixed(fz)) => {
-            PointRef::Fixed {
-                x: *fx,
-                y: *fy,
-                z: *fz,
-            }
-        }
+        (CoordRef::Fixed(fx), CoordRef::Fixed(fy), CoordRef::Fixed(fz)) => PointRef::Fixed {
+            x: *fx,
+            y: *fy,
+            z: *fz,
+        },
         _ => PointRef::Auto {
             x: match x {
                 CoordRef::Auto(id) => Some(id),
@@ -442,7 +433,11 @@ const SOLVE_GROUP: Slvs_hGroup = Slvs_hGroup(2);
 /// Key to deduplicate point entities.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum PointKey {
-    Auto(Option<ValueCellId>, Option<ValueCellId>, Option<ValueCellId>),
+    Auto(
+        Option<ValueCellId>,
+        Option<ValueCellId>,
+        Option<ValueCellId>,
+    ),
     Fixed(u64, u64, u64), // f64 bits for hashing
 }
 
@@ -603,7 +598,8 @@ impl SystemBuilder {
         self.params.push(Slvs_Param::new(ny, FIXED_GROUP, 0.0));
         self.params.push(Slvs_Param::new(nz, FIXED_GROUP, 0.0));
         let normal_e = self.alloc.entity();
-        let mut normal_entity = Slvs_Entity::zeroed_with(normal_e, FIXED_GROUP, slvs_sys::SLVS_E_NORMAL_IN_3D);
+        let mut normal_entity =
+            Slvs_Entity::zeroed_with(normal_e, FIXED_GROUP, slvs_sys::SLVS_E_NORMAL_IN_3D);
         normal_entity.param = [nw, nx, ny, nz];
         self.entities.push(normal_entity);
 
@@ -759,9 +755,7 @@ enum SlvsSolveResult {
 fn point_key(pt: &PointRef) -> PointKey {
     match pt {
         PointRef::Auto { x, y, z } => PointKey::Auto(x.clone(), y.clone(), z.clone()),
-        PointRef::Fixed { x, y, z } => {
-            PointKey::Fixed(x.to_bits(), y.to_bits(), z.to_bits())
-        }
+        PointRef::Fixed { x, y, z } => PointKey::Fixed(x.to_bits(), y.to_bits(), z.to_bits()),
     }
 }
 
@@ -853,8 +847,9 @@ impl ConstraintSolver for SolveSpaceSolver {
                     .to_string(),
             },
             SlvsSolveResult::LockPoisoned => SolveResult::NoProgress {
-                reason: "solver lock poisoned by earlier panic — libslvs global state may be corrupted"
-                    .to_string(),
+                reason:
+                    "solver lock poisoned by earlier panic — libslvs global state may be corrupted"
+                        .to_string(),
             },
             SlvsSolveResult::UnknownError(code) => SolveResult::NoProgress {
                 reason: format!("SolveSpace solver returned unknown error code {}", code),
@@ -886,7 +881,15 @@ fn add_pattern_to_builder(
             } else {
                 SLVS_FREE_IN_3D
             };
-            builder.add_constraint_wrkpl(SLVS_C_PT_PT_DISTANCE, wrkpl, *distance_si, ea, eb, e_none, e_none);
+            builder.add_constraint_wrkpl(
+                SLVS_C_PT_PT_DISTANCE,
+                wrkpl,
+                *distance_si,
+                ea,
+                eb,
+                e_none,
+                e_none,
+            );
         }
         GeometricPattern::Angle {
             line_a,
@@ -901,7 +904,15 @@ fn add_pattern_to_builder(
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             // Angle constraints require a workplane in SolveSpace.
             let wp = builder.get_workplane();
-            builder.add_constraint_wrkpl(SLVS_C_ANGLE, wp, *angle_deg, e_none, e_none, line_a_e, line_b_e);
+            builder.add_constraint_wrkpl(
+                SLVS_C_ANGLE,
+                wp,
+                *angle_deg,
+                e_none,
+                e_none,
+                line_a_e,
+                line_b_e,
+            );
         }
         GeometricPattern::Parallel { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -912,7 +923,15 @@ fn add_pattern_to_builder(
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             // Parallel/perpendicular require a workplane in SolveSpace
             let wp = builder.get_workplane();
-            builder.add_constraint_wrkpl(SLVS_C_PARALLEL, wp, 0.0, e_none, e_none, line_a_e, line_b_e);
+            builder.add_constraint_wrkpl(
+                SLVS_C_PARALLEL,
+                wp,
+                0.0,
+                e_none,
+                e_none,
+                line_a_e,
+                line_b_e,
+            );
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
             let la_start = builder.add_point(&line_a.start, auto_params, current_values);
@@ -922,7 +941,15 @@ fn add_pattern_to_builder(
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             let wp = builder.get_workplane();
-            builder.add_constraint_wrkpl(SLVS_C_PERPENDICULAR, wp, 0.0, e_none, e_none, line_a_e, line_b_e);
+            builder.add_constraint_wrkpl(
+                SLVS_C_PERPENDICULAR,
+                wp,
+                0.0,
+                e_none,
+                e_none,
+                line_a_e,
+                line_b_e,
+            );
         }
         GeometricPattern::Coincident { pt_a, pt_b } => {
             let ea = builder.add_point(pt_a, auto_params, current_values);
@@ -933,7 +960,15 @@ fn add_pattern_to_builder(
             } else {
                 SLVS_FREE_IN_3D
             };
-            builder.add_constraint_wrkpl(SLVS_C_POINTS_COINCIDENT, wrkpl, 0.0, ea, eb, e_none, e_none);
+            builder.add_constraint_wrkpl(
+                SLVS_C_POINTS_COINCIDENT,
+                wrkpl,
+                0.0,
+                ea,
+                eb,
+                e_none,
+                e_none,
+            );
         }
     }
 }

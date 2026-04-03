@@ -1,11 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{bracket_source, MockGeometryKernel};
+use reify_mcp::SelectionInfo;
+use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::diff::compute_delta;
 use crate::engine::EngineSession;
-use crate::mcp_context::{mcp_tool_call_impl, TauriToolContext};
+use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 use crate::types::GuiState;
 
 fn make_engine() -> Arc<Mutex<EngineSession>> {
@@ -19,7 +20,7 @@ fn make_engine() -> Arc<Mutex<EngineSession>> {
 }
 
 fn make_tauri_context() -> TauriToolContext {
-    TauriToolContext::new(make_engine())
+    TauriToolContext::builder(make_engine()).build()
 }
 
 #[test]
@@ -96,7 +97,7 @@ fn mcp_write_tool_produces_state_delta() {
     let last_state: Mutex<Option<GuiState>> = Mutex::new(Some(initial_gui_state));
 
     // 2. Perform an MCP write via mcp_tool_call_impl
-    let ctx = TauriToolContext::new(engine.clone());
+    let ctx = TauriToolContext::builder(engine.clone()).build();
     let result = mcp_tool_call_impl(
         "reify_set_parameter",
         serde_json::json!({"cell_id": "Bracket.width", "value": "100mm"}),
@@ -159,7 +160,7 @@ fn mcp_read_tool_produces_empty_delta() {
     let last_state: Mutex<Option<GuiState>> = Mutex::new(Some(initial_gui_state));
 
     // 2. Perform a read-only MCP tool call
-    let ctx = TauriToolContext::new(engine.clone());
+    let ctx = TauriToolContext::builder(engine.clone()).build();
     let result = mcp_tool_call_impl("reify_get_parameters", serde_json::json!({}), &ctx)
         .expect("get_parameters dispatch should succeed");
     assert!(result.is_array(), "should return array of parameters");
@@ -186,5 +187,45 @@ fn mcp_read_tool_produces_empty_delta() {
     assert!(
         delta.changed_meshes.is_empty(),
         "changed_meshes should be empty after read-only tool"
+    );
+}
+
+#[test]
+fn dispatch_get_selection_returns_selected_entity() {
+    let engine = make_engine();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: None,
+    }));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
+        .expect("dispatch should succeed");
+    assert_eq!(
+        result["selected_entity"], "Bracket",
+        "selected_entity should be Bracket"
+    );
+    assert!(
+        result["hovered_entity"].is_null(),
+        "hovered_entity should be null"
+    );
+}
+
+#[test]
+fn dispatch_get_selection_returns_both_fields() {
+    let engine = make_engine();
+    let selection = Arc::new(RwLock::new(SelectionInfo {
+        selected_entity: Some("Bracket".to_string()),
+        hovered_entity: Some("Bracket.width".to_string()),
+    }));
+    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
+        .expect("dispatch should succeed");
+    assert_eq!(
+        result["selected_entity"], "Bracket",
+        "selected_entity should be Bracket"
+    );
+    assert_eq!(
+        result["hovered_entity"], "Bracket.width",
+        "hovered_entity should be Bracket.width"
     );
 }

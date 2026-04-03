@@ -51,12 +51,7 @@ pub trait ReifyToolContext: Send + Sync {
     fn focus_entity(&self, entity_path: &str) -> Result<bool, ToolError>;
 
     /// Navigate to a source location.
-    fn navigate_to_source(
-        &self,
-        file: &str,
-        line: u32,
-        column: u32,
-    ) -> Result<bool, ToolError>;
+    fn navigate_to_source(&self, file: &str, line: u32, column: u32) -> Result<bool, ToolError>;
 }
 
 /// Mock implementation of ReifyToolContext for testing.
@@ -101,10 +96,7 @@ impl Default for MockToolContext {
                 progress: None,
                 dirty_count: 0,
             },
-            selection: SelectionInfo {
-                selected_entity: None,
-                hovered_entity: None,
-            },
+            selection: SelectionInfo::default(),
             source_locations: std::collections::HashMap::new(),
             update_source_error: None,
             set_param_error: None,
@@ -151,9 +143,7 @@ impl ReifyToolContext for MockToolContext {
         self.source_locations
             .get(entity_path)
             .cloned()
-            .ok_or_else(|| {
-                ToolError::EngineError(format!("entity not found: {entity_path}"))
-            })
+            .ok_or_else(|| ToolError::EngineError(format!("entity not found: {entity_path}")))
     }
 
     fn update_source(&self, _file_path: &str, _content: &str) -> Result<UpdateResult, ToolError> {
@@ -209,12 +199,7 @@ impl ReifyToolContext for MockToolContext {
         Ok(true)
     }
 
-    fn navigate_to_source(
-        &self,
-        _file: &str,
-        _line: u32,
-        _column: u32,
-    ) -> Result<bool, ToolError> {
+    fn navigate_to_source(&self, _file: &str, _line: u32, _column: u32) -> Result<bool, ToolError> {
         if let Some(err) = &self.navigate_error {
             return Err(err.clone());
         }

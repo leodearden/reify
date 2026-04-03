@@ -10,7 +10,11 @@ use reify_types::*;
 /// asserting on compile errors. Used to inspect diagnostics directly.
 fn compile_module_with_diagnostics(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -35,9 +39,10 @@ structure S {
         !errors.is_empty(),
         "expected compile error for ad-hoc selector, but got none"
     );
-    let has_selector_error = errors
-        .iter()
-        .any(|d| d.message.contains("ad-hoc selector (@) is not yet supported"));
+    let has_selector_error = errors.iter().any(|d| {
+        d.message
+            .contains("ad-hoc selector (@) is not yet supported")
+    });
     assert!(
         has_selector_error,
         "expected diagnostic about unsupported ad-hoc selector, got: {:?}",

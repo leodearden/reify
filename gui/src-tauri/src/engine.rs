@@ -11,7 +11,7 @@ use reify_types::{
 };
 
 use crate::types::{
-    format_determinacy, format_value, ConstraintData, FileData, GuiState, MeshData, ValueData,
+    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -43,7 +43,11 @@ impl EngineSession {
     }
 
     /// Load source code, parse, compile, evaluate, and return full GUI state.
-    pub fn load_from_source(&mut self, source: &str, module_name: &str) -> Result<GuiState, String> {
+    pub fn load_from_source(
+        &mut self,
+        source: &str,
+        module_name: &str,
+    ) -> Result<GuiState, String> {
         // Parse
         let parsed = reify_syntax::parse(source, ModulePath::single(module_name));
 
@@ -310,14 +314,11 @@ impl EngineSession {
                 .templates
                 .iter()
                 .find_map(|t| {
-                    t.constraints
-                        .iter()
-                        .find(|c| c.id == entry.id)
-                        .map(|c| {
-                            let expr_str = format_expr(&c.expr);
-                            let param_ids = collect_value_refs(&c.expr);
-                            (expr_str, param_ids)
-                        })
+                    t.constraints.iter().find(|c| c.id == entry.id).map(|c| {
+                        let expr_str = format_expr(&c.expr);
+                        let param_ids = collect_value_refs(&c.expr);
+                        (expr_str, param_ids)
+                    })
                 })
                 .unwrap_or_default();
 
@@ -496,13 +497,18 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         CompiledExprKind::Match { discriminant, arms } => {
             let arm_strs: Vec<String> = arms
                 .iter()
-                .map(|arm| {
-                    format!("{} => {}", arm.patterns.join(" | "), format_expr(&arm.body))
-                })
+                .map(|arm| format!("{} => {}", arm.patterns.join(" | "), format_expr(&arm.body)))
                 .collect();
-            format!("match {} {{ {} }}", format_expr(discriminant), arm_strs.join(", "))
+            format!(
+                "match {} {{ {} }}",
+                format_expr(discriminant),
+                arm_strs.join(", ")
+            )
         }
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
             let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
             format!("{}({})", function_name, arg_strs.join(", "))
         }
@@ -525,20 +531,41 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
         CompiledExprKind::IndexAccess { object, index } => {
             format!("{}[{}]", format_expr(object), format_expr(index))
         }
-        CompiledExprKind::MethodCall { object, method, args } => {
+        CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             if args.is_empty() {
                 format!("{}.{}", format_expr(object), method)
             } else {
                 let arg_strs: Vec<String> = args.iter().map(format_expr).collect();
-                format!("{}.{}({})", format_expr(object), method, arg_strs.join(", "))
+                format!(
+                    "{}.{}({})",
+                    format_expr(object),
+                    method,
+                    arg_strs.join(", ")
+                )
             }
         }
-        CompiledExprKind::Quantifier { kind, variable, collection, predicate, .. } => {
+        CompiledExprKind::Quantifier {
+            kind,
+            variable,
+            collection,
+            predicate,
+            ..
+        } => {
             let keyword = match kind {
                 reify_types::QuantifierKind::ForAll => "forall",
                 reify_types::QuantifierKind::Exists => "exists",
             };
-            format!("{} {} in {}: {}", keyword, variable, format_expr(collection), format_expr(predicate))
+            format!(
+                "{} {} in {}: {}",
+                keyword,
+                variable,
+                format_expr(collection),
+                format_expr(predicate)
+            )
         }
         CompiledExprKind::OptionSome(inner) => format!("some({})", format_expr(inner)),
         CompiledExprKind::OptionNone => "none".to_string(),
@@ -548,9 +575,33 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
                 reify_types::DeterminacyPredicateKind::Determined => "determined",
                 reify_types::DeterminacyPredicateKind::Undetermined => "undetermined",
                 reify_types::DeterminacyPredicateKind::Constrained => "constrained",
-                reify_types::DeterminacyPredicateKind::PartiallyDetermined => "partially_determined",
+                reify_types::DeterminacyPredicateKind::PartiallyDetermined => {
+                    "partially_determined"
+                }
             };
             format!("{}({})", fn_name, cell.member)
+        }
+        CompiledExprKind::RangeConstructor {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => {
+            match (lower, upper) {
+                (Some(lo), Some(hi)) => {
+                    let op = if *upper_inclusive { ".." } else { "..<" };
+                    format!("{}{}{}", format_expr(lo), op, format_expr(hi))
+                }
+                (Some(bound), None) => {
+                    let op = if *lower_inclusive { ">=" } else { ">" };
+                    format!("{}{}", op, format_expr(bound))
+                }
+                (None, Some(bound)) => {
+                    let op = if *upper_inclusive { "<=" } else { "<" };
+                    format!("{}{}", op, format_expr(bound))
+                }
+                (None, None) => "..".to_string(),
+            }
         }
     }
 }

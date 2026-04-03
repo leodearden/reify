@@ -88,7 +88,7 @@ pub struct EvalStatusInfo {
 }
 
 /// Current selection in the viewport.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SelectionInfo {
     pub selected_entity: Option<String>,
     pub hovered_entity: Option<String>,
@@ -117,4 +117,16 @@ pub struct SetParamResult {
     pub success: bool,
     pub new_value: String,
     pub unit: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_info_default_has_none_fields() {
+        let info = SelectionInfo::default();
+        assert_eq!(info.selected_entity, None);
+        assert_eq!(info.hovered_entity, None);
+    }
 }

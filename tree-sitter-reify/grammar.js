@@ -22,6 +22,7 @@ module.exports = grammar({
     [$.param_declaration],
     [$.let_declaration],
     [$.constraint_declaration],
+    [$.constraint_instantiation],
     [$.minimize_declaration],
     [$.maximize_declaration],
     [$.sub_declaration],
@@ -42,6 +43,7 @@ module.exports = grammar({
       $.purpose_declaration,
       $.constraint_definition,
       $.unit_declaration,
+      $.type_alias_declaration,
     ),
 
     // ── Enum ──────────────────────────────────────────────────
@@ -266,6 +268,18 @@ module.exports = grammar({
       optional(seq('offset', field('offset', $._expression))),
     ),
 
+    // ── Type alias (top-level) ─────────────────────────────
+    // `type Pressure = Force / Area`
+    // `type Stress<T> = Force / Area`
+    type_alias_declaration: $ => seq(
+      optional('pub'),
+      'type',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '=',
+      field('type', $.dimensional_type_expr),
+    ),
+
     // ── Associated type ─────────────────────────────────────
     associated_type: $ => seq(
       'type',
@@ -328,6 +342,7 @@ module.exports = grammar({
     _member: $ => choice(
       $.param_declaration,
       $.let_declaration,
+      $.constraint_instantiation,
       $.constraint_declaration,
       $.sub_declaration,
       $.minimize_declaration,
@@ -351,6 +366,19 @@ module.exports = grammar({
       field('key', $.identifier),
       '=',
       field('value', $.string_literal),
+    ),
+
+    // ── Constraint instantiation (member-level) ──────────────
+    // `constraint ConstraintName(arg: expr, ...)` inside structure bodies.
+    // The required named_argument_list (name: value) disambiguates from
+    // constraint_declaration (which parses an arbitrary expression).
+    constraint_instantiation: $ => seq(
+      'constraint',
+      field('name', $.identifier),
+      '(',
+      $.named_argument_list,
+      ')',
+      optional(field('guard', $.where_clause)),
     ),
 
     // ── Where clause (guard) ────────────────────────────────
@@ -553,6 +581,14 @@ module.exports = grammar({
       optional(','),
     ),
 
+    // Dimensional type expression: supports `*`, `/` binary ops on types.
+    // Used in type alias RHS to express dimensional analysis (e.g., `Force / Area`).
+    dimensional_type_expr: $ => choice(
+      prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '*'), field('right', $.dimensional_type_expr))),
+      prec.left(1, seq(field('left', $.dimensional_type_expr), field('op', '/'), field('right', $.dimensional_type_expr))),
+      $.type_expr,
+    ),
+
     // ── Expressions ─────────────────────────────────────────
     // Precedence (low → high):
     //   1: || (or)
@@ -562,11 +598,12 @@ module.exports = grammar({
     //   5: +, - (additive)
     //   6: *, / (multiplicative)
     //   7: unary -, ! (unary)
-    //   8: postfix index access ([])
+    //   8: postfix index access ([]), qualified access (::)
     //   9: postfix ad-hoc selector (@)
     //  10: postfix member access (.), function call
 
     _expression: $ => choice(
+      $.range_expression,
       $.binary_expression,
       $.unary_expression,
       $.conditional_expression,
@@ -575,6 +612,8 @@ module.exports = grammar({
       $.quantifier_expression,
       $.ad_hoc_selector,
       $.index_access,
+      $.qualified_access,
+      $.instance_qualified_access,
       $._primary_expression,
     ),
 
@@ -637,6 +676,16 @@ module.exports = grammar({
       prec.left(5, seq(field('left', $._expression), field('op', '-'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '*'), field('right', $._expression))),
       prec.left(6, seq(field('left', $._expression), field('op', '/'), field('right', $._expression))),
+    ),
+
+    // ── Range expressions ───────────────────────────────────
+    // Precedence 0: lower than all other binary operators so that
+    // `2mm + 1mm .. 10mm - 1mm` parses as `(2mm+1mm) .. (10mm-1mm)`.
+    range_expression: $ => choice(
+      // Two-sided inclusive: lower..upper
+      prec.left(0, seq(field('lower', $._expression), '..', field('upper', $._expression))),
+      // Two-sided exclusive upper: lower..<upper
+      prec.left(0, seq(field('lower', $._expression), '..<', field('upper', $._expression))),
     ),
 
     unary_expression: $ => choice(
@@ -729,6 +778,25 @@ module.exports = grammar({
       '[',
       field('index', $._expression),
       ']',
+    )),
+
+    // ── Qualified access ─────────────────────────────────────
+    // Foo::bar — qualified name access (e.g. module/type member lookup)
+    qualified_access: $ => prec.left(8, seq(
+      field('qualifier', $._expression),
+      '::',
+      field('member', $.identifier),
+    )),
+
+    // obj.(Foo::bar) — instance-qualified access (e.g. trait-qualified method call)
+    // Inner 'qualified' field accepts any expression; lowering validates it's a
+    // qualified_access and emits a specific diagnostic if not.
+    instance_qualified_access: $ => prec.left(8, seq(
+      field('object', $._expression),
+      '.',
+      '(',
+      field('qualified', $._expression),
+      ')',
     )),
 
     // ── Literals ────────────────────────────────────────────

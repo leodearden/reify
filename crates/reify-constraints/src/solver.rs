@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use argmin::core::{CostFunction, Error as ArgminError, Executor, State};
+use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintNodeId,
     ConstraintSolver, DimensionVector, OptimizationObjective, ResolutionProblem, SolveResult, Type,
-    Value, ValueMap,
+    Value, ValueCellId, ValueMap,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -26,6 +26,12 @@ const PENALTY_WEIGHT: f64 = 1e6;
 /// regions, but not so large as to cause overflow when added to other penalties.
 const UNDEF_OBJECTIVE_PENALTY: f64 = f64::MAX / 2.0;
 
+/// Per-simplex-vertex iteration budget when the initial point is already feasible
+/// and an objective is present. Nelder-Mead uses an (N+1)-vertex simplex, so the
+/// total warm-start budget is `FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)`,
+/// capped at MAX_ITERS. This scales naturally with problem dimensionality.
+const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
+
 /// Derivative-free constraint solver using Nelder-Mead optimization.
 ///
 /// Solves for auto parameters by minimizing a penalty function that
@@ -42,10 +48,34 @@ fn dimension_of(ty: &Type) -> DimensionVector {
     }
 }
 
+/// Build the solved-values HashMap from auto params and their f64 solutions.
+///
+/// Each param is mapped to a Value::Scalar with the correct SI value
+/// and dimension. Used by early-exit, fallback, and solution construction paths.
+fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
+    assert_eq!(params.len(), x.len(), "params and x must have the same length");
+    params
+        .iter()
+        .zip(x.iter())
+        .map(|(param, &val)| {
+            (
+                param.id.clone(),
+                Value::Scalar {
+                    si_value: val,
+                    dimension: dimension_of(&param.param_type),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Build a ValueMap from a base map with trial auto-param values inserted.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
+/// Maps params directly to avoid the intermediate HashMap allocation that
+/// `build_solved_values` would create — this is the hot path called on
+/// every Nelder-Mead iteration.
 fn build_trial_values(base: &ValueMap, params: &[AutoParam], x: &[f64]) -> ValueMap {
     let mut values = base.clone();
     for (param, &val) in params.iter().zip(x.iter()) {
@@ -90,30 +120,58 @@ fn extract_initial_point(problem: &ResolutionProblem) -> Vec<f64> {
 /// Returns the absolute distance by which the constraint is violated,
 /// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
-fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+fn comparison_residual(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
+    let lhs =
+        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs =
+        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
             BinOp::Gt => {
-                if l > r { 0.0 } else { r - l }
+                if l > r {
+                    0.0
+                } else {
+                    r - l
+                }
             }
             BinOp::Ge => {
-                if l >= r { 0.0 } else { r - l }
+                if l >= r {
+                    0.0
+                } else {
+                    r - l
+                }
             }
             BinOp::Lt => {
-                if l < r { 0.0 } else { l - r }
+                if l < r {
+                    0.0
+                } else {
+                    l - r
+                }
             }
             BinOp::Le => {
-                if l <= r { 0.0 } else { l - r }
+                if l <= r {
+                    0.0
+                } else {
+                    l - r
+                }
             }
             BinOp::Eq => {
                 let d = (l - r).abs();
                 if d < 1e-15 { 0.0 } else { d }
             }
             BinOp::Ne => {
-                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+                if (l - r).abs() > 1e-15 {
+                    0.0
+                } else {
+                    1.0
+                }
             }
             _ => 1.0,
         },
@@ -127,27 +185,51 @@ fn comparison_residual(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, val
 /// sub-expressions to get numeric values and computes a continuous violation.
 /// Returns 0.0 if satisfied. For non-decomposable boolean constraints,
 /// uses a fixed penalty when violated.
-fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
+fn comparison_violation(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
+    let lhs =
+        reify_expr::eval_expr(left, &reify_expr::EvalContext::new(values, functions)).as_f64();
+    let rhs =
+        reify_expr::eval_expr(right, &reify_expr::EvalContext::new(values, functions)).as_f64();
 
     match (lhs, rhs) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
-                if l > r { 0.0 } else { (r - l + 1e-12).powi(2) }
+                if l > r {
+                    0.0
+                } else {
+                    (r - l + 1e-12).powi(2)
+                }
             }
             // For l >= r: violation when l < r
             BinOp::Ge => {
-                if l >= r { 0.0 } else { (r - l + 1e-12).powi(2) }
+                if l >= r {
+                    0.0
+                } else {
+                    (r - l + 1e-12).powi(2)
+                }
             }
             // For l < r: violation when l >= r, magnitude = (l - r)
             BinOp::Lt => {
-                if l < r { 0.0 } else { (l - r + 1e-12).powi(2) }
+                if l < r {
+                    0.0
+                } else {
+                    (l - r + 1e-12).powi(2)
+                }
             }
             // For l <= r: violation when l > r
             BinOp::Le => {
-                if l <= r { 0.0 } else { (l - r + 1e-12).powi(2) }
+                if l <= r {
+                    0.0
+                } else {
+                    (l - r + 1e-12).powi(2)
+                }
             }
             // For equality: distance squared
             BinOp::Eq => {
@@ -155,7 +237,11 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
             BinOp::Ne => {
-                if (l - r).abs() > 1e-15 { 0.0 } else { 1.0 }
+                if (l - r).abs() > 1e-15 {
+                    0.0
+                } else {
+                    1.0
+                }
             }
             // Not a comparison
             _ => 1.0,
@@ -170,7 +256,11 @@ fn comparison_violation(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, va
 /// Same decomposition structure as `constraint_violation` but returns
 /// absolute residual values. For And composites, returns the max of
 /// sub-residuals (both must hold). For Or, returns the min (one suffices).
-fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+fn constraint_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             match op {
@@ -190,7 +280,10 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
                     lr.min(rr)
                 }
                 _ => {
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+                    match reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions),
+                    ) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -199,14 +292,12 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
                 }
             }
         }
-        _ => {
-            match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
-                Value::Bool(true) => 0.0,
-                Value::Bool(false) => 1.0,
-                Value::Undef => 10.0,
-                _ => 1.0,
-            }
-        }
+        _ => match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+            Value::Bool(true) => 0.0,
+            Value::Bool(false) => 1.0,
+            Value::Undef => 10.0,
+            _ => 1.0,
+        },
     }
 }
 
@@ -214,7 +305,11 @@ fn constraint_residual(expr: &CompiledExpr, values: &ValueMap, functions: &[Comp
 ///
 /// Tries to decompose comparison expressions for continuous violation.
 /// Falls back to binary penalty for non-decomposable expressions.
-fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[CompiledFunction]) -> f64 {
+fn constraint_violation(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> f64 {
     // First try decomposing into a comparison
     match &expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
@@ -224,7 +319,8 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[Com
                 }
                 BinOp::And => {
                     // AND: sum violations of both sides
-                    constraint_violation(left, values, functions) + constraint_violation(right, values, functions)
+                    constraint_violation(left, values, functions)
+                        + constraint_violation(right, values, functions)
                 }
                 BinOp::Or => {
                     // OR: minimum violation of both sides
@@ -234,7 +330,10 @@ fn constraint_violation(expr: &CompiledExpr, values: &ValueMap, functions: &[Com
                 }
                 _ => {
                     // Not a logical/comparison op; evaluate as boolean
-                    match reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions)) {
+                    match reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions),
+                    ) {
                         Value::Bool(true) => 0.0,
                         Value::Bool(false) => 1.0,
                         Value::Undef => 10.0,
@@ -302,15 +401,23 @@ struct ConstraintCostFunction<'a> {
 /// For Minimize, returns the value directly. For Maximize, negates it.
 /// Returns None if the expression evaluates to a non-numeric value (Undef)
 /// or a non-finite float (NaN, Inf).
-fn eval_objective(objective: &OptimizationObjective, values: &ValueMap, functions: &[CompiledFunction]) -> Option<f64> {
+fn eval_objective(
+    objective: &OptimizationObjective,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+) -> Option<f64> {
     match objective {
-        OptimizationObjective::Minimize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-            .as_f64()
-            .filter(|v| v.is_finite()),
-        OptimizationObjective::Maximize(expr) => reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
-            .as_f64()
-            .filter(|v| v.is_finite())
-            .map(|v| -v),
+        OptimizationObjective::Minimize(expr) => {
+            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
+                .as_f64()
+                .filter(|v| v.is_finite())
+        }
+        OptimizationObjective::Maximize(expr) => {
+            reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, functions))
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .map(|v| -v)
+        }
     }
 }
 
@@ -335,8 +442,8 @@ impl CostFunction for ConstraintCostFunction<'_> {
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective(obj, &values, self.functions)
-                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value =
+                    eval_objective(obj, &values, self.functions).unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -385,7 +492,9 @@ fn default_bounds_for(ty: &Type) -> (f64, f64) {
 
 /// Get effective bounds for an AutoParam, falling back to dimension-based defaults.
 fn effective_bounds(param: &AutoParam) -> (f64, f64) {
-    param.bounds.unwrap_or_else(|| default_bounds_for(&param.param_type))
+    param
+        .bounds
+        .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
 impl ConstraintSolver for DimensionalSolver {
@@ -397,30 +506,45 @@ impl ConstraintSolver for DimensionalSolver {
             };
         }
 
-        // Early-exit: if all constraints are already satisfied with current values,
-        // return current auto param values without running the optimizer
-        if problem.objective.is_none() {
-            let initial = extract_initial_point(problem);
-            let trial_values = build_trial_values(
-                &problem.current_values,
-                &problem.auto_params,
-                &initial,
+        // Check feasibility at the initial point for ALL problems (not just
+        // pure feasibility). This enables early-exit for no-objective problems
+        // and a reduced iteration budget for optimization warm-starts.
+        let initial = extract_initial_point(problem);
+        // NB: `trial_values` is used in two places — (1) the feasibility check
+        // immediately below, and (2) the fallback objective validation when the
+        // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+        // Do not inline into the feasibility check.
+        let trial_values =
+            build_trial_values(&problem.current_values, &problem.auto_params, &initial);
+        let initially_feasible =
+            max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
+                <= FEASIBILITY_THRESHOLD;
+
+        // Pure feasibility (no objective) + already feasible: return immediately
+        if initially_feasible && problem.objective.is_none() {
+            let n_params = problem.auto_params.len();
+            tracing::debug!(
+                n_params,
+                "initial point already feasible with no objective; returning early"
             );
-            let max_residual = max_constraint_residual(&problem.constraints, &trial_values, &problem.functions);
-            if max_residual <= FEASIBILITY_THRESHOLD {
-                let mut values = HashMap::new();
-                for (param, &val) in problem.auto_params.iter().zip(initial.iter()) {
-                    values.insert(
-                        param.id.clone(),
-                        Value::Scalar {
-                            si_value: val,
-                            dimension: dimension_of(&param.param_type),
-                        },
-                    );
-                }
-                return SolveResult::Solved { values };
-            }
+            return SolveResult::Solved {
+                values: build_solved_values(&problem.auto_params, &initial),
+            };
         }
+
+        // Choose iteration budget: scaled by simplex size when warm-starting.
+        // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
+        // the budget proportionally to give higher-dimensional problems enough
+        // iterations to converge.
+        // After the early-return above for `initially_feasible && objective.is_none()`,
+        // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+        let max_iters = if initially_feasible {
+            debug_assert!(problem.objective.is_some(), "warm-start budget path reached without objective — early-return invariant violated");
+            let n_params = problem.auto_params.len() as u64;
+            (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
+        } else {
+            MAX_ITERS
+        };
 
         let cost_fn = ConstraintCostFunction {
             auto_params: &problem.auto_params,
@@ -430,8 +554,7 @@ impl ConstraintSolver for DimensionalSolver {
             functions: &problem.functions,
         };
 
-        // Extract initial point and build simplex
-        let initial = extract_initial_point(problem);
+        // Build simplex from the already-extracted initial point
         let simplex = build_simplex(&initial, &problem.auto_params);
 
         // Configure and run Nelder-Mead
@@ -439,21 +562,52 @@ impl ConstraintSolver for DimensionalSolver {
             .with_sd_tolerance(1e-15)
             .expect("sd_tolerance 1e-15 is always valid");
 
-        let executor = Executor::new(cost_fn, solver)
-            .configure(|state| state.max_iters(MAX_ITERS));
+        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
 
         let result = match executor.run() {
             Ok(res) => res,
             Err(e) => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(error = %e, n_params, "solver executor failed");
                 return SolveResult::NoProgress {
                     reason: format!("solver error: {}", e),
                 };
             }
         };
 
+        // Extract and log convergence information from the solver result.
+        let termination_reason = result.state().get_termination_reason().cloned();
+        let has_objective = problem.objective.is_some();
+        let n_params = problem.auto_params.len();
+        let iter_limited =
+            termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+        if iter_limited {
+            tracing::debug!(
+                ?termination_reason,
+                n_params,
+                max_iters,
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed; hit iteration limit — objective may be suboptimal"
+            );
+        } else {
+            tracing::debug!(
+                ?termination_reason,
+                n_params,
+                max_iters,
+                has_objective,
+                initially_feasible,
+                iter_limited,
+                "solver completed"
+            );
+        }
+
         let best_param: Vec<f64> = match result.state().get_best_param() {
             Some(p) => p.clone(),
             None => {
+                let n_params = problem.auto_params.len();
+                tracing::warn!(n_params, "solver returned no best parameter");
                 return SolveResult::NoProgress {
                     reason: "solver returned no solution".to_string(),
                 };
@@ -472,13 +626,38 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Check feasibility by re-evaluating constraint violations
         // (best_cost may include the objective term, so we check violations separately)
-        let final_values = build_trial_values(
-            &problem.current_values,
-            &problem.auto_params,
-            &clamped,
-        );
-        let final_max_residual = max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
+        let final_values =
+            build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+        let final_max_residual =
+            max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
         if final_max_residual > FEASIBILITY_THRESHOLD {
+            // If the initial point was feasible but the optimizer drifted infeasible
+            // while chasing an objective, fall back to the initial feasible values
+            // rather than reporting a false Infeasible.
+            if initially_feasible {
+                // Validate that the objective is numeric at the initial point
+                // before promoting to Solved. The trial_values ValueMap was built
+                // from the same initial point and is still in scope.
+                if let Some(obj) = &problem.objective
+                    && eval_objective(obj, &trial_values, &problem.functions).is_none()
+                {
+                    return SolveResult::NoProgress {
+                        reason: "objective expression evaluated to undefined at fallback point"
+                            .to_string(),
+                    };
+                }
+                // Construct fallback HashMap lazily — only on the error path
+                // where the optimizer drifted infeasible. The `initial` Vec<f64>
+                // is still in scope from the extraction at the top of solve().
+                let fallback = build_solved_values(&problem.auto_params, &initial);
+                tracing::debug!(
+                    n_params,
+                    final_max_residual,
+                    "optimizer drifted infeasible while chasing objective; \
+                     falling back to initial feasible point"
+                );
+                return SolveResult::Solved { values: fallback };
+            }
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
                     severity: reify_types::Severity::Error,
@@ -497,32 +676,27 @@ impl ConstraintSolver for DimensionalSolver {
             && eval_objective(obj, &final_values, &problem.functions).is_none()
         {
             return SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point"
-                    .to_string(),
+                reason: "objective expression evaluated to undefined at solution point".to_string(),
             };
         }
 
         // Build solution values
-        let mut values = HashMap::new();
-        for (param, &val) in problem.auto_params.iter().zip(clamped.iter()) {
-            values.insert(
-                param.id.clone(),
-                Value::Scalar {
-                    si_value: val,
-                    dimension: dimension_of(&param.param_type),
-                },
-            );
-        }
+        let values = build_solved_values(&problem.auto_params, &clamped);
 
+        // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
+        // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
+        // full convergence. Convergence quality is logged via tracing::debug! (see above)
+        // including TerminationReason, iteration budget, and whether fallback was used.
+        // This information is NOT propagated through SolveResult to avoid a breaking API
+        // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
+        // inspect convergence details at runtime.
         SolveResult::Solved { values }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use reify_types::{
-        ConstraintSolver, ResolutionProblem, SolveResult, ValueMap,
-    };
+    use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
 
     #[test]
     fn dimensional_solver_exists_and_implements_trait() {
@@ -580,12 +754,125 @@ mod tests {
         let width = trial.get(&width_id).expect("width should be preserved");
         match width {
             &Value::Scalar { si_value, .. } => {
-                assert!(
-                    (si_value - 0.080).abs() < 1e-15,
-                    "width should be 0.080"
-                );
+                assert!((si_value - 0.080).abs() < 1e-15, "width should be 0.080");
             }
             other => panic!("expected Scalar, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_trial_values_multi_param_regression() {
+        use super::build_trial_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let thickness_id = ValueCellId::new("Bracket", "thickness");
+        let angle_id = ValueCellId::new("Bracket", "angle");
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has a pre-existing non-auto value (width=80mm)
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let params = vec![
+            AutoParam {
+                id: thickness_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+            },
+        ];
+
+        let trial = build_trial_values(&base, &params, &[0.005, 1.2]);
+
+        // First auto param: length with correct dimension
+        let thickness = trial.get(&thickness_id).expect("thickness should exist");
+        match thickness {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.005).abs() < 1e-15,
+                    "thickness si_value should be 0.005, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar for thickness, got {:?}", other),
+        }
+
+        // Second auto param: angle with correct dimension
+        let angle = trial.get(&angle_id).expect("angle should exist");
+        match angle {
+            &Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 1.2).abs() < 1e-15,
+                    "angle si_value should be 1.2, got {}",
+                    si_value
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+
+        // Non-auto value should be preserved unchanged
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_trial_values_empty_params() {
+        use super::build_trial_values;
+        use reify_types::{DimensionVector, Value, ValueCellId};
+
+        let width_id = ValueCellId::new("Bracket", "width");
+
+        // Base map has one pre-existing value
+        let mut base = ValueMap::new();
+        base.insert(
+            width_id.clone(),
+            Value::Scalar {
+                si_value: 0.080,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Empty params slice — should return base unchanged
+        let trial = build_trial_values(&base, &[], &[]);
+
+        // Base value preserved
+        let width = trial.get(&width_id).expect("width should be preserved");
+        match width {
+            &Value::Scalar { si_value, .. } => {
+                assert!(
+                    (si_value - 0.080).abs() < 1e-15,
+                    "width should remain 0.080, got {}",
+                    si_value
+                );
+            }
+            other => panic!("expected Scalar for width, got {:?}", other),
         }
     }
 
@@ -737,7 +1024,10 @@ mod tests {
         let result = solver.solve(&problem);
         match result {
             SolveResult::Solved { values } => {
-                assert!(values.is_empty(), "empty problem should return empty values");
+                assert!(
+                    values.is_empty(),
+                    "empty problem should return empty values"
+                );
             }
             other => panic!("expected Solved, got {:?}", other),
         }
@@ -964,11 +1254,11 @@ mod tests {
             },
             Type::length(),
         );
-        let gt_width = CompiledExpr::binop(BinOp::Gt, width_ref.clone(), fifty_mm.clone(), Type::Bool);
+        let gt_width =
+            CompiledExpr::binop(BinOp::Gt, width_ref.clone(), fifty_mm.clone(), Type::Bool);
 
         // height > 50mm
-        let gt_height =
-            CompiledExpr::binop(BinOp::Gt, height_ref.clone(), fifty_mm, Type::Bool);
+        let gt_height = CompiledExpr::binop(BinOp::Gt, height_ref.clone(), fifty_mm, Type::Bool);
 
         // width + height < 200mm
         let sum = CompiledExpr::binop(BinOp::Add, width_ref, height_ref, Type::length());
@@ -1069,7 +1359,7 @@ mod tests {
             SolveResult::Solved { values } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
-                    x >= 0.001 && x <= 0.050,
+                    (0.001..=0.050).contains(&x),
                     "solution should be within bounds [1mm, 50mm], got {} m",
                     x
                 );
@@ -1147,11 +1437,17 @@ mod tests {
 
         // l=1.9999999, r=2.0: violated by 1e-7
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1169,11 +1465,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1188,11 +1490,17 @@ mod tests {
 
         // l=0.010, r=0.005: Lt violated by 0.005
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.010, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1210,11 +1518,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.003,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.005, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1228,11 +1542,17 @@ mod tests {
         use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, Value};
 
         let l_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let r_expr = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.000001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.000001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let values = ValueMap::new();
@@ -1252,7 +1572,10 @@ mod tests {
         // thickness > 2mm, thickness=1.9999999m (violated by 1e-7)
         let thickness_ref = CompiledExpr::value_ref(ValueCellId::new("B", "t"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let expr = CompiledExpr::binop(BinOp::Gt, thickness_ref, two, Type::Bool);
@@ -1260,7 +1583,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("B", "t"),
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&expr, &values, &[]);
@@ -1279,14 +1605,20 @@ mod tests {
         // And(x > 2.0 [violated by 1e-7], y > 1.0 [violated by 1e-5])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
 
         let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
@@ -1296,11 +1628,17 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 1.9999999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.9999999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
         values.insert(
             ValueCellId::new("P", "y"),
-            Value::Scalar { si_value: 0.99999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.99999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&and_expr, &values, &[]);
@@ -1320,14 +1658,20 @@ mod tests {
         // Or(x > 2.0 [violated by 1e-3], y > 1.0 [satisfied])
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_x = CompiledExpr::binop(BinOp::Gt, x_ref, two, Type::Bool);
 
         let y_ref = CompiledExpr::value_ref(ValueCellId::new("P", "y"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let gt_y = CompiledExpr::binop(BinOp::Gt, y_ref, one, Type::Bool);
@@ -1337,11 +1681,17 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 1.999, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.999,
+                dimension: DimensionVector::LENGTH,
+            },
         );
         values.insert(
             ValueCellId::new("P", "y"),
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = constraint_residual(&or_expr, &values, &[]);
@@ -1351,26 +1701,37 @@ mod tests {
     #[test]
     fn max_constraint_residual_picks_worst() {
         use super::max_constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
 
         // Three constraints: satisfied, violated by 1e-7, violated by 1e-5
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 1.0, x=2.0 → satisfied
         let c1 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), one, Type::Bool);
 
         let two = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.0000001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0000001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 2.0000001, x=2.0 → violated by 1e-7
         let c2 = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), two, Type::Bool);
 
         let three = CompiledExpr::literal(
-            Value::Scalar { si_value: 2.00001, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.00001,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // x > 2.00001, x=2.0 → violated by 1e-5
@@ -1385,7 +1746,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 2.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = max_constraint_residual(&constraints, &values, &[]);
@@ -1399,11 +1763,16 @@ mod tests {
     #[test]
     fn max_constraint_residual_all_satisfied() {
         use super::max_constraint_residual;
-        use reify_types::{BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{
+            BinOp, CompiledExpr, ConstraintNodeId, DimensionVector, Type, Value, ValueCellId,
+        };
 
         let x_ref = CompiledExpr::value_ref(ValueCellId::new("P", "x"), Type::length());
         let one = CompiledExpr::literal(
-            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         let c1 = CompiledExpr::binop(BinOp::Gt, x_ref, one, Type::Bool);
@@ -1413,7 +1782,10 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(
             ValueCellId::new("P", "x"),
-            Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
         );
 
         let res = max_constraint_residual(&constraints, &values, &[]);
@@ -1472,7 +1844,10 @@ mod tests {
         let x_id = ValueCellId::new("Part", "x");
         let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
         let zero = CompiledExpr::literal(
-            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
             Type::length(),
         );
         // Trivially satisfied constraint: x > 0.0
@@ -1502,7 +1877,8 @@ mod tests {
         assert!(
             cost_out > cost_in,
             "out-of-bounds param should have higher cost (in={:.2e}, out={:.2e})",
-            cost_in, cost_out
+            cost_in,
+            cost_out
         );
     }
 
@@ -1670,5 +2046,565 @@ mod tests {
         let initial_3d = vec![0.5, 0.5, 0.5];
         let simplex = build_simplex(&initial_3d, &params_3d);
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
+    }
+
+    /// Verify that the optimizer converges near the lower bound when minimizing.
+    /// With auto param bounds [5mm, 100mm] and a trivially-satisfied constraint
+    /// (x > 1mm), minimizing x should drive it toward the 5mm lower bound,
+    /// confirming convergence quality (result between 4mm and 8mm).
+    ///
+    /// Also serves as a positive-path regression guard for "feasibility check
+    /// returns Solved when an objective is present."
+    #[test]
+    fn optimization_converges_near_lower_bound() {
+        use crate::DimensionalSolver;
+        use reify_test_support::{cnid, gt, literal, mm, value_ref, vcid};
+        use reify_types::{AutoParam, OptimizationObjective, Type};
+
+        let solver = DimensionalSolver;
+        let x_id = vcid("Part", "x");
+
+        // x > 1mm — trivially satisfied when x starts at 10mm
+        let x_ref = value_ref("Part", "x");
+        let one_mm = literal(mm(1.0));
+        let gt_expr = gt(x_ref.clone(), one_mm);
+
+        // Minimize x — with auto param bounds [5mm, 100mm], the minimum
+        // is at 5mm which is still above the 1mm constraint.
+        let objective = OptimizationObjective::Minimize(x_ref);
+
+        let mut current = ValueMap::new();
+        current.insert(x_id.clone(), mm(10.0)); // 10mm — already feasible
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.005, 0.100)), // 5mm–100mm
+            }],
+            constraints: vec![(cnid("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    si > 0.004 && si < 0.008,
+                    "optimizer should drive x toward 5mm lower bound, got {} m \
+                     (expected 4mm < x < 8mm — lower bound catches zero/negative, \
+                     upper bound confirms convergence near 5mm)",
+                    si
+                );
+            }
+            other => panic!(
+                "minimizing x with feasible initial point should return Solved, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Running the solver through TerminationReason extraction must not panic
+    /// or regress the result. A trivially feasible 1-param problem (x > 5mm AND
+    /// x < 50mm with bounds [1mm, 100mm]) must return Solved with x in the
+    /// feasible range, verifying both the solver result variant and constraint
+    /// satisfaction.
+    #[test]
+    fn termination_reason_extracted_without_panic() {
+        use crate::DimensionalSolver;
+        use reify_test_support::{cnid, gt, literal, lt, mm, value_ref, vcid};
+        use reify_types::{AutoParam, Type, Value};
+
+        let solver = DimensionalSolver;
+        let x_id = vcid("Part", "x");
+
+        // Simple feasibility: x > 5mm AND x < 50mm
+        let x_ref = value_ref("Part", "x");
+        let five_mm = literal(mm(5.0));
+        let fifty_mm = literal(mm(50.0));
+        let gt_expr = gt(x_ref.clone(), five_mm);
+        let lt_expr = lt(x_ref, fifty_mm);
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![
+                (cnid("Part", 0), gt_expr),
+                (cnid("Part", 1), lt_expr),
+            ],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        let SolveResult::Solved { values } = result else {
+            panic!(
+                "trivially feasible 1-param problem must return Solved, got {:?}",
+                result
+            );
+        };
+
+        // Verify constraint satisfaction: solved x must be within (5mm, 50mm).
+        let x_val = values.get(&x_id).expect("solved values must contain x");
+        if let Value::Scalar { si_value, .. } = x_val {
+            assert!(
+                *si_value > 0.005 && *si_value < 0.050,
+                "solved x SI value {} must be in (0.005, 0.050)",
+                si_value
+            );
+        } else {
+            panic!("expected Scalar value for x, got {:?}", x_val);
+        }
+    }
+
+    #[test]
+    fn build_solved_values_builds_correct_hashmap() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let length_id = ValueCellId::new("Part", "length");
+        let angle_id = ValueCellId::new("Part", "angle");
+
+        let params = vec![
+            AutoParam {
+                id: length_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 1.0)),
+            },
+            AutoParam {
+                id: angle_id.clone(),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::TAU)),
+            },
+        ];
+
+        let x = [0.025, std::f64::consts::FRAC_PI_2]; // 25mm, ~90°
+
+        let result = build_solved_values(&params, &x);
+
+        assert_eq!(result.len(), 2, "should contain exactly 2 entries");
+
+        // Check length entry
+        match result.get(&length_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 0.025).abs() < 1e-15,
+                    "length si_value should be 0.025, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "length dimension should be LENGTH"
+                );
+            }
+            other => panic!("expected Scalar for length, got {:?}", other),
+        }
+
+        // Check angle entry
+        match result.get(&angle_id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-15,
+                    "angle si_value should be FRAC_PI_2, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ANGLE,
+                    "angle dimension should be ANGLE"
+                );
+            }
+            other => panic!("expected Scalar for angle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_solved_values_empty_params_returns_empty_map() {
+        use super::build_solved_values;
+
+        let result = build_solved_values(&[], &[]);
+        assert!(result.is_empty(), "empty params should produce empty map");
+    }
+
+    #[test]
+    fn build_solved_values_dimensionless_type() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let id = ValueCellId::new("Part", "ratio");
+        let params = vec![AutoParam {
+            id: id.clone(),
+            param_type: Type::Real,
+            bounds: None,
+        }];
+        let x = [3.125];
+
+        let result = build_solved_values(&params, &x);
+        assert_eq!(result.len(), 1);
+
+        match result.get(&id) {
+            Some(Value::Scalar {
+                si_value,
+                dimension,
+            }) => {
+                assert!(
+                    (si_value - 3.125).abs() < 1e-15,
+                    "si_value should be 3.125, got {}",
+                    si_value
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "Type::Real should map to DIMENSIONLESS"
+                );
+            }
+            other => panic!("expected Scalar for ratio, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "params and x must have the same length")]
+    fn build_solved_values_panics_on_length_mismatch() {
+        use super::build_solved_values;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let params = vec![AutoParam {
+            id: ValueCellId::new("Part", "length"),
+            param_type: Type::length(),
+            bounds: Some((0.001, 1.0)),
+        }];
+        // x has 2 elements but params has 1 — should panic
+        let x = [0.025, 0.050];
+
+        let _ = build_solved_values(&params, &x);
+    }
+
+    /// A feasible initial point with an always-undefined objective (x/0)
+    /// must return NoProgress, never Solved. Because the objective is Undef
+    /// everywhere, the optimizer stays near the initial (feasible) point and
+    /// the post-solve validation (not the fallback path) catches the undefined
+    /// objective. The reason string should mention "solution point".
+    #[test]
+    fn undefined_objective_at_feasible_initial_returns_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            AutoParam, BinOp, CompiledExpr, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm — satisfied when x starts at 10mm
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+
+        // Objective: minimize(x / 0) — always Undef
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let div_by_zero = CompiledExpr::binop(BinOp::Div, x_ref, zero_int, Type::Real);
+        let objective = OptimizationObjective::Minimize(div_by_zero);
+
+        // Current value x = 10mm (already satisfies x > 5mm)
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.010,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::NoProgress { reason } => {
+                assert!(
+                    reason.contains("solution point"),
+                    "expected post-solve path ('solution point'), got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "feasible initial + undefined objective should return NoProgress, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Trigger the *fallback* path for undefined-objective validation:
+    /// the optimizer drifts infeasible while chasing an objective that is
+    /// Undef in the feasible region but defined (small) in the infeasible
+    /// region. When the solver falls back to the initial feasible point,
+    /// it discovers the objective is undefined there and returns NoProgress
+    /// with a reason mentioning "fallback point".
+    ///
+    /// Key design: uses TWO thresholds — the constraint boundary (x <= 0.020)
+    /// and a wider Undef boundary (x <= 0.022) in the Conditional. This prevents
+    /// the optimizer from finding a boundary sweet spot where both constraint
+    /// and objective are simultaneously satisfied. The simplex perturbation
+    /// (+10% of range ≈ 0.0099) pushes the second vertex to ~0.0249 (past the
+    /// Undef boundary), giving the optimizer a low-cost infeasible vertex to
+    /// chase.
+    #[test]
+    fn undefined_objective_at_fallback_triggers_no_progress() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
+            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // Constraint: x <= 0.020 (feasible when x ≤ 20mm)
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let constraint_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.020,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let le_expr = CompiledExpr::binop(
+            BinOp::Le,
+            x_ref.clone(),
+            constraint_threshold,
+            Type::Bool,
+        );
+
+        // Objective: minimize(if x <= 0.022 then x/0 else x)
+        //
+        // The Undef boundary (0.022) is wider than the constraint boundary (0.020),
+        // preventing the optimizer from finding a feasible point with a defined objective.
+        //
+        // x ≤ 0.022: objective = x/0 = Undef → UNDEF_OBJECTIVE_PENALTY (~f64::MAX/2)
+        //   (covers entire feasible region x ≤ 0.020 plus a buffer zone 0.020..0.022)
+        // x > 0.022: objective = x → small finite value (well into infeasible region)
+        //
+        // Initial simplex: vertex 0 at x=0.015 (feasible, Undef, cost ≈ f64::MAX/2),
+        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, finite, cost ≈ 4900).
+        // The enormous cost differential lures the optimizer past x=0.022 into the
+        // infeasible region. The solver detects infeasibility (residual >> 1e-12),
+        // falls back to the initial feasible point, then discovers the objective
+        // is Undef there → NoProgress("fallback point").
+        let undef_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.022,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let condition =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
+        let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let then_branch =
+            CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
+        let else_branch = x_ref;
+
+        let cond_hash = ContentHash::of(&[5])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let objective_expr = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Real,
+            content_hash: cond_hash,
+        };
+        let objective = OptimizationObjective::Minimize(objective_expr);
+
+        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
+        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
+        // pushing the second vertex to ~0.0249 (past both thresholds).
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::NoProgress { reason } => {
+                assert!(
+                    reason.contains("fallback point"),
+                    "expected fallback path ('fallback point'), got: {}",
+                    reason
+                );
+            }
+            other => panic!(
+                "feasible initial + region-dependent Undef objective should return NoProgress, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Happy path of the fallback mechanism: the optimizer drifts infeasible
+    /// while chasing an attractive objective in the infeasible region, the solver
+    /// falls back to the initial feasible point, the objective IS defined there,
+    /// and the solver returns Solved with the exact initial values.
+    ///
+    /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
+    /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
+    /// branches of the fallback validation logic (solver.rs lines 637-659).
+    #[test]
+    fn defined_objective_at_fallback_returns_solved() {
+        use crate::DimensionalSolver;
+        use reify_types::{
+            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
+            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // Constraint: x <= 0.020 (feasible when x ≤ 20mm)
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let constraint_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.020,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let le_expr = CompiledExpr::binop(
+            BinOp::Le,
+            x_ref.clone(),
+            constraint_threshold,
+            Type::Bool,
+        );
+
+        // Objective: minimize(if x <= 0.022 then 1e8 else x)
+        //
+        // The large constant (1e8) in the feasible region creates cost >> infeasible
+        // cost (~5000), luring the optimizer past x=0.022 into the infeasible region.
+        //
+        // x ≤ 0.022: objective = 1e8 → large defined finite value (covers entire
+        //   feasible region plus a buffer zone 0.020..0.022)
+        // x > 0.022: objective = x → small attractive value (well into infeasible region)
+        //
+        // Initial simplex: vertex 0 at x=0.015 (feasible, cost=1e8),
+        //   vertex 1 at x=0.015+0.0099≈0.0249 (infeasible, cost≈4900).
+        // The enormous cost differential lures the optimizer past x=0.022 into the
+        // infeasible region. The solver detects infeasibility (residual >> 1e-12),
+        // falls back to the initial feasible point x=0.015, validates the objective
+        // (eval_objective returns Some(1e8) → passes), and returns Solved with the
+        // initial values.
+        let cond_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.022,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let condition =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
+        let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
+        let else_branch = x_ref;
+
+        let cond_hash = ContentHash::of(&[5])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let objective_expr = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::Real,
+            content_hash: cond_hash,
+        };
+        let objective = OptimizationObjective::Minimize(objective_expr);
+
+        // Current value x = 0.015 (15mm, feasible since 0.015 <= 0.020)
+        // With bounds (0.001, 0.1), the simplex perturbation is +0.0099,
+        // pushing the second vertex to ~0.0249 (past both thresholds).
+        let mut current = ValueMap::new();
+        current.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.015,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+            }],
+            constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
+            current_values: current,
+            objective: Some(objective),
+            functions: vec![],
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Solved { values } => {
+                let si = values.get(&x_id).unwrap().as_f64().unwrap();
+                assert!(
+                    (si - 0.015).abs() < 1e-10,
+                    "fallback path should return initial x = 0.015 m, got {} m",
+                    si
+                );
+            }
+            other => panic!(
+                "feasible initial + region-dependent defined objective should return Solved \
+                 (fallback happy path), got {:?}",
+                other
+            ),
+        }
     }
 }

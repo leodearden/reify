@@ -15,6 +15,7 @@ import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
 import type { SourceLocation } from '../types';
+import { errorMessage } from '../utils/errorClassifier';
 import styles from './Editor.module.css';
 
 export interface EditorProps {
@@ -112,7 +113,7 @@ export function Editor(props: EditorProps) {
               saveFile(path, file.content)
                 .then(() => props.store.markClean(path))
                 .catch((err: unknown) =>
-                  props.onError?.(`Failed to save file: ${err instanceof Error ? err.message : String(err)}`),
+                  props.onError?.(`Failed to save file: ${errorMessage(err)}`),
                 );
             }
             return true;
