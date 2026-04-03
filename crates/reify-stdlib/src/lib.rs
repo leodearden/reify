@@ -5254,6 +5254,28 @@ mod tests {
         assert_real_approx!(eval_builtin("magnitude", &[z]), 1e200);
     }
 
+    #[test]
+    fn magnitude_zero_complex_returns_zero() {
+        // magnitude(0+0i) = 0.0 (zero vector has zero magnitude, unlike phase which is undef)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 0.0);
+    }
+
+    #[test]
+    fn complex_magnitude_zero_complex_returns_zero() {
+        // complex_magnitude(0+0i) = 0.0
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 0.0);
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
