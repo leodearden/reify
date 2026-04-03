@@ -9017,11 +9017,11 @@
         "description": "Add Type::is_error() predicate. Add early-return guards in infer_binop_type, index access type inference (~line 1360), quantifier element type inference (~line 1572), and member access type inference (~line 1300) to propagate Type::Error instead of falling through to _ => Type::Real wildcards. This completes the anti-cascade contract stated in Type::Error's doc comment. (Review followup from task 248)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T06:02:40.276Z",
+        "updatedAt": "2026-04-03T23:27:25.365Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17374,7 +17374,7 @@
         "description": "Convention violation. reify-lsp/src/bridge.rs:84 uses serde_json::from_value(params).unwrap_or_default() for InitializeParams. If the LSP client sends malformed initialize params, the server silently uses defaults. Should log a warning via tracing::warn! and optionally surface an LSP error.\n\nmemory_hints: search(\"LSP bridge initialize silent default convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17386,7 +17386,8 @@
           "modules": [
             "crates/reify-lsp"
           ]
-        }
+        },
+        "updatedAt": "2026-04-03T23:27:26.327Z"
       },
       {
         "id": "829",
@@ -17642,7 +17643,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:27:21.597Z",
+      "lastModified": "2026-04-03T23:27:26.330Z",
       "taskCount": 844,
       "completedCount": 658,
       "tags": [
