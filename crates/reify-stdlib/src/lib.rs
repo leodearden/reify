@@ -457,31 +457,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "re" | "real" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { re, dimension, .. } => {
-                if *dimension == DimensionVector::DIMENSIONLESS {
-                    Value::Real(*re)
-                } else {
-                    Value::Scalar {
-                        si_value: *re,
-                        dimension: *dimension,
-                    }
-                }
-            }
+            Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
             _ => Value::Undef,
         })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "im" | "imag" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { im, dimension, .. } => {
-                if *dimension == DimensionVector::DIMENSIONLESS {
-                    Value::Real(*im)
-                } else {
-                    Value::Scalar {
-                        si_value: *im,
-                        dimension: *dimension,
-                    }
-                }
-            }
+            Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
             _ => Value::Undef,
         })),
 
@@ -496,8 +478,12 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }),
 
         // phase(z): compute atan2(im, re), return Scalar with ANGLE dimension.
+        // phase(0+0i) is undefined — zero vector has no direction.
         "phase" => unary(args, |v| match v {
             Value::Complex { re, im, .. } => {
+                if *re == 0.0 && *im == 0.0 {
+                    return Value::Undef;
+                }
                 let angle = im.atan2(*re);
                 sanitize_value(Value::Scalar {
                     si_value: angle,
@@ -1377,14 +1363,7 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 /// by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
-    if dimension == DimensionVector::DIMENSIONLESS {
-        sanitize_value(Value::Real(mag))
-    } else {
-        sanitize_value(Value::Scalar {
-            si_value: mag,
-            dimension,
-        })
-    }
+    sanitize_value(Value::from_component(mag, dimension))
 }
 
 /// Compute the Euclidean norm (magnitude) of a 3D vector.
@@ -5035,6 +5014,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn complex_nan_im_arg_returns_undef() {
+        // NaN in the imaginary (second) arg should also produce Undef
+        let result = eval_builtin("complex", &[Value::Real(3.0), Value::Real(f64::NAN)]);
+        assert!(
+            result.is_undef(),
+            "expected Undef for NaN im, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn complex_inf_im_arg_returns_undef() {
+        // Infinity in the imaginary (second) arg should also produce Undef
+        let result = eval_builtin("complex", &[Value::Real(3.0), Value::Real(f64::INFINITY)]);
+        assert!(
+            result.is_undef(),
+            "expected Undef for Inf im, got {:?}",
+            result
+        );
+    }
+
     // ── re() and im() accessor tests (step-7) ────────────────────────────────
 
     #[test]
@@ -5228,6 +5229,28 @@ mod tests {
         assert_real_approx!(eval_builtin("magnitude", &[z]), 1e200);
     }
 
+    #[test]
+    fn magnitude_zero_complex_returns_zero() {
+        // magnitude(0+0i) = 0.0 (zero vector has zero magnitude, unlike phase which is undef)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("magnitude", &[z]), 0.0);
+    }
+
+    #[test]
+    fn complex_magnitude_zero_complex_returns_zero() {
+        // complex_magnitude(0+0i) = 0.0
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_real_approx!(eval_builtin("complex_magnitude", &[z]), 0.0);
+    }
+
     // ── phase() tests (step-13) ───────────────────────────────────────────────
 
     #[test]
@@ -5274,6 +5297,20 @@ mod tests {
     #[test]
     fn phase_non_complex_returns_undef() {
         assert!(eval_builtin("phase", &[Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn phase_zero_complex_returns_undef() {
+        // phase(0+0i) is mathematically undefined (zero vector has no direction)
+        let z = Value::Complex {
+            re: 0.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            eval_builtin("phase", &[z]).is_undef(),
+            "phase(0+0i) should be Undef, not Scalar{{0.0, ANGLE}}"
+        );
     }
 
     // ── complex_add() tests (step-15) ─────────────────────────────────────────
@@ -6842,6 +6879,13 @@ mod tests {
             eval_builtin(
                 "frame3_identity",
                 &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]
             )
             .is_undef()
         );

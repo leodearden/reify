@@ -483,3 +483,33 @@ fn complex_undef_propagation() {
     );
     assert!(result.is_undef());
 }
+
+// ─── Zero-complex edge cases ───────────��──────────────────────────────────
+
+/// .magnitude() on zero complex returns Real(0.0) — zero vector has zero length.
+#[test]
+fn method_magnitude_zero_complex_returns_zero() {
+    let result = eval_method(
+        complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "magnitude",
+        Type::Real,
+    );
+    assert_eq!(result, Value::Real(0.0));
+}
+
+/// .phase() on zero complex returns Undef (zero vector has no direction).
+#[test]
+fn method_phase_zero_complex_returns_undef() {
+    let result = eval_method(
+        complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "phase",
+        Type::Real,
+    );
+    assert!(
+        result.is_undef(),
+        "phase(0+0i) should be Undef, got {:?}",
+        result
+    );
+}
