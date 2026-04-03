@@ -17626,10 +17626,11 @@
         "description": "In `crates/reify-types/src/value.rs:159`, rename `from_component` to `from_real_scalar` (or `dimensioned_real`) — the doc comment itself acknowledges the name is a semantic stretch for magnitude. Update all call sites in `reify-expr/src/lib.rs` and `reify-stdlib/src/lib.rs`.\n\nAlso add a doc note clarifying that the function does not sanitize NaN/Infinity and callers that may encounter domain errors must wrap the result in `sanitize_value`.\n\nMemory hints: search \"from_component naming\", search \"Value helper naming conventions\", entities: Value::from_component",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:27:27.655Z"
       },
       {
         "id": "844",
@@ -17645,7 +17646,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:27:27.254Z",
+      "lastModified": "2026-04-03T23:27:27.655Z",
       "taskCount": 844,
       "completedCount": 658,
       "tags": [
