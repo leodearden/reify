@@ -11,7 +11,8 @@ use reify_types::{
 };
 
 use crate::types::{
-    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
+    ConstraintData, DiagnosticData, FileData, GuiState, MeshData, ValueData, format_determinacy,
+    format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -248,6 +249,65 @@ impl EngineSession {
             end_line: end_line as u32,
             end_column: end_col as u32,
         })
+    }
+
+    /// Return diagnostics (warnings, info) from the most recently compiled module.
+    ///
+    /// If no module is loaded, returns an empty vec. Because
+    /// [`load_from_source`] and [`update_source`] return `Err` before storing
+    /// a module that has compile errors, only warnings and info-level
+    /// diagnostics survive here — compile errors are surfaced as `Err` results
+    /// from those methods.
+    ///
+    /// Reuses the same `source_map` + `module_name` key resolution and
+    /// `byte_offset_to_line_col` helper as [`get_source_location`].
+    pub fn get_diagnostics(&self) -> Vec<DiagnosticData> {
+        let compiled = match self.compiled.as_ref() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        // Resolve file_path and source text from the module-name-based key.
+        // Mirrors the pattern in get_source_location().
+        let (file_path, source) = if let Some(ref name) = self.module_name {
+            let key = format!("{}.ri", name);
+            match self.source_map.get(&key) {
+                Some(src) => (key, src.as_str()),
+                None => return Vec::new(),
+            }
+        } else {
+            match self.source_map.iter().next() {
+                Some((k, v)) => (k.clone(), v.as_str()),
+                None => return Vec::new(),
+            }
+        };
+
+        compiled
+            .diagnostics
+            .iter()
+            .map(|diag| {
+                // Use the first label's span if available; otherwise default to (1,1,1,1).
+                let (line, column, end_line, end_column) =
+                    if let Some(label) = diag.labels.first() {
+                        let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
+                        let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
+                        (l as u32, c as u32, el as u32, ec as u32)
+                    } else {
+                        (1, 1, 1, 1)
+                    };
+
+                DiagnosticData {
+                    file_path: file_path.clone(),
+                    line,
+                    column,
+                    end_line,
+                    end_column,
+                    severity: format!("{}", diag.severity),
+                    message: diag.message.clone(),
+                    code: None,
+                }
+            })
+            .collect()
     }
 
     /// Build the full GUI state from the current engine state.
