@@ -17670,6 +17670,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 847,
+        "title": "Deduplicate constraint-checking loop bodies and diagnostic helpers",
+        "description": "Four DRY violations introduced by the constraint-def path:\n\n1. Extract a private `push_constraint_result` method or helper closure from the identical three-line `labeled_diagnostics + push` block repeated at lines 2250-2254, 2640-2644, 2735-2740, 2799-2804, 3113-3118 in crates/reify-eval/src/lib.rs.\n2. In `labeled_diagnostics`, change the collect() to an in-place mutation loop and guard the replace with a `contains` check to avoid unnecessary allocations.\n3. Extract the `check_source` (and `eval_source`) helper shared across ≥5 test files into `crates/reify-eval/tests/common/mod.rs` and import it from each test file.\n4. Add an `error_diags` free function to `crates/reify-eval/tests/constraint_def_eval.rs` (or the common module) and replace the five inline filter-collect patterns.\n\nMemory hints: search for \"check_source helper eval tests\", search for \"labeled_diagnostics allocation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17682,7 +17693,7 @@
       ],
       "created": "2026-04-03T23:29:13.172Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-03T23:29:20.765Z"
+      "updated": "2026-04-03T23:29:28.649Z"
     }
   }
 }
