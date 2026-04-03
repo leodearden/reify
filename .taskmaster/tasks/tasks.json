@@ -16509,7 +16509,7 @@
         "description": "Add 4+ arg test case for frame3_identity_with_any_args_returns_undef (or rename test to match actual coverage). Add Ord test with equal-w-different-x quaternion pair to protect against field-order changes in Orientation comparison.",
         "details": "Source: escalation esc-382-149 (task 382 review). Files: crates/reify-stdlib/src/lib.rs:6179, crates/reify-types/src/value.rs:4243-4263.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16522,7 +16522,7 @@
             "crates/reify-types"
           ]
         },
-        "updatedAt": "2026-04-03T22:51:29.913Z"
+        "updatedAt": "2026-04-03T23:35:50.277Z"
       },
       {
         "id": "786",
@@ -17726,7 +17726,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:35:49.862Z",
+      "lastModified": "2026-04-03T23:35:50.277Z",
       "taskCount": 848,
       "completedCount": 660,
       "tags": [
