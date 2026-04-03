@@ -8962,11 +8962,11 @@
         "description": "Add Type::is_error() predicate. Add early-return guards in infer_binop_type, index access type inference (~line 1360), quantifier element type inference (~line 1572), and member access type inference (~line 1300) to propagate Type::Error instead of falling through to _ => Type::Real wildcards. This completes the anti-cascade contract stated in Type::Error's doc comment. (Review followup from task 248)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-02T22:34:46.002Z",
+        "updatedAt": "2026-04-03T01:04:54.124Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -17168,7 +17168,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T01:01:53.997Z",
+      "lastModified": "2026-04-03T01:04:54.125Z",
       "taskCount": 822,
       "completedCount": 628,
       "tags": [
