@@ -47,7 +47,7 @@ pub struct ConstraintData {
 /// Source location reference (for click-to-source navigation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceLocation {
-    pub file: String,
+    pub file_path: String,
     pub line: u32,
     pub column: u32,
     pub end_line: u32,

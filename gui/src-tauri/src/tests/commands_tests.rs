@@ -90,7 +90,7 @@ fn get_source_location_for_width() {
         .get_source_location("Bracket.width")
         .expect("should find width source location");
 
-    assert_eq!(loc.file, "bracket.ri");
+    assert_eq!(loc.file_path, "bracket.ri");
     assert!(loc.line >= 1, "line should be positive");
     assert!(loc.column >= 1, "column should be positive");
 }
@@ -170,7 +170,7 @@ fn end_to_end_get_source_location() {
         let loc = session.get_source_location(param);
         assert!(loc.is_some(), "should find location for {}", param);
         let loc = loc.unwrap();
-        assert_eq!(loc.file, "bracket.ri");
+        assert_eq!(loc.file_path, "bracket.ri");
         assert!(
             loc.line >= 1 && loc.line <= 15,
             "line should be within bracket.ri"

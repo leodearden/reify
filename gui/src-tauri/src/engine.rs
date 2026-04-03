@@ -243,7 +243,7 @@ impl EngineSession {
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
 
         Some(crate::types::SourceLocation {
-            file: file.clone(),
+            file_path: file.clone(),
             line: line as u32,
             column: col as u32,
             end_line: end_line as u32,
