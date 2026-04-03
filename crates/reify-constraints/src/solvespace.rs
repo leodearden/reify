@@ -460,10 +460,10 @@ impl SystemBuilder {
         pt: &PointRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Slvs_hEntity {
+    ) -> Result<Slvs_hEntity, String> {
         let key = point_key(pt);
         if let Some(&h) = self.point_entities.get(&key) {
-            return h;
+            return Ok(h);
         }
 
         match pt {
@@ -479,15 +479,15 @@ impl SystemBuilder {
                 self.entities
                     .push(Slvs_Entity::point_3d(eh, FIXED_GROUP, px, py, pz));
                 self.point_entities.insert(key, eh);
-                eh
+                Ok(eh)
             }
             PointRef::Auto {
                 x: x_id,
                 y: y_id,
                 z: z_id,
             } => {
-                let px = self.add_auto_coord(x_id, auto_params, current_values);
-                let py = self.add_auto_coord(y_id, auto_params, current_values);
+                let px = self.add_auto_coord(x_id, auto_params, current_values)?;
+                let py = self.add_auto_coord(y_id, auto_params, current_values)?;
                 let eh = self.alloc.entity();
                 if z_id.is_none() {
                     // 2D point: use POINT_IN_2D on the XY workplane.
@@ -497,12 +497,12 @@ impl SystemBuilder {
                     self.entities
                         .push(Slvs_Entity::point_2d(eh, SOLVE_GROUP, wp, px, py));
                 } else {
-                    let pz = self.add_auto_coord(z_id, auto_params, current_values);
+                    let pz = self.add_auto_coord(z_id, auto_params, current_values)?;
                     self.entities
                         .push(Slvs_Entity::point_3d(eh, SOLVE_GROUP, px, py, pz));
                 }
                 self.point_entities.insert(key, eh);
-                eh
+                Ok(eh)
             }
         }
     }
@@ -517,16 +517,22 @@ impl SystemBuilder {
     ///
     /// For 2D points (z=None), `add_point` uses POINT_IN_2D entities that
     /// have only 2 params; this method is called only for x and y in that case.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `cell_id` is `Some(id)`, `id` is not an auto param,
+    /// and `id` is absent from `current_values`. This indicates the eval pass
+    /// did not complete — a logic error per the project's noisy-error convention.
     fn add_auto_coord(
         &mut self,
         cell_id: &Option<ValueCellId>,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Slvs_hParam {
+    ) -> Result<Slvs_hParam, String> {
         if let Some(id) = cell_id {
             // Check if already mapped
             if let Some(h) = self.mapping.get_param(id) {
-                return h;
+                return Ok(h);
             }
             // Check if it's truly an auto param
             if auto_params.iter().any(|ap| ap.id == *id) {
@@ -537,17 +543,26 @@ impl SystemBuilder {
                     .unwrap_or(0.01); // small nonzero default for lengths
                 self.params.push(Slvs_Param::new(h, SOLVE_GROUP, initial));
                 self.mapping.insert(id.clone(), h);
-                return h;
+                return Ok(h);
             }
             // Not an auto param — put in SOLVE_GROUP with current value
-            // (avoids mixed-group Jacobian issues, but not mapped so value is ignored)
-            let val = current_values
-                .get(id)
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
-            let h = self.alloc.param();
-            self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
-            h
+            // (avoids mixed-group Jacobian issues, but not mapped so value is ignored).
+            // If the value is missing, the eval pass didn't complete — this is a logic
+            // error that must not be silently swallowed.
+            match current_values.get(id).and_then(|v| v.as_f64()) {
+                Some(val) => {
+                    let h = self.alloc.param();
+                    self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
+                    Ok(h)
+                }
+                None => {
+                    tracing::warn!(
+                        cell_id = %id,
+                        "non-auto parameter missing from current_values — eval pass incomplete"
+                    );
+                    Err(format!("non-auto parameter {id} missing from current_values"))
+                }
+            }
         } else {
             // No cell_id — a fixed coordinate not backed by a cell.
             // This path is reached when a 3D point has a literal coordinate
@@ -556,7 +571,7 @@ impl SystemBuilder {
             // mixed-group Jacobian issues. Not mapped, so the value is ignored.
             let h = self.alloc.param();
             self.params.push(Slvs_Param::new(h, SOLVE_GROUP, 0.0));
-            h
+            Ok(h)
         }
     }
 
@@ -778,12 +793,14 @@ impl ConstraintSolver for SolveSpaceSolver {
             match recognize_pattern(expr, &problem.auto_params) {
                 Some(pattern) => {
                     recognized_any = true;
-                    add_pattern_to_builder(
+                    if let Err(reason) = add_pattern_to_builder(
                         &mut builder,
                         &pattern,
                         &problem.auto_params,
                         &problem.current_values,
-                    );
+                    ) {
+                        return SolveResult::NoProgress { reason };
+                    }
                 }
                 None => {
                     return SolveResult::NoProgress {
@@ -859,12 +876,17 @@ impl ConstraintSolver for SolveSpaceSolver {
 }
 
 /// Add a recognized pattern to the system builder.
+///
+/// # Errors
+///
+/// Returns `Err` if any point contains a non-auto coordinate cell_id that is
+/// missing from `current_values` (propagated from `add_point` → `add_auto_coord`).
 fn add_pattern_to_builder(
     builder: &mut SystemBuilder,
     pattern: &GeometricPattern,
     auto_params: &[AutoParam],
     current_values: &ValueMap,
-) {
+) -> Result<(), String> {
     let e_none = Slvs_hEntity(0);
 
     match pattern {
@@ -873,8 +895,8 @@ fn add_pattern_to_builder(
             pt_b,
             distance_si,
         } => {
-            let ea = builder.add_point(pt_a, auto_params, current_values);
-            let eb = builder.add_point(pt_b, auto_params, current_values);
+            let ea = builder.add_point(pt_a, auto_params, current_values)?;
+            let eb = builder.add_point(pt_b, auto_params, current_values)?;
             // Use the workplane for 2D points so the constraint operates in 2D.
             let wrkpl = if pt_a.is_2d() && pt_b.is_2d() {
                 builder.get_workplane()
@@ -896,10 +918,10 @@ fn add_pattern_to_builder(
             line_b,
             angle_deg,
         } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values);
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values);
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values);
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
+            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
+            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
+            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
+            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             // Angle constraints require a workplane in SolveSpace.
@@ -915,10 +937,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Parallel { line_a, line_b } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values);
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values);
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values);
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
+            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
+            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
+            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
+            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             // Parallel/perpendicular require a workplane in SolveSpace
@@ -934,10 +956,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values);
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values);
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values);
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values);
+            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
+            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
+            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
+            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
             let line_a_e = builder.add_line_segment(la_start, la_end);
             let line_b_e = builder.add_line_segment(lb_start, lb_end);
             let wp = builder.get_workplane();
@@ -952,8 +974,8 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Coincident { pt_a, pt_b } => {
-            let ea = builder.add_point(pt_a, auto_params, current_values);
-            let eb = builder.add_point(pt_b, auto_params, current_values);
+            let ea = builder.add_point(pt_a, auto_params, current_values)?;
+            let eb = builder.add_point(pt_b, auto_params, current_values)?;
             // Use the workplane for 2D points so the constraint operates in 2D.
             let wrkpl = if pt_a.is_2d() && pt_b.is_2d() {
                 builder.get_workplane()
@@ -971,6 +993,7 @@ fn add_pattern_to_builder(
             );
         }
     }
+    Ok(())
 }
 
 /// Extract the DimensionVector from a Type.
