@@ -17308,7 +17308,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-types/tests/value_tests.rs",
+            "crates/reify-compiler/tests/compiler_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-types",
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 826,
@@ -17319,7 +17331,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": 827,
@@ -17330,7 +17351,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/mcp_context.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/gui_state.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 828,
