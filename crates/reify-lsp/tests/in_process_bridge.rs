@@ -78,7 +78,7 @@ async fn initialize_returns_server_capabilities() {
     let lsp = InProcessLsp::new();
 
     let result = lsp
-        .handle_request("initialize", json!({}))
+        .handle_request("initialize", json!({"capabilities": {}}))
         .await
         .expect("initialize should succeed");
 
@@ -108,7 +108,7 @@ async fn did_open_and_completion_returns_items() {
     let lsp = InProcessLsp::new();
 
     // Initialize first
-    lsp.handle_request("initialize", json!({}))
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
         .await
         .expect("initialize should succeed");
     lsp.handle_request("initialized", json!({}))
@@ -157,7 +157,7 @@ async fn did_open_and_completion_returns_items() {
 async fn hover_returns_info_for_known_symbol() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
@@ -203,7 +203,7 @@ async fn hover_returns_info_for_known_symbol() {
 async fn hover_on_documented_structure_shows_doc_via_bridge() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
@@ -251,7 +251,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 async fn goto_definition_returns_location() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
@@ -296,7 +296,7 @@ async fn goto_definition_returns_location() {
 async fn diagnostics_captured_after_did_open_with_syntax_error() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     // Open a document with a syntax error
