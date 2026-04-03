@@ -457,31 +457,13 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "re" | "real" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { re, dimension, .. } => {
-                if *dimension == DimensionVector::DIMENSIONLESS {
-                    Value::Real(*re)
-                } else {
-                    Value::Scalar {
-                        si_value: *re,
-                        dimension: *dimension,
-                    }
-                }
-            }
+            Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
             _ => Value::Undef,
         })),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
         "im" | "imag" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { im, dimension, .. } => {
-                if *dimension == DimensionVector::DIMENSIONLESS {
-                    Value::Real(*im)
-                } else {
-                    Value::Scalar {
-                        si_value: *im,
-                        dimension: *dimension,
-                    }
-                }
-            }
+            Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
             _ => Value::Undef,
         })),
 
@@ -1381,14 +1363,7 @@ fn unary(args: &[Value], f: impl FnOnce(&Value) -> Value) -> Value {
 /// by [`sanitize_value`].
 fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
-    if dimension == DimensionVector::DIMENSIONLESS {
-        sanitize_value(Value::Real(mag))
-    } else {
-        sanitize_value(Value::Scalar {
-            si_value: mag,
-            dimension,
-        })
-    }
+    sanitize_value(Value::from_component(mag, dimension))
 }
 
 /// Compute the Euclidean norm (magnitude) of a 3D vector.
