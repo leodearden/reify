@@ -4586,7 +4586,7 @@
         "id": "249",
         "title": "Ad-hoc port selectors: compiler",
         "description": "Compile ad-hoc selectors to CompiledAdHocPort { base_entity, selector_kind, args, memory_hints }. Selector kinds: Face, Point, Edge, Region, Body. Generate a synthetic port with a frame derived from the geometry query result. The synthetic port is created in the parent scope. Incorporate memory_hints to optimize knowledge context during execution.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "248"
         ],
@@ -4615,7 +4615,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-02T14:15:19.326Z"
+        "updatedAt": "2026-04-03T07:06:31.615Z"
       },
       {
         "id": "250",
@@ -17240,7 +17240,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T07:06:31.303Z",
+      "lastModified": "2026-04-03T07:06:31.615Z",
       "taskCount": 822,
       "completedCount": 641,
       "tags": [
