@@ -11555,7 +11555,7 @@
         "description": "Plastic trait is the only trait in structural_physical.ri with no constraints. Negative plastic_strain and zero hardening_modulus are physically nonsensical.",
         "details": "Add constraint hardening_modulus > 0 and constraint plastic_strain >= 0 to the Plastic trait definition in crates/reify-compiler/stdlib/structural_physical.ri, consistent with the constraint pattern used by all other traits in the file.\n\nFiles: crates/reify-compiler/stdlib/structural_physical.ri",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "329"
         ],
@@ -11570,7 +11570,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-03T15:07:50.783Z"
+        "updatedAt": "2026-04-03T15:11:00.033Z"
       },
       {
         "id": "559",
@@ -17258,7 +17258,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T15:07:50.783Z",
+      "lastModified": "2026-04-03T15:11:00.033Z",
       "taskCount": 822,
       "completedCount": 653,
       "tags": [
