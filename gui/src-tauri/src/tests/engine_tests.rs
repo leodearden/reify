@@ -788,8 +788,28 @@ fn update_source_produces_meshes() {
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let session = EngineSession::new(Box::new(checker), None);
 
     let diags: Vec<DiagnosticData> = session.get_diagnostics();
     assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
+}
+
+/// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
+/// Validates the method works end-to-end on a real compiled module.
+#[test]
+fn engine_get_diagnostics_clean_source_returns_empty() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "bracket source has no warnings — diagnostics must be empty, got: {:?}",
+        diags
+    );
 }
