@@ -17608,11 +17608,11 @@
         "description": "In `crates/reify-expr/src/lib.rs`, the method-call branches for `magnitude` (line 1159), `re`, and `im` (line 1203) call `Value::from_component` without wrapping in `sanitize_value`. The stdlib equivalents (`re(z)`, `im(z)`, `magnitude(z)`) do use `sanitize_value`. This means `z.re` on a Complex carrying NaN returns `Real(NaN)` while `re(z)` returns `Undef` — violating the project convention that logic errors should be noisy.\n\nFix: add `sanitize_value(...)` wrappers around the `Value::from_component` calls in all three method-call branches (magnitude, re, im) in eval_method_call.\n\nMemory hints: search \"sanitize_value NaN Inf convention\", search \"silent defaults convention\", entities: eval_method_call, sanitize_value, Value::from_component",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:30:11.807Z",
+        "updatedAt": "2026-04-03T23:35:49.860Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -17726,7 +17726,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:35:49.031Z",
+      "lastModified": "2026-04-03T23:35:49.862Z",
       "taskCount": 848,
       "completedCount": 660,
       "tags": [
