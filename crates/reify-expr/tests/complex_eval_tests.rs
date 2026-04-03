@@ -483,3 +483,21 @@ fn complex_undef_propagation() {
     );
     assert!(result.is_undef());
 }
+
+// ─── phase(0+0i) edge case ────────────────────────────────────────────────
+
+/// .phase() on zero complex returns Undef (zero vector has no direction).
+#[test]
+fn method_phase_zero_complex_returns_undef() {
+    let result = eval_method(
+        complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
+        Type::complex(Type::Real),
+        "phase",
+        Type::Real,
+    );
+    assert!(
+        result.is_undef(),
+        "phase(0+0i) should be Undef, got {:?}",
+        result
+    );
+}
