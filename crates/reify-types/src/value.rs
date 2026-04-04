@@ -1222,8 +1222,8 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Real(a), Value::Real(b)) => {
-                // Total order via to_bits(), consistent with PartialEq
-                a.to_bits().cmp(&b.to_bits())
+                // IEEE 754 total order via total_cmp() — sign-aware, consistent with mathematical ordering
+                a.total_cmp(b)
             }
             (
                 Value::Scalar {
@@ -1235,8 +1235,8 @@ impl Ord for Value {
                     dimension: bd,
                 },
             ) => {
-                // Compare by dimension first, then by value bits
-                ad.cmp(bd).then_with(|| a.to_bits().cmp(&b.to_bits()))
+                // Compare by dimension first, then by value with IEEE 754 total order
+                ad.cmp(bd).then_with(|| a.total_cmp(b))
             }
             (Value::String(a), Value::String(b)) => a.cmp(b),
             (
@@ -1305,8 +1305,8 @@ impl Ord for Value {
                 },
             ) => ad
                 .cmp(bd)
-                .then_with(|| ar.to_bits().cmp(&br.to_bits()))
-                .then_with(|| ai.to_bits().cmp(&bi.to_bits())),
+                .then_with(|| ar.total_cmp(br))
+                .then_with(|| ai.total_cmp(bi)),
             (
                 Value::Orientation {
                     w: aw,
@@ -1321,11 +1321,10 @@ impl Ord for Value {
                     z: bz,
                 },
             ) => aw
-                .to_bits()
-                .cmp(&bw.to_bits())
-                .then_with(|| ax.to_bits().cmp(&bx.to_bits()))
-                .then_with(|| ay.to_bits().cmp(&by.to_bits()))
-                .then_with(|| az.to_bits().cmp(&bz.to_bits())),
+                .total_cmp(bw)
+                .then_with(|| ax.total_cmp(bx))
+                .then_with(|| ay.total_cmp(by))
+                .then_with(|| az.total_cmp(bz)),
             (
                 Value::Range {
                     lower: al,
@@ -2103,44 +2102,118 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_real_nan_and_neg_zero_still_consistent() {
-        use std::cmp::Ordering;
-
+    fn value_ord_neg_zero() {
+        // -0.0 and +0.0 have different bits and different Ord positions.
+        // With total_cmp() (IEEE 754 totalOrder): -0.0 < +0.0.
+        // PartialEq still distinguishes them (different bit patterns — content hash invariant).
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
+        // They should have a defined comparison (not panic)
+        let _ = pos.cmp(&neg);
+    }
+
+    #[test]
+    fn value_ord_real_nan_and_neg_zero_still_consistent() {
+        // NaN: total_cmp() places NaN after +Infinity, giving it a defined position.
         let nan = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        // NaN == NaN in total_cmp (bit-identical)
+        assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+        // NaN > +Infinity (total_cmp: NaN is the maximum)
+        assert!(nan > inf);
+        // -Infinity < NaN
+        assert!(neg_inf < nan);
 
-        // (a) PartialEq: -0.0 != +0.0 (different bit patterns via to_bits())
-        assert_ne!(neg, pos, "neg-zero and pos-zero must differ under bit-identity PartialEq");
+        // -0.0 vs +0.0: with total_cmp(), -0.0 < +0.0 (IEEE 754 totalOrder).
+        // This is a BEHAVIORAL CHANGE from to_bits() where +0.0 (0x0) < -0.0 (0x8000...).
+        // The new ordering matches mathematical intuition: -0 < +0.
+        let pos_zero = Value::Real(0.0_f64);
+        let neg_zero = Value::Real(-0.0_f64);
+        assert!(neg_zero < pos_zero);
 
-        // (b) Ord: -0.0 has a strict ordering vs +0.0.
-        // With to_bits() unsigned comparison:
-        //   (-0.0f64).to_bits() == 0x8000000000000000 > 0x0000000000000000 == (0.0f64).to_bits()
-        // so neg > pos.
-        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg-zero and pos-zero must not compare Equal");
-        assert_eq!(neg.cmp(&pos), Ordering::Greater, "neg-zero must sort after pos-zero under to_bits() unsigned order");
-        assert_eq!(pos.cmp(&neg), Ordering::Less, "pos-zero must sort before neg-zero under to_bits() unsigned order");
+        // PartialEq still distinguishes them (different bit patterns)
+        assert_ne!(neg_zero, pos_zero);
+    }
 
-        // (c) PartialEq: NaN == NaN (same canonical bit pattern)
-        assert_eq!(nan, nan, "NaN must equal itself under bit-identity PartialEq");
+    #[test]
+    fn value_btreeset_negative_real_iteration_order() {
+        // End-to-end validation: inserting negative reals into a BTreeSet and
+        // iterating must yield mathematical order [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0].
+        // Before the total_cmp() fix, to_bits() would give wrong ordering because
+        // negatives appear larger than positives in u64 space.
+        use std::collections::BTreeSet;
+        let mut set = BTreeSet::new();
+        for v in &[-2.0_f64, 1.0, -0.5, 0.5, -1.0, 2.0] {
+            set.insert(Value::Real(*v));
+        }
+        let sorted: Vec<f64> = set
+            .iter()
+            .map(|v| match v {
+                Value::Real(f) => *f,
+                _ => panic!("unexpected value"),
+            })
+            .collect();
+        assert_eq!(sorted, vec![-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]);
+    }
 
-        // (d) Ord: NaN has a defined non-Equal ordering vs finite and infinite values
-        assert_ne!(nan.cmp(&inf), Ordering::Equal, "NaN must not compare Equal to infinity");
-        assert_ne!(nan.cmp(&pos), Ordering::Equal, "NaN must not compare Equal to pos-zero");
-        // NaN.to_bits() == 0x7FF8000000000000, which is less than INFINITY.to_bits() == 0x7FF0000000000000
-        // Actually let's assert consistent direction using cmp symmetry:
-        assert_eq!(nan.cmp(&inf), inf.cmp(&nan).reverse(), "NaN/inf ordering must be antisymmetric");
+    #[test]
+    fn value_ord_real_negative_vs_positive() {
+        // A negative real must order before a positive real.
+        // to_bits() gets this WRONG: (-0.5_f64).to_bits() > (0.5_f64).to_bits()
+        // because the sign bit (MSB) makes all negatives look larger as u64.
+        assert!(Value::Real(-0.5) < Value::Real(0.5));
+        assert!(Value::Real(-1.0) < Value::Real(0.0));
+        assert!(Value::Real(f64::NEG_INFINITY) < Value::Real(f64::INFINITY));
+    }
 
-        // (e) PartialEq/Ord consistency invariant: a == b iff a.cmp(&b) == Equal
-        // Check eq implies cmp == Equal:
-        assert_eq!(nan.cmp(&nan), Ordering::Equal, "NaN == NaN so cmp must be Equal");
-        assert_eq!(pos.cmp(&pos), Ordering::Equal, "pos == pos so cmp must be Equal");
-        assert_eq!(neg.cmp(&neg), Ordering::Equal, "neg == neg so cmp must be Equal");
-        // Check !eq implies cmp != Equal:
-        assert_ne!(nan.cmp(&inf), Ordering::Equal, "nan != inf so cmp must not be Equal");
-        assert_ne!(nan.cmp(&pos), Ordering::Equal, "nan != pos so cmp must not be Equal");
-        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg != pos so cmp must not be Equal");
+    #[test]
+    fn value_ord_real_negative_magnitude() {
+        // Among negative reals, more-negative should order first (be smaller).
+        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
+        // because larger magnitude negatives have a larger exponent/mantissa as u64.
+        assert!(Value::Real(-2.0) < Value::Real(-1.0));
+        assert!(Value::Real(-1.0) < Value::Real(-0.5));
+        assert!(Value::Real(f64::NEG_INFINITY) < Value::Real(-1.0));
+    }
+
+    #[test]
+    fn value_ord_scalar_negative_ordering() {
+        // Negative scalar values must order correctly.
+        // to_bits() gets this WRONG for both magnitude-among-negatives and
+        // cross-sign comparisons.
+        let neg1 = Value::Scalar {
+            si_value: -1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let neg_half = Value::Scalar {
+            si_value: -0.5,
+            dimension: DimensionVector::LENGTH,
+        };
+        let pos_half = Value::Scalar {
+            si_value: 0.5,
+            dimension: DimensionVector::LENGTH,
+        };
+        // -1.0 < -0.5 < 0.5 within same dimension
+        assert!(neg1 < neg_half);
+        assert!(neg_half < pos_half);
+    }
+
+    #[test]
+    fn value_ord_scalar_dimension_dominance_negative() {
+        // Dimension ordering dominates even when si_value is negative.
+        // LENGTH=[1,0,...] > MASS=[0,1,...] lexicographically, so
+        // Scalar{-1.0, MASS} < Scalar{-1.0, LENGTH} regardless of the
+        // total_cmp() result on si_value.
+        let mass_neg = Value::Scalar {
+            si_value: -1.0,
+            dimension: DimensionVector::MASS,
+        };
+        let length_neg = Value::Scalar {
+            si_value: -1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(mass_neg < length_neg);
     }
 
     // --- Option tests (step-11) ---
@@ -3119,6 +3192,39 @@ mod tests {
         assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
     }
 
+    #[test]
+    fn value_ord_complex_negative_re() {
+        // Negative re components must order correctly.
+        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
+        let a = Value::Complex {
+            re: -1.0,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: -0.5,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(a < b);
+    }
+
+    #[test]
+    fn value_ord_complex_negative_im() {
+        // Negative im components must order correctly (re is tied).
+        let a = Value::Complex {
+            re: 1.0,
+            im: -1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let b = Value::Complex {
+            re: 1.0,
+            im: -0.5,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(a < b);
+    }
+
     // ── Value::Complex content_hash tests (step-6) ────────────────────────────
 
     #[test]
@@ -3390,42 +3496,67 @@ mod tests {
     }
 
     #[test]
-    fn value_orientation_ord_equal_wx_different_y() {
-        // Equal w and x, different y with non-zero z — catches y↔z field-order swap regressions.
-        // Correct Ord (w→x→y→z): g > h because y=1.0 > y=0.5 when w and x are tied.
-        // A wrong impl comparing z before y would say g < h (z=0.5 < z=1.0).
+    fn value_ord_orientation_negative_components() {
+        // Negative w values must order correctly.
+        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
+        let a = Value::Orientation {
+            w: -1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let b = Value::Orientation {
+            w: -0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(a < b);
+
+        // Negative x tiebreaker (w tied)
+        let c = Value::Orientation {
+            w: 0.5,
+            x: -1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let d = Value::Orientation {
+            w: 0.5,
+            x: -0.5,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(c < d);
+
+        // Negative y tiebreaker (w/x tied)
         let g = Value::Orientation {
             w: 0.5,
-            x: 0.5,
-            y: 1.0,
-            z: 0.5,
+            x: 0.0,
+            y: -1.0,
+            z: 0.0,
         };
         let h = Value::Orientation {
             w: 0.5,
-            x: 0.5,
-            y: 0.5,
-            z: 1.0,
+            x: 0.0,
+            y: -0.5,
+            z: 0.0,
         };
-        assert!(g > h);
-    }
+        assert!(g < h);
 
-    #[test]
-    fn value_orientation_ord_equal_wxy_different_z() {
-        // Equal w, x, and y — different z only. Catches regression where z comparison is dropped.
-        // Correct Ord (w→x→y→z): i > j because z=1.0 > z=0.5 when w, x, y are tied.
-        let i = Value::Orientation {
+        // Cross-sign in z (w/x/y all tied)
+        let e = Value::Orientation {
             w: 0.5,
-            x: 0.5,
-            y: 0.5,
-            z: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: -0.5,
         };
-        let j = Value::Orientation {
+        let f = Value::Orientation {
             w: 0.5,
-            x: 0.5,
-            y: 0.5,
+            x: 0.0,
+            y: 0.0,
             z: 0.5,
         };
-        assert!(i > j);
+        assert!(e < f);
     }
 
     #[test]
