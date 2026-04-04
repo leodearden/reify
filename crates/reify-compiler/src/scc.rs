@@ -12,12 +12,21 @@ pub(crate) fn detect_recursive_structures(
     templates: &mut [TopologyTemplate],
     diagnostics: &mut Vec<reify_types::Diagnostic>,
 ) -> Vec<HashSet<String>> {
-    // Build an index: name -> index in templates
-    let name_to_idx: HashMap<&str, usize> = templates
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.name.as_str(), i))
-        .collect();
+    // Build an index: name -> index in templates.
+    // Use explicit insertion so that duplicates are detected and reported instead of
+    // silently overwriting (which would corrupt the adjacency graph).
+    let mut name_to_idx: HashMap<&str, usize> = HashMap::new();
+    for (i, t) in templates.iter().enumerate() {
+        if let Some(&prev_idx) = name_to_idx.get(t.name.as_str()) {
+            diagnostics.push(reify_types::Diagnostic::error(format!(
+                "duplicate template name '{}': indices {} and {}",
+                t.name, prev_idx, i
+            )));
+            // Keep the first entry (prev wins) — don't overwrite.
+        } else {
+            name_to_idx.insert(t.name.as_str(), i);
+        }
+    }
 
     // Build adjacency list: for each template index, collect the indices of templates it
     // references via sub_components (only those that exist in the template set).
