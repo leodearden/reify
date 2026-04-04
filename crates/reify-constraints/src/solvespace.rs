@@ -1052,11 +1052,7 @@ mod tests {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
         // cell_id IS in auto_params
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         // But NOT in current_values — should use 0.01 default
         let current_values = ValueMap::new();
 
@@ -1122,11 +1118,7 @@ mod tests {
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         let current_values = ValueMap::new();
         let initial_len = builder.params.len();
 
@@ -1156,11 +1148,7 @@ mod tests {
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         let mut current_values = ValueMap::new();
         current_values.insert(
             cell_id.clone(),
