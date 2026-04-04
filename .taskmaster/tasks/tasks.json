@@ -17483,7 +17483,8 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: Extract add_line_pair helper to remove triplication"
+              "add_line_pair helper merged main SystemBuilder add_pattern_to_builder",
+              "task 832 add_line_pair completion merged status"
             ]
           }
         }
