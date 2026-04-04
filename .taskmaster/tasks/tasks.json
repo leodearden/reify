@@ -20030,7 +20030,14 @@
         "metadata": {
           "modules": [
             "crates/reify-types"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "Value Set Map float ordering total_cmp NaN BTreeSet BTreeMap serialization",
+              "reify-types value ordering invariants documentation"
+            ]
+          }
         }
       },
       {
