@@ -19512,11 +19512,11 @@
         "description": "In gui/src/__tests__/Editor.test.tsx: (1) Fix misleading anchor/head comment attributing head to wrong field. (2) Replace toBeGreaterThan(0) with toBe(9) for exact cursor offset. (3) Rename dual-phase test or extract Phase 1. (4) Add explicit null guard in getEditorView helper.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:12:39.642Z",
+        "updatedAt": "2026-04-04T19:02:48.986Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20064,9 +20064,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:01:33.189Z",
+      "lastModified": "2026-04-04T19:02:48.987Z",
       "taskCount": 981,
-      "completedCount": 708,
+      "completedCount": 709,
       "tags": [
         "master"
       ]
