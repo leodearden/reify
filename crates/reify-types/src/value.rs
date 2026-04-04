@@ -3390,6 +3390,45 @@ mod tests {
     }
 
     #[test]
+    fn value_orientation_ord_equal_wx_different_y() {
+        // Equal w and x, different y with non-zero z — catches y↔z field-order swap regressions.
+        // Correct Ord (w→x→y→z): g > h because y=1.0 > y=0.5 when w and x are tied.
+        // A wrong impl comparing z before y would say g < h (z=0.5 < z=1.0).
+        let g = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 1.0,
+            z: 0.5,
+        };
+        let h = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 1.0,
+        };
+        assert!(g > h);
+    }
+
+    #[test]
+    fn value_orientation_ord_equal_wxy_different_z() {
+        // Equal w, x, and y — different z only. Catches regression where z comparison is dropped.
+        // Correct Ord (w→x→y→z): i > j because z=1.0 > z=0.5 when w, x, y are tied.
+        let i = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 1.0,
+        };
+        let j = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        assert!(i > j);
+    }
+
+    #[test]
     fn value_orientation_display() {
         let o = Value::Orientation {
             w: 1.0,
