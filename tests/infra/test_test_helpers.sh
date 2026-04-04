@@ -189,6 +189,7 @@ CONSUMERS=(
     "scripts/test_lib.sh"
     "scripts/test_tree_sitter_generate.sh"
     "tests/sync_comments_test.sh"
+    "scripts/check-pm-standardization.sh"
 )
 
 for consumer in "${CONSUMERS[@]}"; do
