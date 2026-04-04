@@ -886,6 +886,9 @@ impl Engine {
         // snapshot discards all purpose-injected constraints/objectives.
         self.active_purposes.clear();
         self.active_objective_map.clear();
+        // Clear incremental-edit metadata so that preserved collection counts
+        // from a previous session do not bleed into this cold evaluation.
+        self.preserved_counts.clear();
         // Build meta_map: template name → meta key/value pairs.
         // Only includes templates with non-empty meta blocks.
         self.meta_map = module
