@@ -18506,6 +18506,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 894,
+        "title": "Add wildcard-arm passthrough tests (Undef idempotency and Bool)",
+        "description": "In crates/reify-expr/src/lib.rs, extend the passthrough tests to cover: (1) sanitize_value(Value::Undef) → is_undef() (idempotency invariant — Undef is what the function produces for bad inputs and should survive a second call); (2) sanitize_value(Value::Bool(true)) → Value::Bool(true) (second representative for the catch-all arm). These can be added to the existing sanitize_non_numeric_passthrough test or as separate named tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18518,7 +18529,7 @@
       ],
       "created": "2026-04-04T03:15:29.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:17:59.886Z"
+      "updated": "2026-04-04T03:18:04.377Z"
     }
   }
 }
