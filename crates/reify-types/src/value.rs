@@ -2079,13 +2079,18 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_neg_zero() {
-        // -0.0 and +0.0 have different bits, so they may have different ordering
-        // (consistent with PartialEq which uses to_bits)
+    fn value_ord_real_negative_zero() {
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // They should have a defined comparison (not panic)
-        let _ = pos.cmp(&neg);
+        // PartialEq uses `a.to_bits() == b.to_bits()` (see `impl PartialEq for Value`,
+        // line 968), so -0.0 and +0.0 are treated as distinct values.
+        assert_ne!(pos, neg);
+        // Ord must be deterministic and antisymmetric.
+        let pos_cmp_neg = pos.cmp(&neg);
+        let neg_cmp_pos = neg.cmp(&pos);
+        assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
+        // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
+        assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
     }
 
     // --- Option tests (step-11) ---
