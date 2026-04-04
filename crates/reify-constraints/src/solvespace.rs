@@ -1153,4 +1153,26 @@ mod tests {
             "error message should contain cell_id, got: {err_msg}"
         );
     }
+
+    /// add_auto_coord must return Err(BuilderError::MissingNonAutoValue(id))
+    /// when a non-auto cell_id is absent from current_values, preserving the
+    /// ValueCellId as typed data for downstream consumers.
+    #[test]
+    fn add_auto_coord_returns_missing_non_auto_variant() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        match result {
+            Err(BuilderError::MissingNonAutoValue(id)) => {
+                assert_eq!(id, cell_id, "error should carry the original cell_id");
+            }
+            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
 }
