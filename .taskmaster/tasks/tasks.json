@@ -6886,7 +6886,7 @@
           "329",
           "332"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -6896,7 +6896,7 @@
         },
         "subtasks": [],
         "details": "Three tests: (1) trait_hierarchy — 3-deep chains, diamond inheritance, multi-trait impl; (2) sweep_degenerate — zero extrude, 0°/720° revolve, self-intersecting path, 1-profile loft; (3) error_messages — every error class produces helpful diagnostic.",
-        "updatedAt": "2026-04-04T04:22:31.897Z"
+        "updatedAt": "2026-04-04T04:23:04.020Z"
       },
       {
         "id": "349",
@@ -18979,7 +18979,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:23:02.581Z",
+      "lastModified": "2026-04-04T04:23:04.020Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
