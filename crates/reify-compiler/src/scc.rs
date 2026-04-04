@@ -75,10 +75,26 @@ pub(crate) fn detect_recursive_structures(
                 in_cycle[v] = true;
             }
             let cycle_path = reconstruct_scc_cycle(scc, &adjacency, templates);
-            diagnostics.push(reify_types::Diagnostic::warning(format!(
+            let scc_set: HashSet<usize> = scc.iter().copied().collect();
+            let mut diag = reify_types::Diagnostic::warning(format!(
                 "recursive structure cycle detected: {}",
                 cycle_path
-            )));
+            ));
+            // Add a label for each sub-component declaration that creates a cycle edge
+            // (i.e., references another member of the same SCC).
+            for &v in scc {
+                for sub in &templates[v].sub_components {
+                    if let Some(&target) = name_to_idx.get(sub.structure_name.as_str()) {
+                        if scc_set.contains(&target) {
+                            diag = diag.with_label(reify_types::DiagnosticLabel::new(
+                                sub.span,
+                                format!("references {}", sub.structure_name),
+                            ));
+                        }
+                    }
+                }
+            }
+            diagnostics.push(diag);
             let scc_names: HashSet<String> =
                 scc.iter().map(|&v| templates[v].name.clone()).collect();
             cyclic_sccs.push(scc_names);
