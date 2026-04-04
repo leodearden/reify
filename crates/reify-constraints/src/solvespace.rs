@@ -478,7 +478,7 @@ impl SystemBuilder {
         pt: &PointRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hEntity, String> {
+    ) -> Result<Slvs_hEntity, BuilderError> {
         let key = point_key(pt);
         if let Some(&h) = self.point_entities.get(&key) {
             return Ok(h);
@@ -546,7 +546,7 @@ impl SystemBuilder {
         cell_id: &Option<ValueCellId>,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hParam, String> {
+    ) -> Result<Slvs_hParam, BuilderError> {
         if let Some(id) = cell_id {
             // Check if already mapped
             if let Some(h) = self.mapping.get_param(id) {
@@ -573,9 +573,10 @@ impl SystemBuilder {
                     self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
                     Ok(h)
                 }
-                None => {
-                    Err(format!("non-auto parameter {id} missing from current_values"))
-                }
+                None => Err(BuilderError {
+                    cell_id: id.clone(),
+                    message: format!("non-auto parameter {id} missing from current_values"),
+                }),
             }
         } else {
             // No cell_id — a fixed coordinate not backed by a cell.
@@ -807,14 +808,18 @@ impl ConstraintSolver for SolveSpaceSolver {
             match recognize_pattern(expr, &problem.auto_params) {
                 Some(pattern) => {
                     recognized_any = true;
-                    if let Err(reason) = add_pattern_to_builder(
+                    if let Err(err) = add_pattern_to_builder(
                         &mut builder,
                         &pattern,
                         &problem.auto_params,
                         &problem.current_values,
                     ) {
-                        tracing::warn!(reason = %reason, "constraint pattern builder failed");
-                        return SolveResult::NoProgress { reason };
+                        tracing::warn!(
+                            cell_id = %err.cell_id,
+                            reason = %err.message,
+                            "constraint pattern builder failed"
+                        );
+                        return SolveResult::NoProgress { reason: err.message };
                     }
                 }
                 None => {
@@ -901,7 +906,7 @@ fn add_pattern_to_builder(
     pattern: &GeometricPattern,
     auto_params: &[AutoParam],
     current_values: &ValueMap,
-) -> Result<(), String> {
+) -> Result<(), BuilderError> {
     let e_none = Slvs_hEntity(0);
 
     match pattern {
@@ -1157,14 +1162,15 @@ mod tests {
             result.is_err(),
             "expected Err when coord cell_id is missing from current_values, got Ok"
         );
-        let err_msg = result.unwrap_err();
-        assert!(
-            err_msg.contains("missing"),
-            "propagated error should contain 'missing', got: {err_msg}"
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.cell_id, cell_id,
+            "propagated BuilderError cell_id should match the PointRef::Auto coordinate cell_id"
         );
         assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "propagated error should contain cell_id, got: {err_msg}"
+            err.message.contains("missing"),
+            "propagated BuilderError message should contain 'missing', got: {}",
+            err.message
         );
     }
 
@@ -1275,10 +1281,10 @@ mod tests {
             result.is_err(),
             "add_point should propagate the Err from add_auto_coord, got Ok"
         );
-        let err_msg = result.unwrap_err();
-        assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {err_msg}"
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.cell_id, cell_id,
+            "propagated BuilderError cell_id should match the coord cell_id"
         );
     }
 }
