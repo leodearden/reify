@@ -473,6 +473,11 @@ impl SystemBuilder {
     }
 
     /// Add or retrieve a point entity from a PointRef.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(BuilderError)` if any coordinate cell_id is a non-auto param
+    /// absent from `current_values` (propagated from `add_auto_coord`).
     fn add_point(
         &mut self,
         pt: &PointRef,
@@ -538,9 +543,11 @@ impl SystemBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `cell_id` is `Some(id)`, `id` is not an auto param,
-    /// and `id` is absent from `current_values`. This indicates the eval pass
-    /// did not complete — a logic error per the project's noisy-error convention.
+    /// Returns `Err(BuilderError)` if `cell_id` is `Some(id)`, `id` is not an
+    /// auto param, and `id` is absent from `current_values`. This indicates the
+    /// eval pass did not complete — a logic error per the project's noisy-error
+    /// convention. The `BuilderError` carries the missing `cell_id` as a
+    /// structured field for use in tracing.
     fn add_auto_coord(
         &mut self,
         cell_id: &Option<ValueCellId>,
@@ -899,8 +906,10 @@ impl ConstraintSolver for SolveSpaceSolver {
 ///
 /// # Errors
 ///
-/// Returns `Err` if any point contains a non-auto coordinate cell_id that is
-/// missing from `current_values` (propagated from `add_point` → `add_auto_coord`).
+/// Returns `Err(BuilderError)` if any point contains a non-auto coordinate
+/// cell_id that is missing from `current_values` (propagated from
+/// `add_point` → `add_auto_coord`). The `BuilderError` carries the missing
+/// `cell_id` as a structured field for the `solve()` tracing log.
 fn add_pattern_to_builder(
     builder: &mut SystemBuilder,
     pattern: &GeometricPattern,
