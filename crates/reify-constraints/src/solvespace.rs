@@ -1054,6 +1054,53 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 mod tests {
     use super::*;
 
+    // ── Shared test helpers ────────────────────────────────────────────────
+
+    /// Returns a standard "missing non-auto coord" setup tuple:
+    /// `(builder, cell_id, auto_params, current_values)` where:
+    /// - `builder` is a fresh `SystemBuilder` with no params
+    /// - `cell_id` is `ValueCellId::new(entity, field)`
+    /// - `auto_params` is an empty `Vec<AutoParam>` (cell_id is non-auto)
+    /// - `current_values` is an empty `ValueMap` (cell_id is absent → triggers Err)
+    fn missing_coord_setup(
+        entity: &str,
+        field: &str,
+    ) -> (SystemBuilder, ValueCellId, Vec<AutoParam>, ValueMap) {
+        let builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new(entity, field);
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+        (builder, cell_id, auto_params, current_values)
+    }
+
+    /// Asserts that `result` is an `Err(BuilderError)` whose `cell_id`
+    /// matches and whose `message` contains `"missing"`.  Generic over
+    /// the `Ok` type so it works for `Result<Slvs_hParam, BuilderError>`,
+    /// `Result<Slvs_hEntity, BuilderError>`, and `Result<(), BuilderError>` alike.
+    #[track_caller]
+    fn assert_missing_err<T: std::fmt::Debug>(result: Result<T, BuilderError>, cell_id: &ValueCellId) {
+        assert!(
+            result.is_err(),
+            "expected Err for missing non-auto coord, got Ok({:?})",
+            result.ok()
+        );
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.cell_id, *cell_id,
+            "BuilderError cell_id should match the expected ValueCellId"
+        );
+        assert!(
+            err.message.contains("missing"),
+            "BuilderError message should contain 'missing', got: {}",
+            err.message
+        );
+        assert!(
+            err.to_string().contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {}",
+            cell_id, err
+        );
+    }
+
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
     /// Shared by the three add_auto_coord tests that need a standard single-param setup.
     fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
@@ -1219,37 +1266,13 @@ mod tests {
     /// silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
-        // cell_id is NOT in auto_params — it's a non-auto param
-        let auto_params: Vec<AutoParam> = vec![];
-        // cell_id is also NOT in current_values — logic error
-        let current_values = ValueMap::new();
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "x");
 
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        assert!(
-            result.is_err(),
-            "expected Err for non-auto param missing from current_values, got Ok"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, cell_id,
-            "BuilderError cell_id should match the ValueCellId passed to add_auto_coord"
-        );
-        assert!(
-            err.message.contains("missing"),
-            "BuilderError message should contain 'missing', got: {}",
-            err.message
-        );
-        // Verify Display produces the same human-readable message
-        let display = err.to_string();
-        assert!(
-            display.contains(&cell_id.to_string()),
-            "Display should contain cell_id '{}', got: {display}",
-            cell_id
-        );
+        assert_missing_err(result, &cell_id);
     }
 
     /// add_auto_coord must return a BuilderError carrying the original
@@ -1257,10 +1280,8 @@ mod tests {
     /// preserving the id as typed data for downstream consumers.
     #[test]
     fn add_auto_coord_returns_builder_error_with_cell_id() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "x");
 
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
@@ -1276,12 +1297,8 @@ mod tests {
     /// recognize_pattern because it guards non-auto coords at line 299).
     #[test]
     fn add_pattern_to_builder_propagates_coord_error() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "bad_coord");
-        // cell_id is NOT in auto_params (empty) → non-auto treatment
-        let auto_params: Vec<AutoParam> = vec![];
-        // cell_id is also NOT in current_values → triggers Err in add_auto_coord
-        let current_values = ValueMap::new();
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "bad_coord");
 
         // Craft a Coincident pattern whose pt_a references the missing cell_id.
         // pt_b is a fixed point so it won't contribute any error.
@@ -1300,24 +1317,7 @@ mod tests {
 
         let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
 
-        assert!(
-            result.is_err(),
-            "expected Err when coord cell_id is missing from current_values, got Ok"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, cell_id,
-            "propagated BuilderError cell_id should match the PointRef::Auto coordinate cell_id"
-        );
-        assert!(
-            err.message.contains("missing"),
-            "propagated BuilderError message should contain 'missing', got: {}",
-            err.message
-        );
-        assert!(
-            err.to_string().contains(&cell_id.to_string()),
-            "propagated error Display should contain cell_id, got: {err}",
-        );
+        assert_missing_err(result, &cell_id);
     }
 
     /// Calling add_auto_coord twice with the same auto-param cell_id must
@@ -1398,17 +1398,47 @@ mod tests {
         );
     }
 
-    /// add_point must propagate the Err from add_auto_coord when a PointRef::Auto
-    /// x-coordinate is a non-auto cell_id absent from current_values.
-    /// This covers the `?` propagation in add_point's PointRef::Auto arm for the x-coordinate.
+    /// missing_coord_setup returns a tuple of a fresh SystemBuilder with no params,
+    /// a ValueCellId matching the given entity/field, empty auto_params, and empty current_values.
     #[test]
-    fn add_point_propagates_error_for_unresolved_x_coord() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Fixed", "y");
-        // cell_id is NOT in auto_params (non-auto)
-        let auto_params: Vec<AutoParam> = vec![];
-        // cell_id is also NOT in current_values — triggers the Err branch
-        let current_values = ValueMap::new();
+    fn missing_coord_setup_returns_expected_tuple() {
+        let (builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Foo", "bar");
+
+        assert!(
+            builder.params.is_empty(),
+            "fresh builder should have no params"
+        );
+        assert_eq!(
+            cell_id,
+            ValueCellId::new("Foo", "bar"),
+            "cell_id should match the given entity/field"
+        );
+        assert!(auto_params.is_empty(), "auto_params should be empty");
+        assert!(current_values.is_empty(), "current_values should be empty");
+    }
+
+    /// assert_missing_err must not panic when given a Result::Err(BuilderError)
+    /// whose message contains both "missing" and the cell_id string.
+    #[test]
+    fn assert_missing_err_passes_on_matching_error() {
+        let cell_id = ValueCellId::new("Ent", "field");
+        let result: Result<(), BuilderError> = Err(BuilderError {
+            cell_id: cell_id.clone(),
+            message: format!("non-auto parameter {} missing from current_values", cell_id),
+        });
+        assert_missing_err(result, &cell_id);
+    }
+
+    /// add_point must propagate the Err returned by add_auto_coord when the
+    /// x-coordinate cell_id is a non-auto param absent from current_values.
+    /// This covers the `?` operator in add_point's PointRef::Auto arm.
+    /// Also strengthened to check contains("missing"), consistent with the
+    /// other two error-path tests.
+    #[test]
+    fn add_point_propagates_missing_value_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Fixed", "y");
 
         let pt = PointRef::Auto {
             x: Some(cell_id.clone()),
@@ -1417,14 +1447,6 @@ mod tests {
         };
         let result = builder.add_point(&pt, &auto_params, &current_values);
 
-        assert!(
-            result.is_err(),
-            "add_point should propagate the Err from add_auto_coord, got Ok"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, cell_id,
-            "propagated BuilderError cell_id should match the coord cell_id"
-        );
+        assert_missing_err(result, &cell_id);
     }
 }
