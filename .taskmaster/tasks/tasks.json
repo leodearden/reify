@@ -19438,10 +19438,11 @@
         "description": "In crates/reify-eval/src/lib.rs: (1) Collect preserved_counts removals in a Vec during collection sub loop and apply after loop (fixes shared-count_cell bug where first removal causes second sub to fall back to 0). (2) Move removal to after snapshot commit for transaction safety. (3) Add retain() to prune orphaned preserved_counts after computing active subs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:29.338Z"
       },
       {
         "id": "957",
@@ -19512,7 +19513,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:29.202Z",
+      "lastModified": "2026-04-04T09:00:29.339Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
