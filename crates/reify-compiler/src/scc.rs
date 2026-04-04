@@ -90,13 +90,13 @@ pub(crate) fn detect_recursive_structures(
             // (i.e., references another member of the same SCC).
             for &v in scc {
                 for sub in &templates[v].sub_components {
-                    if let Some(&target) = name_to_idx.get(sub.structure_name.as_str()) {
-                        if scc_set.contains(&target) {
-                            diag = diag.with_label(reify_types::DiagnosticLabel::new(
-                                sub.span,
-                                format!("references {}", sub.structure_name),
-                            ));
-                        }
+                    if let Some(&target) = name_to_idx.get(sub.structure_name.as_str())
+                        && scc_set.contains(&target)
+                    {
+                        diag = diag.with_label(reify_types::DiagnosticLabel::new(
+                            sub.span,
+                            format!("references {}", sub.structure_name),
+                        ));
                     }
                 }
             }
