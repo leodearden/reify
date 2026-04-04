@@ -19144,6 +19144,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 930,
+        "title": "Migrate test scripts to use test_helpers.sh and fix exit codes",
+        "description": "Refactor tests/check-pm-standardization.sh and tests/sync_comments_test.sh to source tests/infra/test_helpers.sh, use its assert() and test_summary() functions instead of inline PASS/FAIL counting. Normalizes exit codes to 0/1.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19156,7 +19167,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:38.146Z"
+      "updated": "2026-04-04T06:09:41.827Z"
     }
   }
 }
