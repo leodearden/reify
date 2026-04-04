@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { isSameFile } from '../utils/pathUtils';
+import { isSameFile, normalizePath } from '../utils/pathUtils';
+
+describe('normalizePath', () => {
+  it('strips file:// prefix from a URI', () => {
+    expect(normalizePath('file:///project/src/foo.ri')).toBe('/project/src/foo.ri');
+  });
+
+  it('decodes percent-encoded spaces in a file:// URI', () => {
+    expect(normalizePath('file:///project/src/hello%20world.ri')).toBe('/project/src/hello world.ri');
+  });
+
+  it('decodes multiple percent-encoded characters in a file:// URI', () => {
+    expect(normalizePath('file:///path/%E4%BD%A0%E5%A5%BD.ri')).toBe('/path/你好.ri');
+  });
+
+  it('returns stripped path without throwing on malformed percent-encoding', () => {
+    expect(normalizePath('file:///path/bad%ZZsequence.ri')).toBe('/path/bad%ZZsequence.ri');
+  });
+
+  it('passes bare paths through unchanged (no file:// prefix)', () => {
+    expect(normalizePath('/project/src/foo.ri')).toBe('/project/src/foo.ri');
+  });
+});
 
 describe('isSameFile', () => {
   it('identical bare paths match', () => {
@@ -34,5 +56,9 @@ describe('isSameFile', () => {
   it('empty string does not match any real path', () => {
     expect(isSameFile('', '/project/src/bracket.ri')).toBe(false);
     expect(isSameFile('/project/src/bracket.ri', '')).toBe(false);
+  });
+
+  it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
+    expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
   });
 });
