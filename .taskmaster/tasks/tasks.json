@@ -18959,7 +18959,8 @@
           "memory_hints": {
             "entities": [],
             "queries": [
-              "resolution for: Expand Orientation sanitize_value test coverage"
+              "sanitize_value Orientation test coverage quaternion components w x y z",
+              "sanitize_real_neg_inf_returns_undef pattern reify-stdlib"
             ]
           }
         }
