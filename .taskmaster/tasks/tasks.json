@@ -19323,10 +19323,11 @@
         "description": "In gui/src/__tests__/Editor.test.tsx, add test with file2 active and scrollToLocation pointing at file1, assert expected behavior. If Editor should skip scroll on mismatch, add file_path guard in createEffect at Editor.tsx.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:47.195Z"
       },
       {
         "id": "945",
@@ -19540,7 +19541,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:44.669Z",
+      "lastModified": "2026-04-04T09:00:47.196Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
