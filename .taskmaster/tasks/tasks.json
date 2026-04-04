@@ -19529,11 +19529,11 @@
         "description": "Add `if (!view.dom.isConnected) return;` before the view.dispatch() call in gui/src/editor/gotoDefinition.ts after the async requestDefinition resolves, guarding against stale/destroyed EditorView.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:16:16.101Z"
+        "updatedAt": "2026-04-04T09:31:16.231Z"
       },
       {
         "id": "951",
@@ -19796,7 +19796,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:30:27.441Z",
+      "lastModified": "2026-04-04T09:31:16.234Z",
       "taskCount": 966,
       "completedCount": 699,
       "tags": [
