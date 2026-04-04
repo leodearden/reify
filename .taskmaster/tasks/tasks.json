@@ -19408,6 +19408,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 954,
+        "title": "Fix stale to_bits() comments in Value Ord tests after total_cmp migration",
+        "description": "In crates/reify-types/src/value.rs, update 4 stale comments referencing 'to_bits' ordering to say 'total_cmp()' / 'IEEE 754 total order' in: value_ord_within_real_and_nan, value_orientation_ord_within_type, value_frame_ord_same_origin_compare_basis. Add ordering comment to Orientation Ord arm matching Scalar/Complex style.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19420,7 +19431,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:49.999Z"
+      "updated": "2026-04-04T06:12:52.194Z"
     }
   }
 }
