@@ -2075,6 +2075,10 @@ impl Engine {
                 // now would be destructive — preserve them until the count cell
                 // resolves to a definite value.
                 if matches!(new_count_val, Value::Undef) {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Collection count cell `{}` is Undef; skipping re-elaboration to preserve existing instances",
+                        col_sub.count_cell
+                    )));
                     continue;
                 }
 
