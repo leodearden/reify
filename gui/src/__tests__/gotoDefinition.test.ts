@@ -36,6 +36,23 @@ function makeMockEvent(overrides?: Partial<MouseEvent>): MouseEvent {
   } as MouseEvent;
 }
 
+function makeMockView(overrides?: {
+  isConnected?: boolean;
+  line?: (n: number) => { from: number };
+}) {
+  return {
+    posAtCoords: () => 5,
+    state: {
+      doc: {
+        lineAt: () => ({ number: 1, from: 0, to: 10 }),
+        line: overrides?.line ?? (() => ({ from: 0 })),
+      },
+    },
+    dispatch: vi.fn(),
+    dom: { isConnected: overrides?.isConnected ?? true },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -59,17 +76,7 @@ describe('reifyGotoDefinition', () => {
 
     const mockEvent = makeMockEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView();
 
     // First call uses first URI
     mousedownHandler(mockEvent, mockView);
@@ -111,17 +118,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
 
     const mockEvent = makeMockEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView();
 
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
@@ -146,17 +143,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
 
     const mockEvent = makeMockEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView({ line: (n) => ({ from: (n - 1) * 20 }) });
 
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
@@ -185,17 +172,7 @@ describe('isConnected guard', () => {
 
     const mockEvent = makeMockEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: false },
-    };
+    const mockView = makeMockView({ isConnected: false, line: (n) => ({ from: (n - 1) * 20 }) });
 
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
@@ -220,17 +197,7 @@ describe('isConnected guard', () => {
 
     const mockEvent = makeMockEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: false },
-    };
+    const mockView = makeMockView({ isConnected: false, line: (n) => ({ from: (n - 1) * 20 }) });
 
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
