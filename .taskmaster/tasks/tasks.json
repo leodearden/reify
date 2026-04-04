@@ -19094,7 +19094,13 @@
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve orientation assertion macros: per-component diagnostics and sign-insensitive variant"
+            ]
+          }
         }
       },
       {
@@ -19194,11 +19200,11 @@
         "description": "In orchestrator.yaml: (1) Move bash tests/check-pm-standardization.sh from test_command to lint_command (pure static check). (2) Add if test -f existence guards for both check-pm-standardization.sh and sync_comments_test.sh.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:05:08.007Z",
+        "updatedAt": "2026-04-04T14:36:16.082Z",
         "metadata": {
           "modules": [
             "orchestrator.yaml",
@@ -19945,7 +19951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:28:24.248Z",
+      "lastModified": "2026-04-04T14:36:16.082Z",
       "taskCount": 972,
       "completedCount": 705,
       "tags": [
