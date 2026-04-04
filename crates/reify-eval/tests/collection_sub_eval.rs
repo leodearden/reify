@@ -764,3 +764,91 @@ fn edit_param_count_from_undef_to_int_creates_instances() {
         "should not have bolts[4]"
     );
 }
+
+// ─── task-826 step-8: Int(4)→Undef→Int(2) must NOT leak stale instances [2..4) ───
+
+#[test]
+fn edit_param_count_int_undef_int_no_stale_leak() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) Initial eval with n=4 → 4 bolt instances
+    let initial = engine.eval(&module);
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            initial.values.get(&scoped_id).is_some(),
+            "initially bolts[{}] should exist",
+            i
+        );
+    }
+
+    // (b) Edit n to Undef → Undef guard fires, instances preserved (4 still exist)
+    let undef_result = engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("edit_param to Undef should succeed");
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            undef_result.values.get(&scoped_id).is_some(),
+            "bolts[{}] should be preserved when count becomes Undef",
+            i
+        );
+    }
+
+    // (c) Edit n to Int(2) → should clean up instances [2..4), keeping only [0..2)
+    let result = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param to Int(2) should succeed");
+
+    // bolts[0] and bolts[1] must exist with correct values
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should exist after recovery to Int(2)",
+            i
+        );
+    }
+
+    // bolts[2] and bolts[3] must be absent (no stale leak)
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            result.values.get(&scoped_id).is_none(),
+            "bolts[{}] must be removed after Int(4)→Undef→Int(2) — stale instances must not leak",
+            i
+        );
+    }
+}
