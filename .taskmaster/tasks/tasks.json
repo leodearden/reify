@@ -18739,10 +18739,11 @@
         "description": "In crates/reify-test-support/src/tracing_support.rs: (1) Add a comment at line 48 on the fetch_add(1, Ordering::Relaxed) call explaining why Relaxed is correct: uniqueness is all that is needed, tracing's infrastructure stabilizes span IDs before use. (2) In new_span_ids_are_unique at lines 132-134, unwrap each .id() call with an explanatory expect message (e.g. `.expect(\"WARN span should be enabled by WarnCountingSubscriber\")`) so that span-disabled failures are diagnosed correctly rather than appearing as ID collision failures.\n\nmemory_hints: search(\"WarnCountingSubscriber span ID AtomicU64\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:08:33.724Z"
       },
       {
         "id": "907",
@@ -18781,7 +18782,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:08:33.575Z",
+      "lastModified": "2026-04-04T04:08:33.724Z",
       "taskCount": 909,
       "completedCount": 679,
       "tags": [
