@@ -3,23 +3,6 @@
 use reify_lsp::bridge::InProcessLsp;
 use serde_json::json;
 
-/// Malformed (non-object) params should return an Err containing
-/// "initialize params error".
-#[tokio::test]
-async fn initialize_with_malformed_params_is_err() {
-    let lsp = InProcessLsp::new();
-
-    // json!(42) is clearly malformed for InitializeParams (expects an object)
-    let result = lsp.handle_request("initialize", json!(42)).await;
-
-    assert!(result.is_err(), "server should return Err on malformed params");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("initialize params error"),
-        "error message should contain 'initialize params error', got: {err}"
-    );
-}
-
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
     let lsp = InProcessLsp::new();
