@@ -19073,11 +19073,11 @@
         "description": "Three related cleanup items in crates/reify-test-support/src/tracing_support.rs after the enabled() filter was changed from `<=` to `==` WARN:\n\n1. Remove the inner `if event.metadata().level() == &tracing::Level::WARN` guard from `event()` (~line 63-65) — it is dead code after `enabled()` uses `==`. Add a comment that `enabled()` guarantees only WARN reaches here, then unconditionally increment `warn_count`.\n\n2. Rewrite the doc comment block (~lines 88-92) and inline comments (~lines 159-170) in `error_events_rejected_by_enabled_filter`: remove all 'Under the current <= filter…this FAILS' framing and replace with present-tense invariant description (e.g. 'Verifies ERROR events are rejected at enabled() and never dispatched to event()').\n\n3. Fix the assertion message in `non_warn_events_are_not_counted` (~line 214): either weaken it to 'DEBUG/INFO/ERROR events must not increment the WARN counter' (matching what warn_count == 0 actually proves), or add an EventDispatchCounter wrapper to make the gate-rejection claim verifiable.\n\nmemory_hints: search(\"WarnCountingSubscriber enabled filter dead code guard\", project_id=\"reify\"), get_entity(\"WarnCountingSubscriber\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:37:27.488Z",
+        "updatedAt": "2026-04-04T05:00:39.511Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -19104,7 +19104,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T05:00:38.980Z",
+      "lastModified": "2026-04-04T05:00:39.511Z",
       "taskCount": 925,
       "completedCount": 689,
       "tags": [
