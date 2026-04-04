@@ -1596,6 +1596,8 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
         assert_eq!(
             count,
             1,
