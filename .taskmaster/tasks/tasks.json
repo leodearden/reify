@@ -19232,6 +19232,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 938,
+        "title": "Handle both CompletionResponse variants in LSP bridge test assertions",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs, update completion assertions to handle both CompletionResponse::Array and CompletionResponse::List variants, producing actionable error messages on failure.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19244,7 +19255,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:31.308Z"
+      "updated": "2026-04-04T06:10:33.510Z"
     }
   }
 }
