@@ -4526,14 +4526,19 @@ fn compile_entity(
                     match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
                         Some(t) => t,
                         None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!("unresolved type: {}", type_expr.name))
-                                    .with_label(DiagnosticLabel::new(
-                                        type_expr.span,
-                                        "unknown type name",
-                                    )),
-                            );
-                            Type::Real // fallback
+                            // Check if it's an enum type defined in the same module or prelude
+                            if enum_defs.iter().any(|e| e.name == type_expr.name) {
+                                Type::Enum(type_expr.name.clone())
+                            } else {
+                                diagnostics.push(
+                                    Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type name",
+                                        )),
+                                );
+                                Type::Real // fallback
+                            }
                         }
                     }
                 } else {
@@ -6602,7 +6607,17 @@ fn check_trait_conformance(
                 let ty = p
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_name(&te.name)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(Type::Real)
+                    })
                     .unwrap_or(Type::Real);
                 Some((p.name.clone(), ty))
             }
@@ -6610,7 +6625,17 @@ fn check_trait_conformance(
                 let ty = l
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_name(&te.name)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(Type::Real)
+                    })
                     .unwrap_or(Type::Real);
                 Some((l.name.clone(), ty))
             }
