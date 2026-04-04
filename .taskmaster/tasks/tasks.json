@@ -17909,10 +17909,11 @@
         "description": "In `crates/reify-expr/src/lib.rs` (around line 821) and `crates/reify-stdlib/src/lib.rs` (around line 1442), add a `// SYNC: mirror of <other file>::sanitize_value — keep in sync` comment at both sites so future changes to Value variants (e.g. Value::Integer) are grep-findable and both copies get updated together.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:46.851Z"
       },
       {
         "id": "860",
@@ -17939,7 +17940,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:03:44.196Z",
+      "lastModified": "2026-04-04T00:03:46.851Z",
       "taskCount": 861,
       "completedCount": 664,
       "tags": [
