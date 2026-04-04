@@ -280,6 +280,24 @@ async fn initialize_with_malformed_params_returns_error() {
     );
 }
 
+/// An unknown/unsupported method name should return Err, not panic or silently succeed.
+///
+/// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
+#[tokio::test]
+async fn unsupported_method_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp
+        .handle_request("textDocument/foobar", json!({}))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "unsupported method should return Err, got: {:?}",
+        result
+    );
+}
+
 /// Wrong field type within a valid-looking object should return Err containing
 /// "initialize params error".
 #[tokio::test]
