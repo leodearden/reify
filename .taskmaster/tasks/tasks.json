@@ -18015,6 +18015,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 865,
+        "title": "Add sync_comments_test.sh to CI test_command in orchestrator.yaml",
+        "description": "The test script tests/sync_comments_test.sh is never executed by CI. The test_command in orchestrator.yaml runs only `cargo test --workspace` and npm tests — no shell scripts under tests/ are invoked. The test exists but provides no enforcement guarantees.\n\nAppend the script invocation to test_command in orchestrator.yaml, e.g. `&& bash tests/sync_comments_test.sh`. Consider whether other shell test scripts in tests/ also need inclusion.\n\nMemory hints: search \"CI orchestrator test_command configuration\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18027,7 +18038,7 @@
       ],
       "created": "2026-04-04T00:14:50.217Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:14:55.927Z"
+      "updated": "2026-04-04T00:15:00.115Z"
     }
   }
 }
