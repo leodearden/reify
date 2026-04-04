@@ -57,4 +57,8 @@ describe('isSameFile', () => {
     expect(isSameFile('', '/project/src/bracket.ri')).toBe(false);
     expect(isSameFile('/project/src/bracket.ri', '')).toBe(false);
   });
+
+  it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
+    expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
+  });
 });
