@@ -20050,15 +20050,16 @@
         "description": "The cycle-warning filter closure (Severity::Warning + 'recursive structure cycle') is copy-pasted across 7 test functions in crates/reify-compiler/tests/recursive_detection_tests.rs. Extract to a module-level helper fn cycle_warnings(). Also assert label count in duplicate_sub_refs_deduped test (scc.rs:323-349), and add a comment documenting the deliberate asymmetry between adjacency dedup and label non-dedup in scc.rs:91-102.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T19:01:28.607Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:01:27.302Z",
+      "lastModified": "2026-04-04T19:01:28.607Z",
       "taskCount": 981,
       "completedCount": 708,
       "tags": [
