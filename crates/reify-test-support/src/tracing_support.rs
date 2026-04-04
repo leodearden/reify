@@ -227,8 +227,12 @@ mod tests {
         // (no ID) that never call new_span().
         let (sub, _count) = warn_counting_subscriber();
         let (id_a, id_b) = tracing::subscriber::with_default(sub, || {
-            let a = tracing::span!(tracing::Level::WARN, "a").id();
-            let b = tracing::span!(tracing::Level::WARN, "b").id();
+            let a = tracing::span!(tracing::Level::WARN, "a")
+                .id()
+                .expect("WARN span should be enabled by WarnCountingSubscriber");
+            let b = tracing::span!(tracing::Level::WARN, "b")
+                .id()
+                .expect("WARN span should be enabled by WarnCountingSubscriber");
             (a, b)
         });
 
