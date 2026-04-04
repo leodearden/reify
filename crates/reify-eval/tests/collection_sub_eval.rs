@@ -1214,3 +1214,154 @@ fn concurrent_edit_count_to_undef_then_sync_int_no_stale_leak() {
         );
     }
 }
+
+// ─── task-826 step-17: full concurrent Int(4)→Undef→Int(2) via prepare+apply only ───
+
+#[test]
+fn concurrent_edit_count_int_undef_int_full_concurrent_recovery() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let count_bolts_id = ValueCellId::new("Parent", "__count_bolts");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) eval with n=4 → 4 instances
+    engine.eval(&module);
+
+    // (b) concurrent edit: n→Undef via prepare+apply.
+    //     re_elaborate_collections fires Undef guard → preserved_counts[__count_bolts]=4,
+    //     4 instances are preserved.
+    {
+        let setup = engine
+            .prepare_concurrent_edit(n_id.clone(), Value::Undef)
+            .expect("prepare step (b): n→Undef");
+
+        // Simulate scheduler: __count_bolts evaluates to Undef (depends on n=Undef)
+        let count_node = NodeId::Value(count_bolts_id.clone());
+        let mut snapshot_values = setup.snapshot_values.clone();
+        snapshot_values.insert(
+            count_bolts_id.clone(),
+            (Value::Undef, DeterminacyState::Determined),
+        );
+        let mut values = setup.values.clone();
+        values.insert(count_bolts_id.clone(), Value::Undef);
+
+        let result = ConcurrentEditResult {
+            values,
+            snapshot_values,
+            node_results: vec![ConcurrentNodeResult {
+                node: count_node.clone(),
+                value: Value::Undef,
+                determinacy: DeterminacyState::Determined,
+                trace: DependencyTrace { reads: vec![n_id.clone()] },
+                outcome: EvalOutcome::Changed,
+            }],
+            actual_eval_set: vec![count_node],
+            skipped: HashSet::new(),
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
+        };
+
+        let diags = engine.apply_concurrent_edit(&setup, result);
+        // Undef guard should emit one warning
+        assert_eq!(
+            diags.iter().filter(|d| d.severity == Severity::Warning).count(),
+            1,
+            "concurrent n→Undef should emit exactly one Undef-guard warning"
+        );
+    }
+
+    // (c) concurrent edit: n→Int(2) via prepare+apply.
+    //     re_elaborate_collections reads preserved_counts[__count_bolts]=4 as old_count,
+    //     removes instances [0..4), creates instances [0..2).
+    {
+        let setup = engine
+            .prepare_concurrent_edit(n_id.clone(), Value::Int(2))
+            .expect("prepare step (c): n→Int(2)");
+
+        // Simulate scheduler: __count_bolts evaluates to Int(2)
+        let count_node = NodeId::Value(count_bolts_id.clone());
+        let mut snapshot_values = setup.snapshot_values.clone();
+        snapshot_values.insert(
+            count_bolts_id.clone(),
+            (Value::Int(2), DeterminacyState::Determined),
+        );
+        let mut values = setup.values.clone();
+        values.insert(count_bolts_id.clone(), Value::Int(2));
+
+        let result = ConcurrentEditResult {
+            values,
+            snapshot_values,
+            node_results: vec![ConcurrentNodeResult {
+                node: count_node.clone(),
+                value: Value::Int(2),
+                determinacy: DeterminacyState::Determined,
+                trace: DependencyTrace { reads: vec![n_id.clone()] },
+                outcome: EvalOutcome::Changed,
+            }],
+            actual_eval_set: vec![count_node],
+            skipped: HashSet::new(),
+            resolved_params: std::collections::HashMap::new(),
+            diagnostics: Vec::new(),
+        };
+
+        let diags = engine.apply_concurrent_edit(&setup, result);
+        assert!(
+            diags.iter().all(|d| d.severity != Severity::Warning),
+            "Int(2) recovery should not emit warnings, got: {:?}",
+            diags
+        );
+    }
+
+    // Verify final state: bolts[0..2) exist, bolts[2..4) absent
+    let snapshot = engine.snapshot().expect("snapshot should be present");
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        let (val, _) = snapshot
+            .values
+            .get(&scoped_id)
+            .unwrap_or_else(|| panic!("bolts[{}] should exist after full concurrent recovery", i));
+        assert_eq!(
+            val,
+            &Value::length(0.01),
+            "bolts[{}].diameter should be 10mm",
+            i
+        );
+    }
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            snapshot.values.get(&scoped_id).is_none(),
+            "bolts[{}] must be gone after full concurrent Int(4)→Undef→Int(2)",
+            i
+        );
+    }
+}
