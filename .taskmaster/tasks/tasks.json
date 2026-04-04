@@ -19107,11 +19107,16 @@
         "description": "In crates/reify-lsp/src/bridge.rs: (1) Fix the `initialized` arm to deserialize params consistently with all other notification arms, or explicitly document the exemption. (2) Remove the `(since Task 828)` internal task ID from the public doc comment.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:29.436Z"
+        "updatedAt": "2026-04-04T09:02:46.531Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
       },
       {
         "id": "927",
@@ -19568,7 +19573,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:02:33.241Z",
+      "lastModified": "2026-04-04T09:02:46.531Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
