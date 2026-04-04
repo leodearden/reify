@@ -19166,6 +19166,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 932,
+        "title": "Strengthen sync_comments_test.sh to verify referenced functions exist",
+        "description": "In tests/sync_comments_test.sh, add checks that fn sanitize_value (or the referenced function name) actually exists in both the EXPR and STDLIB files, so stale SYNC comments are caught when functions are renamed.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19178,7 +19189,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:44.839Z"
+      "updated": "2026-04-04T06:09:48.098Z"
     }
   }
 }
