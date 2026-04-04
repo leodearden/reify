@@ -18456,11 +18456,11 @@
         "description": "Two related documentation/correctness issues in the total_cmp() migration:\n1. In `crates/reify-types/src/value.rs`, remove `value_ord_neg_zero` (the no-op `let _ = pos.cmp(&neg)` test around line 2083) OR replace the no-op with `assert!(neg < pos)`. The new `value_ord_real_nan_and_neg_zero_still_consistent` test already provides strict coverage.\n2. Add a short comment above the `impl PartialEq for Value` and `impl Ord for Value` blocks (around lines 1142–1153) explaining that `PartialEq` uses `to_bits()` (bit-identity) and `Ord` uses `total_cmp()` (IEEE 754 total order), and that both define equality as bit-pattern identity so the Ord/Eq contract is preserved. Any change to either must preserve this invariant.\n\nMemory hints: search \"Value PartialEq Ord to_bits total_cmp invariant\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:18:46.418Z",
+        "updatedAt": "2026-04-04T03:25:38.967Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -18649,7 +18649,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:25:38.703Z",
+      "lastModified": "2026-04-04T03:25:38.967Z",
       "taskCount": 900,
       "completedCount": 672,
       "tags": [
