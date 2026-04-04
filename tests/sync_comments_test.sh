@@ -11,38 +11,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
 STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
 
-PASS=0
-FAIL=0
-
-check() {
-    local desc="$1"
-    local file="$2"
-    local pattern="$3"
-    if grep -q "$pattern" "$file"; then
-        echo "PASS: $desc"
-        PASS=$((PASS + 1))
-    else
-        echo "FAIL: $desc"
-        echo "      Expected pattern '$pattern' not found in $file"
-        FAIL=$((FAIL + 1))
-    fi
-}
+[ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
+source "$REPO_ROOT/tests/infra/test_helpers.sh"
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
-check \
+assert \
     "reify-expr/src/lib.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
-    "$EXPR_FILE" \
-    "SYNC:.*reify-stdlib::sanitize_value"
+    grep -q "SYNC:.*reify-stdlib::sanitize_value" "$EXPR_FILE"
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
-check \
+assert \
     "reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value" \
-    "$STDLIB_FILE" \
-    "SYNC:.*reify-expr::sanitize_value"
+    grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
+test_summary
