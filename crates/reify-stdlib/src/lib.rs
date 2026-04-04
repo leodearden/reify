@@ -5763,15 +5763,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        match sanitize_value(v) {
-            Value::Orientation { w, x, y, z } => {
-                assert!((w - 1.0).abs() < f64::EPSILON);
-                assert!((x - 0.0).abs() < f64::EPSILON);
-                assert!((y - 0.0).abs() < f64::EPSILON);
-                assert!((z - 0.0).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
-        }
+        assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
     }
 
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
