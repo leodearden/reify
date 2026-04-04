@@ -19254,6 +19254,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 940,
+        "title": "Fix solvespace test naming and add missing NoProgress path coverage",
+        "description": "In crates/reify-constraints/tests/solvespace_tests.rs: (1) Rename solve_returns_no_progress_for_missing_non_auto_value to reflect it tests unrecognized-pattern path. (2) Add integration test for non-auto parameter missing from current_values NoProgress branch. (3) Use auto_params_for helper in add_auto_coord_errors test.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19266,7 +19277,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:36.654Z"
+      "updated": "2026-04-04T06:10:40.675Z"
     }
   }
 }
