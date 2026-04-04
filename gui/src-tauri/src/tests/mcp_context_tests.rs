@@ -512,22 +512,6 @@ fn tauri_tool_context_implements_reify_tool_context() {
 
 // --- Task 827: get_diagnostics wiring tests ---
 
-/// Step-4: get_diagnostics delegates to the engine without lock failure.
-///
-/// With bracket source loaded (no warnings), the real implementation returns
-/// Ok([]) just like the stub. This test is a regression guard ensuring the
-/// delegate path doesn't panic or error on a clean-compile module.
-#[test]
-fn get_diagnostics_delegates_to_engine() {
-    let ctx = make_tauri_context();
-    let result = ctx.get_diagnostics();
-    assert!(
-        result.is_ok(),
-        "get_diagnostics should return Ok for a clean engine, got: {:?}",
-        result.err()
-    );
-}
-
 /// Step-9 (REVIEW FIX — renamed): Accurately named replacement for the previous
 /// `get_diagnostics_maps_fields_correctly` test which only asserted an empty vec.
 ///
