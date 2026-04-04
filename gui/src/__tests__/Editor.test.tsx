@@ -70,8 +70,11 @@ describe('Editor mounting', () => {
 
 /** Get the CM6 EditorView instance from the rendered container. */
 function getEditorView(container: HTMLElement): EditorView {
-  const cmEditor = container.querySelector('.cm-editor')!;
-  return EditorView.findFromDOM(cmEditor as HTMLElement)!;
+  const cmEditor = container.querySelector('.cm-editor');
+  if (!cmEditor) throw new Error('getEditorView: .cm-editor not found in container');
+  const view = EditorView.findFromDOM(cmEditor as HTMLElement);
+  if (!view) throw new Error('getEditorView: EditorView not found from .cm-editor DOM');
+  return view;
 }
 
 describe('Editor doc change handling', () => {
@@ -290,7 +293,7 @@ describe('Editor scrollToLocation', () => {
     // anchor should be at start of span, head at end
     const line2 = view.state.doc.line(2);
     const expectedAnchor = line2.from + 2; // column 3, 0-indexed = 2
-    const expectedHead = line2.from + 7; // column 8, 0-indexed = 7
+    const expectedHead = line2.from + 7; // end_column 8, 0-indexed = 7
     expect(sel.anchor).toBe(expectedAnchor);
     expect(sel.head).toBe(expectedHead);
   });
@@ -306,22 +309,34 @@ describe('Editor scrollToLocation', () => {
     expect(view.state.selection.main.head).toBe(0);
   });
 
-  it('scrollToLocation with mismatched file is a no-op', () => {
+  it('scrollToLocation targeting active file moves cursor to exact offset', () => {
     const store = setupStore([file1, file2]);
-    // Explicitly set active file to match multi-file test convention
     store.setActiveFile(file2.path);
     const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
     render(() => <Editor store={store} scrollToLocation={scrollTo} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
-    // Phase 1: target the active file (file2) to prove the effect fires
-    // file2 content: 'structure Mount {}' (18 chars, single line)
-    // column 5 -> head = 9 (col 10, 0-indexed)
+    // file2 content: 'structure Mount {}' (single line)
+    // anchor = 4 (column 5, 0-indexed), head = 9 (end_column 10, 0-indexed)
     setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
-    expect(view.state.selection.main.head).toBeGreaterThan(0);
+    const sel = view.state.selection.main;
+    expect(sel.anchor).toBe(4);
+    expect(sel.head).toBe(9);
+  });
 
-    // Phase 2: now target mismatched file1 — effect must not move cursor
+  it('scrollToLocation with mismatched file does not move cursor', () => {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file2.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Establish a known cursor position by scrolling to the active file
+    setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+
+    // Targeting a mismatched file must not move the cursor
     const headBefore = view.state.selection.main.head;
     setScrollTo({ file_path: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
     expect(view.state.selection.main.head).toBe(headBefore);
