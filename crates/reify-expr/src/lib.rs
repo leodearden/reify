@@ -820,23 +820,18 @@ fn compute_numerical_gradient_at_point(
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
-/// Complex component extraction (re, im) and magnitude computation produce
-/// `Value::Real` or `Value::Scalar` by calling `Value::from_component`.  When
-/// the underlying f64 is NaN or Inf the result must be Undef, not a silently
-/// poisoned numeric value.  This helper mirrors the private `sanitize_value`
-/// in `reify-stdlib` — the duplication is intentional (see design decisions in
-/// the task plan: making stdlib's version public would widen its API surface;
+/// All callers pass either a `Value::from_component(...)` result — which
+/// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
+/// — or a directly-constructed `Value::Scalar`.  Consequently only the
+/// `Value::Real` and `Value::Scalar` arms are reachable here.  This helper
+/// mirrors the private `sanitize_value` in `reify-stdlib` — the duplication
+/// is intentional (making stdlib's version public would widen its API surface;
 /// moving it to reify-types would add evaluation semantics to a type crate).
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
-        Value::Complex { re, im, .. }
-            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
-        {
             Value::Undef
         }
         _ => v,
@@ -4021,6 +4016,92 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    // ── sanitize_value direct unit tests ─────────────────────────────────────
+
+    #[test]
+    fn sanitize_real_nan_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NAN)).is_undef(),
+            "Real(NaN) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
+            "Real(+Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_neg_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
+            "Real(-Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_finite_passthrough() {
+        let v = Value::Real(3.14);
+        match sanitize_value(v) {
+            Value::Real(x) => assert!((x - 3.14).abs() < 1e-12),
+            other => panic!("expected Real(3.14), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sanitize_scalar_nan_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with NaN si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with +Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_neg_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with -Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_finite_passthrough() {
+        let v = Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        };
+        match sanitize_value(v) {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.001).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
         }
     }
 }
