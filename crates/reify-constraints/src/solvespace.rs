@@ -1216,6 +1216,23 @@ mod tests {
         );
     }
 
+    /// BuilderError must expose cell_id and message fields, and Display must
+    /// output only the message (cell_id is logged as a separate structured field).
+    #[test]
+    fn builder_error_has_cell_id_and_display() {
+        let cell_id = ValueCellId::new("Test", "x");
+        let message = "non-auto parameter Test.x missing from current_values".to_string();
+        let err = BuilderError { cell_id: cell_id.clone(), message: message.clone() };
+
+        assert_eq!(err.cell_id, cell_id, "cell_id field should match the provided ValueCellId");
+        assert_eq!(err.message, message, "message field should match the provided string");
+        assert_eq!(
+            err.to_string(),
+            message,
+            "Display should output only the message, not the cell_id separately"
+        );
+    }
+
     /// add_point must propagate the Err returned by add_auto_coord when the
     /// x-coordinate cell_id is a non-auto param absent from current_values.
     /// This covers the `?` operator on line 489 of add_point.
