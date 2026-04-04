@@ -19131,11 +19131,16 @@
         "description": "In gui/src-tauri/src/tests/lsp_bridge_tests.rs: (1) Rewrite lsp_request_impl_accepts_valid_json_null_literal to use an unconditional assertion (currently vacuously passes on Ok path). (2) Add test cases for empty string and partial JSON to confirm invalid JSON params error.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:35.626Z"
+        "updatedAt": "2026-04-04T09:02:19.354Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "929",
@@ -19553,7 +19558,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:02:13.334Z",
+      "lastModified": "2026-04-04T09:02:19.354Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
