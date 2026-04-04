@@ -18154,11 +18154,11 @@
         "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:12:46.942Z",
+        "updatedAt": "2026-04-04T03:15:25.286Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -18437,10 +18437,11 @@
         "description": "Two related documentation/correctness issues in the total_cmp() migration:\n1. In `crates/reify-types/src/value.rs`, remove `value_ord_neg_zero` (the no-op `let _ = pos.cmp(&neg)` test around line 2083) OR replace the no-op with `assert!(neg < pos)`. The new `value_ord_real_nan_and_neg_zero_still_consistent` test already provides strict coverage.\n2. Add a short comment above the `impl PartialEq for Value` and `impl Ord for Value` blocks (around lines 1142–1153) explaining that `PartialEq` uses `to_bits()` (bit-identity) and `Ord` uses `total_cmp()` (IEEE 754 total order), and that both define equality as bit-pattern identity so the Ord/Eq contract is preserved. Any change to either must preserve this invariant.\n\nMemory hints: search \"Value PartialEq Ord to_bits total_cmp invariant\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:15:25.456Z"
       },
       {
         "id": "889",
@@ -18478,7 +18479,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:15:25.016Z",
+      "lastModified": "2026-04-04T03:15:25.456Z",
       "taskCount": 891,
       "completedCount": 671,
       "tags": [
