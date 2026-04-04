@@ -2069,9 +2069,20 @@ impl Engine {
                     continue;
                 }
 
+                // Guard: skip re-elaboration when the new count is Undef.
+                // The count cell hasn't been evaluated yet (incremental re-eval
+                // order may not have reached it). Destroying existing instances
+                // now would be destructive — preserve them until the count cell
+                // resolves to a definite value.
+                if matches!(new_count_val, Value::Undef) {
+                    continue;
+                }
+
                 // Remove old instances from graph and snapshot
                 let old_count = match &old_count_val {
                     Value::Int(n) => *n,
+                    // Value::Undef means no instances existed in the prior
+                    // snapshot — treating as 0 is semantically correct.
                     _ => 0,
                 };
                 for i in 0..old_count {
