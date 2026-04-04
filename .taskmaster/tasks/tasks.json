@@ -19015,10 +19015,11 @@
         "description": "The `get_diagnostics_maps_warning_fields_to_diagnostic_info` test in gui/src-tauri/src/tests/mcp_context_tests.rs had span assertions and `code.is_none()` removed during task 839 with the rationale that engine_tests covers them. However, these tests exercise different layers: the engine test validates DiagnosticData, while this test validates the mapping closure at mcp_context.rs:138-147 that produces DiagnosticInfo. A field-swap bug in the closure (e.g., `line: d.column`) would go undetected.\n\nChanges needed:\n1. Add back to `get_diagnostics_maps_warning_fields_to_diagnostic_info`: `assert!(first.line >= 1)`, `assert!(first.end_line >= first.line)`, and `assert!(first.code.is_none())`\n2. In `get_diagnostics_clean_source_returns_empty`: add `.expect(\"get_diagnostics should not fail for a healthy lock\")` or `assert!(result.is_ok())` to preserve the lock-health intent of the removed `get_diagnostics_delegates_to_engine` test\n\nmemory_hints: search(\"MCP context diagnostic mapping closure DiagnosticInfo\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:31:25.706Z"
       },
       {
         "id": "922",
@@ -19034,7 +19035,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:31:25.058Z",
+      "lastModified": "2026-04-04T04:31:25.709Z",
       "taskCount": 922,
       "completedCount": 683,
       "tags": [
