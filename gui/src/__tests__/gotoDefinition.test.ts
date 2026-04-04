@@ -26,6 +26,16 @@ import { reifyGotoDefinition } from '../editor/gotoDefinition';
 
 const mockInvoke = vi.mocked(invoke);
 
+function makeMockEvent(overrides?: Partial<MouseEvent>): MouseEvent {
+  return {
+    ctrlKey: true,
+    metaKey: false,
+    clientX: 100,
+    clientY: 50,
+    ...overrides,
+  } as MouseEvent;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -47,12 +57,7 @@ describe('reifyGotoDefinition', () => {
     const ext = reifyGotoDefinition(() => currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMockEvent();
 
     const mockView = {
       posAtCoords: () => 5,
@@ -104,12 +109,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMockEvent();
 
     const mockView = {
       posAtCoords: () => 5,
@@ -144,12 +144,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMockEvent();
 
     const mockView = {
       posAtCoords: () => 5,
@@ -188,12 +183,7 @@ describe('isConnected guard', () => {
     const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMockEvent();
 
     const mockView = {
       posAtCoords: () => 5,
@@ -228,12 +218,7 @@ describe('isConnected guard', () => {
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMockEvent();
 
     const mockView = {
       posAtCoords: () => 5,
