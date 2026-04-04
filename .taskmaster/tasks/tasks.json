@@ -20186,6 +20186,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 987,
+        "title": "SCC minor perf: share HashSet, pre-allocate labels Vec",
+        "description": "Review suggestions S6/S7/S8 from task 362 review.\n\nS6 (scc.rs:84+205): HashSet<usize> allocated twice per cyclic SCC — once in detect_recursive_structures and once in reconstruct_scc_cycle. Share the set by passing it as parameter or returning it.\nS7 (scc.rs:91-102): Unbounded label emission for adversarial inputs. Track emitted (v, target) pairs or iterate deduped adjacency.\nS8 (scc.rs:85): Labels Vec not pre-allocated. Pre-compute expected label count and reserve.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20198,7 +20209,7 @@
       ],
       "created": "2026-04-04T19:30:24.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T20:11:56.003Z"
+      "updated": "2026-04-04T20:12:01.409Z"
     }
   }
 }
