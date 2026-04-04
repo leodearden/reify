@@ -99,7 +99,8 @@ export function reifyGotoDefinition(
       const lspChar = pos - line.from;
       const currentUri = resolveUri(uri);
 
-      // Fire async, don't block the event
+      // Unlike hoverTooltip/completions, this promise is detached from
+      // CodeMirror's lifecycle — guard against dispatch after view destruction.
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
         if (!view.dom.isConnected) return;
