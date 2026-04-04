@@ -18497,11 +18497,11 @@
         "description": "Two missing test cases for directly changed code in `crates/reify-types/src/value.rs`:\n1. In `value_ord_orientation_negative_components` (around line 3450), add a case that ties `w` and `x` and asserts `Value::Orientation { w:0.5, x:0.0, y:-1.0, z:0.0 } < Value::Orientation { w:0.5, x:0.0, y:-0.5, z:0.0 }` — this covers `ay.total_cmp(by)` which is currently untested with negative values.\n2. Add a new test (near line 2147) with two `Value::Scalar` values sharing `si_value: -1.0` but different dimensions (e.g., LENGTH vs MASS) and assert the dimension ordering is respected — covering that `ad.cmp(bd)` still dominates over the negative `total_cmp()` value.\n\nMemory hints: search \"Value Ord orientation scalar negative test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:58:07.568Z",
+        "updatedAt": "2026-04-04T06:17:15.574Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19467,9 +19467,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T06:15:01.217Z",
+      "lastModified": "2026-04-04T06:17:15.574Z",
       "taskCount": 958,
-      "completedCount": 691,
+      "completedCount": 692,
       "tags": [
         "master"
       ]
