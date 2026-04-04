@@ -17918,11 +17918,11 @@
         "description": "When the tracing::warn! was moved from add_auto_coord to solve() (task 830), the cell_id structured tracing field was lost. Previously it was `tracing::warn!(cell_id = %id, ...)` but now it's only embedded in the reason string: `tracing::warn!(reason = %reason, \"constraint pattern builder failed\")`. Any log aggregation or filtering keyed on a `cell_id` field silently stops working.\n\nFix: Change add_pattern_to_builder (and add_auto_coord) to return a richer error type that carries cell_id separately, so solve() can log it as a structured field:\n`tracing::warn!(cell_id = %cell_id, reason = %reason, \"constraint pattern builder failed: non-auto coord missing\")`\n\nAlternatively, a simpler approach: define a small `BuilderError { cell_id: ValueCellId, message: String }` struct used as the error type for add_auto_coord → add_point → add_pattern_to_builder, then destructure at the solve() call site.\n\nmemory_hints: search(\"structured tracing fields observability convention\", project_id=\"reify\"); search(\"solvespace builder error propagation\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:08:09.062Z",
+        "updatedAt": "2026-04-04T03:36:02.696Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -18707,9 +18707,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:31:32.965Z",
+      "lastModified": "2026-04-04T03:36:02.698Z",
       "taskCount": 903,
-      "completedCount": 673,
+      "completedCount": 674,
       "tags": [
         "master"
       ]
