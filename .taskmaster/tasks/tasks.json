@@ -19309,6 +19309,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 945,
+        "title": "Normalize orientation finiteness checks and extract shared predicate",
+        "description": "In crates/reify-types/src/value.rs, add pub fn orientation_is_finite() that checks all four quaternion components with !is_finite(). Use it in crates/reify-expr/src/lib.rs sanitize_value + Transform guards and crates/reify-stdlib/src/lib.rs sanitize_value. Normalizes verbose is_nan()||is_infinite() to !is_finite().",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19321,7 +19332,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:51.398Z"
+      "updated": "2026-04-04T06:10:54.011Z"
     }
   }
 }
