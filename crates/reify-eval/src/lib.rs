@@ -616,6 +616,7 @@ impl Engine {
     /// Updates cache entries, journal, snapshot, and last_eval_set from the
     /// concurrent evaluation results. Called after edit_param_concurrent()
     /// completes to synchronize Engine state.
+    #[must_use = "re-elaboration diagnostics must be surfaced to the caller"]
     pub fn apply_concurrent_edit(
         &mut self,
         setup: &ConcurrentEditSetup,

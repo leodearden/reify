@@ -790,7 +790,7 @@ async fn repeated_error_then_success_cycle() {
     );
 
     // === Third: apply and verify engine state is fully correct ===
-    engine.apply_concurrent_edit(&setup2, result2);
+    let _diags = engine.apply_concurrent_edit(&setup2, result2);
 
     // Cache freshness should be Final for all evaluated nodes
     let entry_b = engine.cache_store().get(&b_node).unwrap();
@@ -1074,7 +1074,7 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
         .unwrap();
 
     // Apply the concurrent edit
-    engine.apply_concurrent_edit(&setup, result);
+    let _diags = engine.apply_concurrent_edit(&setup, result);
 
     // After apply, check engine snapshot values
     let snap = engine.snapshot().expect("snapshot should exist");

@@ -167,7 +167,8 @@ fn apply_concurrent_edit_updates_engine_state() {
     };
 
     // Apply the result
-    engine.apply_concurrent_edit(&setup, result);
+    let diags = engine.apply_concurrent_edit(&setup, result);
+    assert!(diags.is_empty(), "expected no diagnostics from apply_concurrent_edit");
 
     // (1) Cache should have updated entry for volume with correct freshness
     let cache_entry = engine.cache_store().get(&volume_node);

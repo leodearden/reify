@@ -460,7 +460,8 @@ pub async fn edit_check_concurrent(
     let values = result.values.clone();
 
     // Apply concurrent edit to update engine state
-    engine.apply_concurrent_edit(&setup, result);
+    let re_elab_diagnostics = engine.apply_concurrent_edit(&setup, result);
+    diagnostics.extend(re_elab_diagnostics);
 
     // Check constraints against the updated values
     let (constraint_results, constraint_diagnostics) =

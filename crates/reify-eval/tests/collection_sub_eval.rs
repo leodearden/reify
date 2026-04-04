@@ -1184,7 +1184,7 @@ fn concurrent_edit_count_to_undef_then_sync_int_no_stale_leak() {
         diagnostics: Vec::new(),
     };
 
-    engine.apply_concurrent_edit(&setup, result);
+    let _diags = engine.apply_concurrent_edit(&setup, result);
 
     // (c) sync edit_param(n, Int(2)): should clean up instances [2..4), keeping [0..2).
     //     Without the fix, old_count resolves to 0 (preserved_counts empty, Undef fallback),
