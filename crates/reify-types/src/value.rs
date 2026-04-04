@@ -1222,7 +1222,25 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Real(a), Value::Real(b)) => {
-                // IEEE 754 total order via total_cmp() — sign-aware, consistent with mathematical ordering
+                // IEEE 754 total order via total_cmp() — sign-aware, consistent with
+                // mathematical ordering.
+                //
+                // NOTE: to_bits().cmp() and total_cmp() produce *different* total orders:
+                //
+                //   to_bits().cmp()  — negative floats (including -0.0) sort *above* all
+                //     positive values because the sign bit is the MSB and negative values
+                //     have a higher bit pattern than positive ones. NaN canonical bits
+                //     (0x7FF8_0000_0000_0000) sort after +Infinity (0x7FF0_0000_0000_0000).
+                //
+                //   total_cmp()      — negative floats sort *below* positive values
+                //     (IEEE 754 semantics). -0.0 sorts between -epsilon and +0.0.
+                //     NaN still sorts after +Infinity.
+                //
+                // Value::Set(BTreeSet<Value>) and Value::Map(BTreeMap<Value, Value>) rely
+                // on this Ord impl for their tree invariants. Any persisted or long-lived
+                // BTreeSet<Value> or BTreeMap<Value, _> containing NaN or negative-float
+                // keys created under the old to_bits() ordering would have stale tree
+                // invariants and must be fully rebuilt before use.
                 a.total_cmp(b)
             }
             (
@@ -2090,26 +2108,37 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_within_real_and_nan() {
-        // Normal ordering
+    fn value_ord_real_nan_total_order() {
+        // Normal ordering still holds
         assert!(Value::Real(1.0) < Value::Real(2.0));
-        // NaN consistency: NaN should have a defined position (via to_bits)
+        // Under to_bits() total order, NaN's canonical bits (0x7FF8_0000_0000_0000)
+        // are numerically greater than +Infinity's bits (0x7FF0_0000_0000_0000),
+        // so NaN sorts after +Infinity in this order.
         let nan = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
-        // Just verify it doesn't panic and gives consistent results
-        let _ = nan.cmp(&inf);
+        // NaN equals itself under Ord (same bits → Equal)
         assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+        // NaN sorts strictly after +Infinity
+        assert_eq!(nan.cmp(&inf), std::cmp::Ordering::Greater);
+        assert_eq!(inf.cmp(&nan), std::cmp::Ordering::Less);
     }
 
     #[test]
-    fn value_ord_neg_zero() {
+    fn value_ord_real_negative_zero() {
         // -0.0 and +0.0 have different bits and different Ord positions.
         // With total_cmp() (IEEE 754 totalOrder): -0.0 < +0.0.
         // PartialEq still distinguishes them (different bit patterns — content hash invariant).
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // They should have a defined comparison (not panic)
-        let _ = pos.cmp(&neg);
+        // PartialEq uses `a.to_bits() == b.to_bits()` (see `impl PartialEq for Value`,
+        // line 968), so -0.0 and +0.0 are treated as distinct values.
+        assert_ne!(pos, neg);
+        // Ord must be deterministic and antisymmetric.
+        let pos_cmp_neg = pos.cmp(&neg);
+        let neg_cmp_pos = neg.cmp(&pos);
+        assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
+        // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
+        assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
     }
 
     #[test]
