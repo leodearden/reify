@@ -18463,6 +18463,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 891,
+        "title": "Improve test clarity and document NaN ordering behavioral change",
+        "description": "Two improvements to test structure and behavioral documentation in `crates/reify-types/src/value.rs`:\n1. Split `value_ord_real_nan_and_neg_zero_still_consistent` (around line 2093) into two tests: `value_ord_real_nan_total_order` (NaN placement after +Infinity) and `value_ord_real_negative_zero` (-0.0 vs +0.0 Ord+PartialEq consistency). Add a comment on the PartialEq assertion citing the line where `to_bits()` is used in `impl PartialEq for Value`.\n2. Add a code comment near the `Ord` impl (around line 1153) warning that changing from `to_bits()` to `total_cmp()` shifts NaN's position in the total order. If any serialization/deserialization path exists for `BTreeMap<Value, _>` or `BTreeSet<Value>`, note that persisted structures containing NaN keys would have stale tree invariants after this change and must be rebuilt.\n\nMemory hints: search \"Value NaN ordering total_cmp behavioral change persistence\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18475,7 +18486,7 @@
       ],
       "created": "2026-04-04T03:14:47.719Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:14:58.458Z"
+      "updated": "2026-04-04T03:15:03.839Z"
     }
   }
 }
