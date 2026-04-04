@@ -19194,11 +19194,11 @@
         "description": "Refactor tests/check-pm-standardization.sh and tests/sync_comments_test.sh to source tests/infra/test_helpers.sh, use its assert() and test_summary() functions instead of inline PASS/FAIL counting. Normalizes exit codes to 0/1.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:36.799Z"
+        "updatedAt": "2026-04-04T14:06:21.710Z"
       },
       {
         "id": "931",
@@ -19829,9 +19829,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T13:35:50.929Z",
+      "lastModified": "2026-04-04T14:06:21.741Z",
       "taskCount": 969,
-      "completedCount": 701,
+      "completedCount": 702,
       "tags": [
         "master"
       ]
