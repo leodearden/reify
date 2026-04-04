@@ -1682,6 +1682,9 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // Only snapshot_values is poisoned; values and results locks are healthy.
+        // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
+        // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
         assert_eq!(
             count,
             1,
