@@ -18900,11 +18900,11 @@
         "description": "The SYNC comment at crates/reify-expr/src/lib.rs:830 mandates structural parity with reify-stdlib::sanitize_value. reify-stdlib now has Orientation and Complex arms; reify-expr has neither. Add the same `Value::Orientation { w, x, y, z } if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() => Value::Undef` arm to reify-expr/src/lib.rs after line 835 (after the Scalar arm). Update the doc comment (lines 825-829) to note the Orientation arm is currently unreachable from existing callers but included for structural parity.\n\nNote: Task 860 previously removed the Complex arm from reify-expr's sanitize_value as unreachable. Check whether that decision should be revisited for consistency, or whether Orientation should follow the same \"omit unreachable arms\" policy. If omitting, update the SYNC comment to document the intentional divergence.\n\nMemory hints: search \"sanitize_value SYNC reify-expr task 860\", get_entity \"sanitize_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:23:55.268Z",
+        "updatedAt": "2026-04-04T04:27:20.646Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19007,7 +19007,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:27:20.162Z",
+      "lastModified": "2026-04-04T04:27:20.646Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
