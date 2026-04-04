@@ -18502,10 +18502,11 @@
         "description": "In crates/reify-expr/src/lib.rs, add sanitize_scalar_neg_inf_returns_undef (Value::Scalar { si_value: f64::NEG_INFINITY, dimension: DimensionVector::LENGTH }) and at least one sanitize_complex_neg_inf_* test (e.g. re: f64::NEG_INFINITY, im: 0.0), asserting each returns is_undef(). This matches the existing sanitize_real_neg_inf_returns_undef pattern and ensures is_infinite() sign-agnosticism is verified for all three numeric variants.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:18:29.644Z"
       },
       {
         "id": "893",
@@ -18543,7 +18544,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:18:28.547Z",
+      "lastModified": "2026-04-04T03:18:29.645Z",
       "taskCount": 895,
       "completedCount": 671,
       "tags": [
