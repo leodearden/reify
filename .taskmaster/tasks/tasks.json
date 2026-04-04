@@ -19752,11 +19752,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs: (1) Extract parameterized poison-recovery test helper to reduce ~100 lines of boilerplate across 9+ tests. (2) Add value-content assertions to basic recovery tests that only check contains/is_empty. (3) Check catch_unwind results in warn-counting tests that discard them. (4) Add message-content verification to warn-counting assertions (check for lock name substring).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "review",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:06:49.930Z"
+        "updatedAt": "2026-04-04T14:12:07.022Z"
       },
       {
         "id": "964",
@@ -19855,7 +19855,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:10:55.200Z",
+      "lastModified": "2026-04-04T14:12:07.022Z",
       "taskCount": 970,
       "completedCount": 703,
       "tags": [
