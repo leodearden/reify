@@ -45,6 +45,10 @@ impl tracing::Subscriber for WarnCountingSubscriber {
     }
 
     fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Relaxed ordering is correct: the only invariant is uniqueness, which
+        // fetch_add guarantees atomically regardless of memory ordering.  No
+        // synchronisation with other memory operations is required here because
+        // tracing stabilises span IDs before they are shared across threads.
         let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
         // Safety: Id::from_u64 requires a non-zero value; our counter starts at 1.
         tracing::span::Id::from_u64(id)
