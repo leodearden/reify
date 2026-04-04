@@ -17516,7 +17516,13 @@
         "metadata": {
           "modules": [
             "gui/src-tauri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Eliminate DiagnosticData intermediate type and align field naming"
+            ]
+          }
         }
       },
       {
@@ -18032,11 +18038,11 @@
         "description": "The test script tests/sync_comments_test.sh is never executed by CI. The test_command in orchestrator.yaml runs only `cargo test --workspace` and npm tests — no shell scripts under tests/ are invoked. The test exists but provides no enforcement guarantees.\n\nAppend the script invocation to test_command in orchestrator.yaml, e.g. `&& bash tests/sync_comments_test.sh`. Consider whether other shell test scripts in tests/ also need inclusion.\n\nMemory hints: search \"CI orchestrator test_command configuration\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:15:25.462Z"
+        "updatedAt": "2026-04-04T00:23:39.857Z"
       },
       {
         "id": "866",
@@ -18292,9 +18298,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:23:36.841Z",
+      "lastModified": "2026-04-04T00:23:39.857Z",
       "taskCount": 880,
-      "completedCount": 667,
+      "completedCount": 668,
       "tags": [
         "master"
       ]
