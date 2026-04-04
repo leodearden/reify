@@ -19382,10 +19382,11 @@
         "description": "In crates/reify-expr/src/lib.rs neg_scalar function (~line 1436-1440), add `if !re.is_finite() || !im.is_finite() { return Value::Undef; }` to the Complex arm, matching the conjugate guard pattern. Currently negating NaN/Inf propagates poison.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:29.202Z"
       },
       {
         "id": "952",
@@ -19511,7 +19512,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:28.952Z",
+      "lastModified": "2026-04-04T09:00:29.202Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
