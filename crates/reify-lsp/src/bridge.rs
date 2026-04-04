@@ -94,7 +94,7 @@ impl InProcessLsp {
     ///     `serde_json::Value` (should not occur in practice with well-formed
     ///     LSP types).
     ///
-    /// # Breaking change (since Task 828)
+    /// # Breaking change
     ///
     /// The `initialize` method previously tolerated malformed `InitializeParams`
     /// by falling back to a default value (`unwrap_or_default`). It now performs
