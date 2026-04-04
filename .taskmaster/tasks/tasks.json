@@ -19198,7 +19198,14 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:36.975Z"
+        "updatedAt": "2026-04-04T09:00:36.975Z",
+        "metadata": {
+          "modules": [
+            "scripts/check-pm-standardization.sh",
+            "tests/check-pm-standardization.sh",
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 932,
