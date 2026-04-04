@@ -18370,6 +18370,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 886,
+        "title": "Remove unnecessary Clone derive from BuilderError",
+        "description": "In crates/reify-constraints/src/solvespace.rs line ~417, remove Clone from #[derive(Debug, Clone)], leaving #[derive(Debug)]. The type is module-private and consumed only via .to_string() at line ~823; no call site clones a BuilderError. ValueCellId has heap-allocated String fields, so the derive is non-trivially unnecessary API surface.\n\nmemory_hints: search(\"BuilderError Clone derive solvespace\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18382,7 +18393,7 @@
       ],
       "created": "2026-04-04T03:07:43.648Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:07:43.653Z"
+      "updated": "2026-04-04T03:07:47.733Z"
     }
   }
 }
