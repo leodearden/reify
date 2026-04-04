@@ -19452,6 +19452,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 958,
+        "title": "Improve collection_sub_eval test quality: extract fixture, add coverage, tighten assertions",
+        "description": "In crates/reify-eval/tests/collection_sub_eval.rs: (1) Extract shared make_bolt_parent_engine helper to eliminate ~180 lines of duplication. (2) Add Undef->Undef->Int consecutive transition test. (3) Tighten warning assertion predicates to include 'Undef' or 'unexpected'. (4) Assert instance removal in non-Int count warning test.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19464,7 +19475,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:58.932Z"
+      "updated": "2026-04-04T06:13:00.801Z"
     }
   }
 }
