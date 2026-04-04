@@ -19155,6 +19155,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 931,
+        "title": "Strengthen PM standardization assertions: value check, consistency, git preflight",
+        "description": "In tests/check-pm-standardization.sh: (1) Match npm@ prefix not just field presence. (2) Add cross-file consistency check for packageManager version. (3) Batch git check-ignore calls. (4) Add preflight command -v git check.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19167,7 +19178,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:41.827Z"
+      "updated": "2026-04-04T06:09:44.839Z"
     }
   }
 }
