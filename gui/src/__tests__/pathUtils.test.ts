@@ -13,6 +13,14 @@ describe('normalizePath', () => {
   it('decodes multiple percent-encoded characters in a file:// URI', () => {
     expect(normalizePath('file:///path/%E4%BD%A0%E5%A5%BD.ri')).toBe('/path/你好.ri');
   });
+
+  it('returns stripped path without throwing on malformed percent-encoding', () => {
+    expect(normalizePath('file:///path/bad%ZZsequence.ri')).toBe('/path/bad%ZZsequence.ri');
+  });
+
+  it('passes bare paths through unchanged (no file:// prefix)', () => {
+    expect(normalizePath('/project/src/foo.ri')).toBe('/project/src/foo.ri');
+  });
 });
 
 describe('isSameFile', () => {
