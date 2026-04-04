@@ -304,6 +304,29 @@ impl ConcurrentEvalAdapter {
         .join()
         .ok();
     }
+
+    /// Return a second Arc owner for `values`, preventing `into_result()` from
+    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+    /// to exercise the shared-reference fallback path.
+    pub fn values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
+        Arc::clone(&self.values)
+    }
+
+    /// Return a second Arc owner for `snapshot_values`, preventing `into_result()`
+    /// from taking exclusive ownership via `try_unwrap`. Intended for tests that
+    /// need to exercise the shared-reference fallback path.
+    pub fn snapshot_values_arc(
+        &self,
+    ) -> Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>> {
+        Arc::clone(&self.snapshot_values)
+    }
+
+    /// Return a second Arc owner for `results`, preventing `into_result()` from
+    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+    /// to exercise the shared-reference fallback path.
+    pub fn results_arc(&self) -> Arc<Mutex<Vec<ConcurrentNodeResult>>> {
+        Arc::clone(&self.results)
+    }
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {

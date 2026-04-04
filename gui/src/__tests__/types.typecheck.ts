@@ -74,7 +74,7 @@ const constraintWithLabel: ConstraintData = {
 
 // --- SourceLocation ---
 const loc: SourceLocation = {
-  file: 'bracket.ri',
+  file_path: 'bracket.ri',
   line: 10,
   column: 5,
   end_line: 10,

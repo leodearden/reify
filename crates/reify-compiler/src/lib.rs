@@ -4526,14 +4526,19 @@ fn compile_entity(
                     match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
                         Some(t) => t,
                         None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!("unresolved type: {}", type_expr.name))
-                                    .with_label(DiagnosticLabel::new(
-                                        type_expr.span,
-                                        "unknown type name",
-                                    )),
-                            );
-                            Type::Real // fallback
+                            // Check if it's an enum type defined in the same module or prelude
+                            if enum_defs.iter().any(|e| e.name == type_expr.name) {
+                                Type::Enum(type_expr.name.clone())
+                            } else {
+                                diagnostics.push(
+                                    Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type name",
+                                        )),
+                                );
+                                Type::Real // fallback
+                            }
                         }
                     }
                 } else {
@@ -4645,6 +4650,7 @@ fn compile_entity(
             &mut constraint_index,
             enum_defs,
             functions,
+            alias_registry,
             diagnostics,
         );
 
@@ -6591,9 +6597,11 @@ fn check_trait_conformance(
     constraint_index: &mut u32,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Collect all structure member names for conformance checking.
+    let empty_params: HashSet<String> = HashSet::new();
     let structure_members: HashMap<String, Type> = structure
         .members
         .iter()
@@ -6602,7 +6610,29 @@ fn check_trait_conformance(
                 let ty = p
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
+                    })
                     .unwrap_or(Type::Real);
                 Some((p.name.clone(), ty))
             }
@@ -6610,7 +6640,29 @@ fn check_trait_conformance(
                 let ty = l
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
+                    })
                     .unwrap_or(Type::Real);
                 Some((l.name.clone(), ty))
             }

@@ -269,6 +269,7 @@ structure S {
 /// - Triple[0] (a > 0): x=5, 5 > 0 → Satisfied
 /// - Triple[1] (a > b): x=5, y=10, 5 > 10 → Violated
 /// - Triple[2] (a > c): z has no default → Indeterminate
+///
 /// This proves each predicate is checked independently.
 #[test]
 fn constraint_def_predicates_transparent_to_checking() {

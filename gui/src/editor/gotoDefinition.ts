@@ -7,6 +7,7 @@
 import { type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
+import { isSameFile } from '../utils/pathUtils';
 
 interface LspLocation {
   uri: string;
@@ -98,16 +99,16 @@ export function reifyGotoDefinition(
       const lspChar = pos - line.from;
       const currentUri = resolveUri(uri);
 
-      // Fire async, don't block the event
+      // Unlike hoverTooltip/completions, this promise is detached from
+      // CodeMirror's lifecycle — guard against dispatch after view destruction.
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
+        if (!view.dom.isConnected) return;
 
         const resolvedNow = resolveUri(uri);
-        const isSameFile =
-          location.uri === resolvedNow ||
-          location.uri.endsWith(resolvedNow.replace('file://', ''));
+        const sameFile = isSameFile(location.uri, resolvedNow);
 
-        if (isSameFile) {
+        if (sameFile) {
           // Same document: navigate to definition in current view
           const targetLine = view.state.doc.line(location.range.start.line + 1);
           const targetPos = targetLine.from + location.range.start.character;

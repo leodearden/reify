@@ -16,10 +16,16 @@ import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
 import type { SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
+import { isSameFile } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 export interface EditorProps {
   store: ReturnType<typeof createEditorStore>;
+  /**
+   * Scroll the editor to the given location. No-op if location.file_path does not
+   * match the currently active file (compared with URI normalization so that
+   * bare paths and file:// URIs are treated as equivalent).
+   */
   scrollToLocation?: () => SourceLocation | null;
   onError?: (message: string) => void;
 }
@@ -248,6 +254,7 @@ export function Editor(props: EditorProps) {
   createEffect(() => {
     const location = props.scrollToLocation?.();
     if (!view || !location) return;
+    if (!isSameFile(location.file_path, props.store.state.activeFile ?? '')) return;
 
     const doc = view.state.doc;
     const lineCount = doc.lines;

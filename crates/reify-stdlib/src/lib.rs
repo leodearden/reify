@@ -1451,6 +1451,18 @@ fn sanitize_value(v: Value) -> Value {
         {
             Value::Undef
         }
+        Value::Orientation { w, x, y, z }
+            if w.is_nan()
+                || w.is_infinite()
+                || x.is_nan()
+                || x.is_infinite()
+                || y.is_nan()
+                || y.is_infinite()
+                || z.is_nan()
+                || z.is_infinite() =>
+        {
+            Value::Undef
+        }
         _ => v,
     }
 }
@@ -5711,6 +5723,47 @@ mod tests {
             eval_builtin("complex_add", &[a, b]).is_undef(),
             "complex_add with f64::MAX components must return Undef (Inf overflow)"
         );
+    }
+
+    // ── sanitize_value Orientation arm tests (task-904) ──────────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with Inf component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
     }
 
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
