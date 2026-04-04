@@ -304,6 +304,26 @@ impl ConcurrentEvalAdapter {
         .join()
         .ok();
     }
+
+    /// Return a clone of the `values` Arc so tests can hold a second reference,
+    /// forcing `Arc::try_unwrap` to fail (Err branch) in `into_result()`.
+    pub fn clone_values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
+        Arc::clone(&self.values)
+    }
+
+    /// Return a clone of the `snapshot_values` Arc so tests can hold a second
+    /// reference, forcing `Arc::try_unwrap` to fail (Err branch) in `into_result()`.
+    pub fn clone_snapshot_values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
+        Arc::clone(&self.snapshot_values)
+    }
+
+    /// Return a clone of the `results` Arc so tests can hold a second reference,
+    /// forcing `Arc::try_unwrap` to fail (Err branch) in `into_result()`.
+    pub fn clone_results_arc(
+        &self,
+    ) -> Arc<std::sync::Mutex<HashMap<NodeId, reify_eval::cache::CachedResult>>> {
+        Arc::clone(&self.results)
+    }
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
