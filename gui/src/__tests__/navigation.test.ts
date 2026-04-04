@@ -16,7 +16,7 @@ describe('navigation', () => {
   describe('navigateToSource', () => {
     it('calls getSourceLocation with entityPath and passes result to scrollEditor', async () => {
       const sourceLocation: SourceLocation = {
-        file: 'main.ri',
+        file_path: 'main.ri',
         line: 5,
         column: 3,
         end_line: 5,

@@ -276,7 +276,7 @@ describe('Editor scrollToLocation', () => {
     // line 2, column 3 -> offset = 20 (line 1 + \n) + 2 (0-based col 3 -> index 2) = 22
     // line 2, column 8 -> offset = 20 + 7 = 27
     const location: SourceLocation = {
-      file: file1.path,
+      file_path: file1.path,
       line: 2,
       column: 3,
       end_line: 2,
