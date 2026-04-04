@@ -852,3 +852,72 @@ fn edit_param_count_int_undef_int_no_stale_leak() {
         );
     }
 }
+
+// ─── task-826 step-10: Int(4)→Undef→Int(6) removes 4 old instances then creates 6 ───
+
+#[test]
+fn edit_param_count_int_undef_int_expand_no_stale() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) eval with n=4 → 4 instances
+    engine.eval(&module);
+
+    // (b) edit to Undef → guard fires, 4 instances preserved
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("edit_param to Undef should succeed");
+
+    // (c) edit to Int(6) → preserved count (4) used as old_count; remove [0..4) then create [0..6)
+    let result = engine
+        .edit_param(n_id, Value::Int(6))
+        .expect("edit_param to Int(6) should succeed");
+
+    // All 6 instances must exist with correct values
+    for i in 0..6 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should exist after Int(4)→Undef→Int(6)",
+            i
+        );
+    }
+
+    // No bolts[6] should exist
+    let no_instance = ValueCellId::new("Parent.bolts[6]", "diameter");
+    assert!(
+        result.values.get(&no_instance).is_none(),
+        "bolts[6] must not exist after Int(4)→Undef→Int(6)"
+    );
+}
