@@ -6616,7 +6616,19 @@ fn check_trait_conformance(
                                     None
                                 }
                             })
-                            .unwrap_or(Type::Real)
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
                     })
                     .unwrap_or(Type::Real);
                 Some((p.name.clone(), ty))
@@ -6634,7 +6646,19 @@ fn check_trait_conformance(
                                     None
                                 }
                             })
-                            .unwrap_or(Type::Real)
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
                     })
                     .unwrap_or(Type::Real);
                 Some((l.name.clone(), ty))
