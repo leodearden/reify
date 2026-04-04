@@ -902,3 +902,151 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
         diags
     );
 }
+
+/// Step-2: When module_name is cleared after load, get_diagnostics() falls back
+/// to source_map.iter().next() and still returns the warning.
+///
+/// This exercises the `else` branch at engine.rs:278-283: normally module_name
+/// is always set after load_from_source(), but the test helper lets us reach
+/// this branch to verify the fallback key resolution works correctly.
+#[test]
+fn engine_get_diagnostics_module_name_none_uses_fallback() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let source = r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+
+    session
+        .load_from_source(source, "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    // Clear module_name to force the iter().next() fallback path
+    session.clear_module_name_for_test();
+
+    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+
+    // (a) Fallback path found the source_map entry, so diagnostics are non-empty
+    assert!(
+        !diags.is_empty(),
+        "expected diagnostic via fallback path, got empty"
+    );
+
+    let first = &diags[0];
+
+    // (b) file_path comes from the source_map key, not module_name
+    assert_eq!(
+        first.file_path, "test_warn.ri",
+        "expected file_path 'test_warn.ri' via fallback, got '{}'",
+        first.file_path
+    );
+
+    // (c) severity is warning
+    assert_eq!(
+        first.severity, "warning",
+        "expected severity 'warning', got '{}'",
+        first.severity
+    );
+
+    // (d) message mentions unknown port type
+    assert!(
+        first.message.contains("unknown port type"),
+        "expected message to contain 'unknown port type', got: '{}'",
+        first.message
+    );
+}
+
+/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+///
+/// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
+/// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
+/// a labelless diagnostic to verify the (1,1,1,1) fallback.
+#[test]
+fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Inject a warning with no labels — this is the labelless case
+    session.inject_diagnostic_for_test(Diagnostic::warning("test labelless"));
+
+    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+
+    // (a) The injected diagnostic appears
+    assert!(!diags.is_empty(), "expected injected diagnostic, got empty");
+
+    // Find the injected one (bracket_source has none of its own)
+    let injected = diags
+        .iter()
+        .find(|d| d.message == "test labelless")
+        .expect("injected 'test labelless' diagnostic not found in results");
+
+    // (b) All coordinates default to (1,1,1,1)
+    assert_eq!(injected.line, 1, "expected line=1 for labelless, got {}", injected.line);
+    assert_eq!(injected.column, 1, "expected column=1 for labelless, got {}", injected.column);
+    assert_eq!(injected.end_line, 1, "expected end_line=1 for labelless, got {}", injected.end_line);
+    assert_eq!(injected.end_column, 1, "expected end_column=1 for labelless, got {}", injected.end_column);
+
+    // (c) Severity preserved
+    assert_eq!(
+        injected.severity, "warning",
+        "expected severity 'warning', got '{}'",
+        injected.severity
+    );
+
+    // (d) Message preserved
+    assert_eq!(
+        injected.message, "test labelless",
+        "expected message 'test labelless', got '{}'",
+        injected.message
+    );
+}
+
+/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+///
+/// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
+/// module (and its diagnostics) are replaced on each update, so stale diagnostics
+/// from a previous compilation do not persist.
+#[test]
+fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load warning source — establishes a non-empty diagnostics state
+    let warn_source = r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+    session
+        .load_from_source(warn_source, "test_warn")
+        .expect("warning source should compile");
+
+    let diags_before = session.get_diagnostics();
+    assert!(
+        !diags_before.is_empty(),
+        "expected diagnostics before update, got empty"
+    );
+
+    // Update the same file to clean source — diagnostics must be cleared
+    session
+        .update_source("test_warn.ri", bracket_source())
+        .expect("bracket source should compile cleanly");
+
+    let diags_after = session.get_diagnostics();
+    assert!(
+        diags_after.is_empty(),
+        "expected empty diagnostics after updating to clean source, got: {:?}",
+        diags_after
+    );
+}
