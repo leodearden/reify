@@ -20004,6 +20004,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 978,
+        "title": "SCC diagnostic quality: fix duplicate-name error format and add early-return",
+        "description": "Two related issues with the duplicate-template-name handling in detect_recursive_structures (crates/reify-compiler/src/scc.rs lines 19-29): (1) The error diagnostic exposes raw array indices ('indices 0 and 1') instead of using source span labels like the rest of the compiler. Should use with_label() pointing at the two template definition spans. (2) After emitting the error, the function continues SCC analysis on a corrupted index map, which can produce confusing follow-on warnings. Should early-return with an empty cyclic_sccs vec after detecting duplicates.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20016,7 +20027,7 @@
       ],
       "created": "2026-04-04T18:51:27.084Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T18:51:27.096Z"
+      "updated": "2026-04-04T18:54:10.060Z"
     }
   }
 }
