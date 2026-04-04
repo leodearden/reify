@@ -18126,6 +18126,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 874,
+        "title": "Eliminate redundant allocations and iterations in constraint def compilation",
+        "description": "Three performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18138,7 +18149,7 @@
       ],
       "created": "2026-04-04T00:17:32.276Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:17:37.098Z"
+      "updated": "2026-04-04T00:17:42.550Z"
     }
   }
 }
