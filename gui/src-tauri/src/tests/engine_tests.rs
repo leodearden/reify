@@ -921,59 +921,94 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
     );
 }
 
-/// Step-2: When module_name is cleared after load, get_diagnostics() falls back
-/// to source_map.iter().next() and still returns the warning.
-///
-/// This exercises the `else` branch at engine.rs:278-283: normally module_name
-/// is always set after load_from_source(), but the test helper lets us reach
-/// this branch to verify the fallback key resolution works correctly.
+// --- Task 836: resolve_source pinning tests ---
+
+/// get_source_location returns None when no module is loaded.
+/// Documents the early-return (`let compiled = self.compiled.as_ref()?`)
+/// that fires before resolve_source is reached.
 #[test]
-fn engine_get_diagnostics_module_name_none_uses_fallback() {
+fn get_source_location_returns_none_without_module() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when no module is loaded"
+    );
+}
+
+/// get_diagnostics and get_source_location return the same file key.
+///
+/// After load_from_source with a warning-producing source, both methods must resolve
+/// the file key through the same "{module_name}.ri" derivation via resolve_source.
+#[test]
+fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure def S {
+    let source = r#"structure S {
+    param width : Length = 80mm
     port mount : NonExistentTrait {
         param d : Length = 5mm
     }
 }"#;
 
     session
-        .load_from_source(source, "test_warn")
+        .load_from_source(source, "testmod")
         .expect("source with unknown port type should compile (warning, not error)");
 
-    // Clear module_name to force the iter().next() fallback path
-    session.clear_module_name_for_test();
-
-    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
-
-    // (a) Fallback path found the source_map entry, so diagnostics are non-empty
+    let diags = session.get_diagnostics();
     assert!(
         !diags.is_empty(),
-        "expected diagnostic via fallback path, got empty"
+        "expected at least one diagnostic for unknown port type"
     );
+    assert_eq!(diags[0].file_path, "testmod.ri", "get_diagnostics file_path");
 
-    let first = &diags[0];
+    let loc = session
+        .get_source_location("S.width")
+        .expect("should find source location for S.width");
+    assert_eq!(loc.file_path, "testmod.ri", "get_source_location file_path");
+}
 
-    // (b) file_path comes from the source_map key, not module_name
+/// get_diagnostics uses the updated module name key after update_source.
+///
+/// After load_from_source("initial") then update_source("updated.ri", ...),
+/// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+#[test]
+fn diagnostics_file_key_consistent_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let warning_source = r#"structure S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+
+    session
+        .load_from_source(warning_source, "initial")
+        .expect("initial load should succeed");
+
+    let diags_before = session.get_diagnostics();
+    assert!(!diags_before.is_empty(), "should have diagnostics after initial load");
     assert_eq!(
-        first.file_path, "test_warn.ri",
-        "expected file_path 'test_warn.ri' via fallback, got '{}'",
-        first.file_path
+        diags_before[0].file_path, "initial.ri",
+        "before update: file_path should be 'initial.ri'"
     );
 
-    // (c) severity is warning
-    assert_eq!(
-        first.severity, "warning",
-        "expected severity 'warning', got '{}'",
-        first.severity
-    );
+    session
+        .update_source("updated.ri", warning_source)
+        .expect("update_source should succeed");
 
-    // (d) message mentions unknown port type
+    let diags_after = session.get_diagnostics();
     assert!(
-        first.message.contains("unknown port type"),
-        "expected message to contain 'unknown port type', got: '{}'",
-        first.message
+        !diags_after.is_empty(),
+        "should still have diagnostics after update_source"
+    );
+    assert_eq!(
+        diags_after[0].file_path, "updated.ri",
+        "after update_source, file_path should be 'updated.ri'"
     );
 }
 

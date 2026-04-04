@@ -217,6 +217,39 @@ impl EngineSession {
         }
     }
 
+    /// Resolve the canonical source key and text for the currently loaded module.
+    ///
+    /// Returns `Some((key, source_text))` where `key` is `"{module_name}.ri"` and
+    /// `source_text` is the stored source for that key.  Returns `None` when the
+    /// key is not present in `source_map` (should not happen in practice once a
+    /// module is loaded, but guards against any inconsistency).
+    ///
+    /// # Caller precondition
+    ///
+    /// Callers **must** verify `self.compiled.is_some()` before calling this
+    /// method.  `load_from_source` and `update_source` always set `module_name`
+    /// atomically with `compiled` (they fail before mutating state on parse/compile
+    /// errors), so `compiled.is_some()` implies `module_name.is_some()`.  The
+    /// `None` arm of the `match` below is therefore unreachable under that
+    /// precondition.
+    fn resolve_source(&self) -> Option<(String, &str)> {
+        match self.module_name {
+            Some(ref name) => {
+                let key = format!("{}.ri", name);
+                let src = self.source_map.get(&key)?;
+                Some((key, src.as_str()))
+            }
+            None => {
+                // compiled.is_some() implies module_name.is_some() — this branch
+                // is dead whenever callers gate on compiled being present.
+                unreachable!(
+                    "resolve_source called with module_name = None; \
+                     callers must verify compiled.is_some() first"
+                )
+            }
+        }
+    }
+
     /// Look up source location for an entity path (e.g., "Bracket.width").
     pub fn get_source_location(&self, entity_path: &str) -> Option<SourceLocationInfo> {
         let compiled = self.compiled.as_ref()?;
@@ -230,16 +263,8 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Convert byte offset to line/column using stored source
-        // Look up source by module-name-derived key (deterministic), fall back to iter
-        let (file, source) = if let Some(ref name) = self.module_name {
-            let key = format!("{}.ri", name);
-            let src = self.source_map.get(&key)?;
-            (key, src.as_str())
-        } else {
-            let (k, v) = self.source_map.iter().next()?;
-            (k.clone(), v.as_str())
-        };
+        // Resolve the source file key and text via the shared helper.
+        let (file, source) = self.resolve_source()?;
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
@@ -261,27 +286,17 @@ impl EngineSession {
     /// diagnostics survive here — compile errors are surfaced as `Err` results
     /// from those methods.
     ///
-    /// Reuses the same `source_map` + `module_name` key resolution and
-    /// `byte_offset_to_line_col` helper as [`get_source_location`].
+    /// Delegates source key resolution to [`resolve_source`].
     pub fn get_diagnostics(&self) -> Vec<DiagnosticInfo> {
         let compiled = match self.compiled.as_ref() {
             Some(c) => c,
             None => return Vec::new(),
         };
 
-        // Resolve file_path and source text from the module-name-based key.
-        // Mirrors the pattern in get_source_location().
-        let (file_path, source) = if let Some(ref name) = self.module_name {
-            let key = format!("{}.ri", name);
-            match self.source_map.get(&key) {
-                Some(src) => (key, src.as_str()),
-                None => return Vec::new(),
-            }
-        } else {
-            match self.source_map.iter().next() {
-                Some((k, v)) => (k.clone(), v.as_str()),
-                None => return Vec::new(),
-            }
+        // Resolve file_path and source text via the shared helper.
+        let (file_path, source) = match self.resolve_source() {
+            Some(pair) => pair,
+            None => return Vec::new(),
         };
 
         compiled
@@ -435,12 +450,6 @@ impl EngineSession {
 /// Test helpers — compiled out of production binaries.
 #[cfg(test)]
 impl EngineSession {
-    /// Clear `module_name` so tests can reach the `source_map.iter().next()` fallback
-    /// branch in `get_diagnostics` (engine.rs, the `else` at the module_name check).
-    pub(crate) fn clear_module_name_for_test(&mut self) {
-        self.module_name = None;
-    }
-
     /// Inject a diagnostic directly into the compiled module's diagnostics vec,
     /// enabling tests to exercise the `diag.labels.first() == None` fallback path
     /// without needing the compiler to produce such a diagnostic.
