@@ -90,7 +90,7 @@ fn get_source_location_for_width() {
         .get_source_location("Bracket.width")
         .expect("should find width source location");
 
-    assert_eq!(loc.file, "bracket.ri");
+    assert_eq!(loc.file_path, "bracket.ri");
     assert!(loc.line >= 1, "line should be positive");
     assert!(loc.column >= 1, "column should be positive");
 }
@@ -170,7 +170,7 @@ fn end_to_end_get_source_location() {
         let loc = session.get_source_location(param);
         assert!(loc.is_some(), "should find location for {}", param);
         let loc = loc.unwrap();
-        assert_eq!(loc.file, "bracket.ri");
+        assert_eq!(loc.file_path, "bracket.ri");
         assert!(
             loc.line >= 1 && loc.line <= 15,
             "line should be within bracket.ri"
@@ -198,13 +198,12 @@ fn end_to_end_export_via_impl() {
 #[test]
 fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
-    use crate::types::{ConstraintData, FileData, GuiState, MeshData, SourceLocation, ValueData};
+    use crate::types::{ConstraintData, FileData, GuiState, MeshData, ValueData};
     // Verify types implement Clone + Debug (compile-time check)
     fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
     assert_clone_debug::<GuiState>();
     assert_clone_debug::<MeshData>();
     assert_clone_debug::<ValueData>();
     assert_clone_debug::<ConstraintData>();
-    assert_clone_debug::<SourceLocation>();
     assert_clone_debug::<FileData>();
 }

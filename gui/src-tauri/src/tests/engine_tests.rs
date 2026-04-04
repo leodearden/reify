@@ -342,7 +342,7 @@ fn get_source_location_correct_after_load_file_then_update() {
     // The file in the location should match the single file entry
     assert_eq!(state.files.len(), 1);
     assert_eq!(
-        loc.file, state.files[0].path,
+        loc.file_path, state.files[0].path,
         "get_source_location file should match the single file entry"
     );
 }
@@ -417,7 +417,7 @@ fn get_source_location_correct_after_failed_update() {
         "column should be unchanged after failed update"
     );
     assert_eq!(
-        loc_before.file, loc_after.file,
+        loc_before.file_path, loc_after.file_path,
         "file should be unchanged after failed update"
     );
 
@@ -456,7 +456,7 @@ fn get_source_location_uses_explicit_key_lookup() {
 
     // Should return the normalized module-name-based key
     assert_eq!(
-        loc.file, "bracket.ri",
+        loc.file_path, "bracket.ri",
         "get_source_location should return normalized module-name key"
     );
 }

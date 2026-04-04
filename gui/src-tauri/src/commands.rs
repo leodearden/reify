@@ -7,7 +7,7 @@ use reify_mcp::SelectionInfo;
 
 use crate::claude_bridge::SidecarHandle;
 use crate::engine::EngineSession;
-use crate::types::{FileData, GuiState, SourceLocation};
+use crate::types::{FileData, GuiState};
 use crate::watcher::FileWatcher;
 
 /// Application state shared across all Tauri commands.
@@ -68,7 +68,7 @@ pub fn export_impl(engine: &Mutex<EngineSession>, format: &str, path: &str) -> R
 pub fn get_source_location_impl(
     engine: &Mutex<EngineSession>,
     entity_path: &str,
-) -> Result<SourceLocation, String> {
+) -> Result<reify_mcp::SourceLocationInfo, String> {
     let session = engine.lock().map_err(|e| format!("Lock error: {}", e))?;
     session
         .get_source_location(entity_path)

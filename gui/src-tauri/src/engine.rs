@@ -10,6 +10,8 @@ use reify_types::{
     Satisfaction, Severity, Value, ValueCellId,
 };
 
+use reify_mcp::SourceLocationInfo;
+
 use crate::types::{
     ConstraintData, DiagnosticData, FileData, GuiState, MeshData, ValueData, format_determinacy,
     format_value,
@@ -216,7 +218,7 @@ impl EngineSession {
     }
 
     /// Look up source location for an entity path (e.g., "Bracket.width").
-    pub fn get_source_location(&self, entity_path: &str) -> Option<crate::types::SourceLocation> {
+    pub fn get_source_location(&self, entity_path: &str) -> Option<SourceLocationInfo> {
         let compiled = self.compiled.as_ref()?;
         let cell_id = parse_cell_id(entity_path).ok()?;
 
@@ -242,8 +244,8 @@ impl EngineSession {
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
 
-        Some(crate::types::SourceLocation {
-            file: file.clone(),
+        Some(SourceLocationInfo {
+            file_path: file.clone(),
             line: line as u32,
             column: col as u32,
             end_line: end_line as u32,

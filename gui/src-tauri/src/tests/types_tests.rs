@@ -73,15 +73,15 @@ fn constraint_data_serializes_with_expected_fields() {
 
 #[test]
 fn source_location_serializes_with_expected_fields() {
-    let loc = SourceLocation {
-        file: "bracket.ri".to_string(),
+    let loc = reify_mcp::SourceLocationInfo {
+        file_path: "bracket.ri".to_string(),
         line: 3,
         column: 4,
         end_line: 3,
         end_column: 30,
     };
     let v = serde_json::to_value(&loc).unwrap();
-    assert_eq!(v["file"], json!("bracket.ri"));
+    assert_eq!(v["file_path"], json!("bracket.ri"));
     assert_eq!(v["line"], json!(3));
     assert_eq!(v["column"], json!(4));
     assert_eq!(v["end_line"], json!(3));

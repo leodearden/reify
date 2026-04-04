@@ -44,16 +44,6 @@ pub struct ConstraintData {
     pub parameter_ids: Vec<String>,
 }
 
-/// Source location reference (for click-to-source navigation).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceLocation {
-    pub file: String,
-    pub line: u32,
-    pub column: u32,
-    pub end_line: u32,
-    pub end_column: u32,
-}
-
 /// A diagnostic (error/warning/info) from the compiler, in GUI-native form.
 ///
 /// Follows the pattern of [`ValueData`] and [`ConstraintData`]: defined in types.rs,

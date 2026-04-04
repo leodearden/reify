@@ -225,7 +225,7 @@ fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Re
 fn get_source_location(
     state: tauri::State<'_, AppState>,
     entity_path: String,
-) -> Result<reify_gui::types::SourceLocation, String> {
+) -> Result<reify_mcp::SourceLocationInfo, String> {
     reify_gui::commands::get_source_location_impl(&state.engine, &entity_path)
 }
 
