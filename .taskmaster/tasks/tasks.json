@@ -19511,11 +19511,11 @@
         "description": "1. Export normalizePath from gui/src/utils/pathUtils.ts. 2. Add decodeURIComponent (with try/catch) after stripping file:// prefix. 3. Replace inline targetUri.replace('file://','') at gui/src/editor/Editor.tsx:81 with normalizePath(targetUri). 4. Add percent-encoded URI test in pathUtils.test.ts.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:12:37.000Z"
+        "updatedAt": "2026-04-04T14:13:58.857Z"
       },
       {
         "id": "949",
@@ -19885,7 +19885,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:13:56.214Z",
+      "lastModified": "2026-04-04T14:13:58.859Z",
       "taskCount": 970,
       "completedCount": 703,
       "tags": [
