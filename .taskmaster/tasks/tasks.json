@@ -19177,6 +19177,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 933,
+        "title": "Improve WarnCountingSubscriber test accuracy and invariant coverage",
+        "description": "In crates/reify-test-support/src/tracing_support.rs: (1) Fix non_warn_events_are_not_counted to document two-level filtering (enabled accepts ERROR, event filters it). (2) Add non-zero span ID invariant assertion in new_span_ids_are_unique.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19189,7 +19200,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:48.098Z"
+      "updated": "2026-04-04T06:09:50.896Z"
     }
   }
 }
