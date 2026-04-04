@@ -19331,6 +19331,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 947,
+        "title": "Fix Editor scroll test comments, assertions, and naming",
+        "description": "In gui/src/__tests__/Editor.test.tsx: (1) Fix misleading anchor/head comment attributing head to wrong field. (2) Replace toBeGreaterThan(0) with toBe(9) for exact cursor offset. (3) Rename dual-phase test or extract Phase 1. (4) Add explicit null guard in getEditorView helper.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19343,7 +19354,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:56.233Z"
+      "updated": "2026-04-04T06:10:58.234Z"
     }
   }
 }
