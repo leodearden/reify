@@ -1118,12 +1118,14 @@ mod tests {
             bounds: None,
         }];
         let current_values = ValueMap::new();
+        let initial_len = builder.params.len();
 
         // First call — creates the param and inserts into the mapping
         let h1 = builder
             .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
             .expect("first call should succeed");
         let len_after_first = builder.params.len();
+        assert_eq!(len_after_first, initial_len + 1, "first call should insert exactly one param");
 
         // Second call — should hit the cache and return the same handle
         let h2 = builder
