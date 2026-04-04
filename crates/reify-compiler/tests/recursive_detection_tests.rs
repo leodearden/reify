@@ -414,3 +414,39 @@ structure S {
     // What matters is no panic occurred.
     let _ = diagnostics;
 }
+
+// ─── Task 362: source labels on cycle warnings ────────────────────────────────
+
+/// Cycle warnings should include source labels so users can see exactly which
+/// sub-component declarations form the cycle.
+#[test]
+fn cycle_warning_has_source_labels() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
+        .collect();
+
+    assert_eq!(cycle_warnings.len(), 1, "expected exactly 1 cycle warning");
+
+    let warning = cycle_warnings[0];
+    assert!(
+        !warning.labels.is_empty(),
+        "cycle warning should have at least one source label, got none"
+    );
+    assert!(
+        warning.labels.iter().any(|l| l.message.contains("references")),
+        "at least one label should mention 'references', got: {:?}",
+        warning.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+    );
+}
