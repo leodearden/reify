@@ -18916,10 +18916,11 @@
         "description": "In both crates/reify-stdlib/src/lib.rs (lines 1449-1462) and crates/reify-expr/src/lib.rs (after adding the Orientation arm), replace `w.is_nan() || w.is_infinite() || x.is_nan() || x.is_infinite() || y.is_nan() || y.is_infinite() || z.is_nan() || z.is_infinite()` with `!w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite()`. Apply the same simplification to the Complex arm in reify-stdlib (lines 1449-1452): replace `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` with `!re.is_finite() || !im.is_finite()`.\n\nis_finite() returns false for both NaN and infinity in a single intrinsic call, halving the predicate cost on the hot path. sanitize_value has 40+ call sites and is called on every numeric stdlib return.\n\nMemory hints: search \"sanitize_value is_finite performance\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:20:37.663Z"
       },
       {
         "id": "918",
@@ -18935,7 +18936,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:20:37.016Z",
+      "lastModified": "2026-04-04T04:20:37.664Z",
       "taskCount": 918,
       "completedCount": 681,
       "tags": [
