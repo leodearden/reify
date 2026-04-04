@@ -632,3 +632,76 @@ fn edit_param_count_to_undef_preserves_existing_instances() {
         );
     }
 }
+
+// ─── task-826 step-5: Undef→Int(4) via edit_param creates instances (regression) ───
+
+#[test]
+fn edit_param_count_from_undef_to_int_creates_instances() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n has NO default (Undef), so __count_bolts is Undef initially
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param("Parent", "n", Type::Int, None) // no default → Undef initially
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Initial eval: count is Undef → no instances
+    let initial = engine.eval(&module);
+    let count_id = ValueCellId::new("Parent", "__count_bolts");
+    assert_eq!(
+        initial.values.get(&count_id),
+        Some(&Value::Undef),
+        "count cell should be Undef initially when n has no default"
+    );
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            initial.values.get(&scoped_id).is_none(),
+            "no bolt instances should exist initially when count is Undef",
+        );
+    }
+
+    // Edit n from Undef to Int(4): old_count=Undef(→0), new_count=Int(4) → create 4 instances
+    // The guard only fires when new_count is Undef; this path must NOT be blocked.
+    let result = engine
+        .edit_param(n_id, Value::Int(4))
+        .expect("edit_param should succeed");
+
+    // 4 bolt instances should now exist
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should be 10mm after count changes from Undef to Int(4)",
+            i
+        );
+    }
+
+    // No bolts[4]
+    let no_instance = ValueCellId::new("Parent.bolts[4]", "diameter");
+    assert!(
+        result.values.get(&no_instance).is_none(),
+        "should not have bolts[4]"
+    );
+}
