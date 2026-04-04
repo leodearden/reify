@@ -20026,6 +20026,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 980,
+        "title": "Improve cycle-path and source-label test coverage in SCC tests",
+        "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20038,7 +20049,7 @@
       ],
       "created": "2026-04-04T18:51:27.084Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T18:54:12.193Z"
+      "updated": "2026-04-04T18:54:14.462Z"
     }
   }
 }
