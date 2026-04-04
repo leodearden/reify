@@ -18715,15 +18715,16 @@
         "description": "The SYNC comment at reify-stdlib/src/lib.rs line 1442 says both copies of sanitize_value should stay in sync. Task 866 added a Value::Orientation{w,x,y,z} arm to reify-expr's sanitize_value to catch NaN/Inf quaternion components, but reify-stdlib's copy (lines 1443-1456) still lacks this arm — the wildcard `_ => v` silently passes through pathological Orientation values.\n\nSteps:\n1. Add a `Value::Orientation { w, x, y, z }` match arm to `sanitize_value` in `crates/reify-stdlib/src/lib.rs` (around line 1449-1453) that checks all four components for NaN/Inf and returns `Value::Undef` if any are pathological. Mirror the implementation from reify-expr (commit 1468ab2d4).\n2. Add unit tests exercising the new arm: Orientation with NaN component → Undef, Orientation with Inf component → Undef, valid Orientation passes through unchanged.\n3. Verify both copies remain in sync per the SYNC comment.\n\nMemory hints: search \"sanitize_value Orientation reify-expr task 866\", get_entity \"sanitize_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:07:43.552Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:07:43.233Z",
+      "lastModified": "2026-04-04T04:07:43.553Z",
       "taskCount": 904,
       "completedCount": 678,
       "tags": [
