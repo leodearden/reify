@@ -484,7 +484,7 @@ impl SystemBuilder {
         pt: &PointRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hEntity, String> {
+    ) -> Result<Slvs_hEntity, BuilderError> {
         let key = point_key(pt);
         if let Some(&h) = self.point_entities.get(&key) {
             return Ok(h);
@@ -552,7 +552,7 @@ impl SystemBuilder {
         cell_id: &Option<ValueCellId>,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hParam, String> {
+    ) -> Result<Slvs_hParam, BuilderError> {
         if let Some(id) = cell_id {
             // Check if already mapped
             if let Some(h) = self.mapping.get_param(id) {
@@ -584,7 +584,7 @@ impl SystemBuilder {
                         cell_id = %id,
                         "non-auto parameter missing from current_values — eval pass incomplete"
                     );
-                    Err(format!("non-auto parameter {id} missing from current_values"))
+                    Err(BuilderError::MissingNonAutoValue(id.clone()))
                 }
             }
         } else {
@@ -823,7 +823,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                         &problem.auto_params,
                         &problem.current_values,
                     ) {
-                        return SolveResult::NoProgress { reason };
+                        return SolveResult::NoProgress { reason: reason.to_string() };
                     }
                 }
                 None => {
@@ -910,7 +910,7 @@ fn add_pattern_to_builder(
     pattern: &GeometricPattern,
     auto_params: &[AutoParam],
     current_values: &ValueMap,
-) -> Result<(), String> {
+) -> Result<(), BuilderError> {
     let e_none = Slvs_hEntity(0);
 
     match pattern {
@@ -1125,8 +1125,8 @@ mod tests {
     }
 
     /// Non-auto param whose cell_id is missing from current_values should return
-    /// Err — this is a logic error (eval pass incomplete) that must not be
-    /// silently swallowed per the project's noisy-error convention.
+    /// Err(BuilderError::MissingNonAutoValue) — a logic error (eval pass incomplete)
+    /// that must not be silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
         let mut builder = SystemBuilder::new();
@@ -1139,19 +1139,24 @@ mod tests {
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        assert!(
-            result.is_err(),
-            "expected Err for non-auto param missing from current_values, got Ok"
-        );
-        let err_msg = result.unwrap_err();
-        assert!(
-            err_msg.contains("missing"),
-            "error message should contain 'missing', got: {err_msg}"
-        );
-        assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {err_msg}"
-        );
+        match result {
+            Err(BuilderError::MissingNonAutoValue(ref id)) => {
+                assert_eq!(id, &cell_id, "error should carry the original cell_id");
+                // Verify Display still produces a human-readable message
+                let display = result.unwrap_err().to_string();
+                assert!(
+                    display.contains("missing"),
+                    "Display should contain 'missing', got: {display}"
+                );
+                assert!(
+                    display.contains(&cell_id.to_string()),
+                    "Display should contain cell_id '{}', got: {display}",
+                    cell_id
+                );
+            }
+            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
+            Ok(_) => panic!("expected Err for non-auto param missing from current_values, got Ok"),
+        }
     }
 
     /// add_auto_coord must return Err(BuilderError::MissingNonAutoValue(id))
