@@ -17914,11 +17914,11 @@
         "description": "Extract a `missing_coord_setup()` helper and `assert_missing_err()` assertion helper to deduplicate the repeated boilerplate across the 4 tests in solvespace.rs's test module (add_auto_coord_errors_on_missing_non_auto_value, add_pattern_to_builder_propagates_coord_error, and the idempotent/fixed-coord tests). Each test currently repeats: SystemBuilder::new(), ValueCellId::new(\"Test\", ...), vec![] for auto_params, ValueMap::new(), and the is_err/contains(\"missing\")/contains(cell_id) triple assertion. Only the unique pattern construction and target function call differ.\n\nmemory_hints: search(\"solvespace builder test helpers test conventions\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:34.344Z",
+        "updatedAt": "2026-04-04T14:26:57.356Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19939,7 +19939,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:20:19.885Z",
+      "lastModified": "2026-04-04T14:26:57.360Z",
       "taskCount": 972,
       "completedCount": 705,
       "tags": [
