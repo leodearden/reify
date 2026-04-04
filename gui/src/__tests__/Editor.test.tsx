@@ -329,6 +329,35 @@ describe('Editor scrollToLocation', () => {
     // Cursor must not have moved: still at 0
     expect(view.state.selection.main.head).toBe(0);
   });
+
+  it('scrollToLocation with file://-prefixed path matching active file succeeds', () => {
+    // file1 is active; location uses the file:// URI form of the same path
+    const store = setupStore();
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // file1.path = '/project/src/bracket.ri'
+    // file:// URI form  = 'file:///project/src/bracket.ri'
+    const location: SourceLocation = {
+      file: 'file:///project/src/bracket.ri',
+      line: 2,
+      column: 3,
+      end_line: 2,
+      end_column: 8,
+    };
+
+    setScrollTo(location);
+
+    // Cursor should have moved to line 2 (same as the bare-path test)
+    const sel = view.state.selection.main;
+    const line2 = view.state.doc.line(2);
+    const expectedAnchor = line2.from + 2; // column 3, 0-indexed = 2
+    const expectedHead = line2.from + 7;   // column 8, 0-indexed = 7
+    expect(sel.anchor).toBe(expectedAnchor);
+    expect(sel.head).toBe(expectedHead);
+  });
 });
 
 describe('Editor save error callback', () => {
