@@ -7172,9 +7172,14 @@
             "crates/reify-compiler/tests"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "compile_traits",
+              "trait_merge"
+            ],
             "queries": [
-              "resolution for: Trait merge: param/let kind mismatch + conflict diagnostics + test gaps"
+              "cross-trait requirement kind param let mismatch reify-compiler",
+              "trait conflict error diagnostics which traits in conflict",
+              "requirement_type_mismatch_from_cross_trait_default test"
             ]
           }
         }
