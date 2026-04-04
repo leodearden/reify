@@ -19243,6 +19243,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 939,
+        "title": "Add LSP test for downstream ops without initialized notification",
+        "description": "Add a test in crates/reify-lsp/tests/in_process_bridge.rs that sends a malformed initialize, skips the initialized notification, then attempts textDocument/didOpen and completion. Assert expected behavior (functions or returns well-defined error).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19255,7 +19266,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:33.510Z"
+      "updated": "2026-04-04T06:10:36.654Z"
     }
   }
 }
