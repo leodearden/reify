@@ -18109,11 +18109,16 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs, add two tests after the existing error-path tests: (1) initialize_with_missing_capabilities_returns_error: call handle_request(\"initialize\", json!({})) and assert result.is_err(), covering the exact case that caused all fixture updates; (2) initialize_error_does_not_corrupt_server_state: call handle_request(\"initialize\", json!(42)) expecting Err, then immediately call handle_request(\"initialize\", json!({\"capabilities\": {}})) on the same InProcessLsp instance and assert the second call succeeds. Covers review suggestions 6 and 7.\n\nmemory_hints: search(\"initialize error path bridge test coverage missing capabilities\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:19.767Z"
+        "updatedAt": "2026-04-04T00:19:03.395Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
       },
       {
         "id": "872",
@@ -18226,7 +18231,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:18:56.598Z",
+      "lastModified": "2026-04-04T00:19:03.395Z",
       "taskCount": 880,
       "completedCount": 667,
       "tags": [
