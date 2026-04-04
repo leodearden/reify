@@ -89,7 +89,7 @@ structure B {
 }
 "#;
 
-    let (templates, _diagnostics) = compile_all(source);
+    let (templates, diagnostics) = compile_all(source);
     let a = find_template(&templates, "A");
     let b = find_template(&templates, "B");
 
@@ -100,6 +100,24 @@ structure B {
     assert!(
         b.is_recursive,
         "B in A<->B cycle should have is_recursive == true"
+    );
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
+        .collect();
+    assert_eq!(
+        cycle_warnings.len(),
+        1,
+        "expected exactly 1 cycle warning for A<->B, got: {:?}",
+        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        cycle_warnings[0].message.contains(" -> "),
+        "cycle warning message should contain ' -> ' arrow separator, got: {}",
+        cycle_warnings[0].message
     );
 }
 
@@ -413,6 +431,87 @@ structure S {
     // The compilation might produce error diagnostics about 'Unknown', that's fine.
     // What matters is no panic occurred.
     let _ = diagnostics;
+}
+
+// ─── Task 362: cycle path format and warning count ───────────────────────────
+
+/// The cycle path in a mutual-recursion warning must use ' -> ' arrow separators
+/// and include both node names.
+#[test]
+fn mutual_recursion_cycle_path_format() {
+    let source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
+        .collect();
+
+    assert_eq!(cycle_warnings.len(), 1, "expected 1 cycle warning for A<->B");
+
+    let msg = &cycle_warnings[0].message;
+    assert!(
+        msg.contains(" -> "),
+        "cycle warning message should contain ' -> ' arrow separator, got: {msg}"
+    );
+    // The path must mention both A and B
+    assert!(
+        msg.contains('A') && msg.contains('B'),
+        "cycle path should mention both A and B, got: {msg}"
+    );
+}
+
+/// A three-node cycle emits exactly one warning (one SCC) with ' -> ' separators.
+#[test]
+fn three_node_cycle_emits_exactly_one_warning() {
+    let source = r#"
+structure A {
+    param n : Int = 5
+    sub b = B(n: n - 1) where n > 0
+}
+structure B {
+    param n : Int = 5
+    sub c = C(n: n - 1) where n > 0
+}
+structure C {
+    param n : Int = 5
+    sub a = A(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let cycle_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
+        .collect();
+
+    assert_eq!(
+        cycle_warnings.len(),
+        1,
+        "expected exactly 1 cycle warning for A->B->C->A, got {}: {:?}",
+        cycle_warnings.len(),
+        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        cycle_warnings[0].message.contains(" -> "),
+        "cycle warning should use ' -> ' arrow separator, got: {}",
+        cycle_warnings[0].message
+    );
 }
 
 // ─── Task 362: source labels on cycle warnings ────────────────────────────────
