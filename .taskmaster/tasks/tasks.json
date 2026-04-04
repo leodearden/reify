@@ -18514,10 +18514,11 @@
         "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:18:30.149Z"
       },
       {
         "id": "894",
@@ -18544,7 +18545,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:18:29.645Z",
+      "lastModified": "2026-04-04T03:18:30.149Z",
       "taskCount": 895,
       "completedCount": 671,
       "tags": [
