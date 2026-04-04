@@ -17921,10 +17921,11 @@
         "description": "In `crates/reify-expr/src/lib.rs` lines 836-840, remove the `Value::Complex { re, im, .. }` match arm from the local `sanitize_value` function. All callers pass the result of `Value::from_component(...)` which only returns `Value::Real` or `Value::Scalar`. The arm is dead code not present in stdlib's version. If there is intent to support future Complex callers, add a code comment explaining that rather than silent dead code.\n\nMemory hints: search \"sanitize_value from_component Value variants\", entities: sanitize_value, Value::from_component",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:47.068Z"
       },
       {
         "id": "861",
@@ -17940,7 +17941,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:03:46.851Z",
+      "lastModified": "2026-04-04T00:03:47.068Z",
       "taskCount": 861,
       "completedCount": 664,
       "tags": [
