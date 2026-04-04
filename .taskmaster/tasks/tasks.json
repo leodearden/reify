@@ -17852,11 +17852,11 @@
         "description": "The Value Ord implementation uses f64::to_bits().cmp() for comparing float components (Orientation at value.rs:1278-1283, and likely other float-bearing variants). IEEE 754 to_bits() does NOT preserve ordering for negative values — the sign bit inverts the magnitude comparison. For example, -0.5.to_bits() > 0.5.to_bits() even though -0.5 < 0.5, and -1.0.to_bits() > -0.5.to_bits() even though -1.0 < -0.5.\n\nInvestigate whether mathematical ordering is required (vs just any consistent total order for BTreeMap keys), and if so, replace to_bits().cmp() with a sign-aware total-order comparison (e.g. the float_ord crate pattern or manual sign-bit fixup). Add tests with negative float components to validate.\n\nMemory hints: search \"Value Ord implementation to_bits\" and \"float comparison convention\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:57:21.492Z",
+        "updatedAt": "2026-04-04T00:09:27.177Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -17991,7 +17991,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:09:26.215Z",
+      "lastModified": "2026-04-04T00:09:27.178Z",
       "taskCount": 862,
       "completedCount": 664,
       "tags": [
