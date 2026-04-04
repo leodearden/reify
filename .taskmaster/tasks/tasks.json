@@ -18461,10 +18461,11 @@
         "description": "Two code quality improvements in `crates/reify-types/src/value.rs`:\n1. Add two private helpers inside `#[cfg(test)] mod tests` (around line 3147):\n   ```rust\n   fn complex_with(re: f64, im: f64) -> Value {\n       Value::Complex { re, im, dimension: DimensionVector::DIMENSIONLESS }\n   }\n   fn orientation_with(w: f64, x: f64, y: f64, z: f64) -> Value {\n       Value::Orientation { w, x, y, z }\n   }\n   ```\n   Then update the six new negative-float test bodies to use these helpers.\n2. Hoist the verbatim `// to_bits() gets this WRONG: ...` rationale comment (repeated ~5 times around line 2132 and nearby tests) into a single block comment at the top of the float ordering test section, and remove the per-test copies.\n\nMemory hints: search \"Value test helpers complex_with orientation_with DRY\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:15:26.650Z"
       },
       {
         "id": "891",
@@ -18481,7 +18482,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:15:26.263Z",
+      "lastModified": "2026-04-04T03:15:26.651Z",
       "taskCount": 891,
       "completedCount": 671,
       "tags": [
