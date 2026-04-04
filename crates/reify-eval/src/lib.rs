@@ -713,7 +713,7 @@ impl Engine {
             &mut new_snapshot,
             &mut values,
             &setup.functions,
-            &*setup.meta_map,
+            &setup.meta_map,
             &mut diagnostics,
         );
 
