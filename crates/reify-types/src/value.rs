@@ -2063,15 +2063,19 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_within_real_and_nan() {
-        // Normal ordering
+    fn value_ord_real_nan_total_order() {
+        // Normal ordering still holds
         assert!(Value::Real(1.0) < Value::Real(2.0));
-        // NaN consistency: NaN should have a defined position (via to_bits)
+        // Under to_bits() total order, NaN's canonical bits (0x7FF8_0000_0000_0000)
+        // are numerically greater than +Infinity's bits (0x7FF0_0000_0000_0000),
+        // so NaN sorts after +Infinity in this order.
         let nan = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
-        // Just verify it doesn't panic and gives consistent results
-        let _ = nan.cmp(&inf);
+        // NaN equals itself under Ord (same bits → Equal)
         assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+        // NaN sorts strictly after +Infinity
+        assert_eq!(nan.cmp(&inf), std::cmp::Ordering::Greater);
+        assert_eq!(inf.cmp(&nan), std::cmp::Ordering::Less);
     }
 
     #[test]
