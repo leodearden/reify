@@ -4023,4 +4023,90 @@ mod tests {
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
         }
     }
+
+    // ── sanitize_value direct unit tests ─────────────────────────────────────
+
+    #[test]
+    fn sanitize_real_nan_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NAN)).is_undef(),
+            "Real(NaN) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
+            "Real(+Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_neg_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
+            "Real(-Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_finite_passthrough() {
+        let v = Value::Real(3.14);
+        match sanitize_value(v) {
+            Value::Real(x) => assert!((x - 3.14).abs() < 1e-12),
+            other => panic!("expected Real(3.14), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sanitize_scalar_nan_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with NaN si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with +Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_neg_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with -Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_finite_passthrough() {
+        let v = Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        };
+        match sanitize_value(v) {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.001).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
+        }
+    }
 }
