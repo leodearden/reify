@@ -274,6 +274,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_template_names_emits_diagnostic() {
+        // Two templates with the same name — detect_recursive_structures should emit
+        // a diagnostic mentioning "duplicate" rather than silently overwriting the first.
+        let mut templates = vec![minimal_template("A"), minimal_template("A")];
+        let mut diagnostics = Vec::new();
+        detect_recursive_structures(&mut templates, &mut diagnostics);
+        let duplicate_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("duplicate"))
+            .collect();
+        assert!(
+            !duplicate_diags.is_empty(),
+            "expected a diagnostic mentioning 'duplicate' when two templates share a name, got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "Tarjan algorithm invariant violated")]
     fn reconstruct_scc_cycle_panics_on_invalid_scc() {
