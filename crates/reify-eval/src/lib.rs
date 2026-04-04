@@ -620,9 +620,19 @@ impl Engine {
         &mut self,
         setup: &ConcurrentEditSetup,
         result: ConcurrentEditResult,
-    ) {
+    ) -> Vec<Diagnostic> {
+        let ConcurrentEditResult {
+            values: result_values,
+            snapshot_values,
+            node_results,
+            actual_eval_set,
+            skipped,
+            resolved_params,
+            diagnostics: result_diagnostics,
+        } = result;
+
         // Record cache entries and journal events for each evaluated node
-        for node_result in &result.node_results {
+        for node_result in &node_results {
             let start = Instant::now();
             self.journal.record(EvalEvent {
                 timestamp: start,
@@ -654,34 +664,67 @@ impl Engine {
         }
 
         // Restore freshness to Final for skipped nodes
-        for node_id in &result.skipped {
+        for node_id in &skipped {
             self.cache.restore_final(node_id);
         }
 
         // Commit solver-resolved auto param values to engine state.
         // These were computed by resolve_concurrent_edit but must only
         // be persisted here so that resolve remains side-effect-free.
-        for (id, val) in &result.resolved_params {
+        for (id, val) in &resolved_params {
             self.param_overrides.insert(id.clone(), val.clone());
         }
 
-        // Update current snapshot
-        let state = self
+        // Clone old snapshot values before updating (O(1) PersistentMap clone).
+        // This must happen before the new snapshot values are installed so that
+        // re_elaborate_collections can compare old vs. new counts.
+        let old_snapshot_values = self
             .eval_state
-            .as_mut()
-            .expect("apply_concurrent_edit requires eval_state from eval()");
-        let mut new_snapshot = state.snapshot.clone();
+            .as_ref()
+            .expect("apply_concurrent_edit requires eval_state from eval()")
+            .snapshot
+            .values
+            .clone();
+
+        // Build updated snapshot
+        let mut new_snapshot = self
+            .eval_state
+            .as_ref()
+            .expect("apply_concurrent_edit requires eval_state from eval()")
+            .snapshot
+            .clone();
         new_snapshot.id = setup.snapshot_id;
         new_snapshot.version = setup.version;
-        new_snapshot.values = result.snapshot_values;
+        new_snapshot.values = snapshot_values;
         new_snapshot.provenance = SnapshotProvenance::Edit {
             changed: setup.changed_cells.clone(),
             parent: setup.parent_snapshot_id,
         };
-        state.snapshot = new_snapshot;
 
-        // Update last eval set
-        self.last_eval_set = result.actual_eval_set;
+        // Run collection count re-elaboration using disjoint field borrows.
+        // setup.functions / setup.meta_map are used instead of self.functions /
+        // self.meta_map so that &mut self.preserved_counts can be passed
+        // simultaneously without borrow conflicts.
+        let mut values = result_values;
+        let mut diagnostics = result_diagnostics;
+        Self::re_elaborate_collections(
+            &mut self.preserved_counts,
+            &old_snapshot_values,
+            &mut new_snapshot,
+            &mut values,
+            &setup.functions,
+            &*setup.meta_map,
+            &mut diagnostics,
+        );
+
+        // Commit snapshot and eval set
+        self.eval_state
+            .as_mut()
+            .expect("apply_concurrent_edit requires eval_state from eval()")
+            .snapshot = new_snapshot;
+        self.last_eval_set = actual_eval_set;
+
+        diagnostics
     }
 
     /// Run auto-resolution on a concurrent edit result.
