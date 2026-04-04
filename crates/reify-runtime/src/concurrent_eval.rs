@@ -313,15 +313,15 @@ impl ConcurrentEvalAdapter {
 
     /// Return a clone of the `snapshot_values` Arc so tests can hold a second
     /// reference, forcing `Arc::try_unwrap` to fail (Err branch) in `into_result()`.
-    pub fn clone_snapshot_values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
+    pub fn clone_snapshot_values_arc(
+        &self,
+    ) -> Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>> {
         Arc::clone(&self.snapshot_values)
     }
 
     /// Return a clone of the `results` Arc so tests can hold a second reference,
     /// forcing `Arc::try_unwrap` to fail (Err branch) in `into_result()`.
-    pub fn clone_results_arc(
-        &self,
-    ) -> Arc<std::sync::Mutex<HashMap<NodeId, reify_eval::cache::CachedResult>>> {
+    pub fn clone_results_arc(&self) -> Arc<Mutex<Vec<ConcurrentNodeResult>>> {
         Arc::clone(&self.results)
     }
 }
