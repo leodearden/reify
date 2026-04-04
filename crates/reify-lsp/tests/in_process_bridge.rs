@@ -1,7 +1,29 @@
 //! Integration tests for the InProcessLsp bridge.
 
+use std::sync::atomic::Ordering;
+
 use reify_lsp::bridge::InProcessLsp;
+use reify_test_support::warn_counting_subscriber;
 use serde_json::json;
+
+/// Regression guard: the set_default guard pattern must capture WARN events when
+/// running on a current_thread tokio runtime.
+///
+/// set_default installs a *thread-local* guard; multi-thread runtimes push tasks
+/// to other threads that don't have the guard.  current_thread avoids this.
+#[tokio::test(flavor = "current_thread")]
+async fn set_default_guard_captures_warn_on_current_thread() {
+    let (subscriber, warn_count) = warn_counting_subscriber();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    tracing::warn!("test");
+
+    assert_eq!(
+        warn_count.load(Ordering::Relaxed),
+        1,
+        "set_default guard must capture exactly one WARN event on current_thread runtime"
+    );
+}
 
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
