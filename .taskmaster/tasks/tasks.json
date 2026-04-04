@@ -18517,6 +18517,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 895,
+        "title": "Fix passthrough test assertions and strengthen SYNC comment",
+        "description": "Two related quality fixes in crates/reify-expr/src/lib.rs: (1) Replace (v - 42.0).abs() < f64::EPSILON comparisons in passthrough tests with assert_eq!(v, 42.0) — the values are bit-identical to inputs so epsilon tolerance is misleading and obscures the identity invariant. (2) Extend the SYNC comment at line 830 to read: `// SYNC: mirror of reify-stdlib::sanitize_value — keep function AND tests in sync` so future contributors know test parity is also required when changing the function.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18529,7 +18540,7 @@
       ],
       "created": "2026-04-04T03:15:29.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:18:04.377Z"
+      "updated": "2026-04-04T03:18:09.335Z"
     }
   }
 }
