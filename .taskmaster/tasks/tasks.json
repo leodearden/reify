@@ -19155,10 +19155,11 @@
         "description": "Refactor tests/check-pm-standardization.sh and tests/sync_comments_test.sh to source tests/infra/test_helpers.sh, use its assert() and test_summary() functions instead of inline PASS/FAIL counting. Normalizes exit codes to 0/1.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:36.799Z"
       },
       {
         "id": "931",
@@ -19166,10 +19167,11 @@
         "description": "In tests/check-pm-standardization.sh: (1) Match npm@ prefix not just field presence. (2) Add cross-file consistency check for packageManager version. (3) Batch git check-ignore calls. (4) Add preflight command -v git check.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:36.975Z"
       },
       {
         "id": "932",
@@ -19532,7 +19534,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:36.382Z",
+      "lastModified": "2026-04-04T09:00:36.975Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
