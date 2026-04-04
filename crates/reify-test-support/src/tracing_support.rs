@@ -40,8 +40,8 @@ impl WarnCountingSubscriber {
 
 impl tracing::Subscriber for WarnCountingSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        // Accept WARN and above (WARN, ERROR).  Reject DEBUG, TRACE, INFO.
-        metadata.level() <= &tracing::Level::WARN
+        // Accept only WARN events.  Reject all other levels (ERROR, INFO, DEBUG, TRACE).
+        metadata.level() == &tracing::Level::WARN
     }
 
     fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
