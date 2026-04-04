@@ -18360,11 +18360,11 @@
         "description": "Apply the same deduplication pattern from task 835 (DiagnosticData→DiagnosticInfo) to SourceLocation→SourceLocationInfo.\n\n**Changes needed:**\n1. Rename `SourceLocationInfo.file` → `SourceLocationInfo.file_path` in `crates/reify-mcp/src/types.rs:100` to match `DiagnosticInfo.file_path` (this is a breaking change to the MCP JSON contract for `get_source_location`, coordinate accordingly)\n2. Change `engine.rs::get_source_location()` to return `Option<SourceLocationInfo>` directly (importing from reify_mcp)\n3. Remove `SourceLocation` struct from `gui/src-tauri/src/types.rs:48-55`\n4. Remove the field-by-field mapping in `mcp_context.rs:205-211` — pass through directly\n5. Update `gui/src-tauri/src/tests/mod.rs` — remove `SourceLocation` from `public_api_types_are_accessible` and add `assert_clone_debug::<DiagnosticInfo>()` + `assert_clone_debug::<SourceLocationInfo>()` as replacement compile-time guards\n6. Update frontend `SourceLocation` type alias/interface to use `file_path` field name\n\n**memory_hints:** search(\"SourceLocation SourceLocationInfo field naming gui engine\", project_id=\"reify\"); search(\"MCP JSON contract breaking changes\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:07:34.108Z",
+        "updatedAt": "2026-04-04T05:00:40.431Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -19104,7 +19104,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T05:00:39.511Z",
+      "lastModified": "2026-04-04T05:00:40.431Z",
       "taskCount": 925,
       "completedCount": 689,
       "tags": [
