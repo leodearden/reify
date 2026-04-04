@@ -188,3 +188,15 @@ async fn lsp_bridge_with_sink_routes_diagnostics() {
         "broken source should produce error diagnostics through the sink"
     );
 }
+
+#[tokio::test]
+async fn lsp_request_impl_rejects_malformed_json_params() {
+    let bridge = LspBridge::new();
+    let result = lsp_request_impl(&bridge, "initialize", "not json".to_string()).await;
+    assert!(result.is_err(), "malformed JSON params should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("invalid JSON params"),
+        "error should contain 'invalid JSON params', got: {err}"
+    );
+}
