@@ -19966,15 +19966,16 @@
         "description": "In crates/reify-types/src/value.rs: (1) Add doc comments on Value::Set and Value::Map variants noting iteration order depends on Value Ord (total_cmp for floats, NaN sorts after +Infinity). (2) Add serialization version tag or round-trip doc-test to protect BTreeSet/BTreeMap invariants against future Ord changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T14:41:59.432Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:41:59.233Z",
+      "lastModified": "2026-04-04T14:41:59.432Z",
       "taskCount": 974,
       "completedCount": 706,
       "tags": [
