@@ -19265,6 +19265,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 941,
+        "title": "Promote single_auto_param helper to reify-test-support",
+        "description": "Add single_auto_param(cell_id) helper to crates/reify-test-support/src/mocks.rs. Replace ~6 inline AutoParam constructions in decompose_tests.rs and solvespace.rs internal tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19277,7 +19288,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:40.675Z"
+      "updated": "2026-04-04T06:10:43.809Z"
     }
   }
 }
