@@ -608,6 +608,32 @@ impl SystemBuilder {
         eh
     }
 
+    /// Add 4 point entities and 2 line segment entities for a pair of lines.
+    ///
+    /// Extracts the start/end points of `line_a` and `line_b`, creates point
+    /// entities for each, then creates two line segment entities from those
+    /// points. Returns the two line segment handles as `(line_a_e, line_b_e)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if any point entity cannot be created (e.g. a non-auto
+    /// parameter is missing from `current_values`).
+    fn add_line_pair(
+        &mut self,
+        line_a: &LineRef,
+        line_b: &LineRef,
+        auto_params: &[AutoParam],
+        current_values: &ValueMap,
+    ) -> Result<(Slvs_hEntity, Slvs_hEntity), BuilderError> {
+        let la_start = self.add_point(&line_a.start, auto_params, current_values)?;
+        let la_end = self.add_point(&line_a.end, auto_params, current_values)?;
+        let lb_start = self.add_point(&line_b.start, auto_params, current_values)?;
+        let lb_end = self.add_point(&line_b.end, auto_params, current_values)?;
+        let line_a_e = self.add_line_segment(la_start, la_end);
+        let line_b_e = self.add_line_segment(lb_start, lb_end);
+        Ok((line_a_e, line_b_e))
+    }
+
     /// Get or create the default XY workplane.
     ///
     /// Some constraints (parallel, perpendicular, angle) require a workplane
@@ -950,12 +976,8 @@ fn add_pattern_to_builder(
             line_b,
             angle_deg,
         } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
-            let line_a_e = builder.add_line_segment(la_start, la_end);
-            let line_b_e = builder.add_line_segment(lb_start, lb_end);
+            let (line_a_e, line_b_e) =
+                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Angle constraints require a workplane in SolveSpace.
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -969,12 +991,8 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Parallel { line_a, line_b } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
-            let line_a_e = builder.add_line_segment(la_start, la_end);
-            let line_b_e = builder.add_line_segment(lb_start, lb_end);
+            let (line_a_e, line_b_e) =
+                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Parallel/perpendicular require a workplane in SolveSpace
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -988,12 +1006,8 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
-            let la_start = builder.add_point(&line_a.start, auto_params, current_values)?;
-            let la_end = builder.add_point(&line_a.end, auto_params, current_values)?;
-            let lb_start = builder.add_point(&line_b.start, auto_params, current_values)?;
-            let lb_end = builder.add_point(&line_b.end, auto_params, current_values)?;
-            let line_a_e = builder.add_line_segment(la_start, la_end);
-            let line_b_e = builder.add_line_segment(lb_start, lb_end);
+            let (line_a_e, line_b_e) =
+                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
                 SLVS_C_PERPENDICULAR,
@@ -1112,6 +1126,65 @@ mod tests {
         let h = result.expect("expected Ok for None cell_id");
         let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
         assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
+    }
+
+    /// `add_line_pair` should create 4 point entities and 2 line segment entities,
+    /// returning two distinct handles as Ok.
+    #[test]
+    fn add_line_pair_returns_two_line_entities() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let line_a = LineRef {
+            start: PointRef::Fixed { x: 0.0, y: 0.0, z: 0.0 },
+            end: PointRef::Fixed { x: 1.0, y: 0.0, z: 0.0 },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed { x: 0.0, y: 1.0, z: 0.0 },
+            end: PointRef::Fixed { x: 1.0, y: 1.0, z: 0.0 },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
+        assert_ne!(line_a_e, line_b_e, "line entities should be distinct handles");
+        // 4 Fixed points (each creates 1 entity) + 2 line segments = 6 entities
+        assert_eq!(builder.entities.len(), 6, "expected 4 point + 2 line entities");
+    }
+
+    /// `add_line_pair` must propagate Err when a PointRef::Auto contains a
+    /// non-auto cell_id that is missing from current_values. This confirms
+    /// that the `?` operator in `add_line_pair` surfaces errors from `add_point`
+    /// rather than swallowing them.
+    #[test]
+    fn add_line_pair_propagates_point_error() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        // Not in auto_params and not in current_values → add_point will return Err
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        // line_a start has a non-auto Auto point missing from current_values
+        let line_a = LineRef {
+            start: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+            end: PointRef::Fixed { x: 1.0, y: 0.0, z: 0.0 },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed { x: 0.0, y: 1.0, z: 0.0 },
+            end: PointRef::Fixed { x: 1.0, y: 1.0, z: 0.0 },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert!(
+            result.is_err(),
+            "expected Err when a LineRef contains a non-auto point missing from current_values"
+        );
     }
 
     /// BuilderError Display must embed the cell_id and the word "missing" so
