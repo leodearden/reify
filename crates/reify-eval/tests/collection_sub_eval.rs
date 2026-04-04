@@ -921,3 +921,102 @@ fn edit_param_count_int_undef_int_expand_no_stale() {
         "bolts[6] must not exist after Int(4)→Undef→Int(6)"
     );
 }
+
+// ─── task-826 step-11: Int(4)→Undef→Int(2)→Undef→Int(1) multi-cycle recovery ───
+
+#[test]
+fn edit_param_count_multi_cycle_recovery() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) eval with n=4 → 4 instances
+    engine.eval(&module);
+
+    // (b) Int(4)→Undef → guard fires, preserved_counts[__count_bolts]=4
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("edit_param to Undef should succeed");
+
+    // (c) Undef→Int(2) → old_count from preserved_counts=4, removes [2..4), creates [0..2)
+    // After this, preserved_counts[__count_bolts] is cleared.
+    let after_first_recovery = engine
+        .edit_param(n_id.clone(), Value::Int(2))
+        .expect("edit_param to Int(2) should succeed");
+
+    // Verify first recovery: bolts[0..2) exist, bolts[2..4) absent
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            after_first_recovery.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "after first recovery: bolts[{}] should exist",
+            i
+        );
+    }
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            after_first_recovery.values.get(&scoped_id).is_none(),
+            "after first recovery: bolts[{}] must be gone",
+            i
+        );
+    }
+
+    // (d) Int(2)→Undef → guard fires again, preserved_counts[__count_bolts]=2
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("second edit_param to Undef should succeed");
+
+    // (e) Undef→Int(1) → old_count from preserved_counts=2, removes [1..2), creates [0..1)
+    let after_second_recovery = engine
+        .edit_param(n_id, Value::Int(1))
+        .expect("edit_param to Int(1) should succeed");
+
+    // Only bolts[0] should exist
+    let bolt0 = ValueCellId::new("Parent.bolts[0]", "diameter");
+    assert_eq!(
+        after_second_recovery.values.get(&bolt0),
+        Some(&Value::length(0.01)),
+        "after second recovery: bolts[0] should exist"
+    );
+
+    // bolts[1] and bolts[2..4) must all be gone
+    for i in 1..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            after_second_recovery.values.get(&scoped_id).is_none(),
+            "after second recovery: bolts[{}] must be absent",
+            i
+        );
+    }
+}
