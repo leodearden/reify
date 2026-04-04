@@ -18601,15 +18601,16 @@
         "description": "Three improvements to the scrollToLocation tests in `gui/src/__tests__/Editor.test.tsx`:\n\n1. **Explicit activeFile precondition (line 311):** The mismatch test relies on implicit `setupStore([file1, file2])` leaving file2 active. Add `store.setActiveFile(file2.path)` after setup to match the convention used in all other multi-file tests (lines 226, 246).\n\n2. **Two-phase assertion structure (line 309-331):** The mismatch test asserts `head === 0`, which passes vacuously if the effect never ran. Add a two-phase test: first set scrollTo with a location targeting the *active* file (file2) and assert `head > 0` (proving the effect fires), then set scrollTo with the mismatched file1 location and assert cursor didn't move to the new position.\n\n3. **Null activeFile edge case:** Add a test with `setupStore([])` (no files open), set a scrollToLocation, and assert no crash and cursor stays at 0.\n\n**memory_hints:** search(\"Editor test conventions activeFile\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:21:40.443Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:21:40.272Z",
+      "lastModified": "2026-04-04T03:21:40.443Z",
       "taskCount": 898,
       "completedCount": 672,
       "tags": [
