@@ -2075,16 +2075,6 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_neg_zero() {
-        // -0.0 and +0.0 have different bits, so they may have different ordering
-        // (consistent with PartialEq which uses to_bits)
-        let pos = Value::Real(0.0);
-        let neg = Value::Real(-0.0);
-        // They should have a defined comparison (not panic)
-        let _ = pos.cmp(&neg);
-    }
-
-    #[test]
     fn value_ord_real_nan_and_neg_zero_still_consistent() {
         use std::cmp::Ordering;
 
