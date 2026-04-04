@@ -18115,6 +18115,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 873,
+        "title": "Fix constraint_defs visibility semantics and doc comment",
+        "description": "Either filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18127,7 +18138,7 @@
       ],
       "created": "2026-04-04T00:17:32.276Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:17:32.283Z"
+      "updated": "2026-04-04T00:17:37.098Z"
     }
   }
 }
