@@ -20175,6 +20175,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 986,
+        "title": "SCC design coherence: extract validation, early-return on dup, label dedup, naming",
+        "description": "Review suggestions S1/S2/S3/S4/S5 from task 362 review.\n\nS1 (scc.rs:21-28): Duplicate-template diagnostic uses internal indices instead of span labels. Add TopologyTemplate.span field so diagnostic can use \"first defined here\" / \"duplicate defined here\" labels.\nS2 (scc.rs:15-34): detect_recursive_structures conflates validation + cycle detection. Extract validate_template_names() or rename function.\nS3 (scc.rs:81-107): Rename scc_set to scc_member_set or cycle_member_indices.\nS4 (scc.rs:19-29): Early-return vec![] after duplicate-name errors instead of continuing with corrupted graph.\nS5 (scc.rs:91-102): Label generation iterates raw sub_components (not deduped). Either document the asymmetry or dedup labels.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20187,7 +20198,7 @@
       ],
       "created": "2026-04-04T19:30:24.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T19:30:24.968Z"
+      "updated": "2026-04-04T20:11:56.003Z"
     }
   }
 }
