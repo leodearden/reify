@@ -19419,10 +19419,11 @@
         "description": "Move 7 conjugate NaN/Inf tests from crates/reify-expr/src/lib.rs to crates/reify-expr/tests/complex_eval_tests.rs using existing complex_val() and eval_method() helpers. Add missing +Inf im test case and negative-im regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:49.628Z"
       },
       {
         "id": "953",
@@ -19430,10 +19431,11 @@
         "description": "In crates/reify-expr/src/lib.rs: (1) Add phase_inf_im_returns_undef test for im=+Infinity. (2) Add phase_zero_complex_returns_undef test for 0+0i. (3) Update stale comment on phase_neg_inf_im noting atan2(-Inf,1.0) is finite so pre-guard catches it. (4) Expand 'pre-guard is essential' comment to name both is_finite guard and zero-vector guard.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:49.878Z"
       },
       {
         "id": "954",
@@ -19544,7 +19546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:47.991Z",
+      "lastModified": "2026-04-04T09:00:49.879Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
