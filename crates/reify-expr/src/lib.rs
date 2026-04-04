@@ -827,6 +827,7 @@ fn compute_numerical_gradient_at_point(
 /// in `reify-stdlib` — the duplication is intentional (see design decisions in
 /// the task plan: making stdlib's version public would widen its API surface;
 /// moving it to reify-types would add evaluation semantics to a type crate).
+// SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
@@ -1198,11 +1199,17 @@ fn eval_method_call(
                     if *re == 0.0 && *im == 0.0 {
                         return Value::Undef;
                     }
+                    // The pre-guard above is essential: atan2(y, Inf) = 0.0 and
+                    // atan2(y, -Inf) = ±π are both finite, so sanitize_value alone
+                    // cannot detect Inf inputs — it would silently return a wrong result.
+                    // After the guard, atan2(finite, finite) with at least one non-zero
+                    // argument always returns a value in [-π, π], so no output
+                    // sanitization is needed here.
                     let angle = im.atan2(*re);
-                    sanitize_value(Value::Scalar {
+                    Value::Scalar {
                         si_value: angle,
                         dimension: DimensionVector::ANGLE,
-                    })
+                    }
                 }
                 _ => Value::Undef,
             }
@@ -3884,7 +3891,8 @@ mod tests {
     #[test]
     fn phase_inf_re_returns_undef() {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.phase → Undef
-        // The Complex carries an Inf component, violating sanitization convention
+        // Note: atan2(1.0, +Inf) = 0.0 which is finite — sanitize_value alone
+        // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
         let complex_val = Value::Complex {
             re: f64::INFINITY,
             im: 1.0,
@@ -3922,6 +3930,33 @@ mod tests {
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "z.phase with -Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn phase_neg_inf_re_returns_undef() {
+        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.phase → Undef
+        //
+        // Note: atan2(1.0, -Inf) = π, which is finite — so sanitize_value alone
+        // would NOT catch this -Inf input and would silently return a wrong result.
+        // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
+        // rejects this case. This test locks that behaviour as a regression guard.
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
+             so the pre-guard, not sanitize_value, is what catches this)"
         );
     }
 

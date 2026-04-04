@@ -12,7 +12,7 @@ node_modules/
 /package.json
 /package-lock.json
 gui/package-lock.json
-gui/pnpm-lock.yaml
+**/pnpm-lock.yaml
 gui/sidecar/package-lock.json
 tree-sitter-reify/package-lock.json
 test_bracket.reify

@@ -1439,6 +1439,7 @@ fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64,
 /// `unary_f64` and `binary_f64` to ensure domain errors (e.g., sqrt(-1),
 /// log(0), exp(1000) overflow) produce Undef instead of silently propagating
 /// NaN or infinity through the evaluation graph.
+// SYNC: mirror of reify-expr::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,

@@ -11,7 +11,7 @@ module_overrides:
 
 # Verification commands (Rust + GUI frontend)
 # package-lock.json is committed — use npm ci for reproducible installs
-test_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo test --workspace -- --test-threads=1 && if test -d gui; then (cd gui && npm ci && npm test); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi"
+test_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo test --workspace -- --test-threads=1 && if test -d gui; then (cd gui && npm ci && npm test); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi && bash tests/sync_comments_test.sh && bash tests/check-pm-standardization.sh"
 lint_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo clippy --workspace -- -D warnings && if test -d gui; then (cd gui && npm ci && npx tsc --noEmit); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi"
 type_check_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo check --workspace"
 

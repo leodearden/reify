@@ -164,8 +164,21 @@ impl ModuleDag {
                 }
             }
 
-            // Compile this module
-            Ok(crate::compile(&parsed))
+            // Collect prelude modules (already-compiled imports) for constraint def propagation.
+            let preludes: Vec<CompiledModule> = parsed
+                .declarations
+                .iter()
+                .filter_map(|d| {
+                    if let reify_syntax::Declaration::Import(import) = d {
+                        self.modules.get(&import.path).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Compile this module with prelude context so imported constraint defs are visible.
+            Ok(crate::compile_with_prelude(&parsed, &preludes))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed

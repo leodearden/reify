@@ -416,7 +416,7 @@ impl ParamMapping {
 ///
 /// Carries the `cell_id` as a structured field so it can be logged
 /// separately by the `solve()` call site, and a human-readable `message`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BuilderError {
     cell_id: ValueCellId,
     message: String,
@@ -427,6 +427,9 @@ impl fmt::Display for BuilderError {
         f.write_str(&self.message)
     }
 }
+
+impl std::error::Error for BuilderError {}
+
 
 /// Builder that accumulates slvs params/entities/constraints.
 ///
@@ -1105,8 +1108,35 @@ mod tests {
         assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
     }
 
+    /// BuilderError Display must embed the cell_id and the word "missing" so
+    /// log messages and SolveResult::NoProgress reasons are human-readable.
+    /// Also verifies the type satisfies std::error::Error so it can be used
+    /// in ? chains with anyhow / thiserror in the future.
+    #[test]
+    fn builder_error_display_contains_cell_id() {
+        let cell_id = ValueCellId::new("Test", "x");
+        let err = BuilderError {
+            cell_id: cell_id.clone(),
+            message: format!("non-auto parameter {cell_id} missing from current_values"),
+        };
+
+        let display = err.to_string();
+        assert!(
+            display.contains("missing"),
+            "Display should contain 'missing', got: {display}"
+        );
+        assert!(
+            display.contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {display}",
+            cell_id
+        );
+
+        // Verify it satisfies std::error::Error via trait-object coercion.
+        let _: &dyn std::error::Error = &err;
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
-    /// Err — this is a logic error (eval pass incomplete) that must not be
+    /// Err(BuilderError) — a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
@@ -1134,6 +1164,30 @@ mod tests {
             "BuilderError message should contain 'missing', got: {}",
             err.message
         );
+        // Verify Display produces the same human-readable message
+        let display = err.to_string();
+        assert!(
+            display.contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {display}",
+            cell_id
+        );
+    }
+
+    /// add_auto_coord must return a BuilderError carrying the original
+    /// ValueCellId when a non-auto cell_id is absent from current_values,
+    /// preserving the id as typed data for downstream consumers.
+    #[test]
+    fn add_auto_coord_returns_builder_error_with_cell_id() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        let err = result.expect_err("expected Err, got Ok");
+        assert_eq!(err.cell_id, cell_id, "error should carry the original cell_id");
     }
 
     /// Error from add_auto_coord should propagate through add_point and
@@ -1180,6 +1234,11 @@ mod tests {
             err.message.contains("missing"),
             "propagated BuilderError message should contain 'missing', got: {}",
             err.message
+        );
+        assert!(
+            err.to_string().contains(&cell_id.to_string()),
+            "propagated error Display should contain cell_id, got: {}",
+            err.to_string()
         );
     }
 
