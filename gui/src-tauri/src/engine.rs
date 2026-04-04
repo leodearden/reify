@@ -430,6 +430,30 @@ impl EngineSession {
     }
 }
 
+/// Test helpers — compiled out of production binaries.
+#[cfg(test)]
+impl EngineSession {
+    /// Clear `module_name` so tests can reach the `source_map.iter().next()` fallback
+    /// branch in `get_diagnostics` (engine.rs, the `else` at the module_name check).
+    pub(crate) fn clear_module_name_for_test(&mut self) {
+        self.module_name = None;
+    }
+
+    /// Inject a diagnostic directly into the compiled module's diagnostics vec,
+    /// enabling tests to exercise the `diag.labels.first() == None` fallback path
+    /// without needing the compiler to produce such a diagnostic.
+    ///
+    /// # Panics
+    /// Panics if no module is currently loaded (`self.compiled` is `None`).
+    pub(crate) fn inject_diagnostic_for_test(&mut self, diag: reify_types::Diagnostic) {
+        self.compiled
+            .as_mut()
+            .expect("inject_diagnostic_for_test: no compiled module loaded")
+            .diagnostics
+            .push(diag);
+    }
+}
+
 /// Parse a "Entity.member" string into a ValueCellId.
 fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
     let parts: Vec<&str> = s.splitn(2, '.').collect();

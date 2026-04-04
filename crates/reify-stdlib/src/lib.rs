@@ -1439,6 +1439,7 @@ fn quat_rotate(q: (f64, f64, f64, f64), vx: f64, vy: f64, vz: f64) -> (f64, f64,
 /// `unary_f64` and `binary_f64` to ensure domain errors (e.g., sqrt(-1),
 /// log(0), exp(1000) overflow) produce Undef instead of silently propagating
 /// NaN or infinity through the evaluation graph.
+// SYNC: mirror of reify-expr::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
@@ -1447,6 +1448,18 @@ fn sanitize_value(v: Value) -> Value {
         }
         Value::Complex { re, im, .. }
             if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
+        {
+            Value::Undef
+        }
+        Value::Orientation { w, x, y, z }
+            if w.is_nan()
+                || w.is_infinite()
+                || x.is_nan()
+                || x.is_infinite()
+                || y.is_nan()
+                || y.is_infinite()
+                || z.is_nan()
+                || z.is_infinite() =>
         {
             Value::Undef
         }
@@ -5712,6 +5725,47 @@ mod tests {
         );
     }
 
+    // ── sanitize_value Orientation arm tests (task-904) ──────────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with Inf component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
+    }
+
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
 
     #[test]
@@ -6879,6 +6933,13 @@ mod tests {
             eval_builtin(
                 "frame3_identity",
                 &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]
             )
             .is_undef()
         );

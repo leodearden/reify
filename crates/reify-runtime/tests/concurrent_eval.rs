@@ -1575,47 +1575,7 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 // the faulting node.
 
 #[cfg(feature = "test-utils")]
-/// Helper: build a tracing subscriber that counts WARN-level events using an AtomicUsize.
-/// Returns the subscriber and a clone of the counter for assertions.
-fn warn_counting_subscriber() -> (impl tracing::Subscriber, Arc<std::sync::atomic::AtomicUsize>) {
-    use std::sync::atomic::AtomicUsize;
-
-    let count = Arc::new(AtomicUsize::new(0));
-    let count_clone = Arc::clone(&count);
-
-    struct WarnCounter(Arc<AtomicUsize>);
-
-    impl tracing::Subscriber for WarnCounter {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::WARN
-        }
-
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(
-            &self,
-            _span: &tracing::span::Id,
-            _follows: &tracing::span::Id,
-        ) {
-        }
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            if event.metadata().level() == &tracing::Level::WARN {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-
-        fn enter(&self, _span: &tracing::span::Id) {}
-
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    (WarnCounter(count_clone), count)
-}
+use reify_test_support::warn_counting_subscriber;
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
@@ -1636,9 +1596,12 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "values() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count,
+            1,
+            "values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 
@@ -1693,9 +1656,12 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "take_results() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count,
+            1,
+            "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 
@@ -1716,9 +1682,13 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "build_result_shared() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // Only snapshot_values is poisoned; values and results locks are healthy.
+        // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
+        // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
+        assert_eq!(
+            count,
+            1,
+            "build_result_shared() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 }
@@ -2136,9 +2106,65 @@ mod poison_recovery_extended {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // Only values is poisoned; snapshot_values and results locks are healthy.
+        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
+        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
+    /// snapshot_values lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the snapshot_values lock
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on snapshot_values poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
+    /// results lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_results() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the results lock
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on results poison recovery, got {count} WARN events"
         );
     }
 }

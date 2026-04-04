@@ -73,21 +73,41 @@ impl InProcessLsp {
 
     /// Handle an LSP request or notification by method name.
     ///
-    /// For requests (initialize, completion, hover, definition, shutdown),
-    /// returns the JSON-serialized response. For notifications (didOpen,
-    /// didChange, didClose, initialized), returns `Ok(Value::Null)`.
+    /// # Return value contract
+    ///
+    /// - **`Ok(Value)`** — A JSON-serialized response payload for successful *requests*:
+    ///   `initialize`, `textDocument/completion`, `textDocument/hover`,
+    ///   `textDocument/definition`.
+    /// - **`Ok(Value::Null)`** — For successfully processed *notifications* and `shutdown`:
+    ///   `initialized`, `textDocument/didOpen`, `textDocument/didChange`,
+    ///   `textDocument/didClose`, `shutdown`.
+    /// - **`Err(String)`** — In any of the following cases:
+    ///   - **Unsupported method**: the `method` argument names a method not handled
+    ///     by this bridge.
+    ///   - **Deserialization failure**: `params` cannot be parsed into the expected
+    ///     LSP parameter type — this applies to *both* requests and notifications.
+    ///     Notifications do not silently succeed on bad params; the error is
+    ///     propagated to the caller.
+    ///   - **Server error**: the underlying `LanguageServer` implementation returns
+    ///     an error (only possible for request methods, not notifications).
+    ///   - **Serialization failure**: the server response cannot be serialized to
+    ///     `serde_json::Value` (should not occur in practice with well-formed
+    ///     LSP types).
+    ///
+    /// # Breaking change (since Task 828)
+    ///
+    /// The `initialize` method previously tolerated malformed `InitializeParams`
+    /// by falling back to a default value (`unwrap_or_default`). It now performs
+    /// **strict deserialization** and returns `Err` if `params` cannot be
+    /// deserialized into [`tower_lsp::lsp_types::InitializeParams`]. Callers
+    /// that previously relied on the silent default must now supply valid params.
     pub async fn handle_request(&self, method: &str, params: Value) -> Result<Value, String> {
         let server = &self.server;
 
         match method {
             "initialize" => {
-                let p: InitializeParams = match serde_json::from_value(params) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!("malformed InitializeParams, using defaults: {e}");
-                        InitializeParams::default()
-                    }
-                };
+                let p: InitializeParams = serde_json::from_value(params)
+                    .map_err(|e| format!("initialize params error: {e}"))?;
                 let result = server
                     .initialize(p)
                     .await

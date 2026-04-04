@@ -149,6 +149,9 @@ pub struct CompiledModule {
     pub units: Vec<CompiledUnit>,
     /// Compiled type alias declarations from this module.
     pub type_aliases: Vec<CompiledTypeAlias>,
+    /// Constraint definitions declared in this module.
+    /// Stored so downstream modules can reference them during compilation.
+    pub constraint_defs: Vec<reify_syntax::ConstraintDef>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -3784,13 +3787,34 @@ pub fn compile_with_prelude(
     let field_registry: HashMap<String, &CompiledField> =
         fields.iter().map(|f| (f.name.clone(), f)).collect();
 
+    // Collect owned clones of pub constraint defs from prelude modules.
+    // These must outlive the registry borrow below.
+    let prelude_constraint_defs: Vec<reify_syntax::ConstraintDef> = prelude
+        .iter()
+        .flat_map(|m| m.constraint_defs.iter().filter(|c| c.is_pub).cloned())
+        .collect();
+
     // Build a constraint def registry so entity scopes can resolve constraint instantiations.
-    let constraint_def_registry: HashMap<String, &reify_syntax::ConstraintDef> = parsed
+    // Prelude defs (from imported modules) are seeded first; module-local defs override them.
+    let mut constraint_def_registry: HashMap<String, &reify_syntax::ConstraintDef> =
+        prelude_constraint_defs
+            .iter()
+            .map(|c| (c.name.clone(), c))
+            .collect();
+    for decl in &parsed.declarations {
+        if let reify_syntax::Declaration::Constraint(c) = decl {
+            constraint_def_registry.insert(c.name.clone(), c);
+        }
+    }
+
+    // Collect constraint defs from the current module so they can be propagated
+    // to downstream modules that import this one.
+    let constraint_defs: Vec<reify_syntax::ConstraintDef> = parsed
         .declarations
         .iter()
         .filter_map(|d| {
             if let reify_syntax::Declaration::Constraint(c) = d {
-                Some((c.name.clone(), c))
+                Some(c.clone())
             } else {
                 None
             }
@@ -4092,6 +4116,7 @@ pub fn compile_with_prelude(
         templates,
         units: compiled_units,
         type_aliases,
+        constraint_defs,
         diagnostics,
         content_hash,
     }
@@ -4501,14 +4526,19 @@ fn compile_entity(
                     match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
                         Some(t) => t,
                         None => {
-                            diagnostics.push(
-                                Diagnostic::error(format!("unresolved type: {}", type_expr.name))
-                                    .with_label(DiagnosticLabel::new(
-                                        type_expr.span,
-                                        "unknown type name",
-                                    )),
-                            );
-                            Type::Real // fallback
+                            // Check if it's an enum type defined in the same module or prelude
+                            if enum_defs.iter().any(|e| e.name == type_expr.name) {
+                                Type::Enum(type_expr.name.clone())
+                            } else {
+                                diagnostics.push(
+                                    Diagnostic::error(format!("unresolved type: {}", type_expr.name))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type name",
+                                        )),
+                                );
+                                Type::Real // fallback
+                            }
                         }
                     }
                 } else {
@@ -4620,6 +4650,7 @@ fn compile_entity(
             &mut constraint_index,
             enum_defs,
             functions,
+            alias_registry,
             diagnostics,
         );
 
@@ -6566,9 +6597,11 @@ fn check_trait_conformance(
     constraint_index: &mut u32,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Collect all structure member names for conformance checking.
+    let empty_params: HashSet<String> = HashSet::new();
     let structure_members: HashMap<String, Type> = structure
         .members
         .iter()
@@ -6577,7 +6610,29 @@ fn check_trait_conformance(
                 let ty = p
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
+                    })
                     .unwrap_or(Type::Real);
                 Some((p.name.clone(), ty))
             }
@@ -6585,7 +6640,29 @@ fn check_trait_conformance(
                 let ty = l
                     .type_expr
                     .as_ref()
-                    .and_then(|te| resolve_type_name(&te.name))
+                    .map(|te| {
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
+                            .or_else(|| {
+                                if enum_defs.iter().any(|e| e.name == te.name) {
+                                    Some(Type::Enum(te.name.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "unresolved type in conformance check: {}",
+                                        te.name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        te.span,
+                                        "unknown type name",
+                                    )),
+                                );
+                                Type::Real
+                            })
+                    })
                     .unwrap_or(Type::Real);
                 Some((l.name.clone(), ty))
             }
