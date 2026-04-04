@@ -410,6 +410,30 @@ impl ParamMapping {
     }
 }
 
+/// Errors that can occur while building the SolveSpace constraint system.
+///
+/// Module-private: the error is converted to `String` at the `SolveResult`
+/// consumption site in `solve()` and never escapes this module.
+#[derive(Debug, Clone)]
+enum BuilderError {
+    /// A non-auto parameter's `ValueCellId` was not found in `current_values`,
+    /// indicating the evaluation pass did not complete before the solver was
+    /// invoked.
+    MissingNonAutoValue(ValueCellId),
+}
+
+impl std::fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuilderError::MissingNonAutoValue(cell_id) => {
+                write!(f, "non-auto parameter {cell_id} missing from current_values")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuilderError {}
+
 /// Builder that accumulates slvs params/entities/constraints.
 ///
 /// Uses two groups:
@@ -460,7 +484,7 @@ impl SystemBuilder {
         pt: &PointRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hEntity, String> {
+    ) -> Result<Slvs_hEntity, BuilderError> {
         let key = point_key(pt);
         if let Some(&h) = self.point_entities.get(&key) {
             return Ok(h);
@@ -528,7 +552,7 @@ impl SystemBuilder {
         cell_id: &Option<ValueCellId>,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<Slvs_hParam, String> {
+    ) -> Result<Slvs_hParam, BuilderError> {
         if let Some(id) = cell_id {
             // Check if already mapped
             if let Some(h) = self.mapping.get_param(id) {
@@ -556,7 +580,7 @@ impl SystemBuilder {
                     Ok(h)
                 }
                 None => {
-                    Err(format!("non-auto parameter {id} missing from current_values"))
+                    Err(BuilderError::MissingNonAutoValue(id.clone()))
                 }
             }
         } else {
@@ -796,7 +820,7 @@ impl ConstraintSolver for SolveSpaceSolver {
                         &problem.current_values,
                     ) {
                         tracing::warn!(reason = %reason, "constraint pattern builder failed");
-                        return SolveResult::NoProgress { reason };
+                        return SolveResult::NoProgress { reason: reason.to_string() };
                     }
                 }
                 None => {
@@ -883,7 +907,7 @@ fn add_pattern_to_builder(
     pattern: &GeometricPattern,
     auto_params: &[AutoParam],
     current_values: &ValueMap,
-) -> Result<(), String> {
+) -> Result<(), BuilderError> {
     let e_none = Slvs_hEntity(0);
 
     match pattern {
@@ -1073,9 +1097,33 @@ mod tests {
         assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
     }
 
+    /// BuilderError::MissingNonAutoValue Display must embed the cell_id and the
+    /// word "missing" so log messages and SolveResult::NoProgress reasons are
+    /// human-readable. Also verifies the type satisfies std::error::Error so it
+    /// can be used in ? chains with anyhow / thiserror in the future.
+    #[test]
+    fn builder_error_display_contains_cell_id() {
+        let cell_id = ValueCellId::new("Test", "x");
+        let err = BuilderError::MissingNonAutoValue(cell_id.clone());
+
+        let display = err.to_string();
+        assert!(
+            display.contains("missing"),
+            "Display should contain 'missing', got: {display}"
+        );
+        assert!(
+            display.contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {display}",
+            cell_id
+        );
+
+        // Verify it satisfies std::error::Error via trait-object coercion.
+        let _: &dyn std::error::Error = &err;
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
-    /// Err — this is a logic error (eval pass incomplete) that must not be
-    /// silently swallowed per the project's noisy-error convention.
+    /// Err(BuilderError::MissingNonAutoValue) — a logic error (eval pass incomplete)
+    /// that must not be silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
         let mut builder = SystemBuilder::new();
@@ -1088,19 +1136,46 @@ mod tests {
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        assert!(
-            result.is_err(),
-            "expected Err for non-auto param missing from current_values, got Ok"
-        );
-        let err_msg = result.unwrap_err();
-        assert!(
-            err_msg.contains("missing"),
-            "error message should contain 'missing', got: {err_msg}"
-        );
-        assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {err_msg}"
-        );
+        match result {
+            Err(BuilderError::MissingNonAutoValue(ref id)) => {
+                assert_eq!(id, &cell_id, "error should carry the original cell_id");
+                // Verify Display still produces a human-readable message
+                let display = result.unwrap_err().to_string();
+                assert!(
+                    display.contains("missing"),
+                    "Display should contain 'missing', got: {display}"
+                );
+                assert!(
+                    display.contains(&cell_id.to_string()),
+                    "Display should contain cell_id '{}', got: {display}",
+                    cell_id
+                );
+            }
+            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
+            Ok(_) => panic!("expected Err for non-auto param missing from current_values, got Ok"),
+        }
+    }
+
+    /// add_auto_coord must return Err(BuilderError::MissingNonAutoValue(id))
+    /// when a non-auto cell_id is absent from current_values, preserving the
+    /// ValueCellId as typed data for downstream consumers.
+    #[test]
+    fn add_auto_coord_returns_missing_non_auto_variant() {
+        let mut builder = SystemBuilder::new();
+        let cell_id = ValueCellId::new("Test", "x");
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let result =
+            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+
+        match result {
+            Err(BuilderError::MissingNonAutoValue(id)) => {
+                assert_eq!(id, cell_id, "error should carry the original cell_id");
+            }
+            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
     }
 
     /// Error from add_auto_coord should propagate through add_point and
@@ -1138,14 +1213,15 @@ mod tests {
             result.is_err(),
             "expected Err when coord cell_id is missing from current_values, got Ok"
         );
-        let err_msg = result.unwrap_err();
+        let err = result.unwrap_err();
+        let display = err.to_string();
         assert!(
-            err_msg.contains("missing"),
-            "propagated error should contain 'missing', got: {err_msg}"
+            display.contains("missing"),
+            "propagated error should contain 'missing', got: {display}"
         );
         assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "propagated error should contain cell_id, got: {err_msg}"
+            display.contains(&cell_id.to_string()),
+            "propagated error should contain cell_id, got: {display}"
         );
     }
 
@@ -1239,10 +1315,11 @@ mod tests {
             result.is_err(),
             "add_point should propagate the Err from add_auto_coord, got Ok"
         );
-        let err_msg = result.unwrap_err();
+        let err = result.unwrap_err();
+        let display = err.to_string();
         assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {err_msg}"
+            display.contains(&cell_id.to_string()),
+            "error message should contain cell_id, got: {display}"
         );
     }
 }
