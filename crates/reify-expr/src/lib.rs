@@ -1199,11 +1199,17 @@ fn eval_method_call(
                     if *re == 0.0 && *im == 0.0 {
                         return Value::Undef;
                     }
+                    // The pre-guard above is essential: atan2(y, Inf) = 0.0 and
+                    // atan2(y, -Inf) = ±π are both finite, so sanitize_value alone
+                    // cannot detect Inf inputs — it would silently return a wrong result.
+                    // After the guard, atan2(finite, finite) with at least one non-zero
+                    // argument always returns a value in [-π, π], so no output
+                    // sanitization is needed here.
                     let angle = im.atan2(*re);
-                    sanitize_value(Value::Scalar {
+                    Value::Scalar {
                         si_value: angle,
                         dimension: DimensionVector::ANGLE,
-                    })
+                    }
                 }
                 _ => Value::Undef,
             }
@@ -3885,7 +3891,8 @@ mod tests {
     #[test]
     fn phase_inf_re_returns_undef() {
         // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.phase → Undef
-        // The Complex carries an Inf component, violating sanitization convention
+        // Note: atan2(1.0, +Inf) = 0.0 which is finite — sanitize_value alone
+        // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
         let complex_val = Value::Complex {
             re: f64::INFINITY,
             im: 1.0,
