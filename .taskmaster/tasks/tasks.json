@@ -18640,15 +18640,16 @@
         "description": "Consolidate several test-related review findings from task 836 into a single pass on `gui/src-tauri/src/tests/engine_tests.rs`:\n\n1. **Fix test naming conflicts** — Two tests both claim to be \"Step-3\": the new `diagnostics_file_key_consistent_after_update_source` and the pre-existing `engine_get_diagnostics_clean_source_returns_empty`. Renumber to avoid ambiguity (e.g., use Step-R1/R2/R3 for the refactor-pinning tests, or drop ordinal labels entirely).\n\n2. **Improve test coverage for resolve_source fallback** — The Step-1 test (`get_source_location_returns_none_without_module`) never reaches `resolve_source` (returns early at `compiled.as_ref()?`). Add a test that constructs a session where `compiled` and `module_name` are set but the matching `source_map` entry is missing, verifying `get_diagnostics` returns `[]` and `get_source_location` returns `None`.\n\n3. **Harden fragile test assumption** — Tests `diagnostics_and_source_location_agree_on_file_key` and `diagnostics_file_key_consistent_after_update_source` rely on `port mount : NonExistentTrait` producing a warning (not error). Add an explicit severity assertion or comment documenting why this must remain a warning.\n\nmemory_hints: search(\"engine_tests.rs Step-3 naming conflict resolve_source coverage\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:25:02.985Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:25:02.803Z",
+      "lastModified": "2026-04-04T03:25:02.985Z",
       "taskCount": 900,
       "completedCount": 672,
       "tags": [
