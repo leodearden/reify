@@ -2106,6 +2106,9 @@ mod poison_recovery_extended {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // Only values is poisoned; snapshot_values and results locks are healthy.
+        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
+        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
         assert_eq!(
             count,
             1,
