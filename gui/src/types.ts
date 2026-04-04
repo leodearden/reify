@@ -51,7 +51,7 @@ export interface ConstraintData {
 
 /** A location span in source code. */
 export interface SourceLocation {
-  file: string;
+  file_path: string;
   line: number;
   column: number;
   end_line: number;
