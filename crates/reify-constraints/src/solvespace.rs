@@ -12,6 +12,7 @@ compile_error!(
 );
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Mutex;
 
 use reify_types::{
@@ -410,29 +411,25 @@ impl ParamMapping {
     }
 }
 
-/// Errors that can occur while building the SolveSpace constraint system.
+/// Error produced by the internal builder call chain
+/// (`add_auto_coord` → `add_point` → `add_pattern_to_builder`).
 ///
-/// Module-private: the error is converted to `String` at the `SolveResult`
-/// consumption site in `solve()` and never escapes this module.
+/// Carries the `cell_id` as a structured field so it can be logged
+/// separately by the `solve()` call site, and a human-readable `message`.
 #[derive(Debug, Clone)]
-enum BuilderError {
-    /// A non-auto parameter's `ValueCellId` was not found in `current_values`,
-    /// indicating the evaluation pass did not complete before the solver was
-    /// invoked.
-    MissingNonAutoValue(ValueCellId),
+struct BuilderError {
+    cell_id: ValueCellId,
+    message: String,
 }
 
-impl std::fmt::Display for BuilderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BuilderError::MissingNonAutoValue(cell_id) => {
-                write!(f, "non-auto parameter {cell_id} missing from current_values")
-            }
-        }
+impl fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for BuilderError {}
+
 
 /// Builder that accumulates slvs params/entities/constraints.
 ///
@@ -479,6 +476,11 @@ impl SystemBuilder {
     }
 
     /// Add or retrieve a point entity from a PointRef.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(BuilderError)` if any coordinate cell_id is a non-auto param
+    /// absent from `current_values` (propagated from `add_auto_coord`).
     fn add_point(
         &mut self,
         pt: &PointRef,
@@ -544,9 +546,11 @@ impl SystemBuilder {
     ///
     /// # Errors
     ///
-    /// Returns `Err` if `cell_id` is `Some(id)`, `id` is not an auto param,
-    /// and `id` is absent from `current_values`. This indicates the eval pass
-    /// did not complete — a logic error per the project's noisy-error convention.
+    /// Returns `Err(BuilderError)` if `cell_id` is `Some(id)`, `id` is not an
+    /// auto param, and `id` is absent from `current_values`. This indicates the
+    /// eval pass did not complete — a logic error per the project's noisy-error
+    /// convention. The `BuilderError` carries the missing `cell_id` as a
+    /// structured field for use in tracing.
     fn add_auto_coord(
         &mut self,
         cell_id: &Option<ValueCellId>,
@@ -579,9 +583,10 @@ impl SystemBuilder {
                     self.params.push(Slvs_Param::new(h, SOLVE_GROUP, val));
                     Ok(h)
                 }
-                None => {
-                    Err(BuilderError::MissingNonAutoValue(id.clone()))
-                }
+                None => Err(BuilderError {
+                    cell_id: id.clone(),
+                    message: format!("non-auto parameter {id} missing from current_values"),
+                }),
             }
         } else {
             // No cell_id — a fixed coordinate not backed by a cell.
@@ -813,14 +818,18 @@ impl ConstraintSolver for SolveSpaceSolver {
             match recognize_pattern(expr, &problem.auto_params) {
                 Some(pattern) => {
                     recognized_any = true;
-                    if let Err(reason) = add_pattern_to_builder(
+                    if let Err(err) = add_pattern_to_builder(
                         &mut builder,
                         &pattern,
                         &problem.auto_params,
                         &problem.current_values,
                     ) {
-                        tracing::warn!(reason = %reason, "constraint pattern builder failed");
-                        return SolveResult::NoProgress { reason: reason.to_string() };
+                        tracing::warn!(
+                            cell_id = %err.cell_id,
+                            reason = %err.message,
+                            "constraint pattern builder failed"
+                        );
+                        return SolveResult::NoProgress { reason: err.message };
                     }
                 }
                 None => {
@@ -900,8 +909,10 @@ impl ConstraintSolver for SolveSpaceSolver {
 ///
 /// # Errors
 ///
-/// Returns `Err` if any point contains a non-auto coordinate cell_id that is
-/// missing from `current_values` (propagated from `add_point` → `add_auto_coord`).
+/// Returns `Err(BuilderError)` if any point contains a non-auto coordinate
+/// cell_id that is missing from `current_values` (propagated from
+/// `add_point` → `add_auto_coord`). The `BuilderError` carries the missing
+/// `cell_id` as a structured field for the `solve()` tracing log.
 fn add_pattern_to_builder(
     builder: &mut SystemBuilder,
     pattern: &GeometricPattern,
@@ -1097,14 +1108,17 @@ mod tests {
         assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
     }
 
-    /// BuilderError::MissingNonAutoValue Display must embed the cell_id and the
-    /// word "missing" so log messages and SolveResult::NoProgress reasons are
-    /// human-readable. Also verifies the type satisfies std::error::Error so it
-    /// can be used in ? chains with anyhow / thiserror in the future.
+    /// BuilderError Display must embed the cell_id and the word "missing" so
+    /// log messages and SolveResult::NoProgress reasons are human-readable.
+    /// Also verifies the type satisfies std::error::Error so it can be used
+    /// in ? chains with anyhow / thiserror in the future.
     #[test]
     fn builder_error_display_contains_cell_id() {
         let cell_id = ValueCellId::new("Test", "x");
-        let err = BuilderError::MissingNonAutoValue(cell_id.clone());
+        let err = BuilderError {
+            cell_id: cell_id.clone(),
+            message: format!("non-auto parameter {cell_id} missing from current_values"),
+        };
 
         let display = err.to_string();
         assert!(
@@ -1122,8 +1136,8 @@ mod tests {
     }
 
     /// Non-auto param whose cell_id is missing from current_values should return
-    /// Err(BuilderError::MissingNonAutoValue) — a logic error (eval pass incomplete)
-    /// that must not be silently swallowed per the project's noisy-error convention.
+    /// Err(BuilderError) — a logic error (eval pass incomplete) that must not be
+    /// silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
         let mut builder = SystemBuilder::new();
@@ -1136,31 +1150,34 @@ mod tests {
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        match result {
-            Err(BuilderError::MissingNonAutoValue(ref id)) => {
-                assert_eq!(id, &cell_id, "error should carry the original cell_id");
-                // Verify Display still produces a human-readable message
-                let display = result.unwrap_err().to_string();
-                assert!(
-                    display.contains("missing"),
-                    "Display should contain 'missing', got: {display}"
-                );
-                assert!(
-                    display.contains(&cell_id.to_string()),
-                    "Display should contain cell_id '{}', got: {display}",
-                    cell_id
-                );
-            }
-            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
-            Ok(_) => panic!("expected Err for non-auto param missing from current_values, got Ok"),
-        }
+        assert!(
+            result.is_err(),
+            "expected Err for non-auto param missing from current_values, got Ok"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.cell_id, cell_id,
+            "BuilderError cell_id should match the ValueCellId passed to add_auto_coord"
+        );
+        assert!(
+            err.message.contains("missing"),
+            "BuilderError message should contain 'missing', got: {}",
+            err.message
+        );
+        // Verify Display produces the same human-readable message
+        let display = err.to_string();
+        assert!(
+            display.contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {display}",
+            cell_id
+        );
     }
 
-    /// add_auto_coord must return Err(BuilderError::MissingNonAutoValue(id))
-    /// when a non-auto cell_id is absent from current_values, preserving the
-    /// ValueCellId as typed data for downstream consumers.
+    /// add_auto_coord must return a BuilderError carrying the original
+    /// ValueCellId when a non-auto cell_id is absent from current_values,
+    /// preserving the id as typed data for downstream consumers.
     #[test]
-    fn add_auto_coord_returns_missing_non_auto_variant() {
+    fn add_auto_coord_returns_builder_error_with_cell_id() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
         let auto_params: Vec<AutoParam> = vec![];
@@ -1169,13 +1186,8 @@ mod tests {
         let result =
             builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        match result {
-            Err(BuilderError::MissingNonAutoValue(id)) => {
-                assert_eq!(id, cell_id, "error should carry the original cell_id");
-            }
-            Err(other) => panic!("expected MissingNonAutoValue variant, got: {other:?}"),
-            Ok(_) => panic!("expected Err, got Ok"),
-        }
+        let err = result.expect_err("expected Err, got Ok");
+        assert_eq!(err.cell_id, cell_id, "error should carry the original cell_id");
     }
 
     /// Error from add_auto_coord should propagate through add_point and
@@ -1214,14 +1226,19 @@ mod tests {
             "expected Err when coord cell_id is missing from current_values, got Ok"
         );
         let err = result.unwrap_err();
-        let display = err.to_string();
-        assert!(
-            display.contains("missing"),
-            "propagated error should contain 'missing', got: {display}"
+        assert_eq!(
+            err.cell_id, cell_id,
+            "propagated BuilderError cell_id should match the PointRef::Auto coordinate cell_id"
         );
         assert!(
-            display.contains(&cell_id.to_string()),
-            "propagated error should contain cell_id, got: {display}"
+            err.message.contains("missing"),
+            "propagated BuilderError message should contain 'missing', got: {}",
+            err.message
+        );
+        assert!(
+            err.to_string().contains(&cell_id.to_string()),
+            "propagated error Display should contain cell_id, got: {}",
+            err.to_string()
         );
     }
 
@@ -1292,6 +1309,23 @@ mod tests {
         );
     }
 
+    /// BuilderError must expose cell_id and message fields, and Display must
+    /// output only the message (cell_id is logged as a separate structured field).
+    #[test]
+    fn builder_error_has_cell_id_and_display() {
+        let cell_id = ValueCellId::new("Test", "x");
+        let message = "non-auto parameter Test.x missing from current_values".to_string();
+        let err = BuilderError { cell_id: cell_id.clone(), message: message.clone() };
+
+        assert_eq!(err.cell_id, cell_id, "cell_id field should match the provided ValueCellId");
+        assert_eq!(err.message, message, "message field should match the provided string");
+        assert_eq!(
+            err.to_string(),
+            message,
+            "Display should output only the message, not the cell_id separately"
+        );
+    }
+
     /// add_point must propagate the Err returned by add_auto_coord when the
     /// x-coordinate cell_id is a non-auto param absent from current_values.
     /// This covers the `?` operator on line 489 of add_point.
@@ -1316,10 +1350,9 @@ mod tests {
             "add_point should propagate the Err from add_auto_coord, got Ok"
         );
         let err = result.unwrap_err();
-        let display = err.to_string();
-        assert!(
-            display.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {display}"
+        assert_eq!(
+            err.cell_id, cell_id,
+            "propagated BuilderError cell_id should match the coord cell_id"
         );
     }
 }
