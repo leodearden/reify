@@ -19210,6 +19210,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 936,
+        "title": "Use Type::Error sentinel for unresolved types to prevent cascading diagnostics",
+        "description": "In crates/reify-compiler/src/lib.rs, when check_trait_conformance encounters an unresolvable member type, use a sentinel (Type::Error or skip the member) instead of Type::Real fallback, so downstream conformance comparison doesn't emit a second misleading diagnostic.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19222,7 +19233,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:55.484Z"
+      "updated": "2026-04-04T06:09:56.694Z"
     }
   }
 }
