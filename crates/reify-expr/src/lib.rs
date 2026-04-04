@@ -823,10 +823,21 @@ fn compute_numerical_gradient_at_point(
 /// All callers pass either a `Value::from_component(...)` result — which
 /// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
 /// — or a directly-constructed `Value::Scalar`.  Consequently only the
-/// `Value::Real` and `Value::Scalar` arms are reachable here.  This helper
-/// mirrors the private `sanitize_value` in `reify-stdlib` — the duplication
-/// is intentional (making stdlib's version public would widen its API surface;
-/// moving it to reify-types would add evaluation semantics to a type crate).
+/// `Value::Real` and `Value::Scalar` arms are reachable from current call
+/// sites; the `Value::Orientation` arm is unreachable today but is included
+/// for structural parity with `reify-stdlib::sanitize_value` (defense-in-depth:
+/// if callers evolve to pass orientation values, sanitization is already in
+/// place).
+///
+/// **Divergence from stdlib:** the `Value::Complex` arm present in
+/// `reify-stdlib::sanitize_value` is intentionally absent here — it was
+/// removed as unreachable by task 860.  Restoring it for full SYNC parity
+/// is tracked as a separate follow-up.
+///
+/// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
+/// duplication is intentional (making stdlib's version public would widen its
+/// API surface; moving it to reify-types would add evaluation semantics to a
+/// type crate).
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
