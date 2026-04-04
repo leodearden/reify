@@ -820,23 +820,18 @@ fn compute_numerical_gradient_at_point(
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
-/// Complex component extraction (re, im) and magnitude computation produce
-/// `Value::Real` or `Value::Scalar` by calling `Value::from_component`.  When
-/// the underlying f64 is NaN or Inf the result must be Undef, not a silently
-/// poisoned numeric value.  This helper mirrors the private `sanitize_value`
-/// in `reify-stdlib` — the duplication is intentional (see design decisions in
-/// the task plan: making stdlib's version public would widen its API surface;
+/// All callers pass either a `Value::from_component(...)` result — which
+/// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
+/// — or a directly-constructed `Value::Scalar`.  Consequently only the
+/// `Value::Real` and `Value::Scalar` arms are reachable here.  This helper
+/// mirrors the private `sanitize_value` in `reify-stdlib` — the duplication
+/// is intentional (making stdlib's version public would widen its API surface;
 /// moving it to reify-types would add evaluation semantics to a type crate).
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
-        Value::Complex { re, im, .. }
-            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
-        {
             Value::Undef
         }
         _ => v,
