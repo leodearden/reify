@@ -17821,11 +17821,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Tighten initialize_with_malformed_params_emits_warning (lines 70-73) — capture warn_count before calling handle_request and assert it increased by exactly 1 after, so the test actually verifies the malformed-params branch ran rather than any ambient warning. (2) Add a warn-count assertion to initialize_with_malformed_params_still_returns_capabilities (lines 340-366) to confirm the fallback branch actually executed. (3) Add a new test: perform a malformed initialize, then call initialized + textDocument/didOpen + textDocument/completion, and assert the results are valid — confirming that the default-fallback server state supports downstream LSP operations.\n\nmemory_hints: search(\"LSP malformed initialize test assertions coverage\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:46:57.716Z",
+        "updatedAt": "2026-04-04T04:15:24.122Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -18873,7 +18873,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:15:23.328Z",
+      "lastModified": "2026-04-04T04:15:24.122Z",
       "taskCount": 913,
       "completedCount": 680,
       "tags": [
