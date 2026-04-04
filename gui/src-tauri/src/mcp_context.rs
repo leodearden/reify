@@ -131,21 +131,7 @@ impl ReifyToolContext for TauriToolContext {
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
 
-        let diags = session.get_diagnostics();
-
-        Ok(diags
-            .into_iter()
-            .map(|d| DiagnosticInfo {
-                file_path: d.file_path,
-                line: d.line,
-                column: d.column,
-                end_line: d.end_line,
-                end_column: d.end_column,
-                severity: d.severity,
-                message: d.message,
-                code: d.code,
-            })
-            .collect())
+        Ok(session.get_diagnostics())
     }
 
     fn get_parameters(&self) -> Result<Vec<ParameterInfo>, ToolError> {
@@ -212,17 +198,9 @@ impl ReifyToolContext for TauriToolContext {
             .lock()
             .map_err(|e| ToolError::InternalError(format!("Lock error: {}", e)))?;
 
-        let loc = session
+        session
             .get_source_location(entity_path)
-            .ok_or_else(|| ToolError::EngineError(format!("entity not found: {}", entity_path)))?;
-
-        Ok(SourceLocationInfo {
-            file: loc.file,
-            line: loc.line,
-            column: loc.column,
-            end_line: loc.end_line,
-            end_column: loc.end_column,
-        })
+            .ok_or_else(|| ToolError::EngineError(format!("entity not found: {}", entity_path)))
     }
 
     fn update_source(&self, file_path: &str, content: &str) -> Result<UpdateResult, ToolError> {

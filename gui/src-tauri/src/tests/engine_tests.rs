@@ -4,8 +4,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
 use reify_types::ExportFormat;
 
+use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
+
 use crate::engine::{EngineSession, parse_value_string};
-use crate::types::DiagnosticData;
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -247,7 +248,7 @@ fn get_source_location_end_to_end() {
         .get_source_location("Bracket.width")
         .expect("should find source location for Bracket.width");
 
-    assert_eq!(loc.file, "bracket.ri");
+    assert_eq!(loc.file_path, "bracket.ri");
     // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
     assert!(
         loc.line >= 2,
@@ -256,6 +257,23 @@ fn get_source_location_end_to_end() {
     );
     assert!(loc.column >= 1, "column should be positive");
     assert!(loc.end_line >= loc.line, "end_line should be >= line");
+}
+
+#[test]
+fn get_source_location_returns_source_location_info() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let loc: SourceLocationInfo = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location for Bracket.width");
+
+    assert_eq!(loc.file_path, "bracket.ri");
 }
 
 #[test]
@@ -342,7 +360,7 @@ fn get_source_location_correct_after_load_file_then_update() {
     // The file in the location should match the single file entry
     assert_eq!(state.files.len(), 1);
     assert_eq!(
-        loc.file, state.files[0].path,
+        loc.file_path, state.files[0].path,
         "get_source_location file should match the single file entry"
     );
 }
@@ -417,7 +435,7 @@ fn get_source_location_correct_after_failed_update() {
         "column should be unchanged after failed update"
     );
     assert_eq!(
-        loc_before.file, loc_after.file,
+        loc_before.file_path, loc_after.file_path,
         "file should be unchanged after failed update"
     );
 
@@ -456,7 +474,7 @@ fn get_source_location_uses_explicit_key_lookup() {
 
     // Should return the normalized module-name-based key
     assert_eq!(
-        loc.file, "bracket.ri",
+        loc.file_path, "bracket.ri",
         "get_source_location should return normalized module-name key"
     );
 }
@@ -790,7 +808,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
 }
 
@@ -822,7 +840,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
         .load_from_source(source, "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     assert!(
         !diags.is_empty(),
@@ -895,7 +913,7 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
         .load_from_source(bracket_source(), "bracket")
         .expect("bracket source should compile cleanly");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
         diags.is_empty(),
         "bracket source has no warnings — diagnostics must be empty, got: {:?}",
@@ -927,7 +945,7 @@ fn engine_get_diagnostics_module_name_none_uses_fallback() {
     // Clear module_name to force the iter().next() fallback path
     session.clear_module_name_for_test();
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     // (a) Fallback path found the source_map entry, so diagnostics are non-empty
     assert!(
@@ -979,7 +997,7 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     // Inject a warning with no labels — this is the labelless case
     session.inject_diagnostic_for_test(Diagnostic::warning("test labelless"));
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     // (a) The injected diagnostic appears
     assert!(!diags.is_empty(), "expected injected diagnostic, got empty");

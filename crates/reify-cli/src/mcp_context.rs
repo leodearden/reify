@@ -318,7 +318,7 @@ impl ReifyToolContext for CliToolContext {
                     let (line, column) = byte_offset_to_line_col(source, cell.span.start);
                     let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
                     return Ok(SourceLocationInfo {
-                        file: file_path,
+                        file_path,
                         line,
                         column,
                         end_line,
@@ -334,7 +334,7 @@ impl ReifyToolContext for CliToolContext {
                     let (line, column) = byte_offset_to_line_col(source, cell.span.start);
                     let (end_line, end_column) = byte_offset_to_line_col(source, cell.span.end);
                     return Ok(SourceLocationInfo {
-                        file: file_path,
+                        file_path,
                         line,
                         column,
                         end_line,

@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_mcp;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
@@ -225,7 +226,7 @@ fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Re
 fn get_source_location(
     state: tauri::State<'_, AppState>,
     entity_path: String,
-) -> Result<reify_gui::types::SourceLocation, String> {
+) -> Result<reify_mcp::SourceLocationInfo, String> {
     reify_gui::commands::get_source_location_impl(&state.engine, &entity_path)
 }
 
