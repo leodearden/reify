@@ -19251,10 +19251,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs, update completion assertions to handle both CompletionResponse::Array and CompletionResponse::List variants, producing actionable error messages on failure.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:42.928Z"
       },
       {
         "id": "939",
@@ -19262,10 +19263,11 @@
         "description": "Add a test in crates/reify-lsp/tests/in_process_bridge.rs that sends a malformed initialize, skips the initialized notification, then attempts textDocument/didOpen and completion. Assert expected behavior (functions or returns well-defined error).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:43.711Z"
       },
       {
         "id": "940",
@@ -19536,7 +19538,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:40.320Z",
+      "lastModified": "2026-04-04T09:00:43.711Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
