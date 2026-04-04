@@ -17883,10 +17883,11 @@
         "description": "When the tracing::warn! was moved from add_auto_coord to solve() (task 830), the cell_id structured tracing field was lost. Previously it was `tracing::warn!(cell_id = %id, ...)` but now it's only embedded in the reason string: `tracing::warn!(reason = %reason, \"constraint pattern builder failed\")`. Any log aggregation or filtering keyed on a `cell_id` field silently stops working.\n\nFix: Change add_pattern_to_builder (and add_auto_coord) to return a richer error type that carries cell_id separately, so solve() can log it as a structured field:\n`tracing::warn!(cell_id = %cell_id, reason = %reason, \"constraint pattern builder failed: non-auto coord missing\")`\n\nAlternatively, a simpler approach: define a small `BuilderError { cell_id: ValueCellId, message: String }` struct used as the error type for add_auto_coord → add_point → add_pattern_to_builder, then destructure at the solve() call site.\n\nmemory_hints: search(\"structured tracing fields observability convention\", project_id=\"reify\"); search(\"solvespace builder error propagation\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:17.497Z"
       },
       {
         "id": "858",
@@ -17894,15 +17895,16 @@
         "description": "In `crates/reify-expr/src/lib.rs` lines 1201-1205, remove the `sanitize_value(...)` wrapper from the `phase` branch and return `Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE }` directly. Add a comment explaining: (1) the pre-guard at line 1195 is necessary because `atan2(y, Inf) = 0.0` is finite — sanitize_value alone cannot protect against Inf inputs; (2) after the guard, atan2(finite, finite) is always in [-π, π] so no output sanitization is needed. This removes dead code and prevents a future maintainer from mistakenly removing the pre-guard in the belief that sanitize_value provides equivalent protection.\n\nMemory hints: search \"sanitize_value phase atan2 convention\", search \"silent defaults convention\", entities: eval_method_call, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:18.106Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:03:16.912Z",
+      "lastModified": "2026-04-04T00:03:18.107Z",
       "taskCount": 858,
       "completedCount": 663,
       "tags": [
