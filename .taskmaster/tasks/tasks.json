@@ -19060,6 +19060,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 925,
+        "title": "Improve EventDispatchCounter test structure and happy-path coverage",
+        "description": "Two related test-quality improvements in crates/reify-test-support/src/tracing_support.rs:\n\n1. Move the `EventDispatchCounter<S>` struct (currently defined inline inside `error_events_rejected_by_enabled_filter`) to the `tests` module scope with `#[cfg(test)]`. This reduces the function from ~98 lines to ~35 and makes the pattern discoverable for future test authors in this crate.\n\n2. Add a positive WARN assertion inside `error_events_rejected_by_enabled_filter`: after the existing ERROR check, fire a `tracing::warn!` and assert `dispatch_count == 1` and `warn_count == 1`. This confirms the EventDispatchCounter wrapper is correctly wired and that the `==` filter passes WARN through — without this, a totally broken wrapper (always false from enabled()) would still make the test pass.\n\nmemory_hints: search(\"EventDispatchCounter test helper tracing_support\", project_id=\"reify\"), search(\"WarnCountingSubscriber test structure\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19072,7 +19083,7 @@
       ],
       "created": "2026-04-04T04:33:18.673Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T04:33:18.691Z"
+      "updated": "2026-04-04T04:33:25.919Z"
     }
   }
 }
