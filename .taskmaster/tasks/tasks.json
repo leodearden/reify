@@ -18169,10 +18169,11 @@
         "description": "Add compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:18:51.813Z"
       },
       {
         "id": "877",
@@ -18224,7 +18225,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:18:50.920Z",
+      "lastModified": "2026-04-04T00:18:51.814Z",
       "taskCount": 880,
       "completedCount": 667,
       "tags": [
