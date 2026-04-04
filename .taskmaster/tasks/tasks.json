@@ -19351,11 +19351,16 @@
         "description": "In crates/reify-constraints/tests/solvespace_tests.rs: (1) Rename solve_returns_no_progress_for_missing_non_auto_value to reflect it tests unrecognized-pattern path. (2) Add integration test for non-auto parameter missing from current_values NoProgress branch. (3) Use auto_params_for helper in add_auto_coord_errors test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:31.066Z"
+        "updatedAt": "2026-04-04T09:11:10.351Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "941",
@@ -19750,7 +19755,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:10:51.311Z",
+      "lastModified": "2026-04-04T09:11:10.351Z",
       "taskCount": 964,
       "completedCount": 699,
       "tags": [
