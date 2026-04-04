@@ -18062,10 +18062,11 @@
         "description": "Update the doc comment on handle_request in crates/reify-lsp/src/bridge.rs (currently lines 74-78) to: (1) describe when Err(String) is returned vs Ok(Value::Null) for notifications; (2) note that initialize now strictly requires valid InitializeParams and will return Err on any deserialization failure (breaking change from prior tolerant defaulting behavior). Covers review suggestions 1 and 10.\n\nmemory_hints: search(\"handle_request error contract bridge LSP silent defaults convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:18.358Z"
       },
       {
         "id": "869",
@@ -18103,7 +18104,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:17:16.311Z",
+      "lastModified": "2026-04-04T00:17:18.358Z",
       "taskCount": 871,
       "completedCount": 666,
       "tags": [
