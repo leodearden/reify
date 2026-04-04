@@ -7185,11 +7185,11 @@
         "description": "Fix name_to_idx HashMap (lib.rs:2095-2099) silently dropping first template when two have the same name — assert/check for duplicates. Add source location labels to recursive-cycle warning diagnostic (currently spanless, all others have labels). Deduplicate adjacency list (sort+dedup after collect) for improved self-loop check.\n\nMissing tests:\n- mutual_recursion_both_tagged should assert a warning diagnostic was emitted\n- Warning count should use exact len() == 1 instead of !is_empty()\n- Cycle-path assertion should check for \" -> \" format, not single-char contains('A')\n\nMemory hints: search \"recursive structure cycle detection name_to_idx Tarjan\", entities: compile_recursive_structures, DiagnosticLabel",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:07:33.159Z",
+        "updatedAt": "2026-04-04T14:10:00.685Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -19855,9 +19855,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:09:47.790Z",
+      "lastModified": "2026-04-04T14:10:00.691Z",
       "taskCount": 970,
-      "completedCount": 702,
+      "completedCount": 703,
       "tags": [
         "master"
       ]
