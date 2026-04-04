@@ -19221,6 +19221,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 937,
+        "title": "Clean up LSP bridge test boilerplate and fix ordering safety",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract warn-count delta assertion helper using saturating_sub. (2) Change Relaxed ordering to Acquire/Release in WarnCounter::event and assertion loads. (3) Extract did_open_params() helper for ~6 duplicated textDocument/didOpen JSON blocks. (4) Extract subscriber setup helper for 3x duplicated preambles.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19233,7 +19244,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:56.694Z"
+      "updated": "2026-04-04T06:10:31.308Z"
     }
   }
 }
