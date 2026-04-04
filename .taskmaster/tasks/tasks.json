@@ -20043,7 +20043,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T19:01:23.536Z"
+        "updatedAt": "2026-04-04T19:01:23.536Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 979,
