@@ -19954,7 +19954,14 @@
         "metadata": {
           "modules": [
             "gui/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "normalizePath URL API percent-encoding decodeURIComponent gui pathUtils",
+              "isSameFile pathUtils test coverage edge cases"
+            ]
+          }
         }
       },
       {
