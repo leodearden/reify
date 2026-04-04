@@ -19287,6 +19287,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 943,
+        "title": "Fix stale doc-comment and restore DiagnosticInfo type assertion coverage",
+        "description": "In gui/src-tauri/src/tests/mcp_context_tests.rs, update stale doc-comment on get_diagnostics test (references removed mapping closure). In gui/src-tauri/src/tests/mod.rs, add assert_clone_debug::<DiagnosticInfo>() to public_api_types_are_accessible.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19299,7 +19310,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:46.446Z"
+      "updated": "2026-04-04T06:10:49.119Z"
     }
   }
 }
