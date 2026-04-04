@@ -188,3 +188,31 @@ async fn lsp_bridge_with_sink_routes_diagnostics() {
         "broken source should produce error diagnostics through the sink"
     );
 }
+
+#[tokio::test]
+async fn lsp_request_impl_rejects_malformed_json_params() {
+    let bridge = LspBridge::new();
+    let result = lsp_request_impl(&bridge, "initialize", "not json".to_string()).await;
+    assert!(result.is_err(), "malformed JSON params should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("invalid JSON params"),
+        "error should contain 'invalid JSON params', got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn lsp_request_impl_accepts_valid_json_null_literal() {
+    let bridge = LspBridge::new();
+    // "null" is valid JSON — parsing must succeed; the error (if any) must NOT
+    // come from the JSON parse step itself.
+    let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
+    if let Err(ref e) = result {
+        assert!(
+            !e.contains("invalid JSON params"),
+            "null literal should not trigger a JSON parse error, got: {e}"
+        );
+    }
+    // Whether the LSP handler accepts null params or not is its own concern;
+    // what matters is that the JSON parse step did not reject it.
+}
