@@ -19179,10 +19179,11 @@
         "description": "In tests/sync_comments_test.sh, add checks that fn sanitize_value (or the referenced function name) actually exists in both the EXPR and STDLIB files, so stale SYNC comments are caught when functions are renamed.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:38.669Z"
       },
       {
         "id": "933",
@@ -19190,10 +19191,11 @@
         "description": "In crates/reify-test-support/src/tracing_support.rs: (1) Fix non_warn_events_are_not_counted to document two-level filtering (enabled accepts ERROR, event filters it). (2) Add non-zero span ID invariant assertion in new_span_ids_are_unique.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:40.320Z"
       },
       {
         "id": "934",
@@ -19534,7 +19536,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:36.975Z",
+      "lastModified": "2026-04-04T09:00:40.320Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
