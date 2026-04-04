@@ -18381,6 +18381,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 887,
+        "title": "Fix misleading doc comment on BuilderError",
+        "description": "In crates/reify-constraints/src/solvespace.rs, update the doc comment on the builder_error_display_contains_cell_id test (lines ~1100-1103) and/or the BuilderError enum (lines ~413-416) to remove references to anyhow and thiserror, which are not dependencies of reify-constraints. Replace with language that references the std::error::Error propagation contract (e.g. 'implements std::error::Error so it can be propagated with ? or wrapped by any conforming error-aggregation library').\n\nmemory_hints: search(\"BuilderError doc comment solvespace\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18393,7 +18404,7 @@
       ],
       "created": "2026-04-04T03:07:43.648Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:07:47.733Z"
+      "updated": "2026-04-04T03:07:52.249Z"
     }
   }
 }
