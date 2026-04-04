@@ -18589,10 +18589,11 @@
         "description": "The `scrollToLocation` effect in Editor.tsx:251 uses strict `!==` string equality to compare `location.file` against `props.store.state.activeFile`. This can silently swallow scroll requests if the backend emits paths in a different format (e.g. `file://`-prefixed URIs vs bare paths).\n\nThe codebase already has a precedent: `gotoDefinition.ts:106-108` uses an `isSameFile` check with `.endsWith()` fallback for URI/path format mismatches. The scrollToLocation guard should use consistent path comparison.\n\n**Changes needed:**\n1. In `gui/src/editor/Editor.tsx:251`, replace strict `!==` with a normalized path comparison (either reuse `uriToPath` from task 127, or extract a shared `isSameFile` utility)\n2. Add JSDoc to the `scrollToLocation` prop (Editor.tsx:23) documenting the file-match behavior: \"Scroll the editor to the given location. No-op if location.file does not match the currently active file.\"\n3. Add test in `gui/src/__tests__/Editor.test.tsx` with a `file://`-prefixed path that matches the active file, asserting scroll succeeds\n\n**memory_hints:** search(\"uriToPath isSameFile path normalization\", project_id=\"reify\"), get_entity(\"gotoDefinition\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:21:40.272Z"
       },
       {
         "id": "898",
@@ -18608,7 +18609,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:21:38.820Z",
+      "lastModified": "2026-04-04T03:21:40.272Z",
       "taskCount": 898,
       "completedCount": 672,
       "tags": [
