@@ -4650,6 +4650,7 @@ fn compile_entity(
             &mut constraint_index,
             enum_defs,
             functions,
+            alias_registry,
             diagnostics,
         );
 
@@ -6596,9 +6597,11 @@ fn check_trait_conformance(
     constraint_index: &mut u32,
     enum_defs: &[reify_types::EnumDef],
     functions: &[CompiledFunction],
+    alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Collect all structure member names for conformance checking.
+    let empty_params: HashSet<String> = HashSet::new();
     let structure_members: HashMap<String, Type> = structure
         .members
         .iter()
@@ -6608,7 +6611,7 @@ fn check_trait_conformance(
                     .type_expr
                     .as_ref()
                     .map(|te| {
-                        resolve_type_name(&te.name)
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
                             .or_else(|| {
                                 if enum_defs.iter().any(|e| e.name == te.name) {
                                     Some(Type::Enum(te.name.clone()))
@@ -6638,7 +6641,7 @@ fn check_trait_conformance(
                     .type_expr
                     .as_ref()
                     .map(|te| {
-                        resolve_type_name(&te.name)
+                        resolve_type_with_aliases(&te.name, &empty_params, alias_registry)
                             .or_else(|| {
                                 if enum_defs.iter().any(|e| e.name == te.name) {
                                     Some(Type::Enum(te.name.clone()))
