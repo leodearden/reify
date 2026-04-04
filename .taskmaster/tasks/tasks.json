@@ -18043,7 +18043,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:15:26.021Z"
+        "updatedAt": "2026-04-04T00:15:26.021Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": 867,
