@@ -18090,11 +18090,16 @@
         "description": "In gui/src-tauri/src/lsp_bridge.rs line 60, replace the silent unwrap_or(serde_json::Value::Null) with explicit error propagation: serde_json::from_str(&params).map_err(|e| format!(\"invalid JSON params: {e}\"))?. This gives callers a clear distinction between a malformed JSON string and a correctly-formed object with wrong field types. Covers review suggestions 2 and 9.\n\nmemory_hints: search(\"lsp_request_impl JSON parse error propagation silent defaults\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:18.613Z"
+        "updatedAt": "2026-04-04T00:20:13.691Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "870",
@@ -18248,7 +18253,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:20:08.693Z",
+      "lastModified": "2026-04-04T00:20:13.691Z",
       "taskCount": 880,
       "completedCount": 667,
       "tags": [
