@@ -19320,6 +19320,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 946,
+        "title": "Complete orientation sanitize_value test coverage",
+        "description": "In crates/reify-expr/src/lib.rs tests: (1) Add symmetric NaN/Inf tests for each quaternion field. (2) Non-identity orientation passthrough test. (3) Multi-bad-field test. (4) Complex passthrough test confirming intentional divergence from stdlib. Use parameterized helper/macro.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19332,7 +19343,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:54.011Z"
+      "updated": "2026-04-04T06:10:56.233Z"
     }
   }
 }
