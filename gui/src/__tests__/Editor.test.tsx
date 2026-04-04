@@ -305,6 +305,71 @@ describe('Editor scrollToLocation', () => {
     // Cursor should be at position 0 (default)
     expect(view.state.selection.main.head).toBe(0);
   });
+
+  it('scrollToLocation with mismatched file is a no-op', () => {
+    const store = setupStore([file1, file2]);
+    // Explicitly set active file to match multi-file test convention
+    store.setActiveFile(file2.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Phase 1: target the active file (file2) to prove the effect fires
+    // file2 content: 'structure Mount {}' (18 chars, single line)
+    // column 5 -> head = 9 (col 10, 0-indexed)
+    setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    expect(view.state.selection.main.head).toBeGreaterThan(0);
+
+    // Phase 2: now target mismatched file1 — effect must not move cursor
+    const headBefore = view.state.selection.main.head;
+    setScrollTo({ file_path: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    expect(view.state.selection.main.head).toBe(headBefore);
+  });
+
+  it('scrollToLocation with no active file does not crash', () => {
+    // setupStore([]) leaves activeFile as null — tests the null guard
+    const store = setupStore([]);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Targeting any file when activeFile is null: string !== null, effect returns early
+    setScrollTo({ file_path: file1.path, line: 1, column: 1, end_line: 1, end_column: 5 });
+
+    // Cursor unmoved, no crash
+    expect(view.state.selection.main.head).toBe(0);
+  });
+
+  it('scrollToLocation with file://-prefixed path matching active file succeeds', () => {
+    // file1 is active; location uses the file:// URI form of the same path
+    const store = setupStore();
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // file1.path = '/project/src/bracket.ri'
+    // file:// URI form  = 'file:///project/src/bracket.ri'
+    const location: SourceLocation = {
+      file_path: 'file:///project/src/bracket.ri',
+      line: 2,
+      column: 3,
+      end_line: 2,
+      end_column: 8,
+    };
+
+    setScrollTo(location);
+
+    // Cursor should have moved to line 2 (same as the bare-path test)
+    const sel = view.state.selection.main;
+    const line2 = view.state.doc.line(2);
+    const expectedAnchor = line2.from + 2; // column 3, 0-indexed = 2
+    const expectedHead = line2.from + 7;   // column 8, 0-indexed = 7
+    expect(sel.anchor).toBe(expectedAnchor);
+    expect(sel.head).toBe(expectedHead);
+  });
 });
 
 describe('Editor save error callback', () => {

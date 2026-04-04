@@ -199,11 +199,13 @@ fn end_to_end_export_via_impl() {
 fn module_structure_all_public_types() {
     // Verify all public types are accessible from the crate
     use crate::types::{ConstraintData, FileData, GuiState, MeshData, ValueData};
+    use reify_mcp::SourceLocationInfo;
     // Verify types implement Clone + Debug (compile-time check)
     fn assert_clone_debug<T: Clone + std::fmt::Debug>() {}
     assert_clone_debug::<GuiState>();
     assert_clone_debug::<MeshData>();
     assert_clone_debug::<ValueData>();
     assert_clone_debug::<ConstraintData>();
+    assert_clone_debug::<SourceLocationInfo>();
     assert_clone_debug::<FileData>();
 }

@@ -4,8 +4,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
 use reify_types::ExportFormat;
 
+use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
+
 use crate::engine::{EngineSession, parse_value_string};
-use crate::types::DiagnosticData;
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -256,6 +257,23 @@ fn get_source_location_end_to_end() {
     );
     assert!(loc.column >= 1, "column should be positive");
     assert!(loc.end_line >= loc.line, "end_line should be >= line");
+}
+
+#[test]
+fn get_source_location_returns_source_location_info() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let loc: SourceLocationInfo = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location for Bracket.width");
+
+    assert_eq!(loc.file_path, "bracket.ri");
 }
 
 #[test]
@@ -790,7 +808,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
 }
 
@@ -811,7 +829,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure S {
+    let source = r#"structure def S {
     port mount : NonExistentTrait {
         param d : Length = 5mm
     }
@@ -822,7 +840,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
         .load_from_source(source, "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     assert!(
         !diags.is_empty(),
@@ -895,10 +913,193 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
         .load_from_source(bracket_source(), "bracket")
         .expect("bracket source should compile cleanly");
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
         diags.is_empty(),
         "bracket source has no warnings — diagnostics must be empty, got: {:?}",
         diags
+    );
+}
+
+// --- Task 836: resolve_source pinning tests ---
+
+/// get_source_location returns None when no module is loaded.
+/// Documents the early-return (`let compiled = self.compiled.as_ref()?`)
+/// that fires before resolve_source is reached.
+#[test]
+fn get_source_location_returns_none_without_module() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when no module is loaded"
+    );
+}
+
+/// get_diagnostics and get_source_location return the same file key.
+///
+/// After load_from_source with a warning-producing source, both methods must resolve
+/// the file key through the same "{module_name}.ri" derivation via resolve_source.
+#[test]
+fn diagnostics_and_source_location_agree_on_file_key() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let source = r#"structure S {
+    param width : Length = 80mm
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+
+    session
+        .load_from_source(source, "testmod")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    let diags = session.get_diagnostics();
+    assert!(
+        !diags.is_empty(),
+        "expected at least one diagnostic for unknown port type"
+    );
+    assert_eq!(diags[0].file_path, "testmod.ri", "get_diagnostics file_path");
+
+    let loc = session
+        .get_source_location("S.width")
+        .expect("should find source location for S.width");
+    assert_eq!(loc.file_path, "testmod.ri", "get_source_location file_path");
+}
+
+/// get_diagnostics uses the updated module name key after update_source.
+///
+/// After load_from_source("initial") then update_source("updated.ri", ...),
+/// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+#[test]
+fn diagnostics_file_key_consistent_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let warning_source = r#"structure S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+
+    session
+        .load_from_source(warning_source, "initial")
+        .expect("initial load should succeed");
+
+    let diags_before = session.get_diagnostics();
+    assert!(!diags_before.is_empty(), "should have diagnostics after initial load");
+    assert_eq!(
+        diags_before[0].file_path, "initial.ri",
+        "before update: file_path should be 'initial.ri'"
+    );
+
+    session
+        .update_source("updated.ri", warning_source)
+        .expect("update_source should succeed");
+
+    let diags_after = session.get_diagnostics();
+    assert!(
+        !diags_after.is_empty(),
+        "should still have diagnostics after update_source"
+    );
+    assert_eq!(
+        diags_after[0].file_path, "updated.ri",
+        "after update_source, file_path should be 'updated.ri'"
+    );
+}
+
+/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+///
+/// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
+/// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
+/// a labelless diagnostic to verify the (1,1,1,1) fallback.
+#[test]
+fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Inject a warning with no labels — this is the labelless case
+    session.inject_diagnostic_for_test(Diagnostic::warning("test labelless"));
+
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+
+    // (a) The injected diagnostic appears
+    assert!(!diags.is_empty(), "expected injected diagnostic, got empty");
+
+    // Find the injected one (bracket_source has none of its own)
+    let injected = diags
+        .iter()
+        .find(|d| d.message == "test labelless")
+        .expect("injected 'test labelless' diagnostic not found in results");
+
+    // (b) All coordinates default to (1,1,1,1)
+    assert_eq!(injected.line, 1, "expected line=1 for labelless, got {}", injected.line);
+    assert_eq!(injected.column, 1, "expected column=1 for labelless, got {}", injected.column);
+    assert_eq!(injected.end_line, 1, "expected end_line=1 for labelless, got {}", injected.end_line);
+    assert_eq!(injected.end_column, 1, "expected end_column=1 for labelless, got {}", injected.end_column);
+
+    // (c) Severity preserved
+    assert_eq!(
+        injected.severity, "warning",
+        "expected severity 'warning', got '{}'",
+        injected.severity
+    );
+
+    // (d) Message preserved
+    assert_eq!(
+        injected.message, "test labelless",
+        "expected message 'test labelless', got '{}'",
+        injected.message
+    );
+}
+
+/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+///
+/// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
+/// module (and its diagnostics) are replaced on each update, so stale diagnostics
+/// from a previous compilation do not persist.
+#[test]
+fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load warning source — establishes a non-empty diagnostics state
+    let warn_source = r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#;
+    session
+        .load_from_source(warn_source, "test_warn")
+        .expect("warning source should compile");
+
+    let diags_before = session.get_diagnostics();
+    assert!(
+        !diags_before.is_empty(),
+        "expected diagnostics before update, got empty"
+    );
+
+    // Update the same file to clean source — diagnostics must be cleared
+    session
+        .update_source("test_warn.ri", bracket_source())
+        .expect("bracket source should compile cleanly");
+
+    let diags_after = session.get_diagnostics();
+    assert!(
+        diags_after.is_empty(),
+        "expected empty diagnostics after updating to clean source, got: {:?}",
+        diags_after
     );
 }

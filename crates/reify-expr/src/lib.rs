@@ -820,13 +820,24 @@ fn compute_numerical_gradient_at_point(
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
-/// Complex component extraction (re, im) and magnitude computation produce
-/// `Value::Real` or `Value::Scalar` by calling `Value::from_component`.  When
-/// the underlying f64 is NaN or Inf the result must be Undef, not a silently
-/// poisoned numeric value.  This helper mirrors the private `sanitize_value`
-/// in `reify-stdlib` — the duplication is intentional (see design decisions in
-/// the task plan: making stdlib's version public would widen its API surface;
-/// moving it to reify-types would add evaluation semantics to a type crate).
+/// All callers pass either a `Value::from_component(...)` result — which
+/// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
+/// — or a directly-constructed `Value::Scalar`.  Consequently only the
+/// `Value::Real` and `Value::Scalar` arms are reachable from current call
+/// sites; the `Value::Orientation` arm is unreachable today but is included
+/// for structural parity with `reify-stdlib::sanitize_value` (defense-in-depth:
+/// if callers evolve to pass orientation values, sanitization is already in
+/// place).
+///
+/// **Divergence from stdlib:** the `Value::Complex` arm present in
+/// `reify-stdlib::sanitize_value` is intentionally absent here — it was
+/// removed as unreachable by task 860.  Restoring it for full SYNC parity
+/// is tracked as a separate follow-up.
+///
+/// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
+/// duplication is intentional (making stdlib's version public would widen its
+/// API surface; moving it to reify-types would add evaluation semantics to a
+/// type crate).
 // SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
@@ -834,8 +845,15 @@ fn sanitize_value(v: Value) -> Value {
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
             Value::Undef
         }
-        Value::Complex { re, im, .. }
-            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
+        Value::Orientation { w, x, y, z }
+            if w.is_nan()
+                || w.is_infinite()
+                || x.is_nan()
+                || x.is_infinite()
+                || y.is_nan()
+                || y.is_infinite()
+                || z.is_nan()
+                || z.is_infinite() =>
         {
             Value::Undef
         }
@@ -4021,6 +4039,169 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    // ── sanitize_value direct unit tests ─────────────────────────────────────
+
+    #[test]
+    fn sanitize_real_nan_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NAN)).is_undef(),
+            "Real(NaN) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
+            "Real(+Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_neg_inf_returns_undef() {
+        assert!(
+            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
+            "Real(-Inf) should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_real_finite_passthrough() {
+        let v = Value::Real(2.72);
+        match sanitize_value(v) {
+            Value::Real(x) => assert!((x - 2.72).abs() < 1e-12),
+            other => panic!("expected Real(2.72), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn sanitize_scalar_nan_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with NaN si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with +Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_neg_inf_returns_undef() {
+        let v = Value::Scalar {
+            si_value: f64::NEG_INFINITY,
+            dimension: DimensionVector::MASS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Scalar with -Inf si_value should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_scalar_finite_passthrough() {
+        let v = Value::Scalar {
+            si_value: 0.001,
+            dimension: DimensionVector::LENGTH,
+        };
+        match sanitize_value(v) {
+            Value::Scalar { si_value, dimension } => {
+                assert!((si_value - 0.001).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
+        }
+    }
+
+    // ── sanitize_value Orientation arm tests (task-914) ──────────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NEG_INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with -Inf z should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_nan_y_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        match sanitize_value(v) {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < f64::EPSILON);
+                assert!((x - 0.0).abs() < f64::EPSILON);
+                assert!((y - 0.0).abs() < f64::EPSILON);
+                assert!((z - 0.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
         }
     }
 }

@@ -207,6 +207,26 @@ fn source_location_info_partial_eq() {
 }
 
 #[test]
+fn source_location_info_serializes_file_path_key() {
+    let loc = SourceLocationInfo {
+        file_path: "src/main.ri".to_string(),
+        line: 10,
+        column: 3,
+        end_line: 10,
+        end_column: 15,
+    };
+    let json = serde_json::to_value(&loc).unwrap();
+    assert_eq!(
+        json["file_path"], "src/main.ri",
+        "SourceLocationInfo must serialize the file field as 'file_path' JSON key"
+    );
+    assert!(
+        json.get("file").is_none(),
+        "SourceLocationInfo must not have a 'file' JSON key"
+    );
+}
+
+#[test]
 fn update_result_partial_eq() {
     let a = UpdateResult {
         success: true,

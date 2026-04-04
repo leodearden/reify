@@ -827,20 +827,25 @@ fn non_numeric_coord_returns_none() {
 fn solve_returns_no_progress_for_missing_non_auto_value() {
     let solver = SolveSpaceSolver;
 
+    const AUTO_ENTITY: &str = "Auto";
+    const X_MEMBER: &str = "x";
+    const FIXED_ENTITY: &str = "Fixed";
+    const Y_MEMBER: &str = "y";
+
     // A cell_id that is NOT in auto_params — simulates an incomplete eval pass.
-    let fixed_y_id = vcid("Fixed", "y");
+    // (Used as FIXED_ENTITY/Y_MEMBER in the ValueRef below; intentionally absent from auto_params)
 
     // Auto param for x (present in auto_params so the problem is non-trivial)
-    let x_id = vcid("Auto", "x");
+    let x_id = vcid(AUTO_ENTITY, X_MEMBER);
 
     let zero = literal(Value::Scalar {
         si_value: 0.0,
         dimension: DimensionVector::LENGTH,
     });
 
-    // Point with x=auto, y=non-auto ValueRef (fixed_y_id NOT in auto_params)
-    let pt_x = value_ref_typed("Auto", "x", Type::length());
-    let pt_y = value_ref_typed("Fixed", "y", Type::length());
+    // Point with x=auto, y=non-auto ValueRef (FIXED_ENTITY/Y_MEMBER NOT in auto_params)
+    let pt_x = value_ref_typed(AUTO_ENTITY, X_MEMBER, Type::length());
+    let pt_y = value_ref_typed(FIXED_ENTITY, Y_MEMBER, Type::length());
     let point_a = geo_fn(
         "point3d",
         vec![pt_x, pt_y, zero.clone()],
@@ -883,7 +888,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
             // Verify it's not a spurious "no constraints recognized" failure
             // — we DO have a constraint, it's just unrecognizable.
             assert!(
-                reason.contains("unrecognized") || reason.contains("missing"),
+                reason.contains("unrecognized"),
                 "reason should explain why progress was impossible, got: {}",
                 reason
             );

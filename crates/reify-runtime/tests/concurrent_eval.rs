@@ -1575,47 +1575,7 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 // the faulting node.
 
 #[cfg(feature = "test-utils")]
-/// Helper: build a tracing subscriber that counts WARN-level events using an AtomicUsize.
-/// Returns the subscriber and a clone of the counter for assertions.
-fn warn_counting_subscriber() -> (impl tracing::Subscriber, Arc<std::sync::atomic::AtomicUsize>) {
-    use std::sync::atomic::AtomicUsize;
-
-    let count = Arc::new(AtomicUsize::new(0));
-    let count_clone = Arc::clone(&count);
-
-    struct WarnCounter(Arc<AtomicUsize>);
-
-    impl tracing::Subscriber for WarnCounter {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::WARN
-        }
-
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(
-            &self,
-            _span: &tracing::span::Id,
-            _follows: &tracing::span::Id,
-        ) {
-        }
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            if event.metadata().level() == &tracing::Level::WARN {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
-
-        fn enter(&self, _span: &tracing::span::Id) {}
-
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    (WarnCounter(count_clone), count)
-}
+use reify_test_support::warn_counting_subscriber;
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
@@ -1636,9 +1596,12 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "values() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count,
+            1,
+            "values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 
@@ -1693,9 +1656,12 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "take_results() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count,
+            1,
+            "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 
@@ -1716,9 +1682,13 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            count > 0,
-            "build_result_shared() should emit tracing::warn! on poison recovery, got {count} WARN events"
+        // Only snapshot_values is poisoned; values and results locks are healthy.
+        // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
+        // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
+        assert_eq!(
+            count,
+            1,
+            "build_result_shared() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
 }
@@ -2118,7 +2088,11 @@ mod poison_recovery_extended {
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
-    /// into_result() has 6 unwrap_or_else closures in Arc::try_unwrap paths.
+    /// into_result() has 6 unwrap_or_else closures across 3 Arc::try_unwrap match arms.
+    /// These 3 tests exercise the Ok(lock) → into_inner() paths, which are reached when
+    /// Arc::try_unwrap succeeds (refcount == 1). The Err(arc) → read()/lock() →
+    /// unwrap_or_else() shared-fallback paths are covered by the `poison_shared_fallback`
+    /// module below.
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
         let setup = simple_setup();
@@ -2136,9 +2110,259 @@ mod poison_recovery_extended {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // Only values is poisoned; snapshot_values and results locks are healthy.
+        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
+        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
+    /// snapshot_values lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the snapshot_values lock
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on snapshot_values poison recovery, got {count} WARN events"
+        );
+    }
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
+    /// results lock.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_results() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Poison the results lock
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() should emit exactly 1 tracing::warn! on results poison recovery, got {count} WARN events"
+        );
+    }
+}
+
+// Tests for into_result() recovering via the shared-fallback (Err(arc)) branch.
+//
+// These tests hold a second Arc clone alive when into_result() is called, so
+// Arc::try_unwrap fails (refcount == 2) and execution falls into the
+// Err(arc) → read()/lock() → unwrap_or_else path for each of the three locks.
+//
+// Each lock has two tests:
+//   1. warn-counting — confirms tracing::warn! is emitted on poison recovery
+//   2. recovery — confirms no panic and the returned data is usable
+
+#[cfg(feature = "test-utils")]
+mod poison_shared_fallback {
+    use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use reify_test_support::tracing_support::warn_counting_subscriber;
+
+    // -----------------------------------------------------------------------
+    // values shared-fallback
+    // -----------------------------------------------------------------------
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned values lock via the shared-fallback (Err(arc) → read()) path.
+    ///
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
+    /// exercising lines 215-221 of concurrent_eval.rs.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_shared_fallback_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Hold a second Arc reference — try_unwrap will return Err(arc)
+        let _guard = adapter.values_arc();
+
+        // Poison the values lock
+        adapter.poison_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() shared-fallback (values) should emit exactly 1 tracing::warn!, got {count}"
+        );
+    }
+
+    /// Verify that into_result() does not panic and returns usable data when
+    /// recovering from a poisoned values lock via the shared-fallback path.
+    #[test]
+    fn into_result_shared_fallback_recovers_from_poisoned_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Hold a second Arc reference — try_unwrap will return Err(arc)
+        let _guard = adapter.values_arc();
+
+        adapter.poison_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+
         assert!(
-            count > 0,
-            "into_result() should emit tracing::warn! on poison recovery, got {count} WARN events"
+            result.is_ok(),
+            "into_result() should recover from poisoned values lock (shared fallback), not panic"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // snapshot_values shared-fallback
+    // -----------------------------------------------------------------------
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned snapshot_values lock via the shared-fallback (Err(arc) → read()) path.
+    ///
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
+    /// exercising lines 228-236 of concurrent_eval.rs.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_shared_fallback_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        let _guard = adapter.snapshot_values_arc();
+
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() shared-fallback (snapshot_values) should emit exactly 1 tracing::warn!, got {count}"
+        );
+    }
+
+    /// Verify that into_result() does not panic and returns usable data when
+    /// recovering from a poisoned snapshot_values lock via the shared-fallback path.
+    #[test]
+    fn into_result_shared_fallback_recovers_from_poisoned_snapshot_values() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        let _guard = adapter.snapshot_values_arc();
+
+        adapter.poison_snapshot_values();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+
+        assert!(
+            result.is_ok(),
+            "into_result() should recover from poisoned snapshot_values lock (shared fallback), not panic"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // results shared-fallback
+    // -----------------------------------------------------------------------
+
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned results lock via the shared-fallback (Err(arc) → lock()) path.
+    ///
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
+    /// exercising lines 243-249 of concurrent_eval.rs.
+    #[test]
+    fn tracing_warn_emitted_on_poison_into_result_shared_fallback_results() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        let _guard = adapter.results_arc();
+
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let _result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count,
+            1,
+            "into_result() shared-fallback (results) should emit exactly 1 tracing::warn!, got {count}"
+        );
+    }
+
+    /// Verify that into_result() does not panic and returns usable data when
+    /// recovering from a poisoned results lock via the shared-fallback path.
+    /// node_results should be empty because no evaluations occurred.
+    #[test]
+    fn into_result_shared_fallback_recovers_from_poisoned_results() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        let _guard = adapter.results_arc();
+
+        adapter.poison_results();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            adapter.into_result(&eval_set, HashSet::new())
+        }));
+
+        assert!(
+            result.is_ok(),
+            "into_result() should recover from poisoned results lock (shared fallback), not panic"
+        );
+        let edit_result = result.unwrap();
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after shared-fallback poison recovery"
         );
     }
 }

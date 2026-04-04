@@ -63,6 +63,7 @@ describe('reifyGotoDefinition', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     // First call uses first URI
@@ -119,6 +120,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     mousedownHandler(mockEvent, mockView);
@@ -158,6 +160,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     mousedownHandler(mockEvent, mockView);
@@ -170,5 +173,83 @@ describe('cross-file goto-definition (onNavigate)', () => {
       selection: { anchor: expect.any(Number) },
       scrollIntoView: true,
     });
+  });
+});
+
+describe('isConnected guard', () => {
+  it('does not dispatch when view.dom.isConnected is false (editor destroyed)', async () => {
+    const currentUri = 'file:///current.ri';
+    const sameFileLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: 2 }, end: { line: 5, character: 10 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: false },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // view.dispatch must NOT be called — editor was destroyed before response arrived
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not call onNavigate when view.dom.isConnected is false (cross-file case)', async () => {
+    const currentUri = 'file:///current.ri';
+    const crossFileLocation = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 3, character: 1 }, end: { line: 3, character: 7 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: false },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Neither onNavigate nor dispatch should be called — editor was destroyed
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 });

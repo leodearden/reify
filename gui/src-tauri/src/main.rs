@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_mcp;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
