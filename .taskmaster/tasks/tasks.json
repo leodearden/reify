@@ -18201,6 +18201,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 880,
+        "title": "Emit diagnostic on constraint def name collision and document module_dag invariant",
+        "description": "Two improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18213,7 +18224,7 @@
       ],
       "created": "2026-04-04T00:17:53.746Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:18:12.228Z"
+      "updated": "2026-04-04T00:18:18.401Z"
     }
   }
 }
