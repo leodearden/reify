@@ -19441,6 +19441,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 957,
+        "title": "Replace dead Undef=>0 arm with unreachable!() in edit_param count resolution",
+        "description": "In crates/reify-eval/src/lib.rs, replace the Value::Undef => 0 safety fallback in new_count match (dead code due to guard above) with unreachable!(\"Undef new_count guarded above\") per silent-defaults convention.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19453,7 +19464,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:56.638Z"
+      "updated": "2026-04-04T06:12:58.932Z"
     }
   }
 }
