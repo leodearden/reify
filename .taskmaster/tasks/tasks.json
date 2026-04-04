@@ -18441,6 +18441,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 889,
+        "title": "Add coverage gaps: negative-y Orientation and Scalar dimension-dominance with negative value",
+        "description": "Two missing test cases for directly changed code in `crates/reify-types/src/value.rs`:\n1. In `value_ord_orientation_negative_components` (around line 3450), add a case that ties `w` and `x` and asserts `Value::Orientation { w:0.5, x:0.0, y:-1.0, z:0.0 } < Value::Orientation { w:0.5, x:0.0, y:-0.5, z:0.0 }` — this covers `ay.total_cmp(by)` which is currently untested with negative values.\n2. Add a new test (near line 2147) with two `Value::Scalar` values sharing `si_value: -1.0` but different dimensions (e.g., LENGTH vs MASS) and assert the dimension ordering is respected — covering that `ad.cmp(bd)` still dominates over the negative `total_cmp()` value.\n\nMemory hints: search \"Value Ord orientation scalar negative test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18453,7 +18464,7 @@
       ],
       "created": "2026-04-04T03:14:47.719Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:14:47.736Z"
+      "updated": "2026-04-04T03:14:52.563Z"
     }
   }
 }
