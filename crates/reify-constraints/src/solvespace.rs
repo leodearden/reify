@@ -1008,6 +1008,16 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 mod tests {
     use super::*;
 
+    /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
+    /// Shared by the three add_auto_coord tests that need a standard single-param setup.
+    fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
+        vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }]
+    }
+
     /// Non-auto param with a value present in current_values should succeed
     /// and use the provided value. Regression guard for the non-auto happy path.
     #[test]
