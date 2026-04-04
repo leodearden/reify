@@ -2084,6 +2084,47 @@ mod tests {
         let _ = pos.cmp(&neg);
     }
 
+    #[test]
+    fn value_ord_real_nan_and_neg_zero_still_consistent() {
+        use std::cmp::Ordering;
+
+        let pos = Value::Real(0.0);
+        let neg = Value::Real(-0.0);
+        let nan = Value::Real(f64::NAN);
+        let inf = Value::Real(f64::INFINITY);
+
+        // (a) PartialEq: -0.0 != +0.0 (different bit patterns via to_bits())
+        assert_ne!(neg, pos, "neg-zero and pos-zero must differ under bit-identity PartialEq");
+
+        // (b) Ord: -0.0 has a strict ordering vs +0.0.
+        // With to_bits() unsigned comparison:
+        //   (-0.0f64).to_bits() == 0x8000000000000000 > 0x0000000000000000 == (0.0f64).to_bits()
+        // so neg > pos.
+        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg-zero and pos-zero must not compare Equal");
+        assert_eq!(neg.cmp(&pos), Ordering::Greater, "neg-zero must sort after pos-zero under to_bits() unsigned order");
+        assert_eq!(pos.cmp(&neg), Ordering::Less, "pos-zero must sort before neg-zero under to_bits() unsigned order");
+
+        // (c) PartialEq: NaN == NaN (same canonical bit pattern)
+        assert_eq!(nan, nan, "NaN must equal itself under bit-identity PartialEq");
+
+        // (d) Ord: NaN has a defined non-Equal ordering vs finite and infinite values
+        assert_ne!(nan.cmp(&inf), Ordering::Equal, "NaN must not compare Equal to infinity");
+        assert_ne!(nan.cmp(&pos), Ordering::Equal, "NaN must not compare Equal to pos-zero");
+        // NaN.to_bits() == 0x7FF8000000000000, which is less than INFINITY.to_bits() == 0x7FF0000000000000
+        // Actually let's assert consistent direction using cmp symmetry:
+        assert_eq!(nan.cmp(&inf), inf.cmp(&nan).reverse(), "NaN/inf ordering must be antisymmetric");
+
+        // (e) PartialEq/Ord consistency invariant: a == b iff a.cmp(&b) == Equal
+        // Check eq implies cmp == Equal:
+        assert_eq!(nan.cmp(&nan), Ordering::Equal, "NaN == NaN so cmp must be Equal");
+        assert_eq!(pos.cmp(&pos), Ordering::Equal, "pos == pos so cmp must be Equal");
+        assert_eq!(neg.cmp(&neg), Ordering::Equal, "neg == neg so cmp must be Equal");
+        // Check !eq implies cmp != Equal:
+        assert_ne!(nan.cmp(&inf), Ordering::Equal, "nan != inf so cmp must not be Equal");
+        assert_ne!(nan.cmp(&pos), Ordering::Equal, "nan != pos so cmp must not be Equal");
+        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg != pos so cmp must not be Equal");
+    }
+
     // --- Option tests (step-11) ---
 
     #[test]
