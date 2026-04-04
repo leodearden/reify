@@ -210,6 +210,8 @@ describe('isConnected guard', () => {
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
 
+    // LSP request completed (invoke was called) but guard blocked dispatch
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
     // view.dispatch must NOT be called — editor was destroyed before response arrived
     expect(mockView.dispatch).not.toHaveBeenCalled();
   });
@@ -248,6 +250,8 @@ describe('isConnected guard', () => {
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
 
+    // LSP request completed (invoke was called) but guard blocked onNavigate
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
     // Neither onNavigate nor dispatch should be called — editor was destroyed
     expect(onNavigate).not.toHaveBeenCalled();
     expect(mockView.dispatch).not.toHaveBeenCalled();
