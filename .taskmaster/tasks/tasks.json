@@ -19019,6 +19019,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 922,
+        "title": "Extract warn_source_with_unknown_port_type fixture to reify-test-support",
+        "description": "The warn source string (`structure def S { port mount : NonExistentTrait { ... } }`) is copy-pasted in 4 locations:\n- gui/src-tauri/src/tests/engine_tests.rs (~lines 814, 917, 1026)\n- gui/src-tauri/src/tests/mcp_context_tests.rs (~line 544)\n\nTask 839 already had to patch it in two places when the syntax changed from `structure S` to `structure def S`, proving the maintenance friction.\n\nAdd a `warn_source_with_unknown_port_type() -> &'static str` fixture function to `crates/reify-test-support/src/fixtures.rs` (analogous to `bracket_source()`), and replace the four inline literals with calls to it. This collapses future syntax-change updates to a single file.\n\nmemory_hints: search(\"shared test fixtures reify-test-support bracket_source\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19031,7 +19042,7 @@
       ],
       "created": "2026-04-04T04:30:57.840Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T04:30:57.849Z"
+      "updated": "2026-04-04T04:31:04.551Z"
     }
   }
 }
