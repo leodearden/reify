@@ -7156,11 +7156,11 @@
         "description": "Fix cross-trait requirement check (lib.rs:4137,4155-4172) matching name+type only, not kind — a param requirement can be silently satisfied by a let default. Restrict cross-check to kind-matching defaults. Improve trait conflict error messages to identify which specific traits are in conflict (currently unnamed).\n\nMissing tests to add:\n- requirement_type_mismatch_from_cross_trait_default error branch (entirely untested)\n- requirement_satisfied_by_cross_trait_default should assert value cell exists, not just 0 errors\n\nMemory hints: search \"cross-trait requirement kind param let mismatch\", entities: compile_traits, trait_merge",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-03T14:00:11.191Z",
+        "updatedAt": "2026-04-04T04:30:55.407Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -19012,7 +19012,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:29:25.041Z",
+      "lastModified": "2026-04-04T04:30:55.407Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
