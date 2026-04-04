@@ -811,7 +811,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure S {
+    let source = r#"structure def S {
     port mount : NonExistentTrait {
         param d : Length = 5mm
     }
