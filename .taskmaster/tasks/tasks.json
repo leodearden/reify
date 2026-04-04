@@ -18657,10 +18657,11 @@
         "description": "The doc comment on reify-expr's `sanitize_value` (line ~827) still says \"mirrors the private `sanitize_value` in `reify-stdlib`\" and the SYNC marker (line ~830) says \"keep in sync\" without qualification. After task 860 removed the `Value::Complex` arm, the two copies intentionally diverge. Update:\n\n1. Doc comment: Change to say this is a *narrower* variant that omits the Complex arm because all callers pass `Value::from_component` results (Real/Scalar only).\n2. SYNC marker in reify-expr: Change to \"intentional partial mirror — Complex arm omitted; if Real/Scalar arms change, mirror those changes.\"\n3. SYNC marker in reify-stdlib: Add reciprocal note that reify-expr's copy intentionally omits the Complex arm.\n\nMemory hints: search \"task 859 SYNC sanitize_value\", search \"sanitize_value divergence reify-expr reify-stdlib\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:29:08.221Z"
       },
       {
         "id": "902",
@@ -18676,7 +18677,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:29:07.941Z",
+      "lastModified": "2026-04-04T03:29:08.221Z",
       "taskCount": 902,
       "completedCount": 672,
       "tags": [
