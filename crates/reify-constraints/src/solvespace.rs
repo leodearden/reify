@@ -1173,11 +1173,11 @@ mod tests {
         );
     }
 
-    /// add_point must propagate the Err returned by add_auto_coord when the
-    /// x-coordinate cell_id is a non-auto param absent from current_values.
-    /// This covers the `?` operator on line 489 of add_point.
+    /// add_point must propagate the Err from add_auto_coord when a PointRef::Auto
+    /// x-coordinate is a non-auto cell_id absent from current_values.
+    /// This covers the `?` propagation in add_point's PointRef::Auto arm for the x-coordinate.
     #[test]
-    fn add_point_propagates_missing_value_error() {
+    fn add_point_propagates_error_for_unresolved_x_coord() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Fixed", "y");
         // cell_id is NOT in auto_params (non-auto)
