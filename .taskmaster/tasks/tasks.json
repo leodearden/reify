@@ -19324,10 +19324,11 @@
         "description": "In crates/reify-types/src/value.rs, add pub fn orientation_is_finite() that checks all four quaternion components with !is_finite(). Use it in crates/reify-expr/src/lib.rs sanitize_value + Transform guards and crates/reify-stdlib/src/lib.rs sanitize_value. Normalizes verbose is_nan()||is_infinite() to !is_finite().",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:31.479Z"
       },
       {
         "id": "946",
@@ -19521,7 +19522,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:31.291Z",
+      "lastModified": "2026-04-04T09:00:31.479Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
