@@ -20051,11 +20051,16 @@
         "description": "The duplicate_template_names_emits_diagnostic test in crates/reify-compiler/src/scc.rs (lines 351-367) has two gaps: (1) It filters by message substring 'duplicate' without asserting Severity::Error — a regression to warning would go undetected. (2) It doesn't verify that is_recursive is still computed correctly for the non-duplicate entries. Both assertions should be added.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T19:01:26.550Z"
+        "updatedAt": "2026-04-04T19:06:29.554Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "980",
@@ -20123,7 +20128,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:05:23.437Z",
+      "lastModified": "2026-04-04T19:06:29.590Z",
       "taskCount": 984,
       "completedCount": 712,
       "tags": [
