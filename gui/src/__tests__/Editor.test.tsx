@@ -307,27 +307,24 @@ describe('Editor scrollToLocation', () => {
   });
 
   it('scrollToLocation with mismatched file is a no-op', () => {
-    // file2 is active (last opened), but location targets file1
     const store = setupStore([file1, file2]);
+    // Explicitly set active file to match multi-file test convention
+    store.setActiveFile(file2.path);
     const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
     render(() => <Editor store={store} scrollToLocation={scrollTo} />);
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
-    // Target line 1 of file1 — valid in both files so only the file-match guard
-    // can prevent the scroll (not the out-of-bounds guard)
-    const location: SourceLocation = {
-      file: file1.path,
-      line: 1,
-      column: 5,
-      end_line: 1,
-      end_column: 10,
-    };
+    // Phase 1: target the active file (file2) to prove the effect fires
+    // file2 content: 'structure Mount {}' (18 chars, single line)
+    // column 5 -> head = 9 (col 10, 0-indexed)
+    setScrollTo({ file: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    expect(view.state.selection.main.head).toBeGreaterThan(0);
 
-    setScrollTo(location);
-
-    // Cursor must not have moved: still at 0
-    expect(view.state.selection.main.head).toBe(0);
+    // Phase 2: now target mismatched file1 — effect must not move cursor
+    const headBefore = view.state.selection.main.head;
+    setScrollTo({ file: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    expect(view.state.selection.main.head).toBe(headBefore);
   });
 });
 
