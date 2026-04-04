@@ -18366,10 +18366,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs:\n1. Remove add_auto_coord_returns_missing_non_auto_variant (lines ~1162-1179) entirely — it is a strict subset of add_auto_coord_errors_on_missing_non_auto_value.\n2. Strip the Display sub-assertions from add_auto_coord_errors_on_missing_non_auto_value (lines ~1144-1152) — builder_error_display_contains_cell_id already covers the Display contract.\n3. Refactor the surviving match arm in add_auto_coord_errors_on_missing_non_auto_value to avoid the ref id + unwrap_err() NLL dependency: destructure to take ownership of the inner id, then assert equality directly, removing the need to call unwrap_err() on an already-matched result.\n\nmemory_hints: search(\"BuilderError test consolidation solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:08:10.150Z"
       },
       {
         "id": "886",
@@ -18377,10 +18378,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs line ~417, remove Clone from #[derive(Debug, Clone)], leaving #[derive(Debug)]. The type is module-private and consumed only via .to_string() at line ~823; no call site clones a BuilderError. ValueCellId has heap-allocated String fields, so the derive is non-trivially unnecessary API surface.\n\nmemory_hints: search(\"BuilderError Clone derive solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:08:10.951Z"
       },
       {
         "id": "887",
@@ -18396,7 +18398,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:08:09.063Z",
+      "lastModified": "2026-04-04T03:08:10.951Z",
       "taskCount": 887,
       "completedCount": 671,
       "tags": [
