@@ -4,7 +4,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
 use reify_types::ExportFormat;
 
-use reify_mcp::DiagnosticInfo;
+use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::engine::{EngineSession, parse_value_string};
 
@@ -257,6 +257,23 @@ fn get_source_location_end_to_end() {
     );
     assert!(loc.column >= 1, "column should be positive");
     assert!(loc.end_line >= loc.line, "end_line should be >= line");
+}
+
+#[test]
+fn get_source_location_returns_source_location_info() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("initial load");
+
+    let loc: SourceLocationInfo = session
+        .get_source_location("Bracket.width")
+        .expect("should find source location for Bracket.width");
+
+    assert_eq!(loc.file_path, "bracket.ri");
 }
 
 #[test]
