@@ -305,6 +305,30 @@ describe('Editor scrollToLocation', () => {
     // Cursor should be at position 0 (default)
     expect(view.state.selection.main.head).toBe(0);
   });
+
+  it('scrollToLocation with mismatched file is a no-op', () => {
+    // file2 is active (last opened), but location targets file1
+    const store = setupStore([file1, file2]);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Target line 1 of file1 — valid in both files so only the file-match guard
+    // can prevent the scroll (not the out-of-bounds guard)
+    const location: SourceLocation = {
+      file: file1.path,
+      line: 1,
+      column: 5,
+      end_line: 1,
+      end_column: 10,
+    };
+
+    setScrollTo(location);
+
+    // Cursor must not have moved: still at 0
+    expect(view.state.selection.main.head).toBe(0);
+  });
 });
 
 describe('Editor save error callback', () => {
