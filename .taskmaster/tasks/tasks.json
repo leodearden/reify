@@ -19511,11 +19511,16 @@
         "description": "Move 7 conjugate NaN/Inf tests from crates/reify-expr/src/lib.rs to crates/reify-expr/tests/complex_eval_tests.rs using existing complex_val() and eval_method() helpers. Add missing +Inf im test case and negative-im regression test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:49.628Z"
+        "updatedAt": "2026-04-04T09:05:52.643Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "953",
@@ -19670,7 +19675,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:05:46.993Z",
+      "lastModified": "2026-04-04T09:05:52.647Z",
       "taskCount": 962,
       "completedCount": 699,
       "tags": [
