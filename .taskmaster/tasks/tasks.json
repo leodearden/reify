@@ -17922,7 +17922,13 @@
         "metadata": {
           "modules": [
             "crates/reify-constraints"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract shared test helpers for solvespace.rs error-path tests"
+            ]
+          }
         }
       },
       {
@@ -19080,11 +19086,11 @@
         "description": "Two improvements to orientation test assertion macros in crates/reify-stdlib/src/lib.rs:\n\n1. **Per-component diagnostics** (macro at ~line 3971): The current `assert_orientation_approx!` macro uses a single compound `&&` assertion for all 4 components. When it fails, you can't tell which component diverged. Replace the single assert with 4 per-component asserts that include the component name in the message (e.g. `assert!((w - $ew).abs() < 1e-12, \"w: expected {}, got {}\", $ew, w)`).\n\n2. **Sign-insensitive variant** (~lines 7709-7722, 7753-7766, 7800-7820, 7848-7868): Four inline `Value::Orientation { w, x, y, z }` match+assert blocks duplicate a `pos_ok || neg_ok` sign-ambiguity pattern with 1e-10 tolerance. Create an `assert_orientation_approx_sign_insensitive!($expr, $ew, $ex, $ey, $ez, $tol)` macro that handles the quaternion sign-flip check, then replace the 4 inline blocks with it.\n\nMemory hints: search \"assert_orientation_approx macro\", search \"orientation sign ambiguity test pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:13:37.104Z",
+        "updatedAt": "2026-04-04T14:28:24.248Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -19939,7 +19945,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:26:57.360Z",
+      "lastModified": "2026-04-04T14:28:24.248Z",
       "taskCount": 972,
       "completedCount": 705,
       "tags": [
