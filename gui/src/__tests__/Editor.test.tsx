@@ -318,12 +318,12 @@ describe('Editor scrollToLocation', () => {
     // Phase 1: target the active file (file2) to prove the effect fires
     // file2 content: 'structure Mount {}' (18 chars, single line)
     // column 5 -> head = 9 (col 10, 0-indexed)
-    setScrollTo({ file: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
     expect(view.state.selection.main.head).toBeGreaterThan(0);
 
     // Phase 2: now target mismatched file1 — effect must not move cursor
     const headBefore = view.state.selection.main.head;
-    setScrollTo({ file: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    setScrollTo({ file_path: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
     expect(view.state.selection.main.head).toBe(headBefore);
   });
 
@@ -336,7 +336,7 @@ describe('Editor scrollToLocation', () => {
     const view = getEditorView(container);
 
     // Targeting any file when activeFile is null: string !== null, effect returns early
-    setScrollTo({ file: file1.path, line: 1, column: 1, end_line: 1, end_column: 5 });
+    setScrollTo({ file_path: file1.path, line: 1, column: 1, end_line: 1, end_column: 5 });
 
     // Cursor unmoved, no crash
     expect(view.state.selection.main.head).toBe(0);
@@ -353,7 +353,7 @@ describe('Editor scrollToLocation', () => {
     // file1.path = '/project/src/bracket.ri'
     // file:// URI form  = 'file:///project/src/bracket.ri'
     const location: SourceLocation = {
-      file: 'file:///project/src/bracket.ri',
+      file_path: 'file:///project/src/bracket.ri',
       line: 2,
       column: 3,
       end_line: 2,
