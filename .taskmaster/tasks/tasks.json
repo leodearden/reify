@@ -19515,11 +19515,16 @@
         "description": "In crates/reify-types/src/value.rs, update 4 stale comments referencing 'to_bits' ordering to say 'total_cmp()' / 'IEEE 754 total order' in: value_ord_within_real_and_nan, value_orientation_ord_within_type, value_frame_ord_same_origin_compare_basis. Add ordering comment to Orientation Ord arm matching Scalar/Complex style.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:50.211Z"
+        "updatedAt": "2026-04-04T09:04:50.662Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": "955",
@@ -19630,7 +19635,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:04:47.023Z",
+      "lastModified": "2026-04-04T09:04:50.662Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
