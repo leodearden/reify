@@ -6892,7 +6892,13 @@
           "modules": [
             "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Stress test: trait_hierarchy.ri + sweep_degenerate.ri + error_messages.ri"
+            ]
+          }
         },
         "subtasks": [],
         "details": "Three tests: (1) trait_hierarchy — 3-deep chains, diamond inheritance, multi-trait impl; (2) sweep_degenerate — zero extrude, 0°/720° revolve, self-intersecting path, 1-profile loft; (3) error_messages — every error class produces helpful diagnostic.",
@@ -17459,11 +17465,11 @@
         "description": "Add a private method SystemBuilder::add_line_pair (or free function) that encapsulates the 4× add_point + 2× add_line_segment pattern. Replace the three identical blocks in the Angle (lines 921-926), Parallel (lines 940-945), and Perpendicular (lines 959-964) arms of add_pattern_to_builder with a single call to it.\n\nmemory_hints: search(\"solvespace add_line_pair code duplication\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:21:10.216Z",
+        "updatedAt": "2026-04-04T04:23:16.125Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -18979,7 +18985,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:23:04.020Z",
+      "lastModified": "2026-04-04T04:23:16.125Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
