@@ -30,13 +30,19 @@ pub(crate) fn detect_recursive_structures(
 
     // Build adjacency list: for each template index, collect the indices of templates it
     // references via sub_components (only those that exist in the template set).
+    // sort_unstable + dedup removes duplicate edges (e.g. two subs referencing the same
+    // target), keeping the graph clean and the self-loop check at line 70 principled.
     let adjacency: Vec<Vec<usize>> = templates
         .iter()
         .map(|t| {
-            t.sub_components
+            let mut adj: Vec<usize> = t
+                .sub_components
                 .iter()
                 .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
-                .collect()
+                .collect();
+            adj.sort_unstable();
+            adj.dedup();
+            adj
         })
         .collect();
 
