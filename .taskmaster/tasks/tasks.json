@@ -17465,11 +17465,11 @@
         "description": "Add a private method SystemBuilder::add_line_pair (or free function) that encapsulates the 4× add_point + 2× add_line_segment pattern. Replace the three identical blocks in the Angle (lines 921-926), Parallel (lines 940-945), and Perpendicular (lines 959-964) arms of add_pattern_to_builder with a single call to it.\n\nmemory_hints: search(\"solvespace add_line_pair code duplication\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T06:20:21.406Z",
+        "updatedAt": "2026-04-04T09:00:14.154Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19511,9 +19511,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T07:28:12.190Z",
+      "lastModified": "2026-04-04T09:00:14.181Z",
       "taskCount": 962,
-      "completedCount": 699,
+      "completedCount": 698,
       "tags": [
         "master"
       ]
