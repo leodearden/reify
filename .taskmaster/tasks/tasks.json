@@ -18190,6 +18190,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 879,
+        "title": "Fix misleading test name and strengthen single-char error assertions",
+        "description": "Two improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18202,7 +18213,7 @@
       ],
       "created": "2026-04-04T00:17:53.746Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:18:06.885Z"
+      "updated": "2026-04-04T00:18:12.228Z"
     }
   }
 }
