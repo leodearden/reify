@@ -20081,6 +20081,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 983,
+        "title": "Extract parse_params<T> helper to DRY bridge.rs deserialization",
+        "description": "The two-line pattern `let p: T = serde_json::from_value(params).map_err(|e| format!(\"<name> params error: {e}\"))?;` appears 7 times across all match arms in `InProcessLsp::handle_request` (initialize, initialized, didOpen, didChange, didClose, completion, hover, definition).\n\nExtract a module-private helper:\n```rust\nfn parse_params<T: serde::de::DeserializeOwned>(params: serde_json::Value, label: &str) -> Result<T, String> {\n    serde_json::from_value(params).map_err(|e| format!(\"{label} params error: {e}\"))\n}\n```\n\nThen each arm becomes `let p = parse_params::<InitializedParams>(params, \"initialized\")?;` — one line, no format strings scattered across 7 sites. Adding future arms becomes trivially DRY.\n\nMemory hints: search \"bridge.rs handle_request deserialization\", search \"parse_params helper DRY\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20093,7 +20104,7 @@
       ],
       "created": "2026-04-04T19:03:49.751Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T19:03:49.778Z"
+      "updated": "2026-04-04T19:03:56.022Z"
     }
   }
 }
