@@ -18179,6 +18179,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 878,
+        "title": "Add missing test coverage: non-pub visibility, field contents, second predicate, active guard",
+        "description": "Four additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18191,7 +18202,7 @@
       ],
       "created": "2026-04-04T00:17:53.746Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:17:58.520Z"
+      "updated": "2026-04-04T00:18:06.885Z"
     }
   }
 }
