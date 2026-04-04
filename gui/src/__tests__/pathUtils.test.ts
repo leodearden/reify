@@ -5,6 +5,14 @@ describe('normalizePath', () => {
   it('strips file:// prefix from a URI', () => {
     expect(normalizePath('file:///project/src/foo.ri')).toBe('/project/src/foo.ri');
   });
+
+  it('decodes percent-encoded spaces in a file:// URI', () => {
+    expect(normalizePath('file:///project/src/hello%20world.ri')).toBe('/project/src/hello world.ri');
+  });
+
+  it('decodes multiple percent-encoded characters in a file:// URI', () => {
+    expect(normalizePath('file:///path/%E4%BD%A0%E5%A5%BD.ri')).toBe('/path/你好.ri');
+  });
 });
 
 describe('isSameFile', () => {
