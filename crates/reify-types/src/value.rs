@@ -1194,7 +1194,25 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Real(a), Value::Real(b)) => {
-                // Total order via to_bits(), consistent with PartialEq
+                // WARNING: to_bits().cmp() and total_cmp() produce *different* total orders.
+                // Switching implementations would change observable sort behavior:
+                //
+                //   to_bits().cmp()  — negative floats (including -0.0) sort *above* all
+                //     positive values because the sign bit is the MSB and negative values
+                //     have a higher bit pattern than positive ones. NaN canonical bits
+                //     (0x7FF8_0000_0000_0000) sort after +Infinity (0x7FF0_0000_0000_0000).
+                //
+                //   total_cmp()      — negative floats sort *below* positive values
+                //     (IEEE 754 semantics). -0.0 sorts between -epsilon and +0.0.
+                //     NaN still sorts after +Infinity.
+                //
+                // Value::Set(BTreeSet<Value>) and Value::Map(BTreeMap<Value, Value>) rely
+                // on this Ord impl for their tree invariants. Any persisted or long-lived
+                // BTreeSet<Value> or BTreeMap<Value, _> containing NaN or negative-float
+                // keys would have stale tree invariants after an ordering change and must
+                // be fully rebuilt before use.
+                //
+                // Total order via to_bits(), consistent with PartialEq (which also uses to_bits).
                 a.to_bits().cmp(&b.to_bits())
             }
             (
