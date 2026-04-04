@@ -24,6 +24,8 @@ fn public_api_types_are_accessible() {
     assert_clone_debug::<ConstraintData>();
     assert_clone_debug::<SourceLocationInfo>();
     assert_clone_debug::<FileData>();
+    // MCP canonical types replace the removed GUI-local types
+    assert_clone_debug::<reify_mcp::DiagnosticInfo>();
 
     // Verify AppState and EngineSession are usable as types
     let _ = std::any::type_name::<AppState>();
