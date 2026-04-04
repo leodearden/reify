@@ -1596,6 +1596,8 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
         assert_eq!(
             count,
             1,
@@ -1654,6 +1656,8 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
         assert_eq!(
             count,
             1,
@@ -1678,6 +1682,9 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // Only snapshot_values is poisoned; values and results locks are healthy.
+        // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
+        // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
         assert_eq!(
             count,
             1,
@@ -2099,6 +2106,9 @@ mod poison_recovery_extended {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // Only values is poisoned; snapshot_values and results locks are healthy.
+        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
+        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
         assert_eq!(
             count,
             1,
