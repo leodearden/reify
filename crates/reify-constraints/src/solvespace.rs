@@ -410,6 +410,30 @@ impl ParamMapping {
     }
 }
 
+/// Errors that can occur while building the SolveSpace constraint system.
+///
+/// Module-private: the error is converted to `String` at the `SolveResult`
+/// consumption site in `solve()` and never escapes this module.
+#[derive(Debug, Clone)]
+enum BuilderError {
+    /// A non-auto parameter's `ValueCellId` was not found in `current_values`,
+    /// indicating the evaluation pass did not complete before the solver was
+    /// invoked.
+    MissingNonAutoValue(ValueCellId),
+}
+
+impl std::fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuilderError::MissingNonAutoValue(cell_id) => {
+                write!(f, "non-auto parameter {cell_id} missing from current_values")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuilderError {}
+
 /// Builder that accumulates slvs params/entities/constraints.
 ///
 /// Uses two groups:
