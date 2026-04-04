@@ -120,6 +120,14 @@ pub struct Engine {
     /// (e.g., binary tree with `left` and `right` produces B^D nodes).
     /// Default: 10_000.
     max_unfold_nodes: usize,
+    /// Last-known-good instance count for each collection count cell when the
+    /// Undef guard fires. Used to recover accurate old_count on the next
+    /// Int(M) edit after an Int(N)→Undef transition.
+    ///
+    /// Lifecycle: inserted when Undef guard fires (only if old_count is Int(n)),
+    /// read in old_count resolution as fallback for Value::Undef,
+    /// removed after successful re-elaboration.
+    preserved_counts: HashMap<ValueCellId, i64>,
 }
 
 /// Statistics about cache behavior during a cached evaluation.
@@ -288,6 +296,7 @@ impl Engine {
             meta_map: HashMap::new(),
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            preserved_counts: HashMap::new(),
         }
     }
 
@@ -2075,6 +2084,16 @@ impl Engine {
                 // now would be destructive — preserve them until the count cell
                 // resolves to a definite value.
                 if matches!(new_count_val, Value::Undef) {
+                    // Record the last-known-good instance count so that a
+                    // subsequent Int(M) edit can use it as old_count to clean
+                    // up stale instances [M..N) left from the Int(N) era.
+                    // Only record when old_count is Int(n); if old_count is
+                    // already Undef, a previously recorded preserved count (from
+                    // an earlier Int→Undef transition) is still valid and must
+                    // not be overwritten with 0.
+                    if let Value::Int(n) = &old_count_val {
+                        self.preserved_counts.insert(col_sub.count_cell.clone(), *n);
+                    }
                     diagnostics.push(Diagnostic::warning(format!(
                         "Collection count cell `{}` is Undef; skipping re-elaboration to preserve existing instances",
                         col_sub.count_cell
@@ -2085,9 +2104,17 @@ impl Engine {
                 // Remove old instances from graph and snapshot
                 let old_count = match &old_count_val {
                     Value::Int(n) => *n,
-                    // Value::Undef means no instances existed in the prior
-                    // snapshot — treating as 0 is semantically correct.
-                    Value::Undef => 0,
+                    // Value::Undef means the count cell was Undef in the snapshot.
+                    // This can happen after an Int(N)→Undef transition where the
+                    // Undef guard fired and skipped updating the snapshot count.
+                    // Fall back to preserved_counts to recover the true instance
+                    // count (N), so we clean up instances [M..N) correctly.
+                    // If no preserved count exists, genuinely 0 instances existed.
+                    Value::Undef => self
+                        .preserved_counts
+                        .get(&col_sub.count_cell)
+                        .copied()
+                        .unwrap_or(0),
                     // Any other non-Int type is unexpected; treat as 0 but warn.
                     other => {
                         diagnostics.push(Diagnostic::warning(format!(
@@ -2195,6 +2222,10 @@ impl Engine {
                     .graph
                     .topology_fingerprint()
                     .combine(count_state_hash);
+
+                // Re-elaboration succeeded with a definite count — clear the
+                // preserved count entry so it doesn't interfere with future edits.
+                self.preserved_counts.remove(&col_sub.count_cell);
             }
         }
 
