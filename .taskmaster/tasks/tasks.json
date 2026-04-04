@@ -18162,11 +18162,16 @@
         "description": "Test 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:49.267Z"
+        "updatedAt": "2026-04-04T00:19:33.191Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "876",
@@ -18231,7 +18236,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:19:03.395Z",
+      "lastModified": "2026-04-04T00:19:33.193Z",
       "taskCount": 880,
       "completedCount": 667,
       "tags": [
