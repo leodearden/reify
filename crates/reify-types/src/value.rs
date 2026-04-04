@@ -1158,6 +1158,21 @@ impl PartialOrd for Value {
     }
 }
 
+/// Total order for `Value`, consistent with `impl PartialEq for Value`.
+///
+/// Float-bearing variants use `to_bits()` unsigned comparison, giving a
+/// deterministic total order that agrees with bit-identity equality:
+/// `-0.0` and `+0.0` sort differently (negative zero has the sign bit set,
+/// so it compares greater than positive zero under unsigned `u64` comparison),
+/// and `NaN` occupies a fixed position in the order.
+///
+/// **Eq/Ord contract:** Both `PartialEq` and `Ord` define equality as
+/// bit-pattern identity, so the contract `a == b` iff `a.cmp(&b) == Ordering::Equal`
+/// is preserved.
+///
+/// **WARNING:** Any change to the comparison strategy (e.g. migrating to
+/// `total_cmp()`) must preserve this invariant and must update **both** impls
+/// together — if equality semantics change in one, they must change in the other.
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
