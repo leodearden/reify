@@ -197,7 +197,7 @@ mod tests {
         );
     }
 
-    /// Non-WARN events (DEBUG, INFO, ERROR) are NOT counted.
+    /// Non-WARN events (DEBUG, INFO, ERROR) are rejected at the `enabled()` gate.
     #[test]
     fn non_warn_events_are_not_counted() {
         let (subscriber, warn_count) = warn_counting_subscriber();
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
-            "DEBUG/INFO/ERROR events must not increment the WARN counter"
+            "DEBUG/INFO/ERROR events are rejected at the enabled() gate and never reach event()"
         );
     }
 
