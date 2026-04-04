@@ -18727,10 +18727,11 @@
         "description": "In crates/reify-test-support/src/tracing_support.rs, change the enabled() filter at line 44 from `metadata.level() <= &tracing::Level::WARN` to `metadata.level() == &tracing::Level::WARN`. This eliminates the silent acceptance+discard of ERROR events, matches the counting predicate exactly, and eliminates wasted dispatch cost. Also update the test comment at line 116 in non_warn_events_are_not_counted to accurately reflect that ERROR events will now be rejected at the enabled() gate (not just uncounted at event()), so all three non-WARN levels are uniformly rejected.\n\nmemory_hints: search(\"WarnCountingSubscriber enabled filter tracing_support\", project_id=\"reify\"), search(\"silent defaults convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:08:33.421Z"
       },
       {
         "id": "906",
@@ -18779,7 +18780,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:08:31.404Z",
+      "lastModified": "2026-04-04T04:08:33.421Z",
       "taskCount": 909,
       "completedCount": 679,
       "tags": [
