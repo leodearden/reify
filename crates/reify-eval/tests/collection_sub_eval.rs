@@ -3,7 +3,11 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
-use reify_eval::Engine;
+use std::collections::HashSet;
+
+use reify_eval::cache::{EvalOutcome, NodeId};
+use reify_eval::deps::DependencyTrace;
+use reify_eval::{ConcurrentEditResult, ConcurrentNodeResult, Engine};
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -1097,6 +1101,115 @@ fn edit_param_count_int_undef_undef_int_no_overwrite() {
         assert!(
             result.values.get(&scoped_id).is_none(),
             "bolts[{}] must be removed — preserved_counts must not be overwritten by second Undef",
+            i
+        );
+    }
+}
+
+// ─── task-826 step-14: concurrent Int→Undef does NOT populate preserved_counts, causing stale leak ───
+// This test is expected to FAIL until step-16 wires re_elaborate_collections into apply_concurrent_edit.
+
+#[test]
+fn concurrent_edit_count_to_undef_then_sync_int_no_stale_leak() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let count_bolts_id = ValueCellId::new("Parent", "__count_bolts");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) eval with n=4 → 4 instances
+    engine.eval(&module);
+
+    // (b) concurrent edit: n→Undef via prepare+apply.
+    //     The external scheduler evaluates __count_bolts→Undef.
+    //     apply_concurrent_edit (pre-fix) does NOT run re_elaborate_collections,
+    //     so preserved_counts[__count_bolts] is never set.
+    let setup = engine
+        .prepare_concurrent_edit(n_id.clone(), Value::Undef)
+        .expect("prepare_concurrent_edit should succeed");
+
+    // Simulate scheduler: __count_bolts evaluates to Undef (depends on n=Undef)
+    let count_node = NodeId::Value(count_bolts_id.clone());
+    let mut snapshot_values = setup.snapshot_values.clone();
+    snapshot_values.insert(
+        count_bolts_id.clone(),
+        (Value::Undef, DeterminacyState::Determined),
+    );
+    let mut values = setup.values.clone();
+    values.insert(count_bolts_id.clone(), Value::Undef);
+
+    let result = ConcurrentEditResult {
+        values,
+        snapshot_values,
+        node_results: vec![ConcurrentNodeResult {
+            node: count_node.clone(),
+            value: Value::Undef,
+            determinacy: DeterminacyState::Determined,
+            trace: DependencyTrace {
+                reads: vec![n_id.clone()],
+            },
+            outcome: EvalOutcome::Changed,
+        }],
+        actual_eval_set: vec![count_node],
+        skipped: HashSet::new(),
+        resolved_params: std::collections::HashMap::new(),
+        diagnostics: Vec::new(),
+    };
+
+    engine.apply_concurrent_edit(&setup, result);
+
+    // (c) sync edit_param(n, Int(2)): should clean up instances [2..4), keeping [0..2).
+    //     Without the fix, old_count resolves to 0 (preserved_counts empty, Undef fallback),
+    //     so removal loop runs 0..0 → stale instances [2..4) remain.
+    let final_result = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit_param to Int(2) should succeed");
+
+    // bolts[0..2) must exist
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            final_result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}] should exist after concurrent Undef → sync Int(2)",
+            i
+        );
+    }
+
+    // bolts[2..4) must be absent (no stale leak)
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            final_result.values.get(&scoped_id).is_none(),
+            "bolts[{}] must be gone — concurrent Undef path must populate preserved_counts",
             i
         );
     }
