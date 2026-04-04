@@ -20109,7 +20109,14 @@
           "modules": [
             "crates/reify-compiler",
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "SCC detect_recursive_structures duplicate template name error diagnostic span labels",
+              "reify-compiler scc duplicate name early return"
+            ]
+          }
         }
       },
       {
