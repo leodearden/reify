@@ -828,7 +828,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
     let solver = SolveSpaceSolver;
 
     // A cell_id that is NOT in auto_params — simulates an incomplete eval pass.
-    let fixed_y_id = vcid("Fixed", "y");
+    // (Used as "Fixed"/"y" in the ValueRef below; intentionally absent from auto_params)
 
     // Auto param for x (present in auto_params so the problem is non-trivial)
     let x_id = vcid("Auto", "x");
