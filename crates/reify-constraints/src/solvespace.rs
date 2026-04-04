@@ -1316,8 +1316,7 @@ mod tests {
         );
         assert!(
             err.to_string().contains(&cell_id.to_string()),
-            "propagated error Display should contain cell_id, got: {}",
-            err.to_string()
+            "propagated error Display should contain cell_id, got: {err}",
         );
     }
 

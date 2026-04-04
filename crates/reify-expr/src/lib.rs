@@ -4070,10 +4070,10 @@ mod tests {
 
     #[test]
     fn sanitize_real_finite_passthrough() {
-        let v = Value::Real(3.14);
+        let v = Value::Real(2.72);
         match sanitize_value(v) {
-            Value::Real(x) => assert!((x - 3.14).abs() < 1e-12),
-            other => panic!("expected Real(3.14), got {:?}", other),
+            Value::Real(x) => assert!((x - 2.72).abs() < 1e-12),
+            other => panic!("expected Real(2.72), got {:?}", other),
         }
     }
 
