@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isSameFile } from '../utils/pathUtils';
+import { isSameFile, normalizePath } from '../utils/pathUtils';
+
+describe('normalizePath', () => {
+  it('strips file:// prefix from a URI', () => {
+    expect(normalizePath('file:///project/src/foo.ri')).toBe('/project/src/foo.ri');
+  });
+});
 
 describe('isSameFile', () => {
   it('identical bare paths match', () => {
