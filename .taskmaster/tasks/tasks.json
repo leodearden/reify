@@ -19131,10 +19131,11 @@
         "description": "In gui/src-tauri/src/tests/lsp_bridge_tests.rs: (1) Rewrite lsp_request_impl_accepts_valid_json_null_literal to use an unconditional assertion (currently vacuously passes on Ok path). (2) Add test cases for empty string and partial JSON to confirm invalid JSON params error.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:35.626Z"
       },
       {
         "id": "929",
@@ -19142,10 +19143,11 @@
         "description": "In orchestrator.yaml: (1) Move bash tests/check-pm-standardization.sh from test_command to lint_command (pure static check). (2) Add if test -f existence guards for both check-pm-standardization.sh and sync_comments_test.sh.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:36.382Z"
       },
       {
         "id": "930",
@@ -19530,7 +19532,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:34.344Z",
+      "lastModified": "2026-04-04T09:00:36.382Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
