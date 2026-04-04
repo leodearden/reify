@@ -49,7 +49,7 @@ fn navigate_to_source_with_known_entity_returns_location() {
     locations.insert(
         "bracket/body".to_string(),
         SourceLocationInfo {
-            file: "main.ri".to_string(),
+            file_path: "main.ri".to_string(),
             line: 5,
             column: 3,
             end_line: 20,
@@ -71,7 +71,7 @@ fn navigate_to_source_with_known_entity_returns_location() {
 
     assert_eq!(result["success"], true);
     let loc = &result["location"];
-    assert_eq!(loc["file"], "main.ri");
+    assert_eq!(loc["file_path"], "main.ri");
     assert_eq!(loc["line"], 5);
     assert_eq!(loc["column"], 3);
     assert_eq!(loc["end_line"], 20);

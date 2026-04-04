@@ -203,7 +203,7 @@ impl ReifyToolContext for TauriToolContext {
             .ok_or_else(|| ToolError::EngineError(format!("entity not found: {}", entity_path)))?;
 
         Ok(SourceLocationInfo {
-            file: loc.file_path,
+            file_path: loc.file_path,
             line: loc.line,
             column: loc.column,
             end_line: loc.end_line,

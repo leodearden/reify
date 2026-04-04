@@ -131,7 +131,7 @@ fn get_source_location_for_width() {
     let loc = ctx
         .get_source_location("Bracket.width")
         .expect("get_source_location should succeed for Bracket.width");
-    assert_eq!(loc.file, "bracket.ri");
+    assert_eq!(loc.file_path, "bracket.ri");
     assert!(loc.line >= 1, "line should be positive");
 }
 
