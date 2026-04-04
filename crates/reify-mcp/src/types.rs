@@ -129,4 +129,18 @@ mod tests {
         assert_eq!(info.selected_entity, None);
         assert_eq!(info.hovered_entity, None);
     }
+
+    #[test]
+    fn source_location_info_serializes_with_file_path_key() {
+        let loc = SourceLocationInfo {
+            file_path: "bracket.ri".to_string(),
+            line: 3,
+            column: 4,
+            end_line: 3,
+            end_column: 30,
+        };
+        let v = serde_json::to_value(&loc).unwrap();
+        assert_eq!(v["file_path"], "bracket.ri");
+        assert!(v.get("file").is_none(), "should not serialize as 'file'");
+    }
 }
