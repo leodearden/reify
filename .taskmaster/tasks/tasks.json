@@ -18897,6 +18897,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 916,
+        "title": "Improve sanitize_orientation_valid_passthrough assertion style",
+        "description": "In crates/reify-stdlib/src/lib.rs around line 5758-5775, replace the manual destructure-and-compare block in sanitize_orientation_valid_passthrough with either assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0) (preferred, uses the established macro at ~line 3971) or replace the three zero-component assertions with assert_eq!(x, 0.0), assert_eq!(y, 0.0), assert_eq!(z, 0.0) since the values are exact zeros passed through unchanged with no arithmetic.\n\nThe current code uses (x - 0.0).abs() < f64::EPSILON which misleadingly implies floating-point approximation is needed for exact-zero passthrough values.\n\nMemory hints: search \"assert_orientation_approx macro\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18909,7 +18920,7 @@
       ],
       "created": "2026-04-04T04:15:47.088Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T04:20:03.380Z"
+      "updated": "2026-04-04T04:20:09.626Z"
     }
   }
 }
