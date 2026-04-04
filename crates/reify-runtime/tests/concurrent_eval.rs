@@ -1656,6 +1656,8 @@ mod poison_recovery {
         });
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
         assert_eq!(
             count,
             1,
