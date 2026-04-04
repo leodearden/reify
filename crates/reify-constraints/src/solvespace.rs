@@ -1040,6 +1040,16 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 mod tests {
     use super::*;
 
+    /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
+    /// Shared by the three add_auto_coord tests that need a standard single-param setup.
+    fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
+        vec![AutoParam {
+            id: cell_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+        }]
+    }
+
     /// Non-auto param with a value present in current_values should succeed
     /// and use the provided value. Regression guard for the non-auto happy path.
     #[test]
@@ -1074,11 +1084,7 @@ mod tests {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
         // cell_id IS in auto_params
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         // But NOT in current_values — should use 0.01 default
         let current_values = ValueMap::new();
 
@@ -1248,18 +1254,16 @@ mod tests {
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         let current_values = ValueMap::new();
+        let initial_len = builder.params.len();
 
         // First call — creates the param and inserts into the mapping
         let h1 = builder
             .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
             .expect("first call should succeed");
         let len_after_first = builder.params.len();
+        assert_eq!(len_after_first, initial_len + 1, "first call should insert exactly one param");
 
         // Second call — should hit the cache and return the same handle
         let h2 = builder
@@ -1280,11 +1284,7 @@ mod tests {
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Test", "x");
-        let auto_params = vec![AutoParam {
-            id: cell_id.clone(),
-            param_type: Type::length(),
-            bounds: None,
-        }];
+        let auto_params = auto_params_for(&cell_id);
         let mut current_values = ValueMap::new();
         current_values.insert(
             cell_id.clone(),
@@ -1326,11 +1326,11 @@ mod tests {
         );
     }
 
-    /// add_point must propagate the Err returned by add_auto_coord when the
-    /// x-coordinate cell_id is a non-auto param absent from current_values.
-    /// This covers the `?` operator on line 489 of add_point.
+    /// add_point must propagate the Err from add_auto_coord when a PointRef::Auto
+    /// x-coordinate is a non-auto cell_id absent from current_values.
+    /// This covers the `?` propagation in add_point's PointRef::Auto arm for the x-coordinate.
     #[test]
-    fn add_point_propagates_missing_value_error() {
+    fn add_point_propagates_error_for_unresolved_x_coord() {
         let mut builder = SystemBuilder::new();
         let cell_id = ValueCellId::new("Fixed", "y");
         // cell_id is NOT in auto_params (non-auto)
