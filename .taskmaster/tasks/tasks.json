@@ -19375,6 +19375,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 951,
+        "title": "Add NaN/Inf pre-guard to neg_scalar Complex arm",
+        "description": "In crates/reify-expr/src/lib.rs neg_scalar function (~line 1436-1440), add `if !re.is_finite() || !im.is_finite() { return Value::Undef; }` to the Complex arm, matching the conjugate guard pattern. Currently negating NaN/Inf propagates poison.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19387,7 +19398,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:38.856Z"
+      "updated": "2026-04-04T06:12:41.977Z"
     }
   }
 }
