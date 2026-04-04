@@ -17865,6 +17865,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 856,
+        "title": "Add line-based variant and pt_b error propagation tests for add_pattern_to_builder",
+        "description": "The existing add_pattern_to_builder_propagates_coord_error test only exercises the Coincident variant with an error on pt_a. Two gaps remain:\n\n1. Line-based variants (Parallel, Angle, Perpendicular) call add_point 4 times per pattern (once per endpoint). None of these propagation sites are tested. Add a test using e.g. GeometricPattern::Parallel where one of the 4 endpoint PointRef::Auto coords has a missing cell_id, confirming errors from the 3rd/4th add_point call propagate correctly.\n\n2. Within Coincident, only pt_a (line 974) is exercised. The pt_b path (line 975) is never triggered because pt_b is always PointRef::Fixed in the test. Add a sub-case where pt_a is Fixed and pt_b is Auto with a missing cell_id.\n\nThese cover structurally different code paths in the match arms.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17877,7 +17888,7 @@
       ],
       "created": "2026-04-04T00:02:47.366Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:02:47.396Z"
+      "updated": "2026-04-04T00:02:52.512Z"
     }
   }
 }
