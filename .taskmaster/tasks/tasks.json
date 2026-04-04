@@ -17798,11 +17798,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Fix WarnCounter::new_span at line 27 to return unique IDs using an AtomicU64 counter (Id::from_u64(counter.fetch_add(1, Ordering::Relaxed) + 1)) to satisfy the tracing Subscriber contract. (2) Annotate initialize_with_malformed_params_emits_warning (line 56) with #[tokio::test(flavor = \"current_thread\")] to make the thread-local subscriber guard assumption explicit and safe against future runtime changes.\n\nmemory_hints: search(\"WarnCounter tracing subscriber test infrastructure\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:20:04.609Z",
+        "updatedAt": "2026-04-04T03:50:46.264Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -18707,7 +18707,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:50:45.528Z",
+      "lastModified": "2026-04-04T03:50:46.264Z",
       "taskCount": 903,
       "completedCount": 676,
       "tags": [
