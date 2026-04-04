@@ -17924,6 +17924,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 861,
+        "title": "Add missing edge-case tests: NEG_INFINITY for re/im and im-side NaN/Inf for magnitude",
+        "description": "In `crates/reify-expr/src/lib.rs` test section (around line 3533+), add the following missing tests:\n1. `re_neg_inf_dimensionless_returns_undef` — Complex{re: f64::NEG_INFINITY, im:1.0} .re → Undef\n2. `im_neg_inf_dimensionless_returns_undef` — Complex{re:1.0, im: f64::NEG_INFINITY} .im → Undef\n3. `magnitude_nan_im_returns_undef` — Complex{re:1.0, im: f64::NAN} .magnitude → Undef (tests hypot(1.0, NaN)=NaN path)\n4. `magnitude_inf_im_returns_undef` — Complex{re:1.0, im: f64::INFINITY} .magnitude → Undef\n\nOptionally also extract the repeated ~10-line test scaffold into a `fn eval_complex_method(re, im, dim, elem_ty, method, ret_ty) -> Value` test helper.\n\nMemory hints: search \"complex method edge case tests NaN Inf\", search \"test helper extraction convention\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -17936,7 +17947,7 @@
       ],
       "created": "2026-04-04T00:03:24.910Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:03:24.931Z"
+      "updated": "2026-04-04T00:03:32.273Z"
     }
   }
 }
