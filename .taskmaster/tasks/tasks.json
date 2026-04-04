@@ -18495,6 +18495,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 893,
+        "title": "Fill missing Complex guard-clause coverage (im.is_nan and re.is_infinite branches)",
+        "description": "In crates/reify-expr/src/lib.rs, add two new Complex sanitize tests to exercise the two unverified guard sub-clauses: (1) sanitize_complex_nan_im_returns_undef: Value::Complex { re: 1.0, im: f64::NAN, dimension: DimensionVector::DIMENSIONLESS } → is_undef(); (2) sanitize_complex_inf_re_returns_undef: Value::Complex { re: f64::INFINITY, im: 1.0, dimension: DimensionVector::DIMENSIONLESS } → is_undef(). All four clauses in `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` will then be independently exercised.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18507,7 +18518,7 @@
       ],
       "created": "2026-04-04T03:15:29.445Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:17:55.035Z"
+      "updated": "2026-04-04T03:17:59.886Z"
     }
   }
 }
