@@ -17929,11 +17929,11 @@
         "description": "In `crates/reify-expr/src/lib.rs` lines 1201-1205, remove the `sanitize_value(...)` wrapper from the `phase` branch and return `Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE }` directly. Add a comment explaining: (1) the pre-guard at line 1195 is necessary because `atan2(y, Inf) = 0.0` is finite — sanitize_value alone cannot protect against Inf inputs; (2) after the guard, atan2(finite, finite) is always in [-π, π] so no output sanitization is needed. This removes dead code and prevents a future maintainer from mistakenly removing the pre-guard in the belief that sanitize_value provides equivalent protection.\n\nMemory hints: search \"sanitize_value phase atan2 convention\", search \"silent defaults convention\", entities: eval_method_call, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:15:24.566Z",
+        "updatedAt": "2026-04-04T00:41:59.711Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -18334,9 +18334,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:38:37.820Z",
+      "lastModified": "2026-04-04T00:41:59.712Z",
       "taskCount": 883,
-      "completedCount": 668,
+      "completedCount": 669,
       "tags": [
         "master"
       ]
