@@ -12,6 +12,7 @@ compile_error!(
 );
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Mutex;
 
 use reify_types::{
@@ -407,6 +408,23 @@ impl ParamMapping {
 
     fn get_param(&self, cell_id: &ValueCellId) -> Option<Slvs_hParam> {
         self.cell_to_param.get(cell_id).copied()
+    }
+}
+
+/// Error produced by the internal builder call chain
+/// (`add_auto_coord` → `add_point` → `add_pattern_to_builder`).
+///
+/// Carries the `cell_id` as a structured field so it can be logged
+/// separately by the `solve()` call site, and a human-readable `message`.
+#[derive(Debug)]
+struct BuilderError {
+    cell_id: ValueCellId,
+    message: String,
+}
+
+impl fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
