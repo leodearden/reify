@@ -17863,7 +17863,13 @@
         "metadata": {
           "modules": [
             "crates/reify-types"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Investigate to_bits().cmp() ordering correctness for negative floats in Value Ord"
+            ]
+          }
         }
       },
       {
@@ -18148,11 +18154,11 @@
         "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:02:17.889Z",
+        "updatedAt": "2026-04-04T03:12:46.942Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -18428,7 +18434,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:12:29.236Z",
+      "lastModified": "2026-04-04T03:12:46.942Z",
       "taskCount": 887,
       "completedCount": 671,
       "tags": [
