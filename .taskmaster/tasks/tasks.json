@@ -19838,11 +19838,11 @@
         "description": "In gui/src/__tests__/gotoDefinition.test.ts: (1) Extract makeMockEvent() and makeMockView(isConnected?) factories to replace 5 copy-pasted inline fixtures. (2) In both isConnected guard tests, add expect(mockInvoke).toHaveBeenCalledTimes(1) to confirm LSP request fired before guard suppressed result. (3) Add .catch() to the requestDefinition promise chain in gui/src/editor/gotoDefinition.ts to handle stale document RangeError. (4) Add bounds check `if (line+1 > view.state.doc.lines) return;` after isConnected guard.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:17:01.442Z",
+        "updatedAt": "2026-04-04T19:03:38.640Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20074,7 +20074,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:03:30.413Z",
+      "lastModified": "2026-04-04T19:03:38.640Z",
       "taskCount": 981,
       "completedCount": 710,
       "tags": [
