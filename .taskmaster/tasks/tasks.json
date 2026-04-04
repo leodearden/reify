@@ -18970,15 +18970,16 @@
         "description": "Improve test coverage and documentation accuracy for SystemBuilder::add_line_pair in solvespace.rs. Addresses 5 review findings from task 832.\n\n1. **Doc accuracy** (line 611): Revise doc comment from \"Add 4 point entities\" to \"Add up to 4 point entities\" — `add_point` deduplicates via `point_entities` cache, so shared endpoints produce fewer entities. Update the test comment at line 1146 similarly.\n\n2. **Shared endpoint test** (new): Add a test where `line_a.end == line_b.start` (shared point). Assert `builder.entities.len() == 5` (3 unique points + 2 line segments) and that both returned line handles are distinct.\n\n3. **Assert entity types** (line 1127 test): In `add_line_pair_returns_two_line_entities`, verify that the entities at the returned handles have `type_ == SLVS_E_LINE_SEGMENT`, not just that handles are distinct and count is correct.\n\n4. **Error propagation at other positions** (line 1154 test): Add a sibling test placing a bad `PointRef::Auto` at `line_b.end` (the last `?` site) to confirm error propagation works across all four call sites, not just the first.\n\n5. **Partial mutation doc note** (line 611): Add a note to the doc comment: \"On Err, any point entities created before the failure are already registered in the builder; the caller should discard the builder.\" This makes the side-effect contract explicit.\n\nmemory_hints: search(\"solvespace add_line_pair SystemBuilder\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T04:23:02.580Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:23:01.936Z",
+      "lastModified": "2026-04-04T04:23:02.581Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
