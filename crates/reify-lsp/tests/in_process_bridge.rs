@@ -341,3 +341,33 @@ async fn initialize_with_invalid_field_type_returns_error() {
         "error message should contain 'initialize params error', got: {err}"
     );
 }
+
+/// A valid notification should return exactly `Ok(Value::Null)`, not an error and not
+/// any JSON payload.
+///
+/// This documents the `Ok(Value::Null)` contract for successfully processed
+/// one-way LSP messages (initialized, didOpen, didChange, didClose).
+#[tokio::test]
+async fn valid_notification_returns_ok_null() {
+    let lsp = InProcessLsp::new();
+
+    // initialize first so the server state is ready
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("initialize should succeed");
+
+    let result = lsp
+        .handle_request("initialized", json!({}))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "valid notification should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "valid notification should return exactly Ok(Value::Null)"
+    );
+}
