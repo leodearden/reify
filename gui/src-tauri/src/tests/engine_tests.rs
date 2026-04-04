@@ -945,7 +945,7 @@ fn engine_get_diagnostics_module_name_none_uses_fallback() {
     // Clear module_name to force the iter().next() fallback path
     session.clear_module_name_for_test();
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     // (a) Fallback path found the source_map entry, so diagnostics are non-empty
     assert!(
@@ -997,7 +997,7 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     // Inject a warning with no labels — this is the labelless case
     session.inject_diagnostic_for_test(Diagnostic::warning("test labelless"));
 
-    let diags: Vec<DiagnosticData> = session.get_diagnostics();
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
 
     // (a) The injected diagnostic appears
     assert!(!diags.is_empty(), "expected injected diagnostic, got empty");
