@@ -18656,6 +18656,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 902,
+        "title": "Add sanitize_value catchall passthrough test for Complex values",
+        "description": "After task 860 removed the `Value::Complex` arm from reify-expr's `sanitize_value`, the `_ => v` catchall now silently passes Complex values through (including ones with NaN/Inf components). The test suite covers Real and Scalar arms but has no test for the catchall. Per the project's 'silent defaults are bad' convention, add test(s) to pin this intentional behavior:\n\n1. A test that `sanitize_value(Value::Complex { re: NaN, im: 0.0, ... })` returns the Complex unchanged (documenting the passthrough is intentional, not forgotten).\n2. Optionally a test with a finite Complex to confirm general passthrough.\n\nThis documents the semantic change from the removed arm (previously NaN Complex → Undef, now NaN Complex → passthrough).\n\nMemory hints: search \"sanitize_value tests reify-expr task 860\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18668,7 +18679,7 @@
       ],
       "created": "2026-04-04T03:25:39.917Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T03:28:58.872Z"
+      "updated": "2026-04-04T03:29:05.142Z"
     }
   }
 }
