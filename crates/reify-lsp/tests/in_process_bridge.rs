@@ -280,6 +280,45 @@ async fn initialize_with_malformed_params_returns_error() {
     );
 }
 
+/// Notifications with malformed params should propagate deserialization errors as Err,
+/// not silently succeed with Ok(Value::Null).
+///
+/// This documents that the notification arms of `handle_request` are not "fire and forget"
+/// — deserialization failures are surfaced to the caller even for one-way messages.
+#[tokio::test]
+async fn notification_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is not a valid DidOpenTextDocumentParams (expects an object)
+    let result = lsp
+        .handle_request("textDocument/didOpen", json!(42))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "notification with malformed params should return Err, got: {:?}",
+        result
+    );
+}
+
+/// An unknown/unsupported method name should return Err, not panic or silently succeed.
+///
+/// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
+#[tokio::test]
+async fn unsupported_method_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp
+        .handle_request("textDocument/foobar", json!({}))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "unsupported method should return Err, got: {:?}",
+        result
+    );
+}
+
 /// Wrong field type within a valid-looking object should return Err containing
 /// "initialize params error".
 #[tokio::test]
@@ -300,5 +339,35 @@ async fn initialize_with_invalid_field_type_returns_error() {
     assert!(
         err.contains("initialize params error"),
         "error message should contain 'initialize params error', got: {err}"
+    );
+}
+
+/// A valid notification should return exactly `Ok(Value::Null)`, not an error and not
+/// any JSON payload.
+///
+/// This documents the `Ok(Value::Null)` contract for successfully processed
+/// one-way LSP messages (initialized, didOpen, didChange, didClose).
+#[tokio::test]
+async fn valid_notification_returns_ok_null() {
+    let lsp = InProcessLsp::new();
+
+    // initialize first so the server state is ready
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("initialize should succeed");
+
+    let result = lsp
+        .handle_request("initialized", json!({}))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "valid notification should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "valid notification should return exactly Ok(Value::Null)"
     );
 }
