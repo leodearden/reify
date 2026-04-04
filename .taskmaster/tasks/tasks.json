@@ -18372,11 +18372,11 @@
         "description": "Apply the same deduplication pattern from task 835 (DiagnosticData→DiagnosticInfo) to SourceLocation→SourceLocationInfo.\n\n**Changes needed:**\n1. Rename `SourceLocationInfo.file` → `SourceLocationInfo.file_path` in `crates/reify-mcp/src/types.rs:100` to match `DiagnosticInfo.file_path` (this is a breaking change to the MCP JSON contract for `get_source_location`, coordinate accordingly)\n2. Change `engine.rs::get_source_location()` to return `Option<SourceLocationInfo>` directly (importing from reify_mcp)\n3. Remove `SourceLocation` struct from `gui/src-tauri/src/types.rs:48-55`\n4. Remove the field-by-field mapping in `mcp_context.rs:205-211` — pass through directly\n5. Update `gui/src-tauri/src/tests/mod.rs` — remove `SourceLocation` from `public_api_types_are_accessible` and add `assert_clone_debug::<DiagnosticInfo>()` + `assert_clone_debug::<SourceLocationInfo>()` as replacement compile-time guards\n6. Update frontend `SourceLocation` type alias/interface to use `file_path` field name\n\n**memory_hints:** search(\"SourceLocation SourceLocationInfo field naming gui engine\", project_id=\"reify\"); search(\"MCP JSON contract breaking changes\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T05:00:40.431Z",
+        "updatedAt": "2026-04-04T14:16:59.305Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -19105,7 +19105,13 @@
         "metadata": {
           "modules": [
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Clean up dead guard and stale comments in WarnCountingSubscriber"
+            ]
+          }
         }
       },
       {
@@ -19821,7 +19827,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:30:27.185Z"
+        "updatedAt": "2026-04-04T09:30:27.185Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "967",
@@ -19907,9 +19918,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:16:54.041Z",
+      "lastModified": "2026-04-04T14:16:59.305Z",
       "taskCount": 971,
-      "completedCount": 703,
+      "completedCount": 704,
       "tags": [
         "master"
       ]
