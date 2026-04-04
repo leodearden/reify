@@ -18785,11 +18785,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs, add inline comments above each of the four assert_eq!(count, 1) assertions (lines ~1599, ~1657, ~1681, ~2102) explaining the coupling: which lock is poisoned, how many locks the method acquires, and why exactly one WARN fires. Example for the snapshot_values test: '// Only snapshot_values is poisoned; values and results locks are healthy. build_result_shared acquires all three, so exactly 1 WARN fires.' This prevents future authors from being surprised when an added tracing::warn! breaks these tests.\n\nmemory_hints: search(\"poison recovery tracing warn test assertions\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:11:18.948Z",
+        "updatedAt": "2026-04-04T04:20:58.751Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -18951,7 +18951,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:20:52.521Z",
+      "lastModified": "2026-04-04T04:20:58.751Z",
       "taskCount": 919,
       "completedCount": 682,
       "tags": [
