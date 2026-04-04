@@ -2087,7 +2087,15 @@ impl Engine {
                     Value::Int(n) => *n,
                     // Value::Undef means no instances existed in the prior
                     // snapshot — treating as 0 is semantically correct.
-                    _ => 0,
+                    Value::Undef => 0,
+                    // Any other non-Int type is unexpected; treat as 0 but warn.
+                    other => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Collection count cell `{}` had unexpected non-Int prior value {:?}; treating as 0",
+                            col_sub.count_cell, other
+                        )));
+                        0
+                    }
                 };
                 for i in 0..old_count {
                     let scoped_entity =
@@ -2100,10 +2108,21 @@ impl Engine {
                     }
                 }
 
-                // Create new instances based on new count
+                // Create new instances based on new count.
+                // Note: Value::Undef is unreachable here — the guard above
+                // continues before reaching this point when new_count is Undef.
                 let new_count = match &new_count_val {
                     Value::Int(n) => *n,
-                    _ => 0,
+                    // Undef is guarded above; this arm is a safety fallback.
+                    Value::Undef => 0,
+                    // Any other non-Int type is unexpected; treat as 0 but warn.
+                    other => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Collection count cell `{}` has unexpected non-Int value {:?}; treating count as 0",
+                            col_sub.count_cell, other
+                        )));
+                        0
+                    }
                 };
                 for i in 0..new_count {
                     let scoped_entity =
