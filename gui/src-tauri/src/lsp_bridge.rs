@@ -57,7 +57,7 @@ pub async fn lsp_request_impl(
     params: String,
 ) -> Result<String, String> {
     let params_value: serde_json::Value =
-        serde_json::from_str(&params).unwrap_or(serde_json::Value::Null);
+        serde_json::from_str(&params).map_err(|e| format!("invalid JSON params: {e}"))?;
 
     let result = bridge.lsp.handle_request(method, params_value).await?;
 
