@@ -18151,7 +18151,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:02:17.889Z"
+        "updatedAt": "2026-04-04T03:02:17.889Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule"
+            ]
+          }
+        }
       },
       {
         "id": "873",
@@ -18176,11 +18184,11 @@
         "description": "Three performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:48.182Z"
+        "updatedAt": "2026-04-04T03:02:22.326Z"
       },
       {
         "id": "875",
@@ -18327,7 +18335,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:02:17.889Z",
+      "lastModified": "2026-04-04T03:02:22.326Z",
       "taskCount": 883,
       "completedCount": 670,
       "tags": [
