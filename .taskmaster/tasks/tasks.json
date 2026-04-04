@@ -18563,15 +18563,16 @@
         "description": "Move `warn_counting_subscriber()` (and its `WarnCounter` struct) from duplicated inline definitions in `crates/reify-lsp/tests/in_process_bridge.rs` and `crates/reify-runtime/tests/concurrent_eval.rs` into the shared `crates/reify-test-support` crate (e.g. a new `tracing.rs` module or in `mocks.rs`).\n\n**Why:** The function is duplicated verbatim across two test crates. Task 851 fixed the LSP copy to use AtomicU64 for unique span IDs, but the `concurrent_eval.rs` copy still uses the broken `Id::from_u64(1)` pattern. Centralizing ensures both consumers get the fix and prevents future drift.\n\n**Scope:**\n1. Extract `warn_counting_subscriber` into `reify-test-support` with the fixed AtomicU64 span-ID counter\n2. Remove the `Arc` wrapper on `span_counter` since it has only one owner (the subscriber)\n3. Consider renaming the inner struct from `WarnCounter` to `WarnCountingSubscriber` to reflect its full `Subscriber` role\n4. Update `in_process_bridge.rs` assert from `> 0` to `assert_eq!(..., 1)` for sharper intent\n5. Delete both local copies, add `reify-test-support` as dev-dependency in `reify-runtime` if not already present\n6. Run tests in both crates to verify\n\nmemory_hints: search(\"warn_counting_subscriber tracing subscriber test infrastructure\", project_id=\"reify\"), search(\"reify-test-support shared test utilities\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:19:45.234Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:19:44.969Z",
+      "lastModified": "2026-04-04T03:19:45.234Z",
       "taskCount": 896,
       "completedCount": 671,
       "tags": [
