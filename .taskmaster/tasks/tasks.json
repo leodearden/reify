@@ -17908,11 +17908,11 @@
         "description": "Extract a `missing_coord_setup()` helper and `assert_missing_err()` assertion helper to deduplicate the repeated boilerplate across the 4 tests in solvespace.rs's test module (add_auto_coord_errors_on_missing_non_auto_value, add_pattern_to_builder_propagates_coord_error, and the idempotent/fixed-coord tests). Each test currently repeats: SystemBuilder::new(), ValueCellId::new(\"Test\", ...), vec![] for auto_params, ValueMap::new(), and the is_err/contains(\"missing\")/contains(cell_id) triple assertion. Only the unique pattern construction and target function call differ.\n\nmemory_hints: search(\"solvespace builder test helpers test conventions\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:07:45.371Z",
+        "updatedAt": "2026-04-04T09:00:34.344Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19510,10 +19510,11 @@
         "description": "Review suggestions from task 832 (add_line_pair extraction). All changes in crates/reify-constraints/src/solvespace.rs:\n\n1. Fix doc comment entity count accuracy — add_point deduplicates shared endpoints, so 'Add 4 point entities' is not always true. Revise to say 'up to 4' and qualify dedup behavior.\n2. Consider a named return type (type alias or struct) for the (Slvs_hEntity, Slvs_hEntity) return to make positional meaning explicit.\n3. Add partial-mutation doc note — on Err, prior point entities are already registered in the builder. Document this side-effect contract.\n4. Add shared-endpoint dedup test — test with two lines sharing an endpoint, assert entity count is 5 (3 unique points + 2 line segments).\n5. Add entity-type assertion — verify returned handles are line-segment entities, not point entities.\n6. Improve error propagation coverage — test error at line_b.start or line_b.end (not just line_a.start) to confirm all four ? sites propagate errors.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:33.997Z"
       },
       {
         "id": "962",
@@ -19529,7 +19530,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:33.736Z",
+      "lastModified": "2026-04-04T09:00:34.344Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
