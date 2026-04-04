@@ -16,7 +16,7 @@ import { reifyGotoDefinition } from './gotoDefinition';
 import type { createEditorStore } from '../stores/editorStore';
 import type { SourceLocation } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { isSameFile } from '../utils/pathUtils';
+import { isSameFile, normalizePath } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 export interface EditorProps {
@@ -78,7 +78,7 @@ export function Editor(props: EditorProps) {
       reifyHoverTooltip(() => currentUri),
       // LSP-powered go-to-definition (Ctrl+Click) — dynamic URI getter
       reifyGotoDefinition(() => currentUri, (targetUri, line, character) => {
-        const path = targetUri.replace('file://', '');
+        const path = normalizePath(targetUri);
         bridgeOpenFile(path)
           .then((fileData) => {
             if (destroyed) return;
