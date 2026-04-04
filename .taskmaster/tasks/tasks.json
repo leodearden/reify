@@ -19539,15 +19539,16 @@
         "description": "Follow-up from task 836 review. Address non-blocking suggestions in gui/src-tauri/src/engine.rs and engine_tests.rs:\n\n1. resolve_source() mixes Option return with unreachable!() panic — choose one coherent strategy (architect S1)\n2. Caller precondition (compiled.is_some()) enforced only by doc comment, not type system (architect S2)\n3. Test comments reference task numbers instead of behavior (architect S3, test analyst S10)\n4. Warning source fixture duplicated 3x — extract to reify-test-support/src/fixtures.rs (reuse auditor)\n5. Non-atomic state mutation in load_from_source/update_source — module_name/source_map set before compiled (robustness, pre-existing)\n6. source_map key-miss path in resolve_source untested; update_source pinning test only checks get_diagnostics not get_source_location (test analyst S8, S11)\n\nModules: gui/src-tauri, crates/reify-test-support",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:51.430Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:50.212Z",
+      "lastModified": "2026-04-04T09:00:51.430Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
