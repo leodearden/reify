@@ -19438,10 +19438,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Replace `let _ = pos.cmp(&neg)` in value_ord_neg_zero with `assert!(neg < pos)`. (2) Test NaN ordering with two independently constructed NaN values. (3) Add BTreeSet edge-case test with NEG_INFINITY, -1.0, -0.0, 0.0, 1.0, INFINITY.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:32.349Z"
       },
       {
         "id": "956",
@@ -19461,10 +19462,11 @@
         "description": "In crates/reify-eval/src/lib.rs, replace the Value::Undef => 0 safety fallback in new_count match (dead code due to guard above) with unreachable!(\"Undef new_count guarded above\") per silent-defaults convention.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:32.502Z"
       },
       {
         "id": "958",
@@ -19524,7 +19526,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:32.055Z",
+      "lastModified": "2026-04-04T09:00:32.503Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
