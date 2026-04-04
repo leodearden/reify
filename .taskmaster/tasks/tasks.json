@@ -19209,10 +19209,11 @@
         "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:30.044Z"
       },
       {
         "id": "936",
@@ -19516,7 +19517,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:29.839Z",
+      "lastModified": "2026-04-04T09:00:30.044Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
