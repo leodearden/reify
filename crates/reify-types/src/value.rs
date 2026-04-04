@@ -960,6 +960,19 @@ fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
     }
 }
 
+/// Bit-identity equality for `Value`.
+///
+/// Float-bearing variants (`Real`, `Scalar`, `Complex`, `Orientation`) compare via
+/// `to_bits()`, giving bit-pattern identity: `-0.0 != +0.0` and `NaN == NaN`
+/// (for the same canonical NaN bit pattern). This is deliberate for
+/// content-addressable storage — values with different bit representations must
+/// hash and compare differently, so two `Value`s that differ only in float sign
+/// or NaN payload are distinct keys.
+///
+/// **Eq/Ord contract:** this impl and `impl Ord for Value` both define equality
+/// as bit-pattern identity, preserving the invariant: `a == b` iff
+/// `a.cmp(&b) == Ordering::Equal`. Any change to either impl must preserve this
+/// contract — update both impls together.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
