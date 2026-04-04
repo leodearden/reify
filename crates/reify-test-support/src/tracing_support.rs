@@ -223,7 +223,7 @@ mod tests {
         // We verify by calling new_span twice on the SAME subscriber instance.
         //
         // We use WARN-level spans because our subscriber's `enabled()` only
-        // accepts WARN and above; trace_span! would produce disabled spans
+        // accepts WARN; trace_span! would produce disabled spans
         // (no ID) that never call new_span().
         let (sub, _count) = warn_counting_subscriber();
         let (id_a, id_b) = tracing::subscriber::with_default(sub, || {
