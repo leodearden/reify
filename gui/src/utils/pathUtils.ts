@@ -9,7 +9,12 @@
  */
 export function normalizePath(p: string): string {
   if (p.startsWith('file://')) {
-    return p.slice('file://'.length);
+    const stripped = p.slice('file://'.length);
+    try {
+      return decodeURIComponent(stripped);
+    } catch {
+      return stripped;
+    }
   }
   return p;
 }
