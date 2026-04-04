@@ -2089,10 +2089,10 @@ mod poison_recovery_extended {
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
     /// into_result() has 6 unwrap_or_else closures across 3 Arc::try_unwrap match arms.
-    /// These 3 tests exercise the Ok(lock)/into_inner paths (lines 211-214, 224-227,
-    /// 239-242), which are reached when Arc::try_unwrap succeeds (refcount == 1).
-    /// The shared-fallback paths (Err(arc)/read/lock, lines 215-221, 228-236, 243-249)
-    /// are covered by the `poison_shared_fallback` module below.
+    /// These 3 tests exercise the Ok(lock) → into_inner() paths, which are reached when
+    /// Arc::try_unwrap succeeds (refcount == 1). The Err(arc) → read()/lock() →
+    /// unwrap_or_else() shared-fallback paths are covered by the `poison_shared_fallback`
+    /// module below.
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
         let setup = simple_setup();
@@ -2205,7 +2205,7 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.clone_values_arc();
+        let _guard = adapter.values_arc();
 
         // Poison the values lock
         adapter.poison_values();
@@ -2234,7 +2234,7 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.clone_values_arc();
+        let _guard = adapter.values_arc();
 
         adapter.poison_values();
 
@@ -2263,7 +2263,7 @@ mod poison_shared_fallback {
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
-        let _guard = adapter.clone_snapshot_values_arc();
+        let _guard = adapter.snapshot_values_arc();
 
         adapter.poison_snapshot_values();
 
@@ -2290,7 +2290,7 @@ mod poison_shared_fallback {
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
-        let _guard = adapter.clone_snapshot_values_arc();
+        let _guard = adapter.snapshot_values_arc();
 
         adapter.poison_snapshot_values();
 
@@ -2319,7 +2319,7 @@ mod poison_shared_fallback {
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
-        let _guard = adapter.clone_results_arc();
+        let _guard = adapter.results_arc();
 
         adapter.poison_results();
 
@@ -2347,7 +2347,7 @@ mod poison_shared_fallback {
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
-        let _guard = adapter.clone_results_arc();
+        let _guard = adapter.results_arc();
 
         adapter.poison_results();
 
