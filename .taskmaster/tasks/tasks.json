@@ -18168,6 +18168,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 877,
+        "title": "Fix cross-module test temp dir: use tempfile::TempDir for thread safety",
+        "description": "In constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18180,7 +18191,7 @@
       ],
       "created": "2026-04-04T00:17:53.746Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T00:17:53.766Z"
+      "updated": "2026-04-04T00:17:58.520Z"
     }
   }
 }
