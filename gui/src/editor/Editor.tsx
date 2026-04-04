@@ -248,6 +248,7 @@ export function Editor(props: EditorProps) {
   createEffect(() => {
     const location = props.scrollToLocation?.();
     if (!view || !location) return;
+    if (location.file !== props.store.state.activeFile) return;
 
     const doc = view.state.doc;
     const lineCount = doc.lines;
