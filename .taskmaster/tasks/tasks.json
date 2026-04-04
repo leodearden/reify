@@ -19188,6 +19188,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 934,
+        "title": "Extract resolve_enum_type() helper and optimize check_trait_conformance",
+        "description": "In crates/reify-compiler/src/lib.rs: (1) Extract resolve_enum_type(name, enum_defs) helper to replace 4+ inline occurrences. (2) Build HashSet of enum names before filter_map loop in check_trait_conformance. (3) Extract local closure for duplicated 22-line Param/Let blocks. (4) Add assertion when type_args is non-empty on enum match.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19200,7 +19211,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:50.896Z"
+      "updated": "2026-04-04T06:09:53.078Z"
     }
   }
 }
