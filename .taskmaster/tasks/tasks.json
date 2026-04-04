@@ -19287,10 +19287,11 @@
         "description": "Add single_auto_param(cell_id) helper to crates/reify-test-support/src/mocks.rs. Replace ~6 inline AutoParam constructions in decompose_tests.rs and solvespace.rs internal tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:44.006Z"
       },
       {
         "id": "942",
@@ -19538,7 +19539,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:43.711Z",
+      "lastModified": "2026-04-04T09:00:44.006Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
