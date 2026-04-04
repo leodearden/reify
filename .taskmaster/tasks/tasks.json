@@ -18102,11 +18102,18 @@
         "description": "Eliminate duplicated minimal-params literals across both test files: (a) In crates/reify-lsp/tests/in_process_bridge.rs, add a module-level fn minimal_init_params() -> serde_json::Value { json!({\"capabilities\": {}}) } and replace all occurrences. (b) In gui/src-tauri/src/tests/lsp_bridge_tests.rs, add a const INIT_PARAMS: &str and replace all call sites. If a shared reify_test_support crate exists with LSP fixtures, add it there to keep both crates in sync. Covers review suggestions 3 and 4.\n\nmemory_hints: search(\"InitializeParams test fixture duplication LSP test helpers\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:19.580Z"
+        "updatedAt": "2026-04-04T00:20:08.693Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp",
+            "crates/reify-test-support",
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "871",
@@ -18241,7 +18248,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:19:38.720Z",
+      "lastModified": "2026-04-04T00:20:08.693Z",
       "taskCount": 880,
       "completedCount": 667,
       "tags": [
