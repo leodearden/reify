@@ -18791,6 +18791,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 911,
+        "title": "Trim redundant and duplicate test assertions in value_ord_real_nan_and_neg_zero_still_consistent",
+        "description": "In `crates/reify-types/src/value.rs` function `value_ord_real_nan_and_neg_zero_still_consistent` (starting ~line 2111):\n1. Remove part (a) `assert_ne!(neg, pos, ...)` — already covered by `real_neg_zero_hash_differs_from_pos_zero`.\n2. Remove `assert_ne!(neg.cmp(&pos), Ordering::Equal, ...)` — strictly subsumed by the `assert_eq!(..., Ordering::Greater)` that follows.\n3. Remove duplicate `assert_ne!(nan.cmp(&inf), Ordering::Equal, ...)` and `assert_ne!(nan.cmp(&pos), Ordering::Equal, ...)` in section (e) — already asserted in section (d).\n4. Remove the cross-section duplicate of `assert_ne!(neg.cmp(&pos), Ordering::Equal)` — subsumed by the stronger assertion in section (b).\n5. Replace `assert_eq!(nan, nan, ...)` (same-variable reflexivity) with a two-instance test: `let nan2 = Value::Real(f64::NAN); assert_eq!(nan, nan2, \"two separately constructed NaN values with identical bit patterns must compare equal\");`\n\nMemory hints: search \"Value PartialEq Ord to_bits total_cmp invariant\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18803,7 +18814,7 @@
       ],
       "created": "2026-04-04T04:09:06.705Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T04:09:06.713Z"
+      "updated": "2026-04-04T04:09:14.741Z"
     }
   }
 }
