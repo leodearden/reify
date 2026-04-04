@@ -18050,11 +18050,11 @@
         "description": "The reify-stdlib copy of sanitize_value has extensive behavioral unit tests (NaN Real → Undef, Inf Scalar → Undef, Complex NaN/Inf arms, etc.). The reify-expr copy has zero behavioral unit tests. If the reify-expr copy drifted (e.g., missing the Value::Complex arm, or returning a wrong default), no test would catch it.\n\nAdd at minimum three unit tests to reify-expr's `mod tests` block that directly exercise sanitize_value:\n1. Value::Real(f64::NAN) → Value::Undef\n2. Value::Real(f64::INFINITY) → Value::Undef\n3. A non-pathological value passes through unchanged\n\nMirror the pattern used in reify-stdlib's sanitize_value test sections. Because sanitize_value is private, these tests must live in-crate (`mod tests` with `use super::*`).\n\nMemory hints: search \"sanitize_value tests reify-stdlib\", entities: sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:46.040Z",
+        "updatedAt": "2026-04-04T00:42:01.564Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -18334,7 +18334,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:41:59.712Z",
+      "lastModified": "2026-04-04T00:42:01.564Z",
       "taskCount": 883,
       "completedCount": 669,
       "tags": [
