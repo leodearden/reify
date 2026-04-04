@@ -20038,10 +20038,11 @@
         "description": "Three test quality improvements in crates/reify-compiler/tests/recursive_detection_tests.rs: (1) three_node_cycle_emits_exactly_one_warning should verify all three node names (A, B, C) appear in the cycle path. (2) Add a multi-member SCC source label test (2+ node cycle) since only the self-loop case is currently tested. (3) Remove redundant mutual_recursion_cycle_path_format which duplicates indirect_two_node_cycle_both_recursive.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T19:01:27.302Z"
       },
       {
         "id": "981",
@@ -20057,7 +20058,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:01:26.550Z",
+      "lastModified": "2026-04-04T19:01:27.302Z",
       "taskCount": 981,
       "completedCount": 708,
       "tags": [
