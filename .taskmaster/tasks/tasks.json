@@ -19347,10 +19347,11 @@
         "description": "In crates/reify-expr/src/lib.rs tests: (1) Add symmetric NaN/Inf tests for each quaternion field. (2) Non-identity orientation passthrough test. (3) Multi-bad-field test. (4) Complex passthrough test confirming intentional divergence from stdlib. Use parameterized helper/macro.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:47.432Z"
       },
       {
         "id": "947",
@@ -19541,7 +19542,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:47.196Z",
+      "lastModified": "2026-04-04T09:00:47.432Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
