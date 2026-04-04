@@ -19199,6 +19199,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 935,
+        "title": "Add focused enum resolution tests and strengthen tolerancing conformance assertions",
+        "description": "In tolerancing_tests.rs: assert material_condition resolved to Type::Enum not Type::Real in gdt_structure_conforms test. In boundary1_consumer.rs: add focused test for compile_entity enum param resolution. Add test with wrong enum name to confirm error diagnostic.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19211,7 +19222,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:09:53.078Z"
+      "updated": "2026-04-04T06:09:55.484Z"
     }
   }
 }
