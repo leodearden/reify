@@ -19351,11 +19351,19 @@
         "description": "In crates/reify-mcp/src/types.rs, rename SourceLocationInfo.file to file_path for consistency with DiagnosticInfo.file_path. In gui/src-tauri/src/, replace local SourceLocation struct with reify_mcp::SourceLocationInfo (same pattern as DiagnosticData consolidation). Update engine.rs, mcp_context.rs, and test files.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:05:41.498Z"
+        "updatedAt": "2026-04-04T09:05:46.370Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Consolidate SourceLocation types and fix naming inconsistency"
+            ]
+          }
+        }
       },
       {
         "id": "943",
@@ -19657,9 +19665,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:05:43.185Z",
+      "lastModified": "2026-04-04T09:05:46.370Z",
       "taskCount": 962,
-      "completedCount": 698,
+      "completedCount": 699,
       "tags": [
         "master"
       ]
