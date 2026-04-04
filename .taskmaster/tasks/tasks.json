@@ -19013,7 +19013,13 @@
         "metadata": {
           "modules": [
             "crates/reify-runtime"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Test shared-fallback (Err(arc)) warn paths in into_result()"
+            ]
+          }
         }
       },
       {
@@ -19523,11 +19529,11 @@
         "description": "Add `if (!view.dom.isConnected) return;` before the view.dispatch() call in gui/src/editor/gotoDefinition.ts after the async requestDefinition resolves, guarding against stale/destroyed EditorView.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:00:32.055Z"
+        "updatedAt": "2026-04-04T09:16:16.101Z"
       },
       {
         "id": "951",
@@ -19777,7 +19783,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:15:26.742Z",
+      "lastModified": "2026-04-04T09:16:16.102Z",
       "taskCount": 965,
       "completedCount": 699,
       "tags": [
