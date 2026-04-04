@@ -73,9 +73,107 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::warn_counting_subscriber;
+
+    /// ERROR events should be rejected at the `enabled()` gate, not silently
+    /// accepted and then discarded inside `event()`.
+    ///
+    /// We verify this by wrapping the real `WarnCountingSubscriber` in a thin
+    /// `EventDispatchCounter` that increments `dispatch_count` each time the
+    /// tracing framework calls `event()` on us.  Because the wrapper delegates
+    /// `enabled()` to the inner subscriber, `event()` is only reached when the
+    /// inner subscriber's `enabled()` returns `true`.
+    ///
+    /// Under the current `<=` filter ERROR passes `enabled()`, so
+    /// `dispatch_count` ends up as 1 and this test **fails**.
+    /// After the fix (`==`), ERROR is rejected at `enabled()` and
+    /// `dispatch_count` stays 0.
+    #[test]
+    fn error_events_rejected_by_enabled_filter() {
+        // ── thin wrapper ────────────────────────────────────────────────────
+        struct EventDispatchCounter<S> {
+            inner: S,
+            dispatch_count: Arc<AtomicUsize>,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
+            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+                // Delegate to the inner subscriber so its filter is exercised.
+                self.inner.enabled(metadata)
+            }
+
+            fn new_span(
+                &self,
+                span: &tracing::span::Attributes<'_>,
+            ) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(
+                &self,
+                span: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+            ) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Reached only when enabled() returned true.
+                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        // ── test body ───────────────────────────────────────────────────────
+        let warn_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+
+        let inner = super::WarnCountingSubscriber::new(Arc::clone(&warn_count));
+        let subscriber = EventDispatchCounter {
+            inner,
+            dispatch_count: Arc::clone(&dispatch_count),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("error message");
+        });
+
+        // warn_count is 0 even under the current code because event() checks
+        // level == WARN before incrementing.  This assertion passes both before
+        // and after the fix.
+        assert_eq!(
+            warn_count.load(Ordering::Relaxed),
+            0,
+            "ERROR must not be counted as a WARN event"
+        );
+
+        // dispatch_count is 0 only when enabled() rejected the ERROR event.
+        // Under the current `<=` filter dispatch_count == 1 → this FAILS.
+        // After the fix (`==` filter) dispatch_count == 0 → this PASSES.
+        assert_eq!(
+            dispatch_count.load(Ordering::Relaxed),
+            0,
+            "ERROR events must be rejected at enabled(), not reach event()"
+        );
+    }
 
     /// warn_counting_subscriber returns a working (subscriber, counter) pair.
     /// WARN events increment the counter; the counter starts at 0.
