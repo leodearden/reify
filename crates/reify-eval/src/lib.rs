@@ -2063,174 +2063,23 @@ impl Engine {
         // ── Collection count re-elaboration phase ─────────────────────
         // If any structure_controlling cell is a collection count cell and
         // its value changed, add/remove instances to match the new count.
-        {
-            let collection_subs = new_snapshot.graph.collection_subs.clone();
-            for col_sub in &collection_subs {
-                let new_count_val = values
-                    .get(&col_sub.count_cell)
-                    .cloned()
-                    .unwrap_or(Value::Undef);
-                let old_count_val = self
-                    .eval_state
-                    .as_ref()
-                    .and_then(|s| s.snapshot.values.get(&col_sub.count_cell))
-                    .map(|(v, _)| v.clone())
-                    .unwrap_or(Value::Undef);
-
-                if new_count_val == old_count_val {
-                    continue;
-                }
-
-                // Guard: skip re-elaboration when the new count is Undef.
-                // The count cell hasn't been evaluated yet (incremental re-eval
-                // order may not have reached it). Destroying existing instances
-                // now would be destructive — preserve them until the count cell
-                // resolves to a definite value.
-                if matches!(new_count_val, Value::Undef) {
-                    // Record the last-known-good instance count so that a
-                    // subsequent Int(M) edit can use it as old_count to clean
-                    // up stale instances [M..N) left from the Int(N) era.
-                    // Only record when old_count is Int(n); if old_count is
-                    // already Undef, a previously recorded preserved count (from
-                    // an earlier Int→Undef transition) is still valid and must
-                    // not be overwritten with 0.
-                    if let Value::Int(n) = &old_count_val {
-                        self.preserved_counts.insert(col_sub.count_cell.clone(), *n);
-                    }
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "Collection count cell `{}` is Undef; skipping re-elaboration to preserve existing instances",
-                        col_sub.count_cell
-                    )));
-                    continue;
-                }
-
-                // Remove old instances from graph and snapshot
-                let old_count = match &old_count_val {
-                    Value::Int(n) => *n,
-                    // Value::Undef means the count cell was Undef in the snapshot.
-                    // This can happen after an Int(N)→Undef transition where the
-                    // Undef guard fired and skipped updating the snapshot count.
-                    // Fall back to preserved_counts to recover the true instance
-                    // count (N), so we clean up instances [M..N) correctly.
-                    // If no preserved count exists, genuinely 0 instances existed.
-                    Value::Undef => self
-                        .preserved_counts
-                        .get(&col_sub.count_cell)
-                        .copied()
-                        .unwrap_or(0),
-                    // Any other non-Int type is unexpected; treat as 0 but warn.
-                    other => {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "Collection count cell `{}` had unexpected non-Int prior value {:?}; treating as 0",
-                            col_sub.count_cell, other
-                        )));
-                        0
-                    }
-                };
-                for i in 0..old_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
-                        new_snapshot.values.remove(&scoped_id);
-                        values.remove(&scoped_id);
-                    }
-                }
-
-                // Create new instances based on new count.
-                // Note: Value::Undef is unreachable here — the guard above
-                // continues before reaching this point when new_count is Undef.
-                let new_count = match &new_count_val {
-                    Value::Int(n) => *n,
-                    // Undef is guarded above; this arm is a safety fallback.
-                    Value::Undef => 0,
-                    // Any other non-Int type is unexpected; treat as 0 but warn.
-                    other => {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "Collection count cell `{}` has unexpected non-Int value {:?}; treating count as 0",
-                            col_sub.count_cell, other
-                        )));
-                        0
-                    }
-                };
-                for i in 0..new_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                        let expr_hash = default_expr
-                            .as_ref()
-                            .map(|e| e.content_hash)
-                            .unwrap_or(ContentHash(0));
-                        let node = crate::graph::ValueCellNode {
-                            id: scoped_id.clone(),
-                            kind: *kind,
-                            cell_type: cell_type.clone(),
-                            default_expr: default_expr.clone(),
-                            content_hash: id_hash.combine(expr_hash),
-                        };
-                        new_snapshot
-                            .graph
-                            .value_cells
-                            .insert(scoped_id.clone(), node);
-
-                        // Evaluate the cell
-                        let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(
-                                expr,
-                                &reify_expr::EvalContext::new(&values, &functions)
-                                    .with_meta(&self.meta_map),
-                            )
-                        } else {
-                            Value::Undef
-                        };
-                        values.insert(scoped_id.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(scoped_id, (val, DeterminacyState::Determined));
-                    }
-                }
-
-                // Update per-member synthetic lists: __list_{name}__{member}
-                for (member, _, _, _) in &col_sub.child_value_cells {
-                    let member_items: Vec<Value> = (0..new_count)
-                        .map(|idx| {
-                            let scoped_id = ValueCellId::new(
-                                format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
-                                member,
-                            );
-                            values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
-                        })
-                        .collect();
-                    let member_list_id = ValueCellId::new(
-                        &col_sub.parent_entity,
-                        format!("__list_{}__{}", col_sub.sub_name, member),
-                    );
-                    let member_list_val = Value::List(member_items);
-                    values.insert(member_list_id.clone(), member_list_val.clone());
-                    new_snapshot.values.insert(
-                        member_list_id,
-                        (member_list_val, DeterminacyState::Determined),
-                    );
-                }
-
-                // Recompute topology fingerprint to reflect count change
-                let count_state_hash = ContentHash::of_str(&format!(
-                    "collection:{}={}",
-                    col_sub.count_cell, new_count
-                ));
-                new_snapshot.topology_fingerprint = new_snapshot
-                    .graph
-                    .topology_fingerprint()
-                    .combine(count_state_hash);
-
-                // Re-elaboration succeeded with a definite count — clear the
-                // preserved count entry so it doesn't interfere with future edits.
-                self.preserved_counts.remove(&col_sub.count_cell);
-            }
-        }
+        // O(1) PersistentMap clone — shares structure with the old snapshot.
+        let old_snapshot_values = self
+            .eval_state
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .values
+            .clone();
+        Self::re_elaborate_collections(
+            &mut self.preserved_counts,
+            &old_snapshot_values,
+            &mut new_snapshot,
+            &mut values,
+            &functions,
+            &self.meta_map,
+            &mut diagnostics,
+        );
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
@@ -2241,6 +2090,190 @@ impl Engine {
             diagnostics,
             resolved_params,
         })
+    }
+
+    /// Run the collection count re-elaboration phase for a given snapshot transition.
+    ///
+    /// Compares collection count cells between `old_snapshot_values` and the working
+    /// `values` map. For each count cell that changed:
+    /// - If the new count is `Undef`, skips re-elaboration and records the
+    ///   last-known-good count in `preserved_counts` (only when old count is Int).
+    /// - Otherwise, removes instances from `[0..old_count)` and creates instances
+    ///   from `[0..new_count)`, using `preserved_counts` to recover `old_count` when
+    ///   the snapshot count is `Undef` (i.e., after an Int→Undef transition).
+    ///
+    /// This is an associated function (not `&mut self`) so callers can pass
+    /// `&mut self.preserved_counts` and `&self.eval_state` as disjoint field borrows
+    /// without conflicting with the mutable borrows of `new_snapshot` and `values`.
+    fn re_elaborate_collections(
+        preserved_counts: &mut HashMap<ValueCellId, i64>,
+        old_snapshot_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        new_snapshot: &mut Snapshot,
+        values: &mut ValueMap,
+        functions: &[reify_types::CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let collection_subs = new_snapshot.graph.collection_subs.clone();
+        for col_sub in &collection_subs {
+            let new_count_val = values
+                .get(&col_sub.count_cell)
+                .cloned()
+                .unwrap_or(Value::Undef);
+            let old_count_val = old_snapshot_values
+                .get(&col_sub.count_cell)
+                .map(|(v, _)| v.clone())
+                .unwrap_or(Value::Undef);
+
+            if new_count_val == old_count_val {
+                continue;
+            }
+
+            // Guard: skip re-elaboration when the new count is Undef.
+            // The count cell hasn't been evaluated yet (incremental re-eval
+            // order may not have reached it). Destroying existing instances
+            // now would be destructive — preserve them until the count cell
+            // resolves to a definite value.
+            if matches!(new_count_val, Value::Undef) {
+                // Record the last-known-good instance count so that a
+                // subsequent Int(M) edit can use it as old_count to clean
+                // up stale instances [M..N) left from the Int(N) era.
+                // Only record when old_count is Int(n); if old_count is
+                // already Undef, a previously recorded preserved count (from
+                // an earlier Int→Undef transition) is still valid and must
+                // not be overwritten with 0.
+                if let Value::Int(n) = &old_count_val {
+                    preserved_counts.insert(col_sub.count_cell.clone(), *n);
+                }
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Collection count cell `{}` is Undef; skipping re-elaboration to preserve existing instances",
+                    col_sub.count_cell
+                )));
+                continue;
+            }
+
+            // Remove old instances from graph and snapshot
+            let old_count = match &old_count_val {
+                Value::Int(n) => *n,
+                // Value::Undef means the count cell was Undef in the snapshot.
+                // This can happen after an Int(N)→Undef transition where the
+                // Undef guard fired and skipped updating the snapshot count.
+                // Fall back to preserved_counts to recover the true instance
+                // count (N), so we clean up instances [M..N) correctly.
+                // If no preserved count exists, genuinely 0 instances existed.
+                Value::Undef => preserved_counts
+                    .get(&col_sub.count_cell)
+                    .copied()
+                    .unwrap_or(0),
+                // Any other non-Int type is unexpected; treat as 0 but warn.
+                other => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Collection count cell `{}` had unexpected non-Int prior value {:?}; treating as 0",
+                        col_sub.count_cell, other
+                    )));
+                    0
+                }
+            };
+            for i in 0..old_count {
+                let scoped_entity =
+                    format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                for (member, _, _, _) in &col_sub.child_value_cells {
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    new_snapshot.graph.value_cells.remove(&scoped_id);
+                    new_snapshot.values.remove(&scoped_id);
+                    values.remove(&scoped_id);
+                }
+            }
+
+            // Create new instances based on new count.
+            // Note: Value::Undef is unreachable here — the guard above
+            // continues before reaching this point when new_count is Undef.
+            let new_count = match &new_count_val {
+                Value::Int(n) => *n,
+                // Undef is guarded above; this arm is a safety fallback.
+                Value::Undef => 0,
+                // Any other non-Int type is unexpected; treat as 0 but warn.
+                other => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Collection count cell `{}` has unexpected non-Int value {:?}; treating count as 0",
+                        col_sub.count_cell, other
+                    )));
+                    0
+                }
+            };
+            for i in 0..new_count {
+                let scoped_entity =
+                    format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
+                    let expr_hash = default_expr
+                        .as_ref()
+                        .map(|e| e.content_hash)
+                        .unwrap_or(ContentHash(0));
+                    let node = crate::graph::ValueCellNode {
+                        id: scoped_id.clone(),
+                        kind: *kind,
+                        cell_type: cell_type.clone(),
+                        default_expr: default_expr.clone(),
+                        content_hash: id_hash.combine(expr_hash),
+                    };
+                    new_snapshot.graph.value_cells.insert(scoped_id.clone(), node);
+
+                    // Evaluate the cell
+                    let val = if let Some(expr) = default_expr {
+                        reify_expr::eval_expr(
+                            expr,
+                            &reify_expr::EvalContext::new(values, functions)
+                                .with_meta(meta_map),
+                        )
+                    } else {
+                        Value::Undef
+                    };
+                    values.insert(scoped_id.clone(), val.clone());
+                    new_snapshot
+                        .values
+                        .insert(scoped_id, (val, DeterminacyState::Determined));
+                }
+            }
+
+            // Update per-member synthetic lists: __list_{name}__{member}
+            for (member, _, _, _) in &col_sub.child_value_cells {
+                let member_items: Vec<Value> = (0..new_count)
+                    .map(|idx| {
+                        let scoped_id = ValueCellId::new(
+                            format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, idx),
+                            member,
+                        );
+                        values.get(&scoped_id).cloned().unwrap_or(Value::Undef)
+                    })
+                    .collect();
+                let member_list_id = ValueCellId::new(
+                    &col_sub.parent_entity,
+                    format!("__list_{}__{}", col_sub.sub_name, member),
+                );
+                let member_list_val = Value::List(member_items);
+                values.insert(member_list_id.clone(), member_list_val.clone());
+                new_snapshot.values.insert(
+                    member_list_id,
+                    (member_list_val, DeterminacyState::Determined),
+                );
+            }
+
+            // Recompute topology fingerprint to reflect count change
+            let count_state_hash = ContentHash::of_str(&format!(
+                "collection:{}={}",
+                col_sub.count_cell, new_count
+            ));
+            new_snapshot.topology_fingerprint = new_snapshot
+                .graph
+                .topology_fingerprint()
+                .combine(count_state_hash);
+
+            // Re-elaboration succeeded with a definite count — clear the
+            // preserved count entry so it doesn't interfere with future edits.
+            preserved_counts.remove(&col_sub.count_cell);
+        }
     }
 
     /// Replace occurrences of the raw ConstraintNodeId string in diagnostic
