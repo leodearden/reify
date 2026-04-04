@@ -18813,6 +18813,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 913,
+        "title": "Add bit-identity test coverage for Scalar, Complex, and Orientation variants",
+        "description": "In `crates/reify-types/src/value.rs`, add a new test (or extend `value_ord_real_nan_and_neg_zero_still_consistent`) to cover the three other float-bearing variants listed in the doc comment:\n- `Value::Scalar`: assert `Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH } != Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }` (to_bits PartialEq) and that their cmp is not Equal.\n- `Value::Complex`: assert that two Complex values differing only in a NaN component or negative-zero compare as expected under bit-identity.\n- `Value::Orientation`: same spot-check for a NaN or negative-zero quaternion component.\nThis ensures regressions in each variant's independent to_bits() call site are caught.\n\nMemory hints: search \"Value Scalar Complex Orientation to_bits PartialEq bit-identity\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -18825,7 +18836,7 @@
       ],
       "created": "2026-04-04T04:09:06.705Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T04:09:24.724Z"
+      "updated": "2026-04-04T04:09:30.901Z"
     }
   }
 }
