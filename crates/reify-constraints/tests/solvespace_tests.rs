@@ -883,7 +883,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
             // Verify it's not a spurious "no constraints recognized" failure
             // — we DO have a constraint, it's just unrecognizable.
             assert!(
-                reason.contains("unrecognized") || reason.contains("missing"),
+                reason.contains("unrecognized"),
                 "reason should explain why progress was impossible, got: {}",
                 reason
             );
