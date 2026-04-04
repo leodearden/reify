@@ -271,9 +271,25 @@ fn find_cycle_back_to(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EntityKind, Visibility};
-    use reify_types::ContentHash;
+    use crate::{EntityKind, SubComponentDecl, Visibility};
+    use reify_types::{ContentHash, SourceSpan};
     use std::collections::HashMap;
+
+    /// Helper: build a minimal SubComponentDecl referencing `target`.
+    fn sub_ref(name: &str, target: &str) -> SubComponentDecl {
+        SubComponentDecl {
+            name: name.to_string(),
+            structure_name: target.to_string(),
+            visibility: Visibility::Public,
+            args: vec![],
+            type_args: vec![],
+            is_collection: false,
+            count_cell: None,
+            guard_expr: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash(0),
+        }
+    }
 
     /// Helper: build a minimal TopologyTemplate with just a name.
     fn minimal_template(name: &str) -> TopologyTemplate {
@@ -296,6 +312,34 @@ mod tests {
             content_hash: ContentHash(0),
             is_recursive: false,
         }
+    }
+
+    #[test]
+    fn duplicate_sub_refs_deduped() {
+        // Template S has two sub_components both referencing itself — a self-loop via
+        // two distinct sub names. After dedup the adjacency should have one edge.
+        // The result: is_recursive==true and exactly 1 cycle warning.
+        let mut s = minimal_template("S");
+        s.sub_components = vec![sub_ref("x", "S"), sub_ref("y", "S")];
+        let mut templates = vec![s];
+        let mut diagnostics = Vec::new();
+        detect_recursive_structures(&mut templates, &mut diagnostics);
+
+        assert!(templates[0].is_recursive, "S with two self-ref subs should be recursive");
+
+        let cycle_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_types::Severity::Warning
+                    && d.message.contains("recursive structure cycle")
+            })
+            .collect();
+        assert_eq!(
+            cycle_warnings.len(),
+            1,
+            "expected exactly 1 cycle warning even with two self-referencing subs, got: {:?}",
+            cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
