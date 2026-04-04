@@ -1076,6 +1076,30 @@ mod tests {
         assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
     }
 
+    /// BuilderError::MissingNonAutoValue Display must embed the cell_id and the
+    /// word "missing" so log messages and SolveResult::NoProgress reasons are
+    /// human-readable. Also verifies the type satisfies std::error::Error so it
+    /// can be used in ? chains with anyhow / thiserror in the future.
+    #[test]
+    fn builder_error_display_contains_cell_id() {
+        let cell_id = ValueCellId::new("Test", "x");
+        let err = BuilderError::MissingNonAutoValue(cell_id.clone());
+
+        let display = err.to_string();
+        assert!(
+            display.contains("missing"),
+            "Display should contain 'missing', got: {display}"
+        );
+        assert!(
+            display.contains(&cell_id.to_string()),
+            "Display should contain cell_id '{}', got: {display}",
+            cell_id
+        );
+
+        // Verify it satisfies std::error::Error via trait-object coercion.
+        let _: &dyn std::error::Error = &err;
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err — this is a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
