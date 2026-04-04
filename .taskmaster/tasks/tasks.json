@@ -19430,6 +19430,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 956,
+        "title": "Fix preserved_counts transaction ordering, shared count_cell bug, and orphan pruning",
+        "description": "In crates/reify-eval/src/lib.rs: (1) Collect preserved_counts removals in a Vec during collection sub loop and apply after loop (fixes shared-count_cell bug where first removal causes second sub to fall back to 0). (2) Move removal to after snapshot commit for transaction safety. (3) Add retain() to prune orphaned preserved_counts after computing active subs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19442,7 +19453,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:54.472Z"
+      "updated": "2026-04-04T06:12:56.638Z"
     }
   }
 }
