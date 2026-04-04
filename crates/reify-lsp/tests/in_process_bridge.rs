@@ -393,3 +393,28 @@ async fn valid_notification_returns_ok_null() {
         "valid notification should return exactly Ok(Value::Null)"
     );
 }
+
+/// Malformed (non-object) params for `initialized` should return an Err
+/// containing "initialized params error", not silently succeed.
+///
+/// This documents that the `initialized` arm follows the same strict
+/// deserialization contract as all other notification arms — bad params are
+/// surfaced to the caller rather than silently ignored.
+#[tokio::test]
+async fn initialized_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is clearly malformed for InitializedParams (expects an object)
+    let result = lsp.handle_request("initialized", json!(42)).await;
+
+    assert!(
+        result.is_err(),
+        "initialized with malformed params should return Err, got: {:?}",
+        result
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("initialized params error"),
+        "error message should contain 'initialized params error', got: {err}"
+    );
+}
