@@ -19708,15 +19708,16 @@
         "description": "Revise module-level doc comment in crates/reify-runtime/src/concurrent_eval.rs to describe the observable poison-recovery contract rather than explaining why into_result() uses inline recovery vs helper methods.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:06:51.426Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:06:49.930Z",
+      "lastModified": "2026-04-04T09:06:51.437Z",
       "taskCount": 964,
       "completedCount": 699,
       "tags": [
