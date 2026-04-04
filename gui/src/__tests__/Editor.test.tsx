@@ -326,6 +326,21 @@ describe('Editor scrollToLocation', () => {
     setScrollTo({ file: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
     expect(view.state.selection.main.head).toBe(headBefore);
   });
+
+  it('scrollToLocation with no active file does not crash', () => {
+    // setupStore([]) leaves activeFile as null — tests the null guard
+    const store = setupStore([]);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Targeting any file when activeFile is null: string !== null, effect returns early
+    setScrollTo({ file: file1.path, line: 1, column: 1, end_line: 1, end_column: 5 });
+
+    // Cursor unmoved, no crash
+    expect(view.state.selection.main.head).toBe(0);
+  });
 });
 
 describe('Editor save error callback', () => {
