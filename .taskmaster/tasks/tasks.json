@@ -18526,10 +18526,11 @@
         "description": "In crates/reify-expr/src/lib.rs, extend the passthrough tests to cover: (1) sanitize_value(Value::Undef) → is_undef() (idempotency invariant — Undef is what the function produces for bad inputs and should survive a second call); (2) sanitize_value(Value::Bool(true)) → Value::Bool(true) (second representative for the catch-all arm). These can be added to the existing sanitize_non_numeric_passthrough test or as separate named tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:18:31.001Z"
       },
       {
         "id": "895",
@@ -18545,7 +18546,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:18:30.149Z",
+      "lastModified": "2026-04-04T03:18:31.001Z",
       "taskCount": 895,
       "completedCount": 671,
       "tags": [
