@@ -449,7 +449,7 @@ fn get_source_location_returns_location_for_existing_entity() {
     locations.insert(
         "bracket/body".to_string(),
         SourceLocationInfo {
-            file: "main.ri".to_string(),
+            file_path: "main.ri".to_string(),
             line: 5,
             column: 3,
             end_line: 20,
@@ -469,7 +469,7 @@ fn get_source_location_returns_location_for_existing_entity() {
         )
         .expect("should succeed");
 
-    assert_eq!(result["file"], "main.ri");
+    assert_eq!(result["file_path"], "main.ri");
     assert_eq!(result["line"], 5);
     assert_eq!(result["column"], 3);
     assert_eq!(result["end_line"], 20);

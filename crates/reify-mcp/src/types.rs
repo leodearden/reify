@@ -97,7 +97,7 @@ pub struct SelectionInfo {
 /// A source location reference.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceLocationInfo {
-    pub file: String,
+    pub file_path: String,
     pub line: u32,
     pub column: u32,
     pub end_line: u32,

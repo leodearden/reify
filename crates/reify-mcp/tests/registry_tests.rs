@@ -190,14 +190,14 @@ fn selection_info_partial_eq() {
 #[test]
 fn source_location_info_partial_eq() {
     let a = SourceLocationInfo {
-        file: "a.ri".to_string(),
+        file_path: "a.ri".to_string(),
         line: 1,
         column: 0,
         end_line: 1,
         end_column: 5,
     };
     let b = SourceLocationInfo {
-        file: "a.ri".to_string(),
+        file_path: "a.ri".to_string(),
         line: 1,
         column: 0,
         end_line: 1,
