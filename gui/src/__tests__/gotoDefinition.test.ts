@@ -63,6 +63,7 @@ describe('reifyGotoDefinition', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     // First call uses first URI
@@ -119,6 +120,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     mousedownHandler(mockEvent, mockView);
@@ -158,6 +160,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         },
       },
       dispatch: vi.fn(),
+      dom: { isConnected: true },
     };
 
     mousedownHandler(mockEvent, mockView);

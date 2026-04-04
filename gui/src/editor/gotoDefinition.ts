@@ -102,6 +102,7 @@ export function reifyGotoDefinition(
       // Fire async, don't block the event
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
+        if (!view.dom.isConnected) return;
 
         const resolvedNow = resolveUri(uri);
         const sameFile = isSameFile(location.uri, resolvedNow);
