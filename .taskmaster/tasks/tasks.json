@@ -17782,11 +17782,11 @@
         "description": "Review suggestions from task 833 identified several test quality issues in the solvespace test code. All fixes are localized to two files.\n\n**In `crates/reify-constraints/tests/solvespace_tests.rs`:**\n1. Remove unused `fixed_y_id` variable (line ~831) — declared via `vcid(\"Fixed\", \"y\")` but never used in code, only referenced in comments. Produces `unused_variables` compiler warning. Either remove entirely or wire into assertion.\n2. Tighten NoProgress assertion (lines ~885-889) — currently accepts `reason.contains(\"unrecognized\") || reason.contains(\"missing\")`, but the documented code path only produces \"unrecognized geometric constraint pattern\". The `|| \"missing\"` branch masks regressions. Pin to `reason.contains(\"unrecognized\")` only.\n3. DRY up entity/member string literals — `x_id = vcid(\"Auto\", \"x\")` and `pt_x = value_ref_typed(\"Auto\", \"x\", ...)` repeat the same strings independently. Either share constants or derive one from the other.\n\n**In `crates/reify-constraints/src/solvespace.rs` (test module):**\n4. Fix fragile line-number reference in doc comment (line ~1178): \"line 489 of add_point\" → use function-scoped reference instead.\n5. Add initial_len pre-assertion in `add_auto_coord_cache_hit_idempotency` (line ~1126): assert `len_after_first == initial_len + 1` to verify the first call actually inserted a param.\n6. Rename `add_point_propagates_missing_value_error` → `add_point_propagates_error_for_unresolved_x_coord` and update docstring to clarify the PointRef::Auto / non-auto terminology.\n7. Extract shared `auto_params` construction helper to reduce duplication across 3 tests.\n\nmemory_hints: search(\"solvespace test conventions compiler warnings\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:23:16.888Z",
+        "updatedAt": "2026-04-04T05:01:50.262Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19104,9 +19104,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T05:00:40.431Z",
+      "lastModified": "2026-04-04T05:01:50.263Z",
       "taskCount": 925,
-      "completedCount": 689,
+      "completedCount": 690,
       "tags": [
         "master"
       ]
