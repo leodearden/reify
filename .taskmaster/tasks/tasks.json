@@ -11792,16 +11792,9 @@
             "crates/reify-runtime"
           ],
           "memory_hints": {
-            "entities": [
-              "ConcurrentEvalAdapter",
-              "SharedPriorityPromoter",
-              "CliToolContext"
-            ],
+            "entities": [],
             "queries": [
-              "lock poisoning concurrent eval tainted flag",
-              "task 542 lock helper extraction poison recovery",
-              "task 562 tainted flag ConcurrentEditResult",
-              "task 466 ConcurrentEditSetup deep clone"
+              "resolution for: Add observability and tainted-flag to ConcurrentEvalAdapter poison recovery"
             ]
           }
         },
@@ -18154,11 +18147,11 @@
         "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:17:47.187Z"
+        "updatedAt": "2026-04-04T03:02:17.889Z"
       },
       {
         "id": "873",
@@ -18334,7 +18327,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:01:50.620Z",
+      "lastModified": "2026-04-04T03:02:17.889Z",
       "taskCount": 883,
       "completedCount": 670,
       "tags": [
