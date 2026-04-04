@@ -18009,11 +18009,11 @@
         "description": "tests/sync_comments_test.sh reinvents the PASS/FAIL counter and summary pattern that already exists in tests/infra/test_helpers.sh. Refactor the script to:\n1. Source tests/infra/test_helpers.sh at the top\n2. Replace the custom `check()` function with `assert` from test_helpers.sh (e.g., `assert \"desc\" grep -q \"$pattern\" \"$file\"`)\n3. Replace the inline summary block with `test_summary`\n4. The file-existence error masking issue (grep on missing file gives misleading FAIL) is also resolved since assert() handles this pattern.\n\nThis consolidates suggestions about test infrastructure inconsistency, error masking, and code reuse.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", entities: test_helpers.sh",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T00:15:26.237Z"
+        "updatedAt": "2026-04-04T03:00:56.544Z"
       },
       {
         "id": "864",
@@ -18334,9 +18334,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:42:01.564Z",
+      "lastModified": "2026-04-04T03:00:56.546Z",
       "taskCount": 883,
-      "completedCount": 669,
+      "completedCount": 670,
       "tags": [
         "master"
       ]
