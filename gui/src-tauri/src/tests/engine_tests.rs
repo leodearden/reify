@@ -247,7 +247,7 @@ fn get_source_location_end_to_end() {
         .get_source_location("Bracket.width")
         .expect("should find source location for Bracket.width");
 
-    assert_eq!(loc.file, "bracket.ri");
+    assert_eq!(loc.file_path, "bracket.ri");
     // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
     assert!(
         loc.line >= 2,
