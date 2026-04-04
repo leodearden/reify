@@ -19980,7 +19980,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:41:59.432Z"
+        "updatedAt": "2026-04-04T14:41:59.432Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": 975,
