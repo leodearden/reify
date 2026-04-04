@@ -18802,11 +18802,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs, add two new tests in the poison_recovery module mirroring the existing tracing_warn_emitted_on_poison_into_result structure (lines 2083-2107): one that poisons snapshot_values and asserts count==1, and one that poisons results and asserts count==1. The existing test only covers the values lock. into_result() has independent lock-recovery paths for all three locks, each emitting tracing::warn!, but only one has a WARN-emission assertion.\n\nmemory_hints: search(\"into_result poison recovery warn emission\", project_id=\"reify\"), search(\"WarnCountingSubscriber test infrastructure\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:08:34.219Z"
+        "updatedAt": "2026-04-04T04:20:52.521Z"
       },
       {
         "id": "910",
@@ -18951,9 +18951,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:20:43.692Z",
+      "lastModified": "2026-04-04T04:20:52.521Z",
       "taskCount": 919,
-      "completedCount": 681,
+      "completedCount": 682,
       "tags": [
         "master"
       ]
