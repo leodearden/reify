@@ -188,6 +188,7 @@ CONSUMERS=(
     "tests/infra/test_portable_timeout.sh"
     "scripts/test_lib.sh"
     "scripts/test_tree_sitter_generate.sh"
+    "tests/sync_comments_test.sh"
 )
 
 for consumer in "${CONSUMERS[@]}"; do
