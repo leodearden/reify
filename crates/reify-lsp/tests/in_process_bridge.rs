@@ -280,6 +280,27 @@ async fn initialize_with_malformed_params_returns_error() {
     );
 }
 
+/// Notifications with malformed params should propagate deserialization errors as Err,
+/// not silently succeed with Ok(Value::Null).
+///
+/// This documents that the notification arms of `handle_request` are not "fire and forget"
+/// — deserialization failures are surfaced to the caller even for one-way messages.
+#[tokio::test]
+async fn notification_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is not a valid DidOpenTextDocumentParams (expects an object)
+    let result = lsp
+        .handle_request("textDocument/didOpen", json!(42))
+        .await;
+
+    assert!(
+        result.is_err(),
+        "notification with malformed params should return Err, got: {:?}",
+        result
+    );
+}
+
 /// An unknown/unsupported method name should return Err, not panic or silently succeed.
 ///
 /// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
