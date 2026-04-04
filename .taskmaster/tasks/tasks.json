@@ -19822,10 +19822,11 @@
         "description": "Reviewer feedback (reuse_auditor, test_analyst, architect_reviewer): mockEvent and mockView are copy-pasted across 5 test sites in gui/src/__tests__/gotoDefinition.test.ts. Extract makeMockEvent() and makeMockView(overrides?) factories at the top of the file. Also add expect(mockInvoke).toHaveBeenCalledTimes(1) to both isConnected guard tests to prove the guard fires post-response, not pre-request.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T14:09:44.928Z"
       },
       {
         "id": "969",
@@ -19852,7 +19853,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T14:09:40.315Z",
+      "lastModified": "2026-04-04T14:09:44.928Z",
       "taskCount": 970,
       "completedCount": 702,
       "tags": [
