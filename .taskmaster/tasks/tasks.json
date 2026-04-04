@@ -19298,6 +19298,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 944,
+        "title": "Add scrollToLocation file mismatch test and guard in Editor",
+        "description": "In gui/src/__tests__/Editor.test.tsx, add test with file2 active and scrollToLocation pointing at file1, assert expected behavior. If Editor should skip scroll on mismatch, add file_path guard in createEffect at Editor.tsx.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19310,7 +19321,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:10:49.119Z"
+      "updated": "2026-04-04T06:10:51.398Z"
     }
   }
 }
