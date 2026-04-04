@@ -150,6 +150,23 @@ impl Value {
         }
     }
 
+    /// Create a `Real` or `Scalar` from a raw f64 component and a dimension.
+    ///
+    /// Returns `Real(value)` when the dimension is dimensionless, or
+    /// `Scalar { si_value: value, dimension }` otherwise.  This is the
+    /// shared pattern used by complex component extraction (re, im) and
+    /// magnitude computation.
+    pub fn from_component(value: f64, dimension: DimensionVector) -> Self {
+        if dimension.is_dimensionless() {
+            Value::Real(value)
+        } else {
+            Value::Scalar {
+                si_value: value,
+                dimension,
+            }
+        }
+    }
+
     /// Create a Range value with normalized inclusivity flags.
     ///
     /// When a bound is `None` (unbounded), the corresponding inclusive flag is forced to
@@ -3291,6 +3308,26 @@ mod tests {
             z: 0.0,
         };
         assert!(c < d);
+    }
+
+    #[test]
+    fn value_orientation_ord_equal_w_different_x() {
+        // Equal w, different x with non-zero y — catches field-order swap regressions.
+        // Correct Ord (w→x→y→z): e > f because x=1.0 > x=0.5 when w is tied.
+        // A wrong impl comparing y before x would say e < f (y=0.5 < y=1.0).
+        let e = Value::Orientation {
+            w: 0.5,
+            x: 1.0,
+            y: 0.5,
+            z: 0.0,
+        };
+        let f = Value::Orientation {
+            w: 0.5,
+            x: 0.5,
+            y: 1.0,
+            z: 0.0,
+        };
+        assert!(e > f);
     }
 
     #[test]

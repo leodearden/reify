@@ -866,6 +866,35 @@ mod tests {
         assert!(func_labels.contains(&"max"), "should include 'max'");
     }
 
+    #[test]
+    fn re_im_not_in_builtin_completions() {
+        // re, im, real, imag are method-only accessors, not standalone builtins.
+        // They should NOT appear in function completions.
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(
+            !func_labels.contains(&"re"),
+            "'re' should not be in builtin function completions"
+        );
+        assert!(
+            !func_labels.contains(&"im"),
+            "'im' should not be in builtin function completions"
+        );
+        assert!(
+            !func_labels.contains(&"real"),
+            "'real' should not be in builtin function completions"
+        );
+        assert!(
+            !func_labels.contains(&"imag"),
+            "'imag' should not be in builtin function completions"
+        );
+    }
+
     // TODO(task-2): Position(1,0) is inside a structure body. When position-sensitive
     // filtering lands, verify these assertions still hold in StructureBody context.
     #[test]

@@ -224,6 +224,31 @@ fn phase_1_1i_returns_pi_over_4() {
 }
 
 #[test]
+fn phase_zero_complex_returns_undef() {
+    // phase(0+0i) is mathematically undefined (zero vector has no direction)
+    let z = complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS);
+    let result = eval_builtin("phase", &[z]);
+    assert!(
+        result.is_undef(),
+        "phase(0+0i) should be Undef, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn phase_dimensioned_complex_returns_angle() {
+    // phase() discards the input dimension and always returns ANGLE
+    let impedance = DimensionVector::MASS
+        .mul(&DimensionVector::LENGTH.pow(2))
+        .div(&DimensionVector::TIME.pow(3))
+        .div(&DimensionVector::CURRENT.pow(2));
+    let z = complex_val(50.0, -25.0, impedance);
+    let result = eval_builtin("phase", &[z]);
+    let expected_phase = (-25.0_f64).atan2(50.0);
+    assert_scalar_approx(&result, expected_phase, DimensionVector::ANGLE);
+}
+
+#[test]
 fn conjugate_3_4i_negates_imaginary() {
     // conjugate(3+4i) = 3-4i, preserving dimension
     let z = complex_val(3.0, 4.0, DimensionVector::LENGTH);

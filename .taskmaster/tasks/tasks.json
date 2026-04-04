@@ -3486,7 +3486,7 @@
         "dependencies": [
           "197"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -3498,7 +3498,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T22:57:12.463Z"
+        "updatedAt": "2026-04-03T23:29:53.644Z"
       },
       {
         "id": "199",
@@ -3510,7 +3510,7 @@
         "dependencies": [
           "198"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3521,7 +3521,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-04T00:18:40.914Z"
       },
       {
         "id": "200",
@@ -6523,7 +6523,7 @@
           "326",
           "199"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
@@ -6532,7 +6532,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T00:00:00.000Z"
+        "updatedAt": "2026-04-04T00:18:49.253Z"
       },
       {
         "id": "333",
@@ -7111,11 +7111,11 @@
         "description": "Fix phase(0+0i) returning Scalar{0.0, ANGLE} instead of Undef (mathematically undefined). Extract complex_component_to_value() helper to deduplicate dimension-to-value conversion pattern across re/im/magnitude (3-way duplication).\n\nMissing tests to add:\n- NaN/Inf in second arg (im) for complex functions (only first arg tested)\n- phase(0+0i) edge case\n- phase() on dimensioned Complex (documents dimension-agnostic behavior)\n- magnitude(0+0i) edge case\n- Negative assertions that re/im are NOT in LSP completions (guards design decision)\n\nMemory hints: search \"phase complex magnitude edge case\", entities: eval_builtin, phase, complex_magnitude",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-03T22:57:12.577Z",
+        "updatedAt": "2026-04-03T23:27:21.597Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9021,7 +9021,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T06:02:40.276Z",
+        "updatedAt": "2026-04-03T23:35:49.011Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -9029,7 +9029,8 @@
             "crates/reify-types/src/ty.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ],
           "memory_hints": {
             "entities": [
@@ -10389,7 +10390,7 @@
             "crates/reify-test-support"
           ]
         },
-        "updatedAt": "2026-04-03T14:01:43.502Z"
+        "updatedAt": "2026-04-03T23:31:38.048Z"
       },
       {
         "id": "508",
@@ -11531,7 +11532,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-03T13:29:35.979Z"
+        "updatedAt": "2026-04-04T00:21:29.777Z"
       },
       {
         "id": "557",
@@ -11776,7 +11777,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add `tracing::warn!` at each poison recovery site so lock poisoning is observable in logs (robustness S9)\n2. Extract private helper methods (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) to deduplicate the `.unwrap_or_else(|e| e.into_inner())` pattern, matching `CliToolContext::lock_state()` precedent (reuse S12)\n3. Consider adding an `AtomicBool tainted` flag that gets set on first poison recovery, surfaced in `ConcurrentEditResult` so callers can decide whether to trust results or retry (robustness S7, S8). This addresses silent corruption propagation and values/snapshot_values invariant divergence.\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval tainted\"\n  entities: [\"ConcurrentEvalAdapter\", \"SharedPriorityPromoter\", \"CliToolContext\"]",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11804,7 +11805,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-03T23:03:32.427Z"
+        "updatedAt": "2026-04-04T00:21:30.846Z"
       },
       {
         "id": "568",
@@ -12678,7 +12679,7 @@
             "crates/reify-syntax"
           ]
         },
-        "updatedAt": "2026-04-03T15:15:07.058Z"
+        "updatedAt": "2026-04-03T23:48:17.729Z"
       },
       {
         "id": "604",
@@ -16508,7 +16509,7 @@
         "description": "Add 4+ arg test case for frame3_identity_with_any_args_returns_undef (or rename test to match actual coverage). Add Ord test with equal-w-different-x quaternion pair to protect against field-order changes in Orientation comparison.",
         "details": "Source: escalation esc-382-149 (task 382 review). Files: crates/reify-stdlib/src/lib.rs:6179, crates/reify-types/src/value.rs:4243-4263.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -16521,7 +16522,7 @@
             "crates/reify-types"
           ]
         },
-        "updatedAt": "2026-04-03T22:51:29.913Z"
+        "updatedAt": "2026-04-03T23:54:19.158Z"
       },
       {
         "id": "786",
@@ -17351,7 +17352,7 @@
         "description": "gui/src-tauri/src/mcp_context.rs:128-130 returns Ok(Vec::new()) for get_diagnostics(). The GUI's MCP context cannot surface compiler diagnostics to Claude. The CLI's CliToolContext at crates/reify-cli/src/mcp_context.rs:163 has a real implementation that reads from compiled.diagnostics. The GUI needs equivalent wiring — either through GuiState carrying diagnostics, or by querying the LspBridge which already has get_diagnostics(uri).\n\nNote: the test at gui/src-tauri/src/tests/mcp_context_tests.rs:137 asserts empty behavior and will need updating.\n\nmemory_hints: search(\"GUI MCP diagnostics TauriToolContext\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17366,7 +17367,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-04-03T22:41:43.595Z"
+        "updatedAt": "2026-04-03T23:18:10.068Z"
       },
       {
         "id": "828",
@@ -17374,7 +17375,7 @@
         "description": "Convention violation. reify-lsp/src/bridge.rs:84 uses serde_json::from_value(params).unwrap_or_default() for InitializeParams. If the LSP client sends malformed initialize params, the server silently uses defaults. Should log a warning via tracing::warn! and optionally surface an LSP error.\n\nmemory_hints: search(\"LSP bridge initialize silent default convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -17386,7 +17387,8 @@
           "modules": [
             "crates/reify-lsp"
           ]
-        }
+        },
+        "updatedAt": "2026-04-03T23:35:13.601Z"
       },
       {
         "id": "829",
@@ -17423,11 +17425,16 @@
         "description": "Remove the tracing::warn! call from add_auto_coord (solvespace.rs:559-562) and add it instead at the Err(reason) match arm in ConstraintSolver::solve (solvespace.rs:796-803), consistent with how solver.rs handles its own Err paths. This eliminates double-reporting (once via tracing, once via Diagnostic::warning in reify-eval) and aligns with the established pattern that builders propagate errors and coordinators log.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-03T23:16:27.900Z"
+        "updatedAt": "2026-04-04T00:03:11.063Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "831",
@@ -17435,10 +17442,16 @@
         "description": "Define a small error enum (e.g. `enum BuilderError { MissingNonAutoValue(ValueCellId) }`) implementing Display, and change the return types of add_auto_coord, add_point, and add_pattern_to_builder from Result<_, String> to Result<_, BuilderError>. This preserves the cell_id as typed data, enables pattern-matched error handling, eliminates unnecessary heap allocation on the error path, and aligns with Rust library idioms. File: crates/reify-constraints/src/solvespace.rs lines 531, 531-576.\n\nmemory_hints: search(\"solvespace error types BuilderError\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:16.912Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "832",
@@ -17449,7 +17462,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:19:15.250Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "833",
@@ -17457,10 +17476,11 @@
         "description": "Add the following tests in the #[cfg(test)] mod tests block (solvespace.rs:1007-1108):\n1. Cache-hit idempotency: call add_auto_coord twice with the same cell_id, assert same handle returned and builder.params.len() unchanged.\n2. Auto-param warm-start: cell_id in both auto_params and current_values (si_value: 5.0), assert created param val == 5.0, not 0.01.\n3. add_point error propagation: call builder.add_point with a PointRef::Auto containing a non-auto cell_id absent from current_values, assert result is Err.\n4. Integration: construct a ResolutionProblem with a non-auto coordinate cell_id absent from current_values, call SolveSpaceSolver::solve(), assert SolveResult::NoProgress with reason containing the cell_id.\n\nmemory_hints: search(\"solvespace builder test helpers test conventions\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:43:42.742Z"
       },
       {
         "id": "834",
@@ -17471,14 +17491,816 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:22:01.456Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints",
+            "crates/reify-eval",
+            "crates/reify-test-support",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "835",
+        "title": "Eliminate DiagnosticData intermediate type and align field naming",
+        "description": "In gui/src-tauri/src/types.rs, remove DiagnosticData (lines 62-71) since it is structurally identical to DiagnosticInfo in reify-mcp/src/types.rs. Change EngineSession::get_diagnostics() in gui/src-tauri/src/engine.rs to return Vec<DiagnosticInfo> directly (importing reify-mcp types). Remove the field-for-field mapping closure in gui/src-tauri/src/mcp_context.rs:136-148. Also align field naming: SourceLocation.file (types.rs:50) and DiagnosticData.file_path (or the surviving type) should use the same field name within types.rs.\n\nmemory_hints: search(\"DiagnosticData DiagnosticInfo type mapping gui engine\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "blocked",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:23:36.840Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Eliminate DiagnosticData intermediate type and align field naming"
+            ]
+          }
+        }
+      },
+      {
+        "id": "836",
+        "title": "Extract resolve_source helper in engine.rs and replace dead fallback with unreachable!",
+        "description": "In gui/src-tauri/src/engine.rs, extract the repeated source-key resolution block (lines 233-240 and 272-283) into a private method `fn resolve_source(&self) -> Option<(String, &str)>`. Replace the else branch at lines 278-282 with `unreachable!(\"compiled is Some implies module_name is Some\")` or `debug_assert!`, documenting the invariant that load_from_source/update_source always set module_name atomically with compiled.\n\nmemory_hints: search(\"engine.rs source-key resolution module_name compiled invariant\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:50:29.398Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Extract resolve_source helper in engine.rs and replace dead fallback with unreachable!"
+            ]
+          },
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "837",
+        "title": "Optimize get_diagnostics: pre-build line-offset table and reduce allocations",
+        "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:27:37.584Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "838",
+        "title": "Consolidate byte_offset_to_line_col into shared utility crate",
+        "description": "Move the byte_offset_to_line_col function (currently at gui/src-tauri/src/engine.rs:682-697 and crates/reify-cli/src/mcp_context.rs:105-121) into a shared utility crate (e.g. reify-types or a new reify-source-util). Agree on a single signature (usize→usize or u32→u32). Update both call sites to import from the shared crate.\n\nmemory_hints: search(\"byte_offset_to_line_col duplicate cross-crate\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:20:52.834Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-cli",
+            "crates/reify-types",
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "839",
+        "title": "Fix and expand diagnostic test coverage",
+        "description": "In gui/src-tauri/src/tests/engine_tests.rs: (1) change the test fixture at line 814 from `structure S {` to `structure def S {` to match compiler port test convention; (2) add test for module_name=None branch (construct EngineSession with source_map populated but module_name=None); (3) add test for diag.labels.first()=None fallback returning (1,1,1,1); (4) add test for update_source→get_diagnostics contract (load warning source, confirm diagnostic, update to clean source, confirm empty). In gui/src-tauri/src/tests/mcp_context_tests.rs: (5) remove get_diagnostics_delegates_to_engine (lines 521-528) as it is a strict subset of get_diagnostics_clean_source_returns_empty; (6) reduce get_diagnostics_maps_warning_fields_to_diagnostic_info to spot-check field mapping only, removing redundant semantic assertions already covered by engine test; (7) add `assert!(first.message.contains(\"NonExistentTrait\"), ...)` to the mcp warning test (lines 593-597).\n\nmemory_hints: search(\"diagnostic test coverage engine_tests mcp_context_tests\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:24:20.088Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "840",
+        "title": "Audit grammar stamp, document single-file and span edge-case assumptions",
+        "description": "In tree-sitter-reify/src/.grammar_hash.stamp: confirm whether the stamp update was intentional; if not, revert it and land it in a separate commit tied to the actual grammar change. In gui/src-tauri/src/engine.rs: (1) add a comment near line 285 noting 'Assumes all diagnostic spans refer to the single loaded source file — file_path from multi-file diagnostics would need threading here'; (2) add documentation or a Result return to byte_offset_to_line_col (line 682) clarifying that empty spans produce identical start/end coordinates and that offsets beyond source.len() are silently clamped.\n\nmemory_hints: search(\"grammar_hash.stamp tree-sitter-reify byte_offset_to_line_col edge cases\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:21:40.871Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri",
+            "tree-sitter-reify/src"
+          ]
+        }
+      },
+      {
+        "id": "841",
+        "title": "Fix unsanitized NaN/Inf propagation in reify-expr method paths",
+        "description": "In `crates/reify-expr/src/lib.rs`, the method-call branches for `magnitude` (line 1159), `re`, and `im` (line 1203) call `Value::from_component` without wrapping in `sanitize_value`. The stdlib equivalents (`re(z)`, `im(z)`, `magnitude(z)`) do use `sanitize_value`. This means `z.re` on a Complex carrying NaN returns `Real(NaN)` while `re(z)` returns `Undef` — violating the project convention that logic errors should be noisy.\n\nFix: add `sanitize_value(...)` wrappers around the `Value::from_component` calls in all three method-call branches (magnitude, re, im) in eval_method_call.\n\nMemory hints: search \"sanitize_value NaN Inf convention\", search \"silent defaults convention\", entities: eval_method_call, sanitize_value, Value::from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:03:44.196Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "842",
+        "title": "Extract complex_phase helper to eliminate duplicated phase zero-guard",
+        "description": "The guard `if *re == 0.0 && *im == 0.0 { return Value::Undef; }` is copy-pasted verbatim into `crates/reify-expr/src/lib.rs` (method-call path) and `crates/reify-stdlib/src/lib.rs` (builtin path). Add a `Value::complex_phase(re: f64, im: f64, dimension: DimensionVector) -> Value` (or free function) in `crates/reify-types/src/value.rs` and have both call sites delegate to it, mirroring the pattern established by `Value::from_component` in the same diff.\n\nMemory hints: search \"from_component complex extraction pattern\", search \"phase zero-guard duplication\", entities: Value::from_component, phase, eval_builtin",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:29:51.820Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-stdlib",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "843",
+        "title": "Rename Value::from_component to from_real_scalar and add NaN-safety doc note",
+        "description": "In `crates/reify-types/src/value.rs:159`, rename `from_component` to `from_real_scalar` (or `dimensioned_real`) — the doc comment itself acknowledges the name is a semantic stretch for magnitude. Update all call sites in `reify-expr/src/lib.rs` and `reify-stdlib/src/lib.rs`.\n\nAlso add a doc note clarifying that the function does not sanitize NaN/Infinity and callers that may encounter domain errors must wrap the result in `sanitize_value`.\n\nMemory hints: search \"from_component naming\", search \"Value helper naming conventions\", entities: Value::from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:29:49.017Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-stdlib",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "844",
+        "title": "Fill test coverage gaps: redundant test, dimensioned edge cases, from_component unit tests, LSP positive assertion",
+        "description": "Four distinct test gaps to address:\n\n1. Remove `complex_magnitude_zero_complex_returns_zero` in `crates/reify-stdlib/src/lib.rs` — it's redundant with `magnitude_zero_complex_returns_zero` as both route through `complex_abs` for a Complex input.\n2. Add `magnitude_zero_complex_dimensioned_returns_scalar_zero` testing `Complex{0.0, 0.0, LENGTH}` → `Scalar{0.0, LENGTH}` in both the stdlib test suite and the method-call test suite (`complex_eval_tests.rs`).\n3. Add `phase_zero_dimensioned_complex_returns_undef` testing `Complex{0.0, 0.0, LENGTH}` → Undef in `complex_tests.rs` and `complex_eval_tests.rs`.\n4. Add unit tests `from_component_dimensionless_returns_real` and `from_component_dimensioned_returns_scalar` in a `#[cfg(test)]` block in `crates/reify-types/src/value.rs`.\n5. Add a positive counterpart to `re_im_not_in_builtin_completions` in `crates/reify-lsp/src/completion.rs` that triggers method completion on a complex-typed receiver and asserts `re`, `im`, `magnitude`, `phase` appear as METHOD-kind items.\n\nMemory hints: search \"complex edge case tests\", search \"LSP completion method tests\", entities: complex_magnitude, phase, from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:36:54.192Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-lsp",
+            "crates/reify-stdlib",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "845",
+        "title": "Fix label uniqueness for multiple constraint-def instantiations",
+        "description": "In crates/reify-compiler/src/lib.rs:5200-5208, the label format `format!(\"{}[{}]\", ci.name, pred_idx)` produces identical labels when the same constraint def is instantiated more than once in a single structure. Add a per-def instantiation counter (inst_idx) so labels become `\"Name#inst[pred]\"`. Then add a test in crates/reify-eval/tests/constraint_def_eval.rs that instantiates the same constraint def twice with different arguments and asserts the two resulting ConstraintCheckEntry labels are distinct.\n\nMemory hints: search for \"constraint def label format\", get_entity \"CompiledConstraint\", search for \"ConstraintCheckEntry label\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:37:57.093Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "846",
+        "title": "Harden labeled_diagnostics correctness and ordering safety",
+        "description": "Three correctness gaps in the labeled_diagnostics enrichment pipeline in crates/reify-eval/src/lib.rs:\n\n1. Extend the substitution loop (~line 2196) to also replace id_str in each `d.labels[i].message` field, not just `d.message`.\n2. Add a `debug_assert` or `tracing::warn` when a non-empty label is provided but the replacement produced no change in any message — catches Display format drift silently breaking enrichment.\n3. At each of the five `results.into_iter().zip(active_constraints.iter())` sites (lines 2249, 2639, 2735, 2799, 3113), add `debug_assert_eq!(result.id, compiled.id)` and a post-loop count assert to catch out-of-order or truncated checker results.\n\nMemory hints: search for \"labeled_diagnostics\", search for \"ConstraintNodeId Display format\", get_entity \"DiagnosticLabel\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:39:02.403Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "847",
+        "title": "Deduplicate constraint-checking loop bodies and diagnostic helpers",
+        "description": "Four DRY violations introduced by the constraint-def path:\n\n1. Extract a private `push_constraint_result` method or helper closure from the identical three-line `labeled_diagnostics + push` block repeated at lines 2250-2254, 2640-2644, 2735-2740, 2799-2804, 3113-3118 in crates/reify-eval/src/lib.rs.\n2. In `labeled_diagnostics`, change the collect() to an in-place mutation loop and guard the replace with a `contains` check to avoid unnecessary allocations.\n3. Extract the `check_source` (and `eval_source`) helper shared across ≥5 test files into `crates/reify-eval/tests/common/mod.rs` and import it from each test file.\n4. Add an `error_diags` free function to `crates/reify-eval/tests/constraint_def_eval.rs` (or the common module) and replace the five inline filter-collect patterns.\n\nMemory hints: search for \"check_source helper eval tests\", search for \"labeled_diagnostics allocation\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:36:08.075Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "848",
+        "title": "Fill test coverage gaps for constraint-def evaluation",
+        "description": "Three missing test scenarios:\n\n1. In crates/reify-eval/tests/incremental.rs, extend `edit_check_preserves_constraint_labels` (or add a new test) to assert that when a labeled constraint is violated through `edit_check`, the returned Diagnostic messages contain the human-readable label string rather than the raw ConstraintNodeId.\n2. In crates/reify-compiler/tests/constraint_inst_tests.rs:368-379, replace positional `tmpl.constraints[0]`/`[1]` access with label-based `.find(|c| c.label == Some(\"Bounded[0]\".to_string()))` to make the test order-independent.\n3. In crates/reify-eval/tests/constraint_def_eval.rs, add a test for the guard=true active case of a guarded constraint def where the constraint is violated, verifying that the entry appears with the expected label and Violated satisfaction.\n\nMemory hints: search for \"edit_check_preserves_constraint_labels\", search for \"constraint_inst_tests label\", search for \"guarded constraint def test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:34:35.500Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "849",
+        "title": "Fix compiler warnings and tighten assertions in solvespace tests",
+        "description": "Review suggestions from task 833 identified several test quality issues in the solvespace test code. All fixes are localized to two files.\n\n**In `crates/reify-constraints/tests/solvespace_tests.rs`:**\n1. Remove unused `fixed_y_id` variable (line ~831) — declared via `vcid(\"Fixed\", \"y\")` but never used in code, only referenced in comments. Produces `unused_variables` compiler warning. Either remove entirely or wire into assertion.\n2. Tighten NoProgress assertion (lines ~885-889) — currently accepts `reason.contains(\"unrecognized\") || reason.contains(\"missing\")`, but the documented code path only produces \"unrecognized geometric constraint pattern\". The `|| \"missing\"` branch masks regressions. Pin to `reason.contains(\"unrecognized\")` only.\n3. DRY up entity/member string literals — `x_id = vcid(\"Auto\", \"x\")` and `pt_x = value_ref_typed(\"Auto\", \"x\", ...)` repeat the same strings independently. Either share constants or derive one from the other.\n\n**In `crates/reify-constraints/src/solvespace.rs` (test module):**\n4. Fix fragile line-number reference in doc comment (line ~1178): \"line 489 of add_point\" → use function-scoped reference instead.\n5. Add initial_len pre-assertion in `add_auto_coord_cache_hit_idempotency` (line ~1126): assert `len_after_first == initial_len + 1` to verify the first call actually inserted a param.\n6. Rename `add_point_propagates_missing_value_error` → `add_point_propagates_error_for_unresolved_x_coord` and update docstring to clarify the PointRef::Auto / non-auto terminology.\n7. Extract shared `auto_params` construction helper to reduce duplication across 3 tests.\n\nmemory_hints: search(\"solvespace test conventions compiler warnings\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:48:10.878Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "850",
+        "title": "Fix bridge.rs error handling: propagate initialize deserialization error",
+        "description": "In crates/reify-lsp/src/bridge.rs lines 84-90, the initialize arm silently falls back to InitializeParams::default() on a deserialization error, while all other arms (didOpen, didChange, didClose, completion, hover, definition) propagate Err(String). Either change initialize to also propagate Err (preferred — matches project silent-defaults convention), or document the fallback policy in the handle_request doc-comment and apply consistently.\n\nmemory_hints: search(\"LSP bridge handle_request error contract silent defaults convention\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:16.311Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "851",
+        "title": "Fix WarnCounter test infrastructure: unique span IDs + explicit runtime flavor",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Fix WarnCounter::new_span at line 27 to return unique IDs using an AtomicU64 counter (Id::from_u64(counter.fetch_add(1, Ordering::Relaxed) + 1)) to satisfy the tracing Subscriber contract. (2) Annotate initialize_with_malformed_params_emits_warning (line 56) with #[tokio::test(flavor = \"current_thread\")] to make the thread-local subscriber guard assumption explicit and safe against future runtime changes.\n\nmemory_hints: search(\"WarnCounter tracing subscriber test infrastructure\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:18.794Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "852",
+        "title": "Strengthen malformed-initialize test assertions and add downstream-operation coverage",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Tighten initialize_with_malformed_params_emits_warning (lines 70-73) — capture warn_count before calling handle_request and assert it increased by exactly 1 after, so the test actually verifies the malformed-params branch ran rather than any ambient warning. (2) Add a warn-count assertion to initialize_with_malformed_params_still_returns_capabilities (lines 340-366) to confirm the fallback branch actually executed. (3) Add a new test: perform a malformed initialize, then call initialized + textDocument/didOpen + textDocument/completion, and assert the results are valid — confirming that the default-fallback server state supports downstream LSP operations.\n\nmemory_hints: search(\"LSP malformed initialize test assertions coverage\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-03T23:46:57.716Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "853",
+        "title": "Add Orientation Ord tests for y and z tie-breaking levels",
+        "description": "The Orientation Ord implementation compares fields in w→x→y→z order (value.rs:1278-1283), but tests only exercise w and x tie-breaking. Add two companion tests:\n1. Equal w and x, different y (with non-zero z to create ambiguity) — catches x↔y swap regression\n2. Equal w, x, y, different z only — catches y↔z swap regression\n\nMemory hints: search \"Orientation Ord field order\" for implementation context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:16:08.325Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add Orientation Ord tests for y and z tie-breaking levels"
+            ]
+          },
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "854",
+        "title": "Investigate to_bits().cmp() ordering correctness for negative floats in Value Ord",
+        "description": "The Value Ord implementation uses f64::to_bits().cmp() for comparing float components (Orientation at value.rs:1278-1283, and likely other float-bearing variants). IEEE 754 to_bits() does NOT preserve ordering for negative values — the sign bit inverts the magnitude comparison. For example, -0.5.to_bits() > 0.5.to_bits() even though -0.5 < 0.5, and -1.0.to_bits() > -0.5.to_bits() even though -1.0 < -0.5.\n\nInvestigate whether mathematical ordering is required (vs just any consistent total order for BTreeMap keys), and if so, replace to_bits().cmp() with a sign-aware total-order comparison (e.g. the float_ord crate pattern or manual sign-bit fixup). Add tests with negative float components to validate.\n\nMemory hints: search \"Value Ord implementation to_bits\" and \"float comparison convention\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:09:27.177Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "855",
+        "title": "Extract shared test helpers for solvespace.rs error-path tests",
+        "description": "Extract a `missing_coord_setup()` helper and `assert_missing_err()` assertion helper to deduplicate the repeated boilerplate across the 4 tests in solvespace.rs's test module (add_auto_coord_errors_on_missing_non_auto_value, add_pattern_to_builder_propagates_coord_error, and the idempotent/fixed-coord tests). Each test currently repeats: SystemBuilder::new(), ValueCellId::new(\"Test\", ...), vec![] for auto_params, ValueMap::new(), and the is_err/contains(\"missing\")/contains(cell_id) triple assertion. Only the unique pattern construction and target function call differ.\n\nmemory_hints: search(\"solvespace builder test helpers test conventions\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:07:45.371Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "856",
+        "title": "Add line-based variant and pt_b error propagation tests for add_pattern_to_builder",
+        "description": "The existing add_pattern_to_builder_propagates_coord_error test only exercises the Coincident variant with an error on pt_a. Two gaps remain:\n\n1. Line-based variants (Parallel, Angle, Perpendicular) call add_point 4 times per pattern (once per endpoint). None of these propagation sites are tested. Add a test using e.g. GeometricPattern::Parallel where one of the 4 endpoint PointRef::Auto coords has a missing cell_id, confirming errors from the 3rd/4th add_point call propagate correctly.\n\n2. Within Coincident, only pt_a (line 974) is exercised. The pt_b path (line 975) is never triggered because pt_b is always PointRef::Fixed in the test. Add a sub-case where pt_a is Fixed and pt_b is Auto with a missing cell_id.\n\nThese cover structurally different code paths in the match arms.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:05:35.159Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "857",
+        "title": "Restore structured cell_id tracing field in solve() error warn log",
+        "description": "When the tracing::warn! was moved from add_auto_coord to solve() (task 830), the cell_id structured tracing field was lost. Previously it was `tracing::warn!(cell_id = %id, ...)` but now it's only embedded in the reason string: `tracing::warn!(reason = %reason, \"constraint pattern builder failed\")`. Any log aggregation or filtering keyed on a `cell_id` field silently stops working.\n\nFix: Change add_pattern_to_builder (and add_auto_coord) to return a richer error type that carries cell_id separately, so solve() can log it as a structured field:\n`tracing::warn!(cell_id = %cell_id, reason = %reason, \"constraint pattern builder failed: non-auto coord missing\")`\n\nAlternatively, a simpler approach: define a small `BuilderError { cell_id: ValueCellId, message: String }` struct used as the error type for add_auto_coord → add_point → add_pattern_to_builder, then destructure at the solve() call site.\n\nmemory_hints: search(\"structured tracing fields observability convention\", project_id=\"reify\"); search(\"solvespace builder error propagation\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:07:19.682Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "858",
+        "title": "Remove dead sanitize_value wrapper from phase arm (with safety comment)",
+        "description": "In `crates/reify-expr/src/lib.rs` lines 1201-1205, remove the `sanitize_value(...)` wrapper from the `phase` branch and return `Value::Scalar { si_value: angle, dimension: DimensionVector::ANGLE }` directly. Add a comment explaining: (1) the pre-guard at line 1195 is necessary because `atan2(y, Inf) = 0.0` is finite — sanitize_value alone cannot protect against Inf inputs; (2) after the guard, atan2(finite, finite) is always in [-π, π] so no output sanitization is needed. This removes dead code and prevents a future maintainer from mistakenly removing the pre-guard in the belief that sanitize_value provides equivalent protection.\n\nMemory hints: search \"sanitize_value phase atan2 convention\", search \"silent defaults convention\", entities: eval_method_call, sanitize_value",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:15:24.566Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "859",
+        "title": "Add SYNC cross-reference comments to both sanitize_value copies",
+        "description": "In `crates/reify-expr/src/lib.rs` (around line 821) and `crates/reify-stdlib/src/lib.rs` (around line 1442), add a `// SYNC: mirror of <other file>::sanitize_value — keep in sync` comment at both sites so future changes to Value variants (e.g. Value::Integer) are grep-findable and both copies get updated together.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:15:20.413Z"
+      },
+      {
+        "id": "860",
+        "title": "Remove unreachable Value::Complex arm from reify-expr sanitize_value",
+        "description": "In `crates/reify-expr/src/lib.rs` lines 836-840, remove the `Value::Complex { re, im, .. }` match arm from the local `sanitize_value` function. All callers pass the result of `Value::from_component(...)` which only returns `Value::Real` or `Value::Scalar`. The arm is dead code not present in stdlib's version. If there is intent to support future Complex callers, add a code comment explaining that rather than silent dead code.\n\nMemory hints: search \"sanitize_value from_component Value variants\", entities: sanitize_value, Value::from_component",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:05:57.860Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "861",
+        "title": "Add missing edge-case tests: NEG_INFINITY for re/im and im-side NaN/Inf for magnitude",
+        "description": "In `crates/reify-expr/src/lib.rs` test section (around line 3533+), add the following missing tests:\n1. `re_neg_inf_dimensionless_returns_undef` — Complex{re: f64::NEG_INFINITY, im:1.0} .re → Undef\n2. `im_neg_inf_dimensionless_returns_undef` — Complex{re:1.0, im: f64::NEG_INFINITY} .im → Undef\n3. `magnitude_nan_im_returns_undef` — Complex{re:1.0, im: f64::NAN} .magnitude → Undef (tests hypot(1.0, NaN)=NaN path)\n4. `magnitude_inf_im_returns_undef` — Complex{re:1.0, im: f64::INFINITY} .magnitude → Undef\n\nOptionally also extract the repeated ~10-line test scaffold into a `fn eval_complex_method(re, im, dim, elem_ty, method, ret_ty) -> Value` test helper.\n\nMemory hints: search \"complex method edge case tests NaN Inf\", search \"test helper extraction convention\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:06:09.682Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "862",
+        "title": "Clean up Orientation Ord tie-breaking tests: descriptive names, helper, and documentation",
+        "description": "Three small improvements to the Orientation Ord tie-breaking tests (value.rs:3313-3370):\n\n1. **Descriptive variable names:** Replace alphabetical sequence variables (g/h/i/j) with semantically meaningful names (e.g. `higher_y`/`lower_y`, `greater_z`/`lesser_z`). Also consider renaming e/f in the existing `equal_w_different_x` test. The cross-function alphabetical sequence (a→j) is an invisible maintenance risk.\n\n2. **Extract `make_orientation(w, x, y, z)` helper:** A general constructor helper parallel to the existing `make_orientation_identity()` at line ~4166. This would DRY up the 6-line struct literal repeated in `equal_w_different_x`, `equal_wx_different_y`, and `equal_wxy_different_z`.\n\n3. **Add missing regression comment to z-only test:** The `value_orientation_ord_equal_wxy_different_z` test is missing the \"A wrong impl…\" comment that all peer tie-breaking tests carry. Add: `// A wrong impl that drops z comparison entirely would say i == j, not i > j.` (using the new variable names).\n\nMemory hints: search \"Orientation Ord field order\" for implementation context; search \"descriptive variable names convention\" for naming norms.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:14:19.807Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "863",
+        "title": "Refactor sync_comments_test.sh to use shared test_helpers.sh",
+        "description": "tests/sync_comments_test.sh reinvents the PASS/FAIL counter and summary pattern that already exists in tests/infra/test_helpers.sh. Refactor the script to:\n1. Source tests/infra/test_helpers.sh at the top\n2. Replace the custom `check()` function with `assert` from test_helpers.sh (e.g., `assert \"desc\" grep -q \"$pattern\" \"$file\"`)\n3. Replace the inline summary block with `test_summary`\n4. The file-existence error masking issue (grep on missing file gives misleading FAIL) is also resolved since assert() handles this pattern.\n\nThis consolidates suggestions about test infrastructure inconsistency, error masking, and code reuse.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", entities: test_helpers.sh",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:15:26.237Z"
+      },
+      {
+        "id": "864",
+        "title": "Add body-parity diff check to sync_comments_test.sh",
+        "description": "The sync_comments_test.sh only verifies that `// SYNC:` comment markers exist — it does not verify that the two sanitize_value function bodies are actually identical. A developer could modify one implementation (e.g., add a Value::Integer arm to one crate but not the other), leave the SYNC comment in place, and the test would still pass.\n\nAdd a second check that extracts both function bodies and diffs them. Example approach using awk:\n```bash\nextract_fn() { awk '/^fn sanitize_value/,/^}/' \"$1\"; }\ndiff <(extract_fn \"$EXPR_FILE\") <(extract_fn \"$STDLIB_FILE\") \\\n  || { echo 'FAIL: sanitize_value bodies differ'; FAIL=$((FAIL+1)); }\n```\n\nThis turns the test into an actual parity guard, not just a comment-presence check.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:18:44.078Z",
+        "metadata": {
+          "modules": [
+            "tests/sync_comments_test.sh"
+          ]
+        }
+      },
+      {
+        "id": "865",
+        "title": "Add sync_comments_test.sh to CI test_command in orchestrator.yaml",
+        "description": "The test script tests/sync_comments_test.sh is never executed by CI. The test_command in orchestrator.yaml runs only `cargo test --workspace` and npm tests — no shell scripts under tests/ are invoked. The test exists but provides no enforcement guarantees.\n\nAppend the script invocation to test_command in orchestrator.yaml, e.g. `&& bash tests/sync_comments_test.sh`. Consider whether other shell test scripts in tests/ also need inclusion.\n\nMemory hints: search \"CI orchestrator test_command configuration\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:23:39.857Z"
+      },
+      {
+        "id": "866",
+        "title": "Add sanitize_value behavioral unit tests to reify-expr",
+        "description": "The reify-stdlib copy of sanitize_value has extensive behavioral unit tests (NaN Real → Undef, Inf Scalar → Undef, Complex NaN/Inf arms, etc.). The reify-expr copy has zero behavioral unit tests. If the reify-expr copy drifted (e.g., missing the Value::Complex arm, or returning a wrong default), no test would catch it.\n\nAdd at minimum three unit tests to reify-expr's `mod tests` block that directly exercise sanitize_value:\n1. Value::Real(f64::NAN) → Value::Undef\n2. Value::Real(f64::INFINITY) → Value::Undef\n3. A non-pathological value passes through unchanged\n\nMirror the pattern used in reify-stdlib's sanitize_value test sections. Because sanitize_value is private, these tests must live in-crate (`mod tests` with `use super::*`).\n\nMemory hints: search \"sanitize_value tests reify-stdlib\", entities: sanitize_value",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:46.040Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "867",
+        "title": "Fix brittle error-string assertions in bridge error-path tests",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs, the two error tests (lines ~268 and ~285) assert err.contains(\"initialize params error\"), coupling them to the exact format string at bridge.rs line 85. Fix by: (a) defining the error prefix as a const in bridge.rs and referencing it from both test assertions, OR asserting result.is_err() only since the string content is not a public contract. Optionally extract a shared async helper assert_init_error(bad_params: Value) to remove the structural duplication between the two tests. Covers review suggestions 0, 5, 8.\n\nmemory_hints: search(\"bridge error-path test assertions error string coupling\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:20:37.169Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "868",
+        "title": "Document handle_request error contract in bridge.rs",
+        "description": "Update the doc comment on handle_request in crates/reify-lsp/src/bridge.rs (currently lines 74-78) to: (1) describe when Err(String) is returned vs Ok(Value::Null) for notifications; (2) note that initialize now strictly requires valid InitializeParams and will return Err on any deserialization failure (breaking change from prior tolerant defaulting behavior). Covers review suggestions 1 and 10.\n\nmemory_hints: search(\"handle_request error contract bridge LSP silent defaults convention\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:19:38.719Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "869",
+        "title": "Propagate JSON parse errors explicitly in lsp_request_impl",
+        "description": "In gui/src-tauri/src/lsp_bridge.rs line 60, replace the silent unwrap_or(serde_json::Value::Null) with explicit error propagation: serde_json::from_str(&params).map_err(|e| format!(\"invalid JSON params: {e}\"))?. This gives callers a clear distinction between a malformed JSON string and a correctly-formed object with wrong field types. Covers review suggestions 2 and 9.\n\nmemory_hints: search(\"lsp_request_impl JSON parse error propagation silent defaults\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:20:13.691Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "870",
+        "title": "Extract shared minimal InitializeParams fixture into helper",
+        "description": "Eliminate duplicated minimal-params literals across both test files: (a) In crates/reify-lsp/tests/in_process_bridge.rs, add a module-level fn minimal_init_params() -> serde_json::Value { json!({\"capabilities\": {}}) } and replace all occurrences. (b) In gui/src-tauri/src/tests/lsp_bridge_tests.rs, add a const INIT_PARAMS: &str and replace all call sites. If a shared reify_test_support crate exists with LSP fixtures, add it there to keep both crates in sync. Covers review suggestions 3 and 4.\n\nmemory_hints: search(\"InitializeParams test fixture duplication LSP test helpers\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:20:08.693Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp",
+            "crates/reify-test-support",
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "871",
+        "title": "Add missing initialize error-path tests for bridge",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs, add two tests after the existing error-path tests: (1) initialize_with_missing_capabilities_returns_error: call handle_request(\"initialize\", json!({})) and assert result.is_err(), covering the exact case that caused all fixture updates; (2) initialize_error_does_not_corrupt_server_state: call handle_request(\"initialize\", json!(42)) expecting Err, then immediately call handle_request(\"initialize\", json!({\"capabilities\": {}})) on the same InProcessLsp instance and assert the second call succeeds. Covers review suggestions 6 and 7.\n\nmemory_hints: search(\"initialize error path bridge test coverage missing capabilities\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:19:03.395Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
+      },
+      {
+        "id": "872",
+        "title": "Introduce CompiledConstraintDef to eliminate AST nodes from CompiledModule",
+        "description": "Replace `pub constraint_defs: Vec<reify_syntax::ConstraintDef>` with a new `CompiledConstraintDef` struct (in reify-compiler or reify-types) that captures name, is_pub, compiled param descriptors, and compiled predicates. Update compile_with_prelude to produce CompiledConstraintDef at definition-compile time rather than cloning raw AST nodes. This maintains the abstraction boundary where CompiledModule only contains compiler-crate or semantic types, not raw syntax AST nodes.\n\nmemory_hints: search \"CompiledConstraintDef constraint_defs CompiledModule\" for prior context; get_entity \"CompiledModule\" for field structure",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:47.187Z"
+      },
+      {
+        "id": "873",
+        "title": "Fix constraint_defs visibility semantics and doc comment",
+        "description": "Either filter constraint_defs to only pub defs at collection time (lib.rs:3812-3822) so non-pub defs never appear in the compiled artifact, or explicitly document that the field contains all local defs and callers must apply is_pub filtering themselves. Update the doc comment from 'Stored so downstream modules can reference them' to accurately describe visibility behavior: only is_pub==true defs are propagated to downstream modules.\n\nmemory_hints: search \"constraint_defs is_pub visibility\" for prior context on pub visibility implementation",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:21:24.476Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "874",
+        "title": "Eliminate redundant allocations and iterations in constraint def compilation",
+        "description": "Three performance improvements: (1) module_dag.rs:168-178 — change compile_with_prelude to accept &[&[ConstraintDef]] or equivalent instead of &[CompiledModule] to avoid full module clones; (2) module_dag.rs:161-178 — merge the two Declaration::Import iteration passes into one that both compiles dependencies and collects prelude defs; (3) lib.rs:3804-3822 — merge the two Declaration::Constraint passes in compile_with_prelude into one that simultaneously inserts into the registry and pushes to the output vec.\n\nmemory_hints: search \"compile_with_prelude constraint def compilation\" for implementation context",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:17:48.182Z"
+      },
+      {
+        "id": "875",
+        "title": "Fix non-asserting test 13 (type_mismatch_bool_for_length)",
+        "description": "Test 13 in constraint_def_compile_tests.rs (line ~607-641) always passes regardless of compiler behavior — it branches on diagnostics.is_empty() and passes in both branches. Mark it #[ignore = \"known gap: param-level type checking not implemented\"] and add a failing assertion inside (e.g. assert!(!errors.is_empty(), ...)), so when type checking is implemented the test is explicitly re-enabled rather than silently passing.\n\nmemory_hints: search \"type_mismatch_bool_for_length constraint def test\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:19:33.191Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "876",
+        "title": "Consolidate constraint def test helpers into reify-test-support",
+        "description": "Add compile_module, compile_template, error_diags, and parse_and_compile to crates/reify-test-support/src/. Remove per-file duplicates in: constraint_def_compile_tests.rs (lines 12-36), constraint_inst_tests.rs, and ~12 other compiler test files; and m9_constraint_def.rs (lines 20-34) plus m9_trait_conformance.rs, m5_integration.rs, m10_geometric_types.rs, purpose_eval.rs, determinacy_predicates.rs.\n\nNote: Prior consolidation tasks (2, 81, 614, 769) moved compile_source, eval_source, test_uri, and solver helpers. This task covers the remaining compile_module/compile_template/error_diags/parse_and_compile helpers that are still duplicated.\n\nmemory_hints: search \"reify-test-support helpers consolidate\" for prior consolidation work",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:23:09.493Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval",
+            "crates/reify-test-support"
+          ]
+        }
+      },
+      {
+        "id": "877",
+        "title": "Fix cross-module test temp dir: use tempfile::TempDir for thread safety",
+        "description": "In constraint_def_compile_tests.rs (lines ~469-520), replace the PID-based temp dir path with tempfile::TempDir::new() which generates a unique path per call and cleans up automatically on drop. This fixes thread-isolation race conditions where parallel test runs in the same process derive the same path. Consider extracting the write-files-to-temp-dir pattern into a reify-test-support::fixtures helper for reuse by other cross-module tests.\n\nmemory_hints: search \"tempfile TempDir test temp directory\" for established convention",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:21:47.685Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-test-support"
+          ]
+        }
+      },
+      {
+        "id": "878",
+        "title": "Add missing test coverage: non-pub visibility, field contents, second predicate, active guard",
+        "description": "Four additive tests across two files: (1) constraint_def_compile_tests.rs — add test that a non-pub constraint def in module A is NOT instantiable in module B (guards the is_pub filter at lib.rs:3792); (2) same file — add test asserting module.constraint_defs.len(), each entry's .name and .is_pub after compile_module; (3) same file, test 4 (named_args_different_order, line 173) — add assertions for tmpl.constraints[1]: op==Le, left==ValueRef(d), right==100mm literal; (4) m9_constraint_def.rs — add guarded_constraint_active test filtering constraint_results for ActiveWall, asserting exactly 1 Satisfied result labeled MinThickness[0].\n\nmemory_hints: search \"constraint def compile test coverage\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:21:54.901Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "879",
+        "title": "Fix misleading test name and strengthen single-char error assertions",
+        "description": "Two improvements: (1) Rename wrong_arg_count_zero (line 368) to wrong_arg_name_single or misnamed_single_arg_produces_two_errors to accurately describe the scenario; (2) In tests 7, 8, and 9 (lines ~350, ~387, ~430), replace single-char char-literal contains checks (contains('c'), contains('y'), contains('b')) with multi-char quoted strings like \"'c'\" or \"arg 'c'\" to prevent false-positives on any English word containing those characters.\n\nmemory_hints: search \"constraint def compile test error assertions\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:22:15.136Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "880",
+        "title": "Emit diagnostic on constraint def name collision and document module_dag invariant",
+        "description": "Two improvements: (1) lib.rs:3799-3803 — Before inserting a prelude def into constraint_def_registry, check if the name is already present from a different module; if so, emit a warning-level diagnostic (e.g. 'constraint def X from module b shadows import from module a') so the ambiguity is visible rather than silently discarding the first definition. (2) module_dag.rs:167 — Add a debug_assert or explanatory comment before the preludes collection pass making explicit that all imports were compiled successfully above (via early-return ?) and are therefore guaranteed to be present in self.modules.\n\nmemory_hints: search \"constraint def registry name collision shadow\" for context",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:22:43.633Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-03T23:16:27.900Z",
-      "taskCount": 834,
-      "completedCount": 656,
+      "lastModified": "2026-04-04T00:23:39.857Z",
+      "taskCount": 880,
+      "completedCount": 668,
       "tags": [
         "master"
       ]

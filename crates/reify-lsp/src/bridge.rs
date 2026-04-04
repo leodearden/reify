@@ -81,7 +81,8 @@ impl InProcessLsp {
 
         match method {
             "initialize" => {
-                let p: InitializeParams = serde_json::from_value(params).unwrap_or_default();
+                let p: InitializeParams = serde_json::from_value(params)
+                    .map_err(|e| format!("initialize params error: {e}"))?;
                 let result = server
                     .initialize(p)
                     .await
