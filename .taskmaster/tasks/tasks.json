@@ -18325,15 +18325,16 @@
         "description": "After task 835, `engine.rs` directly imports `reify_mcp::DiagnosticInfo`. This couples the engine's domain layer to MCP wire/protocol types. Previously, the architecture maintained a seam: engine.rs produced GUI-local types, mcp_context.rs mapped them to MCP types.\n\n**Evaluate whether** DiagnosticInfo, SourceLocationInfo, and similar types should be moved to the existing `reify-types` crate (or a new `reify-domain` crate) so both `reify-mcp` and `gui/src-tauri/engine.rs` depend on a shared lower-level crate rather than engine depending on MCP.\n\n**Considerations:**\n- reify-types already exists and is used by engine.rs\n- If DiagnosticInfo fields are purely domain concepts (not protocol artifacts), moving makes sense\n- If MCP needs additional protocol-specific fields in the future, having a separate domain type preserves the seam\n- May be premature if the types remain stable\n\n**memory_hints:** search(\"reify-types crate shared domain types layering\", project_id=\"reify\"); search(\"engine.rs reify_mcp import coupling\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:38:37.820Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:38:37.694Z",
+      "lastModified": "2026-04-04T00:38:37.820Z",
       "taskCount": 883,
       "completedCount": 668,
       "tags": [
