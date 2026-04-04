@@ -827,6 +827,7 @@ fn compute_numerical_gradient_at_point(
 /// in `reify-stdlib` — the duplication is intentional (see design decisions in
 /// the task plan: making stdlib's version public would widen its API surface;
 /// moving it to reify-types would add evaluation semantics to a type crate).
+// SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
 fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
