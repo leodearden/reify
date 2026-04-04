@@ -19397,6 +19397,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 953,
+        "title": "Complete phase method test coverage and fix stale comments",
+        "description": "In crates/reify-expr/src/lib.rs: (1) Add phase_inf_im_returns_undef test for im=+Infinity. (2) Add phase_zero_complex_returns_undef test for 0+0i. (3) Update stale comment on phase_neg_inf_im noting atan2(-Inf,1.0) is finite so pre-guard catches it. (4) Expand 'pre-guard is essential' comment to name both is_finite guard and zero-vector guard.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19409,7 +19420,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:45.075Z"
+      "updated": "2026-04-04T06:12:49.999Z"
     }
   }
 }
