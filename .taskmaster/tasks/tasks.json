@@ -18628,10 +18628,11 @@
         "description": "Consolidate several review findings from task 836 into a single improvement pass on `gui/src-tauri/src/engine.rs`:\n\n1. **Unify resolve_source failure semantics** — The method returns `Option<(String, &str)>` but the `None` arm of `module_name` panics via `unreachable!()`. This hybrid contract (graceful via `?` for source_map miss, panic for module_name miss) is incoherent. Preferred fix: change signature to return `(&str, &str)` with `debug_assert!(self.compiled.is_some())` at entry, making the precondition explicit in the type. Alternative: convert `unreachable!` to `return None` for fully graceful semantics.\n\n2. **Optimize allocations** — `resolve_source` allocates a new `String` via `format!(\"{}.ri\", name)` on every call. Use `HashMap::get_key_value` to return `(&str, &str)` instead of `(String, &str)`, eliminating per-call allocation. Also eliminate the per-diagnostic `file_path.clone()` in `get_diagnostics` (line 315).\n\n3. **Extract module_key helper** — `format!(\"{}.ri\", module_name)` appears in 3 places (load_from_source:81, update_source:180, resolve_source:236). Extract a private `fn module_key(name: &str) -> String` to DRY this up.\n\nmemory_hints: search(\"resolve_source engine.rs Option unreachable module_key allocation\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T03:25:02.803Z"
       },
       {
         "id": "900",
@@ -18647,7 +18648,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T03:25:02.584Z",
+      "lastModified": "2026-04-04T03:25:02.803Z",
       "taskCount": 900,
       "completedCount": 672,
       "tags": [
