@@ -18313,10 +18313,11 @@
         "description": "The Editor component's `createEffect` for `scrollToLocation` (Editor.tsx:248-271) scrolls unconditionally when `location` is non-null, without checking whether `location.file_path` matches the currently active file. The existing tests only cover the case where `file_path` matches the active file.\n\n**Add a test that:**\n1. Renders the Editor with `file2` active\n2. Sets a `scrollToLocation` whose `file_path` points to `file1`\n3. Asserts the expected behavior (either scroll is skipped, or a file-switch side-effect fires)\n\nThis documents the contract and guards against future regressions involving the `file_path` field that was renamed in task 835.\n\n**memory_hints:** search(\"Editor scrollToLocation file_path behavior\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T00:38:37.694Z"
       },
       {
         "id": "883",
@@ -18332,7 +18333,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T00:38:37.573Z",
+      "lastModified": "2026-04-04T00:38:37.694Z",
       "taskCount": 883,
       "completedCount": 668,
       "tags": [
