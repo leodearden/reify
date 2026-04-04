@@ -12,22 +12,37 @@ pub(crate) fn detect_recursive_structures(
     templates: &mut [TopologyTemplate],
     diagnostics: &mut Vec<reify_types::Diagnostic>,
 ) -> Vec<HashSet<String>> {
-    // Build an index: name -> index in templates
-    let name_to_idx: HashMap<&str, usize> = templates
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.name.as_str(), i))
-        .collect();
+    // Build an index: name -> index in templates.
+    // Use explicit insertion so that duplicates are detected and reported instead of
+    // silently overwriting (which would corrupt the adjacency graph).
+    let mut name_to_idx: HashMap<&str, usize> = HashMap::new();
+    for (i, t) in templates.iter().enumerate() {
+        if let Some(&prev_idx) = name_to_idx.get(t.name.as_str()) {
+            diagnostics.push(reify_types::Diagnostic::error(format!(
+                "duplicate template name '{}': indices {} and {}",
+                t.name, prev_idx, i
+            )));
+            // Keep the first entry (prev wins) — don't overwrite.
+        } else {
+            name_to_idx.insert(t.name.as_str(), i);
+        }
+    }
 
     // Build adjacency list: for each template index, collect the indices of templates it
     // references via sub_components (only those that exist in the template set).
+    // sort_unstable + dedup removes duplicate edges (e.g. two subs referencing the same
+    // target), keeping the graph clean and the self-loop check at line 70 principled.
     let adjacency: Vec<Vec<usize>> = templates
         .iter()
         .map(|t| {
-            t.sub_components
+            let mut adj: Vec<usize> = t
+                .sub_components
                 .iter()
                 .filter_map(|sub| name_to_idx.get(sub.structure_name.as_str()).copied())
-                .collect()
+                .collect();
+            adj.sort_unstable();
+            adj.dedup();
+            adj
         })
         .collect();
 
@@ -66,10 +81,26 @@ pub(crate) fn detect_recursive_structures(
                 in_cycle[v] = true;
             }
             let cycle_path = reconstruct_scc_cycle(scc, &adjacency, templates);
-            diagnostics.push(reify_types::Diagnostic::warning(format!(
+            let scc_set: HashSet<usize> = scc.iter().copied().collect();
+            let mut diag = reify_types::Diagnostic::warning(format!(
                 "recursive structure cycle detected: {}",
                 cycle_path
-            )));
+            ));
+            // Add a label for each sub-component declaration that creates a cycle edge
+            // (i.e., references another member of the same SCC).
+            for &v in scc {
+                for sub in &templates[v].sub_components {
+                    if let Some(&target) = name_to_idx.get(sub.structure_name.as_str())
+                        && scc_set.contains(&target)
+                    {
+                        diag = diag.with_label(reify_types::DiagnosticLabel::new(
+                            sub.span,
+                            format!("references {}", sub.structure_name),
+                        ));
+                    }
+                }
+            }
+            diagnostics.push(diag);
             let scc_names: HashSet<String> =
                 scc.iter().map(|&v| templates[v].name.clone()).collect();
             cyclic_sccs.push(scc_names);
@@ -246,9 +277,25 @@ fn find_cycle_back_to(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EntityKind, Visibility};
-    use reify_types::ContentHash;
+    use crate::{EntityKind, SubComponentDecl, Visibility};
+    use reify_types::{ContentHash, SourceSpan};
     use std::collections::HashMap;
+
+    /// Helper: build a minimal SubComponentDecl referencing `target`.
+    fn sub_ref(name: &str, target: &str) -> SubComponentDecl {
+        SubComponentDecl {
+            name: name.to_string(),
+            structure_name: target.to_string(),
+            visibility: Visibility::Public,
+            args: vec![],
+            type_args: vec![],
+            is_collection: false,
+            count_cell: None,
+            guard_expr: None,
+            span: SourceSpan::new(0, 0),
+            content_hash: ContentHash(0),
+        }
+    }
 
     /// Helper: build a minimal TopologyTemplate with just a name.
     fn minimal_template(name: &str) -> TopologyTemplate {
@@ -271,6 +318,52 @@ mod tests {
             content_hash: ContentHash(0),
             is_recursive: false,
         }
+    }
+
+    #[test]
+    fn duplicate_sub_refs_deduped() {
+        // Template S has two sub_components both referencing itself — a self-loop via
+        // two distinct sub names. After dedup the adjacency should have one edge.
+        // The result: is_recursive==true and exactly 1 cycle warning.
+        let mut s = minimal_template("S");
+        s.sub_components = vec![sub_ref("x", "S"), sub_ref("y", "S")];
+        let mut templates = vec![s];
+        let mut diagnostics = Vec::new();
+        detect_recursive_structures(&mut templates, &mut diagnostics);
+
+        assert!(templates[0].is_recursive, "S with two self-ref subs should be recursive");
+
+        let cycle_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_types::Severity::Warning
+                    && d.message.contains("recursive structure cycle")
+            })
+            .collect();
+        assert_eq!(
+            cycle_warnings.len(),
+            1,
+            "expected exactly 1 cycle warning even with two self-referencing subs, got: {:?}",
+            cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_template_names_emits_diagnostic() {
+        // Two templates with the same name — detect_recursive_structures should emit
+        // a diagnostic mentioning "duplicate" rather than silently overwriting the first.
+        let mut templates = vec![minimal_template("A"), minimal_template("A")];
+        let mut diagnostics = Vec::new();
+        detect_recursive_structures(&mut templates, &mut diagnostics);
+        let duplicate_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("duplicate"))
+            .collect();
+        assert!(
+            !duplicate_diags.is_empty(),
+            "expected a diagnostic mentioning 'duplicate' when two templates share a name, got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
