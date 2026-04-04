@@ -115,7 +115,9 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "initialized" => {
-                server.initialized(InitializedParams {}).await;
+                let p: InitializedParams = serde_json::from_value(params)
+                    .map_err(|e| format!("initialized params error: {e}"))?;
+                server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
