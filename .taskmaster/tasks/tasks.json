@@ -18716,11 +18716,11 @@
         "description": "The `conjugate` method in reify-expr (line ~1217) constructs `Value::Complex { re: *re, im: -im, dimension }` without any NaN/Inf guard. If the input has NaN/Inf components, the output is a poisoned Complex. The reify-stdlib counterpart (task 667) was already fixed to wrap conjugate output in sanitize_value, but reify-expr's copy was missed.\n\nWith the Complex arm now removed from reify-expr's sanitize_value (task 860), wrapping in sanitize_value won't help. Instead, add a direct non-finite guard before the Complex construction — similar to the phase method's pattern at line ~1190: check for NaN/Inf in re/im and return Undef early.\n\nThis is a pre-existing gap widened by the Complex arm removal.\n\nMemory hints: search \"conjugate sanitize_value NaN\", search \"task 667 conjugate\", entities: conjugate, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:07:43.233Z",
+        "updatedAt": "2026-04-04T04:25:58.416Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -19001,7 +19001,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T04:23:55.268Z",
+      "lastModified": "2026-04-04T04:25:58.427Z",
       "taskCount": 920,
       "completedCount": 682,
       "tags": [
