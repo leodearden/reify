@@ -20002,10 +20002,11 @@
         "description": "Follow-up from task 923 review. Seven suggestions across 5 reviewers, all in crates/reify-stdlib/src/lib.rs:\n\n1. **Tolerance API inconsistency** (architect, reuse_auditor): `assert_orientation_approx!` hardcodes 1e-12 while `assert_orientation_approx_sign_insensitive!` takes `$tol`. Add optional tolerance arm to the strict macro for symmetry.\n\n2. **Degenerate negative-sign test** (test_analyst): `sign_insensitive_macro_negative` uses (-1,0,0,0) where x/y/z are trivially zero. Add a test with a fully non-trivial quaternion (e.g. negated 45-degree rotation).\n\n3. **Per-component diagnostic only validates w:** (test_analyst): Add catch_unwind tests for x, y, z component labels too.\n\n4. **Rejection test ignores message** (test_analyst): `sign_insensitive_macro_rejects_wrong_value` only checks `is_err()`. Inspect the panic message content.\n\n5. **Non-Orientation arm untested** (test_analyst): Add a catch_unwind test passing a non-Orientation value to the sign-insensitive macro.\n\n6. **$tol multiple evaluation** (robustness): Macro evaluates `$tol` 9 times. Capture into a local binding for hygiene.\n\n7. **Shared inner helper macro** (reuse_auditor): Both macros repeat per-component abs-diff logic. Extract a private helper macro.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T19:01:25.856Z"
       },
       {
         "id": "978",
@@ -20055,7 +20056,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T19:01:24.674Z",
+      "lastModified": "2026-04-04T19:01:25.857Z",
       "taskCount": 981,
       "completedCount": 708,
       "tags": [
