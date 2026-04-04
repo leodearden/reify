@@ -1110,14 +1110,15 @@ mod tests {
             result.is_err(),
             "expected Err for non-auto param missing from current_values, got Ok"
         );
-        let err_msg = result.unwrap_err();
-        assert!(
-            err_msg.contains("missing"),
-            "error message should contain 'missing', got: {err_msg}"
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.cell_id, cell_id,
+            "BuilderError cell_id should match the ValueCellId passed to add_auto_coord"
         );
         assert!(
-            err_msg.contains(&cell_id.to_string()),
-            "error message should contain cell_id, got: {err_msg}"
+            err.message.contains("missing"),
+            "BuilderError message should contain 'missing', got: {}",
+            err.message
         );
     }
 
