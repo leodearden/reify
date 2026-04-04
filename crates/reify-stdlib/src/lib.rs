@@ -5713,6 +5713,55 @@ mod tests {
         );
     }
 
+    // ── sanitize_value Orientation arm tests (task-904) ──────────────────────
+
+    #[test]
+    fn sanitize_orientation_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::INFINITY,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with Inf component should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_valid_passthrough() {
+        let v = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        match sanitize_value(v) {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < f64::EPSILON);
+                assert!((x - 0.0).abs() < f64::EPSILON);
+                assert!((y - 0.0).abs() < f64::EPSILON);
+                assert!((z - 0.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
+        }
+    }
+
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
 
     #[test]
