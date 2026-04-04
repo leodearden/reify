@@ -19005,11 +19005,11 @@
         "description": "In into_result() (crates/reify-runtime/src/concurrent_eval.rs:210-250), each of the 3 locks has two warn-emission paths: the Ok(lock)/into_inner path (tested) and the Err(arc)/read/lock shared-fallback path (untested). Current tests always hit the Ok branch because poison helpers drop their Arc clone before into_result() is called, so Arc::try_unwrap always succeeds.\n\nAdd warn-counting tests that arrange for a second Arc clone to still be alive when into_result() is called (e.g., via a test-only accessor that returns a clone of the inner Arc), forcing Arc::try_unwrap to fail and exercising the shared-fallback warn paths (lines 215-221, 228-236, 243-249).\n\nAlso update the doc comment on tracing_warn_emitted_on_poison_into_result (line 2084) which says \"6 unwrap_or_else closures\" — clarify which 3 are currently tested (into_inner paths) vs the 3 shared-fallback paths this new task covers.\n\nmemory_hints: search(\"into_result poison recovery warn emission\", project_id=\"reify\"), search(\"Arc::try_unwrap shared fallback\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:30:26.875Z",
+        "updatedAt": "2026-04-04T13:32:40.659Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -19796,9 +19796,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:31:16.542Z",
+      "lastModified": "2026-04-04T13:32:40.659Z",
       "taskCount": 966,
-      "completedCount": 699,
+      "completedCount": 700,
       "tags": [
         "master"
       ]
