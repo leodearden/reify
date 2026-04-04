@@ -960,6 +960,19 @@ fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
     }
 }
 
+/// Bit-identity equality for `Value`.
+///
+/// Float-bearing variants (`Real`, `Scalar`, `Complex`, `Orientation`) compare via
+/// `to_bits()`, giving bit-pattern identity: `-0.0 != +0.0` and `NaN == NaN`
+/// (for the same canonical NaN bit pattern). This is deliberate for
+/// content-addressable storage — values with different bit representations must
+/// hash and compare differently, so two `Value`s that differ only in float sign
+/// or NaN payload are distinct keys.
+///
+/// **Eq/Ord contract:** this impl and `impl Ord for Value` both define equality
+/// as bit-pattern identity, preserving the invariant: `a == b` iff
+/// `a.cmp(&b) == Ordering::Equal`. Any change to either impl must preserve this
+/// contract — update both impls together.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -1145,6 +1158,21 @@ impl PartialOrd for Value {
     }
 }
 
+/// Total order for `Value`, consistent with `impl PartialEq for Value`.
+///
+/// Float-bearing variants use `to_bits()` unsigned comparison, giving a
+/// deterministic total order that agrees with bit-identity equality:
+/// `-0.0` and `+0.0` sort differently (negative zero has the sign bit set,
+/// so it compares greater than positive zero under unsigned `u64` comparison),
+/// and `NaN` occupies a fixed position in the order.
+///
+/// **Eq/Ord contract:** Both `PartialEq` and `Ord` define equality as
+/// bit-pattern identity, so the contract `a == b` iff `a.cmp(&b) == Ordering::Equal`
+/// is preserved.
+///
+/// **WARNING:** Any change to the comparison strategy (e.g. migrating to
+/// `total_cmp()`) must preserve this invariant and must update **both** impls
+/// together — if equality semantics change in one, they must change in the other.
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
@@ -2075,13 +2103,44 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_neg_zero() {
-        // -0.0 and +0.0 have different bits, so they may have different ordering
-        // (consistent with PartialEq which uses to_bits)
+    fn value_ord_real_nan_and_neg_zero_still_consistent() {
+        use std::cmp::Ordering;
+
         let pos = Value::Real(0.0);
         let neg = Value::Real(-0.0);
-        // They should have a defined comparison (not panic)
-        let _ = pos.cmp(&neg);
+        let nan = Value::Real(f64::NAN);
+        let inf = Value::Real(f64::INFINITY);
+
+        // (a) PartialEq: -0.0 != +0.0 (different bit patterns via to_bits())
+        assert_ne!(neg, pos, "neg-zero and pos-zero must differ under bit-identity PartialEq");
+
+        // (b) Ord: -0.0 has a strict ordering vs +0.0.
+        // With to_bits() unsigned comparison:
+        //   (-0.0f64).to_bits() == 0x8000000000000000 > 0x0000000000000000 == (0.0f64).to_bits()
+        // so neg > pos.
+        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg-zero and pos-zero must not compare Equal");
+        assert_eq!(neg.cmp(&pos), Ordering::Greater, "neg-zero must sort after pos-zero under to_bits() unsigned order");
+        assert_eq!(pos.cmp(&neg), Ordering::Less, "pos-zero must sort before neg-zero under to_bits() unsigned order");
+
+        // (c) PartialEq: NaN == NaN (same canonical bit pattern)
+        assert_eq!(nan, nan, "NaN must equal itself under bit-identity PartialEq");
+
+        // (d) Ord: NaN has a defined non-Equal ordering vs finite and infinite values
+        assert_ne!(nan.cmp(&inf), Ordering::Equal, "NaN must not compare Equal to infinity");
+        assert_ne!(nan.cmp(&pos), Ordering::Equal, "NaN must not compare Equal to pos-zero");
+        // NaN.to_bits() == 0x7FF8000000000000, which is less than INFINITY.to_bits() == 0x7FF0000000000000
+        // Actually let's assert consistent direction using cmp symmetry:
+        assert_eq!(nan.cmp(&inf), inf.cmp(&nan).reverse(), "NaN/inf ordering must be antisymmetric");
+
+        // (e) PartialEq/Ord consistency invariant: a == b iff a.cmp(&b) == Equal
+        // Check eq implies cmp == Equal:
+        assert_eq!(nan.cmp(&nan), Ordering::Equal, "NaN == NaN so cmp must be Equal");
+        assert_eq!(pos.cmp(&pos), Ordering::Equal, "pos == pos so cmp must be Equal");
+        assert_eq!(neg.cmp(&neg), Ordering::Equal, "neg == neg so cmp must be Equal");
+        // Check !eq implies cmp != Equal:
+        assert_ne!(nan.cmp(&inf), Ordering::Equal, "nan != inf so cmp must not be Equal");
+        assert_ne!(nan.cmp(&pos), Ordering::Equal, "nan != pos so cmp must not be Equal");
+        assert_ne!(neg.cmp(&pos), Ordering::Equal, "neg != pos so cmp must not be Equal");
     }
 
     // --- Option tests (step-11) ---
