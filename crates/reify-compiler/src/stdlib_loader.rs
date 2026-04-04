@@ -19,6 +19,9 @@ const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechani
 const STRUCTURAL_PHYSICAL_SRC: &str =
     include_str!("../stdlib/structural_physical.ri");
 
+/// Embedded source for stdlib/tolerancing.ri.
+const TOLERANCING_SRC: &str = include_str!("../stdlib/tolerancing.ri");
+
 /// Global cache for compiled stdlib modules.
 static STDLIB_CACHE: OnceLock<Vec<CompiledModule>> = OnceLock::new();
 
@@ -37,6 +40,7 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             ("std.units", UNITS_SRC),
             ("std.materials.mechanical", MATERIALS_MECHANICAL_SRC),
             ("std.structural.physical", STRUCTURAL_PHYSICAL_SRC),
+            ("std.tolerancing", TOLERANCING_SRC),
         ];
 
         let mut modules = Vec::with_capacity(sources.len());

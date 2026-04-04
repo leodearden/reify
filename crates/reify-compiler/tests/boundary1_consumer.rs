@@ -258,3 +258,111 @@ fn handle_parse_errors_gracefully() {
     let compiled = reify_compiler::compile(&module);
     assert_eq!(compiled.templates.len(), 1);
 }
+
+/// Step 21: check_trait_conformance emits a diagnostic for unresolved type names
+/// instead of silently falling back to Type::Real.
+///
+/// Constructs a module with:
+/// - trait T requiring `param x : Real`
+/// - structure S : T with `param x : NonexistentEnumType`
+///
+/// Before the fix (step 22), check_trait_conformance silently uses Type::Real for
+/// the unresolved type, so assertion #3 (conformance-path message format) fails.
+/// After the fix, a "unresolved type in conformance check: NonexistentEnumType"
+/// diagnostic is emitted.
+#[test]
+fn reject_unresolved_type_in_trait_conformance() {
+    use reify_syntax::*;
+    use reify_types::*;
+
+    let module = ParsedModule {
+        path: ModulePath::single("bad_conformance"),
+        declarations: vec![
+            // trait T { param x : Real }
+            Declaration::Trait(TraitDecl {
+                name: "T".into(),
+                doc: None,
+                is_pub: false,
+                type_params: vec![],
+                refinements: vec![],
+                members: vec![MemberDecl::Param(ParamDecl {
+                    name: "x".into(),
+                    doc: None,
+                    type_expr: Some(TypeExpr {
+                        name: "Real".into(),
+                        type_args: vec![],
+                        span: SourceSpan::new(20, 24),
+                    }),
+                    default: None,
+                    where_clause: None,
+                    span: SourceSpan::new(16, 24),
+                    content_hash: ContentHash::of_str("param x: Real"),
+                })],
+                span: SourceSpan::new(0, 30),
+                content_hash: ContentHash::of_str("trait T"),
+            }),
+            // structure def S : T { param x : NonexistentEnumType }
+            Declaration::Structure(StructureDef {
+                name: "S".into(),
+                doc: None,
+                is_pub: false,
+                type_params: vec![],
+                trait_bounds: vec![TraitBoundRef {
+                    name: "T".into(),
+                    type_args: vec![],
+                    span: SourceSpan::new(50, 51),
+                }],
+                members: vec![MemberDecl::Param(ParamDecl {
+                    name: "x".into(),
+                    doc: None,
+                    type_expr: Some(TypeExpr {
+                        name: "NonexistentEnumType".into(),
+                        type_args: vec![],
+                        span: SourceSpan::new(70, 89),
+                    }),
+                    default: None,
+                    where_clause: None,
+                    span: SourceSpan::new(66, 89),
+                    content_hash: ContentHash::of_str("param x: NonexistentEnumType"),
+                })],
+                span: SourceSpan::new(45, 95),
+                content_hash: ContentHash::of_str("structure S : T"),
+            }),
+        ],
+        errors: vec![],
+        content_hash: ContentHash::of_str("bad conformance module"),
+    };
+
+    let compiled = reify_compiler::compile(&module);
+
+    // Assertion 1: diagnostics are non-empty
+    assert!(
+        !compiled.diagnostics.is_empty(),
+        "should have diagnostics for unresolved type in conformance"
+    );
+
+    // Assertion 2: at least one diagnostic mentions both "unresolved type" and "NonexistentEnumType"
+    let mentions_unresolved_and_name = compiled.diagnostics.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("unresolved type") && d.message.contains("NonexistentEnumType")
+    });
+    assert!(
+        mentions_unresolved_and_name,
+        "expected a diagnostic containing 'unresolved type' and 'NonexistentEnumType', got: {:?}",
+        compiled.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Assertion 3: specifically the conformance-path diagnostic must be present.
+    // This assertion fails BEFORE the fix because check_trait_conformance
+    // silently falls back to Type::Real without emitting a diagnostic.
+    let has_conformance_diagnostic = compiled.diagnostics.iter().any(|d| {
+        d.message.contains("unresolved type in conformance check")
+            && d.message.contains("NonexistentEnumType")
+    });
+    assert!(
+        has_conformance_diagnostic,
+        "expected conformance-path diagnostic 'unresolved type in conformance check: NonexistentEnumType', \
+         got diagnostics: {:?}",
+        compiled.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

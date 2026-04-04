@@ -1,0 +1,229 @@
+// Stdlib: Tolerancing — Dimensional, Geometric (14 GD&T types), Surface
+// Provides core definitions for engineering tolerancing and geometric dimensioning.
+// Uses Length and Angle types for dimensioned params. Real is used as a
+// placeholder for Geometry and Datum-reference types pending future type system extensions.
+
+// ── Enumerations ─────────────────────────────────────────────────────────────
+
+// Material condition modifiers used in GD&T callouts.
+enum MaterialCondition { MMC, LMC, RFS }
+
+// Fit classification per ISO 286 / ANSI B4.1.
+enum FitCategory { Clearance, Transition, Interference }
+
+// Surface roughness parameter designations per ISO 4287 / ASME B46.1.
+enum SurfaceParameter { Ra, Rz, Rq, Rt, Rp, Rv, Rsk, Rku }
+
+// Lay direction of surface texture.
+enum SurfaceDirection { Parallel, Perpendicular, Crossed, Multidirectional, Circular, Radial }
+
+// ── Dimensional Tolerance ────────────────────────────────────────────────────
+
+// Defines a tolerance zone around a nominal dimension.
+// upper_limit and lower_limit are derived from nominal + deviations.
+// constraint: upper_deviation must be >= lower_deviation.
+structure def DimensionalTolerance {
+    param nominal : Length
+    param upper_deviation : Length
+    param lower_deviation : Length
+    let upper_limit = nominal + upper_deviation
+    let lower_limit = nominal + lower_deviation
+    let tolerance_band = upper_deviation - lower_deviation
+    constraint upper_deviation >= lower_deviation
+}
+
+// ── Geometric Tolerance Traits ───────────────────────────────────────────────
+
+// Base trait for all geometric tolerance types.
+// feature uses Real pending a dedicated Geometry type.
+// material_condition specifies MMC, LMC, or RFS modifier.
+trait GeometricTolerance {
+    param tolerance_value : Length
+    param feature : Real
+    param material_condition : MaterialCondition
+}
+
+// Form tolerances constrain shape without a datum reference.
+trait FormTolerance : GeometricTolerance {
+}
+
+// Orientation tolerances constrain angular relationship to datums.
+trait OrientationTolerance : GeometricTolerance {
+    param datum_refs : Real
+}
+
+// Location tolerances constrain position relative to datums.
+trait LocationTolerance : GeometricTolerance {
+    param datum_refs : Real
+}
+
+// ── Form Tolerances (4 types) ────────────────────────────────────────────────
+
+structure def Flatness : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def Straightness : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def Circularity : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def Cylindricity : FormTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// ── Orientation Tolerances (3 types) ────────────────────────────────────────
+
+structure def Parallelism : OrientationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+structure def Perpendicularity : OrientationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+// Angularity adds a nominal_angle param specifying the target angle.
+structure def Angularity : OrientationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+    param nominal_angle : Angle = 0deg
+}
+
+// ── Location Tolerances (3 types) ────────────────────────────────────────────
+
+structure def Position : LocationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+structure def Concentricity : LocationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+structure def Symmetry : LocationTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+    param datum_refs : Real = 0.0
+}
+
+// ── Runout Tolerances (2 types) ──────────────────────────────────────────────
+
+structure def CircularRunout : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def TotalRunout : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// ── Profile Tolerances (2 types) ─────────────────────────────────────────────
+
+structure def ProfileOfSurface : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+structure def ProfileOfLine : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Real = 0.0
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// ── Datum ─────────────────────────────────────────────────────────────────────
+
+// Datum reference feature — the label identifies the datum (e.g., "A", "B").
+// feature uses Real pending a dedicated Geometry type.
+structure def Datum {
+    param label : String
+    param feature : Real
+}
+
+// ── Surface Finish ────────────────────────────────────────────────────────────
+
+// Surface texture specification per ISO 1302.
+// parameter: roughness measurement type; value: measured quantity.
+// direction: lay direction; process: manufacturing process (optional, use "").
+structure def SurfaceFinish {
+    param parameter : SurfaceParameter
+    param value : Length
+    param direction : SurfaceDirection
+    param process : String
+}
+
+// ── Fit ───────────────────────────────────────────────────────────────────────
+
+// Shaft-and-hole fit per ISO 286.
+// Clearances are derived: positive = clearance, negative = interference.
+structure def Fit {
+    param hole_upper : Length
+    param hole_lower : Length
+    param shaft_upper : Length
+    param shaft_lower : Length
+    param fit_type : FitCategory
+    let max_clearance = hole_upper - shaft_lower
+    let min_clearance = hole_lower - shaft_upper
+}
+
+// ── ISO Tolerance Grade ───────────────────────────────────────────────────────
+
+// ISO 286-1 tolerance grade entry.
+// grade: IT number (IT01, IT0, IT1..IT18 encoded as integer).
+// nominal_min / nominal_max: diameter range for which this grade applies.
+// tolerance_value: the actual tolerance width for this grade and range.
+structure def ISOToleranceGrade {
+    param grade : Int
+    param nominal_min : Length
+    param nominal_max : Length
+    param tolerance_value : Length
+}
+
+// ── Conforms constraint def ───────────────────────────────────────────────────
+
+// Asserts that a tolerance_value is positive (a meaningful tolerance).
+constraint def Conforms {
+    param tolerance_value : Length
+    tolerance_value > 0
+}
+
+// ── Constructor Functions ─────────────────────────────────────────────────────
+
+// Creates a symmetric tolerance band around nominal.
+// Returns the upper limit (nominal + deviation).
+fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {
+    nominal + deviation
+}
+
+// Computes the tolerance band width from upper and lower limits.
+fn limit_tolerance(upper: Length, lower: Length) -> Length {
+    upper - lower
+}
