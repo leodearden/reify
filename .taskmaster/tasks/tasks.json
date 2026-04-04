@@ -19233,10 +19233,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract warn-count delta assertion helper using saturating_sub. (2) Change Relaxed ordering to Acquire/Release in WarnCounter::event and assertion loads. (3) Extract did_open_params() helper for ~6 duplicated textDocument/didOpen JSON blocks. (4) Extract subscriber setup helper for 3x duplicated preambles.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-04T09:00:30.930Z"
       },
       {
         "id": "938",
@@ -19518,7 +19519,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T09:00:30.632Z",
+      "lastModified": "2026-04-04T09:00:30.930Z",
       "taskCount": 962,
       "completedCount": 698,
       "tags": [
