@@ -19353,6 +19353,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 949,
+        "title": "Add missing gotoDefinition tests: mixed-format URI and suffix false-positive",
+        "description": "Add two tests to gui/src/__tests__/gotoDefinition.test.ts: (1) bare path uri with file:// location.uri verifying same-file dispatch, (2) partial suffix match (/a/foo.ri vs /b/a/foo.ri) verifying cross-file navigation.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19365,7 +19376,7 @@
       ],
       "created": "2026-04-04T06:09:26.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T06:12:32.153Z"
+      "updated": "2026-04-04T06:12:35.733Z"
     }
   }
 }
