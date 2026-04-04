@@ -3926,6 +3926,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_neg_inf_re_returns_undef() {
+        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.phase → Undef
+        //
+        // Note: atan2(1.0, -Inf) = π, which is finite — so sanitize_value alone
+        // would NOT catch this -Inf input and would silently return a wrong result.
+        // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
+        // rejects this case. This test locks that behaviour as a regression guard.
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "phase".to_string(),
+            vec![],
+            Type::angle(),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
+             so the pre-guard, not sanitize_value, is what catches this)"
+        );
+    }
+
     // ── method regressions: finite phase values still work ────────────────────
 
     #[test]
