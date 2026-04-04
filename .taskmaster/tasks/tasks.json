@@ -19803,6 +19803,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 968,
+        "title": "Extract makeMockEvent/makeMockView factories in gotoDefinition tests",
+        "description": "Reviewer feedback (reuse_auditor, test_analyst, architect_reviewer): mockEvent and mockView are copy-pasted across 5 test sites in gui/src/__tests__/gotoDefinition.test.ts. Extract makeMockEvent() and makeMockView(overrides?) factories at the top of the file. Also add expect(mockInvoke).toHaveBeenCalledTimes(1) to both isConnected guard tests to prove the guard fires post-response, not pre-request.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -19815,7 +19826,7 @@
       ],
       "created": "2026-04-04T13:32:57.990Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-04T13:32:57.998Z"
+      "updated": "2026-04-04T13:33:01.746Z"
     }
   }
 }
