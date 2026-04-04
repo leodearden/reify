@@ -1020,3 +1020,84 @@ fn edit_param_count_multi_cycle_recovery() {
         );
     }
 }
+
+// ─── task-826 step-13: Int(4)→Undef→Undef→Int(2): second Undef must not overwrite preserved_counts ───
+
+#[test]
+fn edit_param_count_int_undef_undef_int_no_overwrite() {
+    // Bolt template: param diameter : Scalar = 10mm
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .build();
+
+    // Parent template: param n=4, count_cell __count_bolts = n, collection sub bolts
+    let count_expr = value_ref_typed("Parent", "n", Type::Int);
+    let n_id = ValueCellId::new("Parent", "n");
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(4), Type::Int)),
+        )
+        .let_binding("Parent", "__count_bolts", Type::Int, count_expr)
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // (a) eval with n=4 → 4 instances, preserved_counts empty
+    engine.eval(&module);
+
+    // (b) edit n→Undef: Undef guard fires, preserved_counts[__count_bolts]=4
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("first edit to Undef should succeed");
+
+    // (c) edit n→Undef again: new_count==old_count==Undef → equality check fires,
+    //     loop iteration is skipped entirely, preserved_counts must NOT be touched.
+    //     If there were a regression (e.g. unconditional insert in the guard), this
+    //     would overwrite preserved_counts[__count_bolts] with 0.
+    engine
+        .edit_param(n_id.clone(), Value::Undef)
+        .expect("second edit to Undef should succeed");
+
+    // (d) edit n→Int(2): old_count must be recovered from preserved_counts as 4,
+    //     so instances [2..4) are removed and only [0..2) remain.
+    let result = engine
+        .edit_param(n_id, Value::Int(2))
+        .expect("edit to Int(2) should succeed");
+
+    // bolts[0] and bolts[1] must exist
+    for i in 0..2 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            result.values.get(&scoped_id),
+            Some(&Value::length(0.01)),
+            "bolts[{}].diameter should exist after Int(4)→Undef→Undef→Int(2)",
+            i
+        );
+    }
+
+    // bolts[2] and bolts[3] must be absent (old_count was 4, not 0)
+    for i in 2..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert!(
+            result.values.get(&scoped_id).is_none(),
+            "bolts[{}] must be removed — preserved_counts must not be overwritten by second Undef",
+            i
+        );
+    }
+}
