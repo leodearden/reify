@@ -1039,8 +1039,14 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1122,8 +1128,14 @@ async fn concurrent_edit_result_includes_resolved_params() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1203,7 +1215,10 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
     solved1.insert(x_id.clone(), mm(5.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
         SolveResult::Infeasible {
             diagnostics: vec![Diagnostic {
                 severity: Severity::Error,
@@ -1409,8 +1424,14 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1599,8 +1620,7 @@ mod poison_recovery {
         // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
         // poisoned, so exactly 1 WARN fires.
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
@@ -1659,8 +1679,7 @@ mod poison_recovery {
         // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
         // poisoned, so exactly 1 WARN fires.
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
@@ -1686,8 +1705,7 @@ mod poison_recovery {
         // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
         // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "build_result_shared() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
@@ -2114,8 +2132,7 @@ mod poison_recovery_extended {
         // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
         // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
         );
     }
@@ -2140,8 +2157,7 @@ mod poison_recovery_extended {
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() should emit exactly 1 tracing::warn! on snapshot_values poison recovery, got {count} WARN events"
         );
     }
@@ -2166,8 +2182,7 @@ mod poison_recovery_extended {
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() should emit exactly 1 tracing::warn! on results poison recovery, got {count} WARN events"
         );
     }
@@ -2186,8 +2201,8 @@ mod poison_recovery_extended {
 #[cfg(feature = "test-utils")]
 mod poison_shared_fallback {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
     use reify_test_support::tracing_support::warn_counting_subscriber;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     // -----------------------------------------------------------------------
     // values shared-fallback
@@ -2219,8 +2234,7 @@ mod poison_shared_fallback {
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() shared-fallback (values) should emit exactly 1 tracing::warn!, got {count}"
         );
     }
@@ -2276,8 +2290,7 @@ mod poison_shared_fallback {
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() shared-fallback (snapshot_values) should emit exactly 1 tracing::warn!, got {count}"
         );
     }
@@ -2332,8 +2345,7 @@ mod poison_shared_fallback {
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            count,
-            1,
+            count, 1,
             "into_result() shared-fallback (results) should emit exactly 1 tracing::warn!, got {count}"
         );
     }
@@ -2485,11 +2497,12 @@ mod poison_evaluate {
 
         // Verify results were actually pushed despite poisoning
         let results = adapter.take_results();
-        assert_eq!(results.len(), 1, "evaluate() should push exactly one result");
         assert_eq!(
-            results[0].node,
-            NodeId::Value(ValueCellId::new("T", "b"))
+            results.len(),
+            1,
+            "evaluate() should push exactly one result"
         );
+        assert_eq!(results[0].node, NodeId::Value(ValueCellId::new("T", "b")));
         assert_eq!(results[0].outcome, EvalOutcome::Changed);
         assert_eq!(
             results[0].value,
@@ -2519,7 +2532,8 @@ mod poison_evaluate {
         let outcome = tracing::subscriber::with_default(subscriber, || {
             evaluate_with_recovery(&adapter, node)
         });
-        let outcome = outcome.expect("evaluate() should recover from poisoned values lock, not panic");
+        let outcome =
+            outcome.expect("evaluate() should recover from poisoned values lock, not panic");
         assert_eq!(outcome, EvalOutcome::Changed);
 
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -2530,14 +2544,13 @@ mod poison_evaluate {
     }
 }
 
-
 mod execute_with_config_tests {
     //! Tests for execute_with_config: priority, commitment, overrides.
     use super::*;
+    use reify_runtime::Priority;
     use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
     use reify_runtime::concurrent::{SchedulerConfig, SchedulerError};
     use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -2550,698 +2563,774 @@ mod execute_with_config_tests {
     }
 
     /// Test that nodes within a level are spawned in priority order.
-/// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
-/// Uses TrackingAsyncEvaluator to record evaluation order.
-/// With #[tokio::test] (current_thread runtime), spawn order == eval order for
-/// synchronous evaluators.
-#[tokio::test]
-async fn test_priority_ordering_within_level() {
-    // TrackingAsyncEvaluator: records NodeId on each evaluate call
-    struct TrackingAsyncEvaluator {
-        eval_order: Arc<Mutex<Vec<NodeId>>>,
-    }
-    impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            self.eval_order.lock().unwrap().push(node);
-            EvalOutcome::Changed
+    /// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
+    /// Uses TrackingAsyncEvaluator to record evaluation order.
+    /// With #[tokio::test] (current_thread runtime), spawn order == eval order for
+    /// synchronous evaluators.
+    #[tokio::test]
+    async fn test_priority_ordering_within_level() {
+        // TrackingAsyncEvaluator: records NodeId on each evaluate call
+        struct TrackingAsyncEvaluator {
+            eval_order: Arc<Mutex<Vec<NodeId>>>,
         }
-    }
-
-    let e = "PRI";
-    // Use names whose hash order differs from priority order.
-    // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
-    let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
-    let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
-    let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
-
-    // All at same level (no inter-dependencies, empty traces → dirty by default)
-    let mut traces = HashMap::new();
-    traces.insert(node_p0.clone(), DependencyTrace::default());
-    traces.insert(node_p1slow.clone(), DependencyTrace::default());
-    traces.insert(node_p3.clone(), DependencyTrace::default());
-
-    let eval_order = Arc::new(Mutex::new(Vec::new()));
-    let evaluator = Arc::new(TrackingAsyncEvaluator {
-        eval_order: Arc::clone(&eval_order),
-    });
-
-    // Set up priorities
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
-    node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
-
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let config = SchedulerConfig {
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    // Reverse order in eval_set to ensure sorting actually reorders
-    let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    assert_eq!(result.changed.len(), 3);
-
-    // With priority sorting, spawn order should be: P0, P1Slow, P3
-    let order = eval_order.lock().unwrap();
-    assert_eq!(order.len(), 3);
-    assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
-    assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
-    assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
-}
-
-/// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
-/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
-/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
-/// node_b should be in result.skipped and NOT in result.changed.
-/// node_a should be in result.changed.
-#[tokio::test]
-async fn test_only_run_on_final_inputs_skipped() {
-    let e = "SKIP";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    // node_b has OnlyRunOnFinalInputs override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
-
-    // has_intermediate_inputs returns true for node_b
-    let b_clone = node_b.clone();
-    let config = SchedulerConfig {
-        node_overrides,
-        has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
-    assert!(
-        result.skipped.contains(&node_b),
-        "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
-    );
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed set"
-    );
-
-    // node_a should be evaluated and in changed
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed set (default CommitIfSlow)"
-    );
-}
-
-/// Test that a committed node's result survives cancellation.
-/// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
-/// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
-/// elapsed > 10ms → committed). After execute_with_config:
-/// - slow_node IS in result.changed (committed, survived cancel)
-/// - fast_node NOT in result.changed (uncommitted, cancelled)
-#[tokio::test]
-async fn test_committed_node_survives_cancellation() {
-    let e = "CMT";
-    let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
-    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(fast_node.clone(), DependencyTrace::default());
-    traces.insert(slow_node.clone(), DependencyTrace::default());
-
-    // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
-    let cancel = CancellationToken::new();
-
-    struct CommitmentTestEvaluator {
-        cancel: CancellationToken,
-        fast_node: NodeId,
-    }
-    impl AsyncNodeEvaluator for CommitmentTestEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.fast_node {
-                // Fast node: cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow node: sleep long enough to exceed always_commit_after
-                tokio::time::sleep(Duration::from_millis(50)).await;
+        impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.eval_order.lock().unwrap().push(node);
                 EvalOutcome::Changed
             }
         }
+
+        let e = "PRI";
+        // Use names whose hash order differs from priority order.
+        // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
+        let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
+        let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
+        let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
+
+        // All at same level (no inter-dependencies, empty traces → dirty by default)
+        let mut traces = HashMap::new();
+        traces.insert(node_p0.clone(), DependencyTrace::default());
+        traces.insert(node_p1slow.clone(), DependencyTrace::default());
+        traces.insert(node_p3.clone(), DependencyTrace::default());
+
+        let eval_order = Arc::new(Mutex::new(Vec::new()));
+        let evaluator = Arc::new(TrackingAsyncEvaluator {
+            eval_order: Arc::clone(&eval_order),
+        });
+
+        // Set up priorities
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
+        node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
+
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let config = SchedulerConfig {
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        // Reverse order in eval_set to ensure sorting actually reorders
+        let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.changed.len(), 3);
+
+        // With priority sorting, spawn order should be: P0, P1Slow, P3
+        let order = eval_order.lock().unwrap();
+        assert_eq!(order.len(), 3);
+        assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
+        assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
+        assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
     }
 
-    let evaluator = Arc::new(CommitmentTestEvaluator {
-        cancel: cancel.clone(),
-        fast_node: fast_node.clone(),
-    });
+    /// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
+    /// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+    /// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
+    /// node_b should be in result.skipped and NOT in result.changed.
+    /// node_a should be in result.changed.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_skipped() {
+        let e = "SKIP";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(10),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        ..SchedulerConfig::default()
-    };
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![fast_node.clone(), slow_node.clone()];
+        // has_intermediate_inputs returns true for node_b
+        let b_clone = node_b.clone();
+        let config = SchedulerConfig {
+            node_overrides,
+            has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
+            ..SchedulerConfig::default()
+        };
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
 
-    // Verify cancellation actually occurred (fast_node fires cancel.cancel())
-    assert!(
-        cancel.is_cancelled(),
-        "cancel token should be fired by fast_node during evaluation"
-    );
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // Exactly one node survives: slow_node (committed) — fast_node dropped (uncommitted)
-    assert_eq!(
-        result.changed.len(),
-        1,
-        "exactly one node should survive cancellation (the committed slow_node)"
-    );
-    // slow_node should survive cancellation because it's committed (elapsed > 10ms)
-    assert!(
-        result.changed.contains(&slow_node),
-        "slow_node should be in changed (committed, survived cancel)"
-    );
-    // fast_node should be dropped because it's uncommitted when cancel fires
-    assert!(
-        !result.changed.contains(&fast_node),
-        "fast_node should NOT be in changed (uncommitted, cancelled)"
-    );
-}
+        // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
+        assert!(
+            result.skipped.contains(&node_b),
+            "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed set"
+        );
 
-/// Test that uncommitted nodes in dirty cone are cancelled.
-/// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
-/// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
-/// Assert neither node is in result.changed (both uncommitted when cancel fires).
-#[tokio::test]
-async fn test_uncommitted_in_dirty_cone_cancelled() {
-    let e = "UNC";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    // Evaluator: node_a fires cancel, both are fast
-    struct CancellingEvaluator {
-        cancel: CancellationToken,
-        trigger_node: NodeId,
+        // node_a should be evaluated and in changed
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed set (default CommitIfSlow)"
+        );
     }
-    impl AsyncNodeEvaluator for CancellingEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger_node {
-                self.cancel.cancel();
-            }
-            EvalOutcome::Changed
+
+    /// Test that a committed node's result survives cancellation.
+    /// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
+    /// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
+    /// elapsed > 10ms → committed). After execute_with_config:
+    /// - slow_node IS in result.changed (committed, survived cancel)
+    /// - fast_node NOT in result.changed (uncommitted, cancelled)
+    #[tokio::test]
+    async fn test_committed_node_survives_cancellation() {
+        let e = "CMT";
+        let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
+        let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
+
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(fast_node.clone(), DependencyTrace::default());
+        traces.insert(slow_node.clone(), DependencyTrace::default());
+
+        // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
+        let cancel = CancellationToken::new();
+
+        struct CommitmentTestEvaluator {
+            cancel: CancellationToken,
+            fast_node: NodeId,
         }
+        impl AsyncNodeEvaluator for CommitmentTestEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.fast_node {
+                    // Fast node: cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow node: sleep long enough to exceed always_commit_after
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
+            }
+        }
+
+        let evaluator = Arc::new(CommitmentTestEvaluator {
+            cancel: cancel.clone(),
+            fast_node: fast_node.clone(),
+        });
+
+        // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![fast_node.clone(), slow_node.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Verify cancellation actually occurred (fast_node fires cancel.cancel())
+        assert!(
+            cancel.is_cancelled(),
+            "cancel token should be fired by fast_node during evaluation"
+        );
+
+        // Exactly one node survives: slow_node (committed) — fast_node dropped (uncommitted)
+        assert_eq!(
+            result.changed.len(),
+            1,
+            "exactly one node should survive cancellation (the committed slow_node)"
+        );
+        // slow_node should survive cancellation because it's committed (elapsed > 10ms)
+        assert!(
+            result.changed.contains(&slow_node),
+            "slow_node should be in changed (committed, survived cancel)"
+        );
+        // fast_node should be dropped because it's uncommitted when cancel fires
+        assert!(
+            !result.changed.contains(&fast_node),
+            "fast_node should NOT be in changed (uncommitted, cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(CancellingEvaluator {
-        cancel: cancel.clone(),
-        trigger_node: node_a.clone(),
-    });
+    /// Test that uncommitted nodes in dirty cone are cancelled.
+    /// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
+    /// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
+    /// Assert neither node is in result.changed (both uncommitted when cancel fires).
+    #[tokio::test]
+    async fn test_uncommitted_in_dirty_cone_cancelled() {
+        let e = "UNC";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: 5s threshold — neither node will reach this
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_secs(5),
-        commit_when_proportion_done: 0.99,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        ..SchedulerConfig::default()
-    };
+        let cancel = CancellationToken::new();
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
-    // → both should be dropped
-    assert!(
-        !result.changed.contains(&node_a),
-        "node_a should NOT be in changed (uncommitted, cancelled)"
-    );
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed (uncommitted, cancelled)"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up after execution.
-/// Two nodes, normal execution (no cancel). After execute_with_config completes,
-/// tracker.task_count() == 0 and promoter.count() == 0.
-#[tokio::test]
-async fn test_cleanup_on_completion() {
-    let e = "CLN";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    assert_eq!(result.changed.len(), 2);
-
-    // After execution, all nodes should be cleaned up from tracker and promoter
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after completion, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after completion, got {promoter_count}"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up even when a task panics.
-/// The `return Err(TaskPanicked)` at line 353 bypasses the cleanup block, so this test
-/// should FAIL until the cleanup-on-error-path fix is implemented.
-#[tokio::test]
-async fn test_cleanup_on_task_panic() {
-    let e = "PNC";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(PanickingEvaluator);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await;
-
-    // Should return TaskPanicked error
-    assert!(result.is_err(), "scheduler should return error on panic");
-    match result.unwrap_err() {
-        SchedulerError::TaskPanicked(_) => {} // expected
-        other => panic!("Expected TaskPanicked, got {:?}", other),
-    }
-
-    // After error, all nodes should still be cleaned up from tracker and promoter
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after panic, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after panic, got {promoter_count}"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up on task cancellation.
-///
-/// The `TaskCancelled` error path (`Err(_)` non-panic in `handle.await`) shares the same
-/// cleanup closure as `TaskPanicked` (both call `cleanup_level` before returning).
-/// Since triggering a true `JoinError::Cancelled` through `execute_with_config`'s public API
-/// requires externally aborting internally-held JoinHandles (not accessible), this test
-/// exercises the error-path cleanup through `execute_with_config` using a `PanickingEvaluator`
-/// (TaskPanicked path) with three nodes. The cleanup closure handles all dirty_nodes for the
-/// level, so verifying cleanup on the panic path also validates the cancellation path's
-/// identical cleanup behavior.
-///
-/// This test FAILS because the early `return Err(...)` bypasses the cleanup block,
-/// leaving stale entries in both structures.
-#[tokio::test]
-async fn test_cleanup_on_task_cancelled() {
-    let e = "CXL";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-    let node_c = NodeId::Value(ValueCellId::new(e, "c"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-    traces.insert(node_c.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-    node_priorities.insert(node_c.clone(), Priority::P3Speculative);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(PanickingEvaluator);
-    let eval_set = vec![node_a.clone(), node_b.clone(), node_c.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await;
-
-    // Should return an error (TaskPanicked since that's what we can trigger)
-    assert!(result.is_err(), "scheduler should return error on panic");
-    match result.unwrap_err() {
-        SchedulerError::TaskPanicked(_) => {} // expected — exercises same cleanup path as TaskCancelled
-        other => panic!("Expected TaskPanicked, got {:?}", other),
-    }
-
-    // After error, ALL three nodes should be cleaned up from tracker and promoter.
-    // This verifies cleanup_level handles the full dirty_nodes list, not just the
-    // node that caused the error — same behavior needed for TaskCancelled path.
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after error, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after error, got {promoter_count}"
-    );
-}
-
-/// Test that node_overrides are correctly threaded from the dirty-check to
-/// the commitment tracker registration. Three nodes at same level:
-/// - trigger: fires cancel immediately (fast, < always_commit_after → cancelled)
-/// - node_a: default CommitIfSlow, sleeps 50ms (> 10ms always_commit_after → committed, survives cancel)
-/// - node_b: AlwaysCancelWhenStale override, sleeps 50ms (NeverCommit regardless of time → cancelled)
-///
-/// This validates that the override looked up during the dirty/skip pre-computation
-/// is the same override used during commitment tracker registration — if they diverge,
-/// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
-#[tokio::test]
-async fn test_node_override_threaded_to_commitment_tracker() {
-    let e = "THREAD";
-    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    // All at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(trigger.clone(), DependencyTrace::default());
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    struct OverrideThreadingEvaluator {
-        cancel: CancellationToken,
-        trigger: NodeId,
-    }
-    impl AsyncNodeEvaluator for OverrideThreadingEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger {
-                // Trigger: fire cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow nodes: sleep long enough to exceed always_commit_after
-                tokio::time::sleep(Duration::from_millis(50)).await;
+        // Evaluator: node_a fires cancel, both are fast
+        struct CancellingEvaluator {
+            cancel: CancellationToken,
+            trigger_node: NodeId,
+        }
+        impl AsyncNodeEvaluator for CancellingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger_node {
+                    self.cancel.cancel();
+                }
                 EvalOutcome::Changed
             }
         }
+
+        let evaluator = Arc::new(CancellingEvaluator {
+            cancel: cancel.clone(),
+            trigger_node: node_a.clone(),
+        });
+
+        // CommitmentPolicy: 5s threshold — neither node will reach this
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(5),
+            commit_when_proportion_done: 0.99,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
+        // → both should be dropped
+        assert!(
+            !result.changed.contains(&node_a),
+            "node_a should NOT be in changed (uncommitted, cancelled)"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed (uncommitted, cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(OverrideThreadingEvaluator {
-        cancel: cancel.clone(),
-        trigger: trigger.clone(),
-    });
+    /// Test that commitment tracker and priority promoter are cleaned up after execution.
+    /// Two nodes, normal execution (no cancel). After execute_with_config completes,
+    /// tracker.task_count() == 0 and promoter.count() == 0.
+    #[tokio::test]
+    async fn test_cleanup_on_completion() {
+        let e = "CLN";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: commit after 10ms (slow nodes' 50ms will exceed this)
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(10),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    // node_b has AlwaysCancelWhenStale override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        node_overrides,
-        ..SchedulerConfig::default()
-    };
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![trigger.clone(), node_a.clone(), node_b.clone()];
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
 
-    // node_a (CommitIfSlow default): elapsed 50ms > 10ms → committed → survives cancel
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed (CommitIfSlow, elapsed > always_commit_after → committed)"
-    );
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // node_b (AlwaysCancelWhenStale): NeverCommit regardless of elapsed time → cancelled
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
-    );
-}
+        assert_eq!(result.changed.len(), 2);
 
-/// Test that AlwaysCancelWhenStale drops result even with always_commit_after=0ms.
-/// Two nodes at same level: trigger fires cancel immediately, slow_node has
-/// AlwaysCancelWhenStale override and sleeps 50ms. CommitmentPolicy with
-/// always_commit_after=0ms means any elapsed time would normally auto-commit
-/// under CommitIfSlow — but AlwaysCancelWhenStale should override this and
-/// return NeverCommit, so slow_node should NOT appear in result.changed.
-#[tokio::test]
-async fn test_always_cancel_when_stale_drops_result() {
-    let e = "ACWS";
-    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
-    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(trigger.clone(), DependencyTrace::default());
-    traces.insert(slow_node.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    struct AlwaysCancelEvaluator {
-        cancel: CancellationToken,
-        trigger: NodeId,
+        // After execution, all nodes should be cleaned up from tracker and promoter
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after completion, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after completion, got {promoter_count}"
+        );
     }
-    impl AsyncNodeEvaluator for AlwaysCancelEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger {
-                // Trigger: fire cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow node: sleep to accumulate elapsed time past the 0ms threshold
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                EvalOutcome::Changed
+
+    /// Test that commitment tracker and priority promoter are cleaned up even when a task panics.
+    /// The `return Err(TaskPanicked)` at line 353 bypasses the cleanup block, so this test
+    /// should FAIL until the cleanup-on-error-path fix is implemented.
+    #[tokio::test]
+    async fn test_cleanup_on_task_panic() {
+        let e = "PNC";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingEvaluator);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await;
+
+        // Should return TaskPanicked error
+        assert!(result.is_err(), "scheduler should return error on panic");
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(_) => {} // expected
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+
+        // After error, all nodes should still be cleaned up from tracker and promoter
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after panic, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after panic, got {promoter_count}"
+        );
+    }
+
+    /// Test that commitment tracker and priority promoter are cleaned up on task cancellation.
+    ///
+    /// The `TaskCancelled` error path (`Err(_)` non-panic in `handle.await`) shares the same
+    /// cleanup closure as `TaskPanicked` (both call `cleanup_level` before returning).
+    /// Since triggering a true `JoinError::Cancelled` through `execute_with_config`'s public API
+    /// requires externally aborting internally-held JoinHandles (not accessible), this test
+    /// exercises the error-path cleanup through `execute_with_config` using a `PanickingEvaluator`
+    /// (TaskPanicked path) with three nodes. The cleanup closure handles all dirty_nodes for the
+    /// level, so verifying cleanup on the panic path also validates the cancellation path's
+    /// identical cleanup behavior.
+    ///
+    /// This test FAILS because the early `return Err(...)` bypasses the cleanup block,
+    /// leaving stale entries in both structures.
+    #[tokio::test]
+    async fn test_cleanup_on_task_cancelled() {
+        let e = "CXL";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let node_c = NodeId::Value(ValueCellId::new(e, "c"));
+
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+        traces.insert(node_c.clone(), DependencyTrace::default());
+
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+        node_priorities.insert(node_c.clone(), Priority::P3Speculative);
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingEvaluator);
+        let eval_set = vec![node_a.clone(), node_b.clone(), node_c.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await;
+
+        // Should return an error (TaskPanicked since that's what we can trigger)
+        assert!(result.is_err(), "scheduler should return error on panic");
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(_) => {} // expected — exercises same cleanup path as TaskCancelled
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+
+        // After error, ALL three nodes should be cleaned up from tracker and promoter.
+        // This verifies cleanup_level handles the full dirty_nodes list, not just the
+        // node that caused the error — same behavior needed for TaskCancelled path.
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after error, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after error, got {promoter_count}"
+        );
+    }
+
+    /// Test that node_overrides are correctly threaded from the dirty-check to
+    /// the commitment tracker registration. Three nodes at same level:
+    /// - trigger: fires cancel immediately (fast, < always_commit_after → cancelled)
+    /// - node_a: default CommitIfSlow, sleeps 50ms (> 10ms always_commit_after → committed, survives cancel)
+    /// - node_b: AlwaysCancelWhenStale override, sleeps 50ms (NeverCommit regardless of time → cancelled)
+    ///
+    /// This validates that the override looked up during the dirty/skip pre-computation
+    /// is the same override used during commitment tracker registration — if they diverge,
+    /// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
+    #[tokio::test]
+    async fn test_node_override_threaded_to_commitment_tracker() {
+        let e = "THREAD";
+        let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        // All at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(trigger.clone(), DependencyTrace::default());
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        let cancel = CancellationToken::new();
+
+        struct OverrideThreadingEvaluator {
+            cancel: CancellationToken,
+            trigger: NodeId,
+        }
+        impl AsyncNodeEvaluator for OverrideThreadingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger {
+                    // Trigger: fire cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow nodes: sleep long enough to exceed always_commit_after
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
             }
         }
+
+        let evaluator = Arc::new(OverrideThreadingEvaluator {
+            cancel: cancel.clone(),
+            trigger: trigger.clone(),
+        });
+
+        // CommitmentPolicy: commit after 10ms (slow nodes' 50ms will exceed this)
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        // node_b has AlwaysCancelWhenStale override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(
+            node_b.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            node_overrides,
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![trigger.clone(), node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_a (CommitIfSlow default): elapsed 50ms > 10ms → committed → survives cancel
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (CommitIfSlow, elapsed > always_commit_after → committed)"
+        );
+
+        // node_b (AlwaysCancelWhenStale): NeverCommit regardless of elapsed time → cancelled
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(AlwaysCancelEvaluator {
-        cancel: cancel.clone(),
-        trigger: trigger.clone(),
-    });
+    /// Test that AlwaysCancelWhenStale drops result even with always_commit_after=0ms.
+    /// Two nodes at same level: trigger fires cancel immediately, slow_node has
+    /// AlwaysCancelWhenStale override and sleeps 50ms. CommitmentPolicy with
+    /// always_commit_after=0ms means any elapsed time would normally auto-commit
+    /// under CommitIfSlow — but AlwaysCancelWhenStale should override this and
+    /// return NeverCommit, so slow_node should NOT appear in result.changed.
+    #[tokio::test]
+    async fn test_always_cancel_when_stale_drops_result() {
+        let e = "ACWS";
+        let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+        let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
 
-    // CommitmentPolicy: always_commit_after=0ms — would normally auto-commit instantly
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(0),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(trigger.clone(), DependencyTrace::default());
+        traces.insert(slow_node.clone(), DependencyTrace::default());
 
-    // slow_node has AlwaysCancelWhenStale override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(slow_node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        let cancel = CancellationToken::new();
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        node_overrides,
-        ..SchedulerConfig::default()
-    };
+        struct AlwaysCancelEvaluator {
+            cancel: CancellationToken,
+            trigger: NodeId,
+        }
+        impl AsyncNodeEvaluator for AlwaysCancelEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger {
+                    // Trigger: fire cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow node: sleep to accumulate elapsed time past the 0ms threshold
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
+            }
+        }
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![trigger.clone(), slow_node.clone()];
+        let evaluator = Arc::new(AlwaysCancelEvaluator {
+            cancel: cancel.clone(),
+            trigger: trigger.clone(),
+        });
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        // CommitmentPolicy: always_commit_after=0ms — would normally auto-commit instantly
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(0),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
-    // Positive control: trigger node should have evaluated and committed
-    assert!(
-        result.changed.contains(&trigger),
-        "trigger should be in changed (positive control: proves the scheduler actually ran)"
-    );
+        // slow_node has AlwaysCancelWhenStale override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(
+            slow_node.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
 
-    // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
-    assert!(
-        !result.changed.contains(&slow_node),
-        "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
-    );
-    // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
-    // It is neither committed (changed) nor preemptively skipped — it ran but
-    // its result was discarded due to cancellation, so it doesn't appear in
-    // either set. This is distinct from OnlyRunOnFinalInputs which skips
-    // evaluation entirely and places the node in `skipped`.
-    assert!(
-        !result.skipped.contains(&slow_node),
-        "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
-    );
-}
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            node_overrides,
+            ..SchedulerConfig::default()
+        };
 
-/// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
-/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
-/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns false
-/// for all nodes (all inputs are final). node_b should proceed normally:
-/// it should be in result.changed and NOT in result.skipped.
-#[tokio::test]
-async fn test_only_run_on_final_inputs_runs_when_final() {
-    let e = "FINAL";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![trigger.clone(), slow_node.clone()];
 
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // node_b has OnlyRunOnFinalInputs override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        // Positive control: trigger node should have evaluated and committed
+        assert!(
+            result.changed.contains(&trigger),
+            "trigger should be in changed (positive control: proves the scheduler actually ran)"
+        );
 
-    // has_intermediate_inputs returns false for all nodes (all inputs are final)
-    let config = SchedulerConfig {
-        node_overrides,
-        has_intermediate_inputs: Arc::new(|_| false),
-        ..SchedulerConfig::default()
-    };
+        // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
+        assert!(
+            !result.changed.contains(&slow_node),
+            "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
+        );
+        // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
+        // It is neither committed (changed) nor preemptively skipped — it ran but
+        // its result was discarded due to cancellation, so it doesn't appear in
+        // either set. This is distinct from OnlyRunOnFinalInputs which skips
+        // evaluation entirely and places the node in `skipped`.
+        assert!(
+            !result.skipped.contains(&slow_node),
+            "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
+        );
+    }
 
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
+    /// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
+    /// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+    /// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns false
+    /// for all nodes (all inputs are final). node_b should proceed normally:
+    /// it should be in result.changed and NOT in result.skipped.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_runs_when_final() {
+        let e = "FINAL";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    // node_b should be evaluated (not skipped) because inputs are final
-    assert!(
-        result.changed.contains(&node_b),
-        "node_b should be in changed (OnlyRunOnFinalInputs with final inputs → runs normally)"
-    );
-    assert!(
-        !result.skipped.contains(&node_b),
-        "node_b should NOT be in skipped (inputs are final, not intermediate)"
-    );
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-    // node_a should also be evaluated
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed (default CommitIfSlow)"
-    );
-    assert!(
-        !result.skipped.contains(&node_a),
-        "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
-    );
-}
+        // has_intermediate_inputs returns false for all nodes (all inputs are final)
+        let config = SchedulerConfig {
+            node_overrides,
+            has_intermediate_inputs: Arc::new(|_| false),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_b should be evaluated (not skipped) because inputs are final
+        assert!(
+            result.changed.contains(&node_b),
+            "node_b should be in changed (OnlyRunOnFinalInputs with final inputs → runs normally)"
+        );
+        assert!(
+            !result.skipped.contains(&node_b),
+            "node_b should NOT be in skipped (inputs are final, not intermediate)"
+        );
+
+        // node_a should also be evaluated
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (default CommitIfSlow)"
+        );
+        assert!(
+            !result.skipped.contains(&node_a),
+            "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
+        );
+    }
 } // mod execute_with_config_tests

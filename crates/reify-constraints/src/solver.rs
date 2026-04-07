@@ -53,7 +53,11 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 /// Each param is mapped to a Value::Scalar with the correct SI value
 /// and dimension. Used by early-exit, fallback, and solution construction paths.
 fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
-    assert_eq!(params.len(), x.len(), "params and x must have the same length");
+    assert_eq!(
+        params.len(),
+        x.len(),
+        "params and x must have the same length"
+    );
     params
         .iter()
         .zip(x.iter())
@@ -503,6 +507,7 @@ impl ConstraintSolver for DimensionalSolver {
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
@@ -529,6 +534,7 @@ impl ConstraintSolver for DimensionalSolver {
             );
             return SolveResult::Solved {
                 values: build_solved_values(&problem.auto_params, &initial),
+                unique: true,
             };
         }
 
@@ -539,7 +545,10 @@ impl ConstraintSolver for DimensionalSolver {
         // After the early-return above for `initially_feasible && objective.is_none()`,
         // reaching here with `initially_feasible=true` implies `objective.is_some()`.
         let max_iters = if initially_feasible {
-            debug_assert!(problem.objective.is_some(), "warm-start budget path reached without objective — early-return invariant violated");
+            debug_assert!(
+                problem.objective.is_some(),
+                "warm-start budget path reached without objective — early-return invariant violated"
+            );
             let n_params = problem.auto_params.len() as u64;
             (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
         } else {
@@ -656,7 +665,10 @@ impl ConstraintSolver for DimensionalSolver {
                     "optimizer drifted infeasible while chasing objective; \
                      falling back to initial feasible point"
                 );
-                return SolveResult::Solved { values: fallback };
+                return SolveResult::Solved {
+                    values: fallback,
+                    unique: true,
+                };
             }
             return SolveResult::Infeasible {
                 diagnostics: vec![reify_types::Diagnostic {
@@ -690,7 +702,10 @@ impl ConstraintSolver for DimensionalSolver {
         // This information is NOT propagated through SolveResult to avoid a breaking API
         // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
         // inspect convergence details at runtime.
-        SolveResult::Solved { values }
+        SolveResult::Solved {
+            values,
+            unique: true,
+        }
     }
 }
 
@@ -1026,7 +1041,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 assert!(
                     values.is_empty(),
                     "empty problem should return empty values"
@@ -1086,7 +1101,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let thickness = values
                     .get(&thickness_id)
                     .expect("thickness should be in solution");
@@ -1215,7 +1230,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let thickness = values
                     .get(&thickness_id)
                     .expect("thickness should be in solution");
@@ -1304,7 +1319,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let w = values
                     .get(&width_id)
                     .expect("width should be in solution")
@@ -1365,7 +1380,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     (0.001..=0.050).contains(&x),
@@ -1428,7 +1443,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     x > 0.005 && x < 0.050,
@@ -1993,7 +2008,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 // Should return current value since already satisfied
                 assert!(
@@ -2110,7 +2125,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     si > 0.004 && si < 0.008,
@@ -2155,17 +2170,14 @@ mod tests {
                 bounds: Some((0.001, 0.1)),
                 free: false,
             }],
-            constraints: vec![
-                (cnid("Part", 0), gt_expr),
-                (cnid("Part", 1), lt_expr),
-            ],
+            constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
         };
 
         let result = solver.solve(&problem);
-        let SolveResult::Solved { values } = result else {
+        let SolveResult::Solved { values, .. } = result else {
             panic!(
                 "trivially feasible 1-param problem must return Solved, got {:?}",
                 result
@@ -2407,8 +2419,8 @@ mod tests {
     fn undefined_objective_at_fallback_triggers_no_progress() {
         use crate::DimensionalSolver;
         use reify_types::{
-            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
-            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
         };
 
         let solver = DimensionalSolver;
@@ -2423,12 +2435,8 @@ mod tests {
             },
             Type::length(),
         );
-        let le_expr = CompiledExpr::binop(
-            BinOp::Le,
-            x_ref.clone(),
-            constraint_threshold,
-            Type::Bool,
-        );
+        let le_expr =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), constraint_threshold, Type::Bool);
 
         // Objective: minimize(if x <= 0.022 then x/0 else x)
         //
@@ -2452,11 +2460,9 @@ mod tests {
             },
             Type::length(),
         );
-        let condition =
-            CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
+        let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let then_branch =
-            CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
+        let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
         let else_branch = x_ref;
 
         let cond_hash = ContentHash::of(&[5])
@@ -2527,8 +2533,8 @@ mod tests {
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;
         use reify_types::{
-            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
-            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
         };
 
         let solver = DimensionalSolver;
@@ -2543,12 +2549,8 @@ mod tests {
             },
             Type::length(),
         );
-        let le_expr = CompiledExpr::binop(
-            BinOp::Le,
-            x_ref.clone(),
-            constraint_threshold,
-            Type::Bool,
-        );
+        let le_expr =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), constraint_threshold, Type::Bool);
 
         // Objective: minimize(if x <= 0.022 then 1e8 else x)
         //
@@ -2573,8 +2575,7 @@ mod tests {
             },
             Type::length(),
         );
-        let condition =
-            CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
+        let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
         let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
         let else_branch = x_ref;
 
@@ -2620,7 +2621,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     (si - 0.015).abs() < 1e-10,

@@ -56,7 +56,7 @@ fn boolean_sat_3_params() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // a must be true
             assert_eq!(values.get(&a_id), Some(&Value::Bool(true)));
             // b || !c must hold
@@ -146,7 +146,7 @@ fn implication_if_a_then_b() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let a = values.get(&a_id).unwrap() == &Value::Bool(true);
             let b = values.get(&b_id).unwrap() == &Value::Bool(true);
             assert!(!a || b, "implication violated: a={a}, b={b}");
@@ -193,7 +193,7 @@ fn implication_forced_a_true_implies_b_true() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             assert_eq!(values.get(&a_id), Some(&Value::Bool(true)));
             assert_eq!(values.get(&b_id), Some(&Value::Bool(true)));
         }
@@ -266,7 +266,7 @@ fn cardinality_at_most_2_of_4() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let count_true = [&a_id, &b_id, &c_id, &d_id]
                 .iter()
                 .filter(|id| values.get(id) == Some(&Value::Bool(true)))
@@ -333,7 +333,7 @@ fn enum_constraint_excludes_one_variant() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x_val = values.get(&x_id).unwrap();
             match x_val {
                 Value::Enum { variant, .. } => {
@@ -407,7 +407,7 @@ fn integer_constraint_sum_equals_10() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = match values.get(&x_id).unwrap() {
                 Value::Int(v) => *v,
                 other => panic!("expected Int for x, got {:?}", other),
@@ -479,7 +479,7 @@ fn all_different_3_ints() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let mut vals: Vec<i64> = [&x_id, &y_id, &z_id]
                 .iter()
                 .map(|id| match values.get(id).unwrap() {
@@ -525,7 +525,7 @@ fn empty_problem_returns_solved_empty() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             assert!(values.is_empty(), "expected empty values for empty problem");
         }
         other => panic!("expected Solved, got {:?}", other),
@@ -684,7 +684,7 @@ fn registry_integration_logical_solver() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             assert_eq!(values.get(&a_id), Some(&Value::Bool(true)));
             assert_eq!(values.get(&b_id), Some(&Value::Bool(true)));
         }

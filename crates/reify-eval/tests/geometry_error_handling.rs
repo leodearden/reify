@@ -460,10 +460,9 @@ fn cascading_kernel_failures_aborted_after_first() {
         .realization(e, 0, vec![box_op_0, box_op_1, box_op_2])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
@@ -606,10 +605,9 @@ fn tessellate_aborts_cascading_compile_failures() {
         .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -776,10 +774,9 @@ fn partial_failure_tessellate_produces_no_mesh() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -851,10 +848,9 @@ fn partial_failure_build_produces_no_geometry() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();

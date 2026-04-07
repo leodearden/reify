@@ -40,7 +40,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
     let reg_result = registry.solve(&problem);
 
     match (&dim_result, &reg_result) {
-        (SolveResult::Solved { values: v1 }, SolveResult::Solved { values: v2 }) => {
+        (SolveResult::Solved { values: v1, .. }, SolveResult::Solved { values: v2, .. }) => {
             let si1 = v1.get(&thickness_id).unwrap().as_f64().unwrap();
             let si2 = v2.get(&thickness_id).unwrap().as_f64().unwrap();
             // Both should be in feasible range
@@ -91,7 +91,7 @@ fn registry_solves_independent_subproblems() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             assert!(values.contains_key(&a_id), "should have value for a");
             assert!(values.contains_key(&b_id), "should have value for b");
 
@@ -181,7 +181,7 @@ fn cross_domain_shared_param_solved_via_fallback() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
             let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
             // a > b, b > 5mm, a < 50mm
@@ -222,7 +222,7 @@ fn registry_backward_compat_compound_constraint() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 x > 0.005 && x < 0.050,
@@ -348,7 +348,7 @@ fn registry_compat_maximize_objective() {
     // Either Solved (near 20mm) or Infeasible (boundary edge case) —
     // same as DimensionalSolver behavior
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.017,
@@ -452,7 +452,7 @@ fn objective_spanning_independent_components_merges_them() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
             let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
             // Both should be maximized toward 20mm (upper feasible bound).
@@ -561,7 +561,7 @@ fn registry_dispatches_geometric_to_solvespace() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
             let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
             let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
@@ -661,7 +661,7 @@ fn registry_mixed_dimensional_and_geometric() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Dimensional: thickness in [2mm, 20mm]
             let thickness = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(

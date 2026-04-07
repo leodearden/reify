@@ -91,6 +91,10 @@ pub enum SolveResult {
     Solved {
         /// Resolved values for auto parameters.
         values: HashMap<ValueCellId, Value>,
+        /// Whether the solution is uniquely determined. `true` for strict auto
+        /// parameters that pass perturbation-based uniqueness verification;
+        /// `false` for auto(free) parameters where uniqueness is skipped.
+        unique: bool,
     },
     /// The constraints are infeasible — no solution exists.
     Infeasible {
@@ -325,9 +329,12 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(ValueCellId::new("Bracket", "width"), Value::length(0.05));
 
-        let result = SolveResult::Solved { values };
+        let result = SolveResult::Solved {
+            values,
+            unique: true,
+        };
         match &result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 assert_eq!(values.len(), 1);
                 assert!(values.contains_key(&ValueCellId::new("Bracket", "width")));
             }

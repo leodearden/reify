@@ -7,8 +7,8 @@ use reify_eval::cache::NodeId;
 use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
-    MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt,
-    literal, lt, mm, value_ref,
+    MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
+    lt, mm, value_ref,
 };
 use reify_types::{
     DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
@@ -959,9 +959,11 @@ fn eval_resolves_per_template_independently() {
     let spy = MultiCallSpyConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1092,14 +1094,17 @@ fn edit_param_resolves_per_template_not_cross_template() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
         // edit_param() re-resolution: Bracket only
         SolveResult::Solved {
             values: bracket_resolved_again,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1201,8 +1206,8 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
     // Same two-template module. After eval(), prepare_concurrent_edit on
     // Bracket.limit, then resolve_concurrent_edit. The solver call should
     // contain only Bracket's auto params.
-    use std::collections::HashSet;
     use reify_types::SolveResult;
+    use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1218,12 +1223,15 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
     let spy = MultiCallSpyConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bracket_resolved_again,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1341,9 +1349,11 @@ fn edit_param_matches_eval_for_multi_template_module() {
     let solver1 = SequencedMockConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
     ]);
 
@@ -1383,8 +1393,8 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .template(bolt.clone())
         .build();
 
-    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver1));
+    let mut engine1 =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver1));
     let eval_result = engine1.eval(&module);
 
     // Record baseline resolved params from eval
@@ -1405,14 +1415,17 @@ fn edit_param_matches_eval_for_multi_template_module() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution: Bracket returns same result
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
     ]);
 
@@ -1421,8 +1434,8 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .template(bolt)
         .build();
 
-    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver2));
+    let mut engine2 =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver2));
     engine2.eval(&module2);
 
     // Edit Bracket.limit to trigger Bracket's constraint re-resolution
@@ -1478,18 +1491,22 @@ fn scope_name_deterministic_for_multi_template() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution after editing Bracket.limit
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution after editing Bolt.clearance
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1629,18 +1646,22 @@ fn edit_param_no_cross_group_value_contamination() {
         // eval() call 1 (either group)
         SolveResult::Solved {
             values: bracket_eval_solved,
+            unique: true,
         },
         // eval() call 2 (either group)
         SolveResult::Solved {
             values: bolt_eval_solved,
+            unique: true,
         },
         // edit_param() call 3 (first dirty group)
         SolveResult::Solved {
             values: edit_resolved_a,
+            unique: true,
         },
         // edit_param() call 4 (second dirty group)
         SolveResult::Solved {
             values: edit_resolved_b,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1731,7 +1752,8 @@ fn edit_param_no_cross_group_value_contamination() {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     assert_eq!(
-        cv_a, cv_b,
+        cv_a,
+        cv_b,
         "cross-group contamination: edit_param solver calls received different \
          current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
         problems[2]
@@ -1752,8 +1774,8 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
     // Same invariant as edit_param_no_cross_group_value_contamination but
     // exercised through the resolve_concurrent_edit path, which uses
     // result.values instead of a local values map.
-    use std::collections::HashSet;
     use reify_types::SolveResult;
+    use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_clearance = ValueCellId::new("Bracket", "clearance");
@@ -1776,18 +1798,22 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
         // eval() call 1 (either group)
         SolveResult::Solved {
             values: bracket_eval_solved,
+            unique: true,
         },
         // eval() call 2 (either group)
         SolveResult::Solved {
             values: bolt_eval_solved,
+            unique: true,
         },
         // resolve_concurrent_edit() call 3 (first dirty group)
         SolveResult::Solved {
             values: edit_resolved_a,
+            unique: true,
         },
         // resolve_concurrent_edit() call 4 (second dirty group)
         SolveResult::Solved {
             values: edit_resolved_b,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1883,7 +1909,8 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     assert_eq!(
-        cv_a, cv_b,
+        cv_a,
+        cv_b,
         "cross-group contamination: resolve_concurrent_edit solver calls received different \
          current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
         problems[2]

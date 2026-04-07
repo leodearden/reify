@@ -101,7 +101,7 @@ fn solve_simple_point_distance_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
             let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
             let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
@@ -218,7 +218,7 @@ fn solve_angle_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
             let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
 
@@ -347,7 +347,7 @@ fn solve_parallel_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
             let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
 
@@ -470,7 +470,7 @@ fn solve_coincident_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x1 = values.get(&x1_id).unwrap().as_f64().unwrap();
             let y1 = values.get(&y1_id).unwrap().as_f64().unwrap();
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
@@ -622,7 +622,7 @@ fn solve_underconstrained_solves_with_dof() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             let y = values.get(&y_id).unwrap().as_f64().unwrap();
             let z = values.get(&z_id).unwrap().as_f64().unwrap();

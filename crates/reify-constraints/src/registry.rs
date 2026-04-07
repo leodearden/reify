@@ -73,6 +73,7 @@ impl ConstraintSolver for SolverRegistry {
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
@@ -91,6 +92,7 @@ impl ConstraintSolver for SolverRegistry {
         if components.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
@@ -152,7 +154,7 @@ impl ConstraintSolver for SolverRegistry {
             let result = solver.solve(&sub_problem);
 
             match result {
-                SolveResult::Solved { values } => {
+                SolveResult::Solved { values, .. } => {
                     merged_values.extend(values);
                 }
                 SolveResult::Infeasible { diagnostics } => {
@@ -166,6 +168,7 @@ impl ConstraintSolver for SolverRegistry {
 
         SolveResult::Solved {
             values: merged_values,
+            unique: true,
         }
     }
 }

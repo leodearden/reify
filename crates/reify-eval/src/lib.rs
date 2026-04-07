@@ -723,8 +723,7 @@ impl Engine {
             }
 
             // Compute dirty cone from changed cells
-            let dirty_cone =
-                crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
+            let dirty_cone = crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
 
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
@@ -771,16 +770,16 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        ..
                     } => {
                         for (id, val) in &solver_values {
                             result.values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
 
-                            result.snapshot_values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            result
+                                .snapshot_values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             let node_id = NodeId::Value(id.clone());
                             let trace = DependencyTrace::default();
@@ -828,14 +827,12 @@ impl Engine {
                                 .with_meta(&setup.meta_map),
                         );
                         result.values.insert(vcid.clone(), val.clone());
-                        result.snapshot_values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        result
+                            .snapshot_values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
@@ -1133,9 +1130,7 @@ impl Engine {
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
 
@@ -1175,9 +1170,7 @@ impl Engine {
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
             }
@@ -1385,6 +1378,7 @@ impl Engine {
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
+                        ..
                     } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
@@ -1849,6 +1843,7 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        ..
                     } => {
                         for (id, val) in &solver_values {
                             values.insert(id.clone(), val.clone());
@@ -1856,10 +1851,9 @@ impl Engine {
                             all_resolved_ids.insert(id.clone());
 
                             // Update snapshot values
-                            new_snapshot.values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            new_snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
@@ -1918,15 +1912,13 @@ impl Engine {
                                 .with_meta(&self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
-                        new_snapshot.values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        new_snapshot
+                            .values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         // Update cache for re-evaluated node
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,

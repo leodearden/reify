@@ -36,7 +36,7 @@ fn single_param_feasibility_via_trait_object() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.002 && si < 0.020,
@@ -79,7 +79,7 @@ fn maximize_objective() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Maximizing thickness subject to < 20mm should push close to 20mm
             assert!(
@@ -335,7 +335,7 @@ fn compound_and_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 x > 0.005 && x < 0.050,
@@ -453,7 +453,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
     // This should not panic — the solver should configure NelderMead correctly
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.005 && si < 0.050,
@@ -504,7 +504,7 @@ fn optimize_with_feasible_initial_point() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Minimize should push thickness toward 5mm (auto param lower bound),
             // which is safely above the 2mm constraint.
@@ -555,7 +555,7 @@ fn maximize_with_feasible_initial_point() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Maximize should push x toward 50mm (auto param upper bound),
             // well above the 10mm initial point
@@ -622,7 +622,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Fallback must return the EXACT initial value (5.5mm = 0.0055m),
             // not a partially-optimized point. The initial is preserved through
@@ -730,7 +730,7 @@ fn warm_start_optimizes_when_possible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Optimizer should push x toward ~5mm (param lower bound).
             // With wide constraints (2-50mm) and bounds [5mm, 100mm],
@@ -807,7 +807,7 @@ fn warm_start_scales_iterations_with_dimension() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // All params must satisfy their constraints
             for pid in &param_ids {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -905,7 +905,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // All params must satisfy constraints: 10mm < p < 12mm (feasibility preserved)
             for id in &ids {
                 let si = values.get(id).unwrap().as_f64().unwrap();
@@ -1003,7 +1003,7 @@ fn warm_start_feasible_no_objective_early_exit() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Each param should be returned at exactly the initial value (15mm)
             for (pid, label) in [(&x_id, "x"), (&y_id, "y"), (&z_id, "z")] {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -1145,7 +1145,7 @@ fn multi_param_warm_start_with_objective() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let mut sum_si = 0.0;
             for pid in [&p0_id, &p1_id, &p2_id] {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -1317,7 +1317,7 @@ fn partial_feasibility_solved_when_close_to_boundary() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // The solver found feasibility for both params. Verify the solved
             // values actually satisfy all constraints.
             let p0_si = values.get(&p0_id).unwrap().as_f64().unwrap();
@@ -1382,7 +1382,7 @@ fn warm_start_budget_requires_objective_invariant() {
     };
 
     match solver.solve(&problem_with_obj) {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Optimizer should push x below 25mm initial toward the lower bound
             assert!(
@@ -1407,7 +1407,7 @@ fn warm_start_budget_requires_objective_invariant() {
     };
 
     match solver.solve(&problem_no_obj) {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 (si - 0.025).abs() < 1e-12,
@@ -1491,7 +1491,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Each param must be returned at EXACTLY the initial value (10.5mm = 0.0105m).
             // The fallback path reconstructs values via build_solved_values(&problem.auto_params, &initial),
             // which should preserve exact f64 values through the round-trip.
