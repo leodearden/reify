@@ -5893,6 +5893,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sanitize_orientation_y_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: f64::NAN,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN y component should become Undef"
+        );
+    }
+
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
 
     #[test]
