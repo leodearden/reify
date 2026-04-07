@@ -60,7 +60,7 @@ describe('reifyGotoDefinition', () => {
         doc: {
           lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0 }),
+          line: () => ({ from: 0, to: 10 }),
         },
       },
       dispatch: vi.fn(),
@@ -118,7 +118,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         doc: {
           lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0 }),
+          line: () => ({ from: 0, to: 10 }),
         },
       },
       dispatch: vi.fn(),
@@ -159,7 +159,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
         doc: {
           lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
         },
       },
       dispatch: vi.fn(),
@@ -294,7 +294,7 @@ describe('isConnected guard', () => {
         doc: {
           lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
         },
       },
       dispatch: vi.fn(),
@@ -333,7 +333,7 @@ describe('isConnected guard', () => {
         doc: {
           lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
         },
       },
       dispatch: vi.fn(),
@@ -376,7 +376,7 @@ describe('line-bounds guard', () => {
         doc: {
           lines: 5,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
         },
       },
       dispatch: vi.fn(),
