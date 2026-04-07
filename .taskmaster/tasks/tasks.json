@@ -21447,15 +21447,16 @@
         "description": "Three source-inspection tests in `tree-sitter-reify/tests/build_logic_tests.rs` read `\"build.rs\"` using a bare relative path, suffering the same CWD fragility that was fixed for the `tests/build_logic_tests.rs` self-reads:\n\n- `test_no_redundant_rerun_if_changed` (line ~223): `std::fs::read_to_string(\"build.rs\")`\n- `test_try_wait_error_path_kills_child` (line ~325): `std::fs::read_to_string(\"build.rs\")`\n- `test_out_dir_no_silent_fallback` (line ~459): `std::fs::read_to_string(\"build.rs\")`\n\nReplace each with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/build.rs\")`.\n\nConsider adding a blanket meta-test assertion that no bare `\"build.rs\"` string appears in a `read_to_string` call.\n\nmemory_hints: search \"CARGO_MANIFEST_DIR build_logic_tests convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:15:17.353Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:15:16.878Z",
+      "lastModified": "2026-04-07T19:15:17.353Z",
       "taskCount": 1040,
       "completedCount": 728,
       "tags": [
