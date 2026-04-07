@@ -758,35 +758,42 @@ fn compute_numerical_gradient_at_point(
         }
     };
 
+    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
+    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
+    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
+    let mut work_coords = coords.clone();
+    // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
         let coord_i = coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
-        // Build perturbed coordinate vectors
-        let mut plus_coords = coords.clone();
-        plus_coords[i] += h;
-        let mut minus_coords = coords.clone();
-        minus_coords[i] -= h;
-
-        // Build the argument list based on calling convention
-        let plus_args: Vec<Value>;
-        let minus_args: Vec<Value>;
+        // Perturb forward (+h), evaluate
+        work_coords[i] += h;
+        work_args.clear();
         if single_point_param {
-            // Single-Point convention: wrap coords in a Value::Point
-            let plus_point = Value::Point(plus_coords.into_iter().map(&make_arg).collect());
-            let minus_point = Value::Point(minus_coords.into_iter().map(&make_arg).collect());
-            plus_args = vec![plus_point];
-            minus_args = vec![minus_point];
+            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
         } else {
-            // Decomposed convention: pass individual scalar/real values
-            plus_args = plus_coords.into_iter().map(&make_arg).collect();
-            minus_args = minus_coords.into_iter().map(&make_arg).collect();
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
+        let f_plus = apply_lambda(lambda, &work_args, ctx);
 
-        let f_plus = apply_lambda(lambda, &plus_args, ctx);
-        let f_minus = apply_lambda(lambda, &minus_args, ctx);
+        // Swing to backward (−h from original = −2h from current), evaluate
+        work_coords[i] -= 2.0 * h;
+        work_args.clear();
+        if single_point_param {
+            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+        } else {
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+        }
+        let f_minus = apply_lambda(lambda, &work_args, ctx);
+
+        // Restore coord[i] to original value
+        work_coords[i] += h;
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
