@@ -39,9 +39,8 @@ assert "all package.json files agree on packageManager version" bash -c "
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
-for lockfile in gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json; do
-    assert "$lockfile is not gitignored" bash -c "! (cd '$ROOT' && git check-ignore -q '$lockfile' 2>/dev/null)"
-done
+assert "no npm lockfiles are gitignored" \
+    bash -c "! (cd '$ROOT' && git check-ignore gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json)"
 
 # ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
 echo ""
