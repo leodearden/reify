@@ -59,4 +59,11 @@ assert "test_command uses 'if test' guard pattern for npm ci" \
 assert "lint_command uses 'if test' guard pattern for npm ci" \
     bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test'"
 
+# -- Test 4: script has git preflight check ----------------------------------
+echo ""
+echo "--- Test 4: script has 'command -v git' preflight ---"
+
+assert "script contains 'command -v git' preflight check" \
+    grep -q 'command -v git' "$SCRIPT"
+
 test_summary
