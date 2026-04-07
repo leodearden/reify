@@ -20818,11 +20818,11 @@
         "description": "Follow-up task from task 929 code review. Addresses 5 non-blocking suggestions across tests/infra and scripts/.\n\nS1 (test_coverage): In test_npm_ci_hardening.sh:66-67, strengthen the 'check-pm-standardization.sh is in lint_command' assertion to grep for 'scripts/check-pm-standardization.sh' (full path) instead of just the bare filename, or add a comment explaining the guard-pattern assertion below provides full-path coverage.\n\nS2 (missing_negative_assertion): In test_npm_ci_hardening.sh:62-77, add symmetric negative assertion: `assert \"sync_comments_test.sh is NOT in lint_command\" bash -c \"! grep 'lint_command:' '$ORCH' | grep -q 'sync_comments_test.sh'\"`. This mirrors the existing check that check-pm-standardization.sh is NOT in test_command.\n\nS3 (missing_execution_test): In test_npm_ci_hardening.sh, add an execution assertion that runs `scripts/check-pm-standardization.sh` and asserts exit 0, verifying the script actually works in the repo context (not just that it's referenced in orchestrator.yaml).\n\nS4 (silent_failure_masking): In orchestrator.yaml:14-15, add warning echoes when `if test -f` guards trigger a skip, e.g.: `if test -f scripts/check-pm-standardization.sh; then bash scripts/check-pm-standardization.sh; else echo 'WARNING: check-pm-standardization.sh not found, skipping'; fi`. Same for sync_comments_test.sh.\n\nS5 (external_command_failure_handling): In scripts/check-pm-standardization.sh:27, add a git availability check before calling `git check-ignore`. If not inside a git repo (or git unavailable), skip or warn instead of silently reporting PASS for all lockfiles.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:34:57.503Z",
+        "updatedAt": "2026-04-07T15:42:28.413Z",
         "metadata": {
           "modules": [
             "orchestrator.yaml",
@@ -20988,7 +20988,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:41:18.691Z",
+      "lastModified": "2026-04-07T15:42:28.413Z",
       "taskCount": 1014,
       "completedCount": 718,
       "tags": [
