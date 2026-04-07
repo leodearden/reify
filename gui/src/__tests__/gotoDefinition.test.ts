@@ -445,6 +445,50 @@ describe('line-bounds guard', () => {
   });
 });
 
+describe('character-bounds guard', () => {
+  it('does not dispatch when character offset exceeds line length', async () => {
+    const currentUri = 'file:///current.ri';
+    // Line has from=100, to=110 → length=10. Character offset 15 exceeds that.
+    const location = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: 15 }, end: { line: 5, character: 15 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // line 6 (1-based): from=100, to=110 → length 10; character 15 > 10
+          line: () => ({ from: 100, to: 110 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Character offset exceeds line length; neither dispatch nor onNavigate should be called
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
 describe('.catch() error handler', () => {
   it('logs a warning when doc.line() throws RangeError (no unhandled rejection)', async () => {
     const currentUri = 'file:///current.ri';
