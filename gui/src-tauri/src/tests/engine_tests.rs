@@ -1149,3 +1149,13 @@ fn byte_offset_to_line_col_empty_source() {
     // Empty source: offset 0 → initial position (1, 1)
     assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
 }
+
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "ab" (len=2). Offset 100 far exceeds the source length.
+    // The loop exhausts all chars without hitting the break, leaving the
+    // position after the last char: column incremented for 'a' and 'b' → (1, 3).
+    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+}
