@@ -2858,6 +2858,108 @@ fn gradient_single_point_param_quadratic() {
     }
 }
 
+/// Gradient of a 3D field with 1-param lambda at irrational coordinates.
+///
+/// Lambda: |p| dot(p, [1,2,3]) = x + 2y + 3z. Gradient is constant (1,2,3).
+/// Sample at Point3(1/3, π/7, √2) — coordinates not exactly representable
+/// in IEEE 754. Verifies that the exact-restore and buffer-reuse paths handle
+/// irrational input coordinates without FP drift. Tolerance 1e-3.
+#[test]
+fn gradient_single_point_param_irrational_coords() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| dot(p, Point3(1.0, 2.0, 3.0))
+    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1/3, π/7, √2) — not exactly representable in IEEE 754
+    let x = 1.0_f64 / 3.0;
+    let y = std::f64::consts::PI / 7.0;
+    let z = 2.0_f64.sqrt();
+    let point = Value::Point(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            let expected = [1.0_f64, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp.as_f64().unwrap_or_else(|| {
+                    panic!("component {} should be numeric, got {:?}", i, comp)
+                });
+                assert!(
+                    (val - exp).abs() < 1e-3,
+                    "gradient component {} of dot(p,[1,2,3]) at irrational coords should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector; got {:?}",
+            sample_result
+        ),
+    }
+}
+
 /// NaN in a Point coordinate causes gradient sampling to return Undef
 /// via the single-point-param path.
 ///
