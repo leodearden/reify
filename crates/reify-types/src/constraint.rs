@@ -336,6 +336,35 @@ mod tests {
     }
 
     #[test]
+    fn solve_result_solved_with_unique_flag() {
+        use crate::identity::ValueCellId;
+        use crate::value::Value;
+        use std::collections::HashMap;
+
+        // unique = true (strict auto, uniquely determined)
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), Value::length(0.05));
+        let result = SolveResult::Solved {
+            values,
+            unique: true,
+        };
+        match &result {
+            SolveResult::Solved { unique, .. } => assert!(unique),
+            _ => panic!("expected Solved"),
+        }
+
+        // unique = false (auto(free), not uniquely determined)
+        let result = SolveResult::Solved {
+            values: HashMap::new(),
+            unique: false,
+        };
+        match &result {
+            SolveResult::Solved { unique, .. } => assert!(!unique),
+            _ => panic!("expected Solved"),
+        }
+    }
+
+    #[test]
     fn solve_result_infeasible() {
         use crate::diagnostics::{Diagnostic, Severity};
 
