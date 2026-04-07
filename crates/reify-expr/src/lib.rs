@@ -3555,6 +3555,127 @@ mod tests {
         );
     }
 
+    // ── unop: Neg on Complex (NaN/Inf pre-guard) ─────────────────────────────
+
+    #[test]
+    fn neg_complex_nan_re_returns_undef() {
+        // Complex{re: NaN, im: 1.0, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with NaN re should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_nan_im_returns_undef() {
+        // Complex{re: 1.0, im: NaN, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with NaN im should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_inf_re_returns_undef() {
+        // Complex{re: +Inf, im: 1.0, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with +Inf re should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_neg_inf_re_returns_undef() {
+        // Complex{re: -Inf, im: 1.0, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with -Inf re should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_inf_im_returns_undef() {
+        // Complex{re: 1.0, im: +Inf, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with +Inf im should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_neg_inf_im_returns_undef() {
+        // Complex{re: 1.0, im: -Inf, DIMENSIONLESS} via UnOp::Neg → Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating Complex with -Inf im should return Undef"
+        );
+    }
+
+    #[test]
+    fn neg_complex_nan_dimensioned_returns_undef() {
+        // Complex{re: NaN, im: 1.0, LENGTH} via UnOp::Neg → Undef (dimensioned path)
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let operand = lit(complex_val, Type::complex(Type::length()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::length()));
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "negating dimensioned Complex with NaN re should return Undef"
+        );
+    }
+
     // ── method: re ────────────────────────────────────────────────────────────
 
     #[test]
