@@ -5423,19 +5423,19 @@ fn compile_entity(
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or(Type::Real);
 
-                // Check if the default is ExprKind::Auto
-                let is_auto = matches!(
-                    param.default.as_ref(),
-                    Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto { .. },
-                        ..
-                    })
-                );
+                // Extract the auto flag (and free sub-flag) from the default.
+                let auto_free = param.default.as_ref().and_then(|e| {
+                    if let reify_syntax::ExprKind::Auto { free } = e.kind {
+                        Some(free)
+                    } else {
+                        None
+                    }
+                });
 
-                let decl = if is_auto {
+                let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto { free: false },
+                        kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -5740,18 +5740,18 @@ fn compile_entity(
                                 .map(|(_, ty)| ty.clone())
                                 .unwrap_or(Type::Real);
 
-                            let is_auto = matches!(
-                                param.default.as_ref(),
-                                Some(reify_syntax::Expr {
-                                    kind: reify_syntax::ExprKind::Auto { .. },
-                                    ..
-                                })
-                            );
+                            let auto_free = param.default.as_ref().and_then(|e| {
+                                if let reify_syntax::ExprKind::Auto { free } = e.kind {
+                                    Some(free)
+                                } else {
+                                    None
+                                }
+                            });
 
-                            let decl = if is_auto {
+                            let decl = if let Some(free) = auto_free {
                                 ValueCellDecl {
                                     id,
-                                    kind: ValueCellKind::Auto { free: false },
+                                    kind: ValueCellKind::Auto { free },
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
@@ -7141,18 +7141,18 @@ fn compile_guarded_members(
                     .map(|(_, ty)| ty.clone())
                     .unwrap_or(Type::Real);
 
-                let is_auto = matches!(
-                    param.default.as_ref(),
-                    Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto { .. },
-                        ..
-                    })
-                );
+                let auto_free = param.default.as_ref().and_then(|e| {
+                    if let reify_syntax::ExprKind::Auto { free } = e.kind {
+                        Some(free)
+                    } else {
+                        None
+                    }
+                });
 
-                let decl = if is_auto {
+                let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto { free: false },
+                        kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
