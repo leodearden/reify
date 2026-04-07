@@ -1176,3 +1176,89 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
         diags_after
     );
 }
+
+// --- Task 837: offset_to_line_col_fast unit tests ---
+
+/// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
+#[test]
+fn offset_to_line_col_fast_offset_zero() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast cross-validates with byte_offset_to_line_col
+/// for every byte offset in a multi-line string.
+#[test]
+fn offset_to_line_col_fast_matches_original_every_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let line_offsets = build_line_offsets(source);
+    for offset in 0..source.len() {
+        let expected = byte_offset_to_line_col(source, offset);
+        let actual = offset_to_line_col_fast(&line_offsets, offset);
+        assert_eq!(
+            actual, expected,
+            "mismatch at offset {}: fast={:?} original={:?}",
+            offset, actual, expected
+        );
+    }
+}
+
+/// offset_to_line_col_fast returns correct values at specific key offsets.
+///
+/// "abc\ndef\nghi" — '\n' at bytes 3 and 7.
+/// offset 3  → (1,4) — the '\n' itself is still on line 1
+/// offset 4  → (2,1) — first char of line 2
+/// offset 7  → (2,4) — the second '\n'
+/// offset 8  → (3,1) — first char of line 3
+/// offset 10 → (3,3) — last char 'i'
+#[test]
+fn offset_to_line_col_fast_key_positions() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(&offsets, 3), (1, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(&offsets, 4), (2, 1)); // 'd'
+    assert_eq!(offset_to_line_col_fast(&offsets, 7), (2, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(&offsets, 8), (3, 1)); // 'g'
+    assert_eq!(offset_to_line_col_fast(&offsets, 10), (3, 3)); // 'i'
+}
+
+/// offset_to_line_col_fast works on empty source (no newlines).
+#[test]
+fn offset_to_line_col_fast_empty_source() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let offsets = build_line_offsets("");
+    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast works on single-line source (no newlines).
+#[test]
+fn offset_to_line_col_fast_single_line() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "hello";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
+    assert_eq!(offset_to_line_col_fast(&offsets, 4), (1, 5));
+}
+
+/// offset_to_line_col_fast agrees with byte_offset_to_line_col at source.len()
+/// (one-past-end / EOF position, the highest offset a compiler span can produce).
+///
+/// For offsets strictly beyond source.len() the two implementations diverge —
+/// the original stops iterating at the last source char while the fast version
+/// extrapolates the column — but that case never occurs in production because
+/// diagnostic spans are always within source bounds.
+#[test]
+fn offset_to_line_col_fast_at_eof_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef";
+    let line_offsets = build_line_offsets(source);
+    // source.len() is the EOF position — both implementations must agree here.
+    let eof = source.len();
+    let expected = byte_offset_to_line_col(source, eof);
+    let actual = offset_to_line_col_fast(&line_offsets, eof);
+    assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
+}

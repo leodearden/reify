@@ -723,8 +723,24 @@ pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Binary-search for the (line, column) of `offset` using a pre-built newline table.
+///
+/// `line_offsets` must be the result of [`build_line_offsets`] for the same source.
+/// Both line and column are 1-based. Runs in O(log M) vs O(M) for the naive scan.
+pub(crate) fn offset_to_line_col_fast(line_offsets: &[usize], offset: usize) -> (usize, usize) {
+    // Count newlines that appear *strictly before* `offset`.
+    let line_idx = line_offsets.partition_point(|&nl| nl < offset);
+    let line = line_idx + 1;
+    let col = if line_idx == 0 {
+        offset + 1
+    } else {
+        offset - line_offsets[line_idx - 1]
+    };
+    (line, col)
+}
+
 /// Convert a byte offset in source text to (line, column), both 1-based.
-fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {
