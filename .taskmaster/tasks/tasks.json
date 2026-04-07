@@ -20293,6 +20293,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 991,
+        "title": "Fix QualifiedAccess substitute_expr correctness + add coverage",
+        "description": "substitute_expr for QualifiedAccess in crates/reify-compiler/src/lib.rs:4423 currently recurses into the qualifier. EnumAccess (the analogous static-path operation) intentionally clones strings without recursing. With the current behaviour, a value binding named `Foo` in scope will silently rewrite the qualifier in `Foo::bar`, almost certainly producing wrong ASTs in parameterised structure instantiation. This bug has zero test coverage.\n\n## Correctness fix\nIn substitute_expr, the QualifiedAccess arm should clone qualifier/member opaquely without recursing, matching the EnumAccess pattern. Apply the equivalent fix to InstanceQualifiedAccess (which currently has no substitution coverage either).\n\nIf dynamic-qualifier dispatch is intentional, add a doc comment + a covering test; otherwise the recursion is a real bug.\n\n## Type::Error fallback (crates/reify-compiler/src/lib.rs:3099)\nThe compile-time fallback for an unsupported QualifiedAccess form emits a \"not yet supported\" diagnostic and returns CompiledExpr::literal(Value::Undef, Type::Real). Replace `Type::Real` with `Type::Error` (or whichever sentinel exists) to suppress cascading type-mismatch diagnostics. Honours the silent-defaults convention.\n\n## Tests\n1. Add a substitute_expr test that puts an `Ident` into bindings and verifies QualifiedAccess.qualifier is NOT replaced (regression for the fix).\n2. Add a compiler diagnostic test asserting `Foo::bar` produces exactly one error diagnostic.\n3. Add an instance_qualified_access test for chained inner paths: `obj.(A::B::c)`, asserting the nested QualifiedAccess shape is preserved.\n4. Add member-span tests for QualifiedAccess and InstanceQualifiedAccess (parallel to member_span_tests.rs).\n5. Tighten the existing tautological assertion in parse_invalid_instance_qualified_numeric (line ~148) — currently asserts a 3-way disjunction that almost any outcome satisfies. Pin one expected outcome.\n\n## Lowering cleanup (crates/reify-syntax/src/ts_parser.rs:2147)\nThe second `matches!` validation block in lower_instance_qualified_access is unreachable dead code (the prior CST kind guard already ensures the result). Replace with a debug_assert! (or remove) and add a ParseError push before returning None for the silent-failure case at lines 2148-2150.\n\nSource: review escalations esc-365-18, esc-365-22 (auto-dismissed, never triaged).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20305,7 +20316,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:21:34.031Z"
+      "updated": "2026-04-07T13:21:51.001Z"
     }
   }
 }
