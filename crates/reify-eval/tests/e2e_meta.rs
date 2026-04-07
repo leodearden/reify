@@ -152,6 +152,14 @@ fn e2e_meta_access_in_constraint() {
     let mut engine = reify_eval::Engine::new(Box::new(checker), None);
     let result = engine.check(&compiled);
 
+    // Assert constraint_results is non-empty so the loop below is not vacuous.
+    // If the engine silently drops the constraint expression, this will fail.
+    assert!(
+        !result.constraint_results.is_empty(),
+        "expected at least one constraint result, got zero \
+         (engine may have dropped the MetaAccess constraint expression)"
+    );
+
     // Assert no constraint violations
     for entry in &result.constraint_results {
         assert_eq!(
