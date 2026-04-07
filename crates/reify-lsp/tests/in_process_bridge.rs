@@ -6,6 +6,23 @@ use reify_lsp::bridge::InProcessLsp;
 use reify_test_support::warn_counting_subscriber;
 use serde_json::json;
 
+/// Create a fully initialized [`InProcessLsp`] server, ready to receive document
+/// requests and notifications.
+///
+/// Performs the standard LSP handshake (initialize → initialized) and returns
+/// the server. Panics if the handshake fails — all tests that need a ready
+/// server should use this helper rather than repeating the setup inline.
+async fn initialized_lsp() -> InProcessLsp {
+    let lsp = InProcessLsp::new();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("initialized_lsp: initialize should succeed");
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .expect("initialized_lsp: initialized should succeed");
+    lsp
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
