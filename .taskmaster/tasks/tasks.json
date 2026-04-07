@@ -21371,11 +21371,11 @@
         "description": "Add `did_change_returns_ok_null` and `did_close_returns_ok_null` tests in `crates/reify-lsp/tests/in_process_bridge.rs`, following the same pattern as the existing `did_open_returns_ok_null` and `initialized_returns_ok_null` tests. These tests should verify the `Ok(Value::Null)` return-value contract for `textDocument/didChange` and `textDocument/didClose` notifications at the bridge layer. The old `valid_notification_returns_ok_null` test documented coverage for all four notification types, but after the task 1017 refactor only `initialized` and `didOpen` have explicit contract tests. The `lifecycle.rs` tests call these at the trait level (returning `()`) and don't verify the bridge-layer contract. Also use the `expect()` pattern instead of `is_ok()` + `unwrap()` in the new tests (see preferences_and_norms for this convention).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:10:35.472Z",
+        "updatedAt": "2026-04-07T19:12:11.211Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -21393,18 +21393,30 @@
         "priority": "low",
         "subtasks": [],
         "updatedAt": "2026-04-07T19:11:08.688Z"
+      },
+      {
+        "id": 1037,
+        "title": "Refactor gotoDefinition.test.ts: fixtures, naming, and assertion strength",
+        "description": "Clean up gotoDefinition.test.ts with three improvements from task 949 review:\n\n1. **Rename describe block** (S2): Change 'cross-file goto-definition (onNavigate)' to something broader like 'goto-definition routing (same-file vs cross-file)' since the block contains both same-file and cross-file tests.\n\n2. **Extract shared test fixtures** (S3): The file has 6+ near-identical copies of `mockEvent` and `mockView`. Extract a module-level `const baseMockEvent` and a `makeMockView(connected = true)` factory in the 'cross-file' describe block. Each test should only override what's unique (e.g., `dispatch: vi.fn()`).\n\n3. **Strengthen weak assertion** (S6): In the bare-path/file:// normalization test (line ~218), replace `expect.any(Number)` with the concrete value `144`. The mock `line: (n) => ({ from: (n-1)*20 })` with LSP range `line: 7, character: 4` gives `doc.line(8).from + 4 = 140 + 4 = 144`.\n\nMemory hints: search \"task 949 gotoDefinition tests\" for origin context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:12:10.296Z",
+      "lastModified": "2026-04-07T19:12:11.211Z",
       "taskCount": 1036,
       "completedCount": 727,
       "tags": [
         "master"
       ],
-      "created": "2026-04-07T19:12:10.876Z",
-      "description": "Tasks for master context"
+      "created": "2026-04-07T19:12:11.283Z",
+      "description": "Tasks for master context",
+      "updated": "2026-04-07T19:12:11.301Z"
     }
   }
 }
