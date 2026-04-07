@@ -21056,6 +21056,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1018,
+        "title": "Use initialized_lsp() in did_change/did_close malformed-params tests for test realism",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: Replace `InProcessLsp::new()` with `initialized_lsp().await` in both `did_change_with_malformed_params_returns_error` and `did_close_with_malformed_params_returns_error`. These notifications only arrive post-initialization in real LSP usage. Without initialization, a future is-initialized guard added before param deserialization would cause these tests to still pass but for the wrong reason — the error would come from the guard, not the malformed params — silently hiding the real behavior.\n\nMemory hints: search for \"LSP bridge test initialization pattern\" and \"initialized_lsp helper\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21068,7 +21079,7 @@
       ],
       "created": "2026-04-07T16:30:53.600Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T16:30:53.608Z"
+      "updated": "2026-04-07T16:30:59.165Z"
     }
   }
 }
