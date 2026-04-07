@@ -19664,11 +19664,11 @@
         "description": "Add two tests to gui/src/__tests__/gotoDefinition.test.ts: (1) bare path uri with file:// location.uri verifying same-file dispatch, (2) partial suffix match (/a/foo.ri vs /b/a/foo.ri) verifying cross-file navigation.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:18:25.542Z",
+        "updatedAt": "2026-04-07T16:48:04.233Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -20054,11 +20054,11 @@
         "description": "Reviewer feedback (robustness): Two pre-existing robustness gaps in gui/src/editor/gotoDefinition.ts:\n1. The .then() callback has no .catch() — if view.state.doc.line() receives an out-of-bounds line number from a stale LSP response, it throws a RangeError that becomes an unhandled promise rejection. Add .catch(err => console.warn(\"gotoDefinition: failed to apply result\", err)).\n2. After the isConnected guard (line 105), add a bounds check: if (location.range.start.line + 1 > view.state.doc.lines) return; to handle stale document state where lines were deleted between mousedown and async response.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:18:08.203Z",
+        "updatedAt": "2026-04-07T16:48:04.289Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.185Z",
+      "lastModified": "2026-04-07T16:48:04.289Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
