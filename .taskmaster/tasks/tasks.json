@@ -2623,7 +2623,7 @@
         "dependencies": [
           "159"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -2655,7 +2655,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:34:14.940Z"
+        "updatedAt": "2026-04-07T13:41:40.327Z"
       },
       {
         "id": "161",
@@ -20445,7 +20445,13 @@
           ],
           "modules": [
             "scripts"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: tree-sitter-generate.sh: stale-lock window regression + kill-fallback cleanup"
+            ]
+          }
         },
         "updatedAt": "2026-04-07T13:41:32.246Z"
       },
@@ -20651,7 +20657,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:41:32.246Z",
+      "lastModified": "2026-04-07T13:41:40.327Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
