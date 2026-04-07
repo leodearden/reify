@@ -19964,7 +19964,7 @@
         "id": "966",
         "title": "Extract mock factories and add mockInvoke assertions in gotoDefinition tests",
         "description": "In gui/src/editor/gotoDefinition.ts: (3) Add .catch() to the requestDefinition promise chain to handle stale document RangeError. (4) Add bounds check `if (line+1 > view.state.doc.lines) return;` after isConnected guard.",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "details": "Focus on handling errors and ensuring bounds checks in the gotoDefinition functionality.",
@@ -20002,7 +20002,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:04:59.558Z"
+        "updatedAt": "2026-04-07T16:05:17.525Z"
       },
       {
         "id": "967",
@@ -20999,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:05:05.535Z",
+      "lastModified": "2026-04-07T16:05:17.531Z",
       "taskCount": 1014,
       "completedCount": 720,
       "tags": [
