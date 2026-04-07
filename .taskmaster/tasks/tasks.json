@@ -10390,7 +10390,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10411,7 +10411,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:03:56.847Z"
+        "updatedAt": "2026-04-07T16:18:17.273Z"
       },
       {
         "id": "508",
@@ -17585,11 +17585,11 @@
         "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:04:58.849Z",
+        "updatedAt": "2026-04-07T16:18:21.045Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:12.745Z",
+      "lastModified": "2026-04-07T16:18:21.045Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
