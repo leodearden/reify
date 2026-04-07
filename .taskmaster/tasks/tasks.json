@@ -20370,7 +20370,22 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-syntax/tests/qualified_access_tests.rs",
+            "crates/reify-syntax/tests/member_span_tests.rs",
+            "crates/reify-compiler/tests/qualified_access_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests",
+            "crates/reify-syntax/src",
+            "crates/reify-syntax/tests"
+          ]
+        }
       },
       {
         "id": 992,
@@ -20381,7 +20396,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/gradient_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/src",
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 993,
@@ -20392,7 +20417,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/point_vector_eval_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 994,
@@ -20403,7 +20436,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/tree-sitter-generate.sh",
+            ".gitignore"
+          ],
+          "modules": [
+            "scripts"
+          ]
+        }
       },
       {
         "id": 995,
@@ -20414,7 +20456,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/lib_portable.sh",
+            "tests/infra/test_portable_timeout.sh"
+          ],
+          "modules": [
+            "scripts",
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 996,
@@ -20425,7 +20477,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/bridge.rs",
+            "crates/reify-lsp/tests/in_process_bridge.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src",
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": 997,
@@ -20436,7 +20498,21 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/lib.rs",
+            "crates/reify-lsp/src/goto_def.rs",
+            "crates/reify-syntax/tests/member_span_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/src",
+            "crates/reify-syntax/tests",
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": 998,
@@ -20447,7 +20523,20 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs",
+            "crates/reify-lsp/tests/lifecycle.rs",
+            "crates/reify-lsp/tests/interactive_edit_loop.rs",
+            "crates/reify-test-support/src/tracing_support.rs",
+            "crates/reify-test-support/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/tests",
+            "crates/reify-test-support/src"
+          ]
+        }
       },
       {
         "id": 999,
@@ -20458,7 +20547,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify/tests"
+          ]
+        }
       },
       {
         "id": 1000,
@@ -20469,7 +20566,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/sidecar/src/utils.ts",
+            "gui/src/utils/errorClassifier.ts",
+            "gui/src/__tests__/Editor.test.tsx"
+          ],
+          "modules": [
+            "gui/sidecar/src",
+            "gui/src/utils",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 1001,
@@ -20480,7 +20589,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-syntax/tests/type_alias_tests.rs",
+            "gui/src/__tests__/test-utils.test.ts",
+            "gui/src-tauri/src/tests/lsp_bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-syntax/tests",
+            "gui/src/__tests__",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 1002,
@@ -20491,7 +20612,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-types/src",
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": 1003,
@@ -20502,7 +20633,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       }
     ],
     "metadata": {
