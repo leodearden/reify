@@ -21201,6 +21201,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1025,
+        "title": "Fix fn existence grep to use precise word-boundary anchoring in sync_comments_test.sh",
+        "description": "In tests/sync_comments_test.sh lines 36 and 48, `grep -q \"fn ${name}\"` will false-positive on prefix-named functions (e.g., `fn sanitize_value_raw`) and on commented-out mentions. Replace with an anchored pattern such as `grep -qE \"^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+${name}[[:space:](]\"` to require a proper function declaration with the exact name followed by whitespace or `(`.\n\nNote: Do NOT use grep -P (PCRE) as it is non-portable — macOS grep does not support -P.\n\nmemory_hints: search(\"sync_comments_test fn grep anchoring\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21213,7 +21224,7 @@
       ],
       "created": "2026-04-07T19:07:40.877Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:07:40.882Z"
+      "updated": "2026-04-07T19:07:44.901Z"
     }
   }
 }
