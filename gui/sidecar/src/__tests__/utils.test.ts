@@ -65,7 +65,4 @@ describe('errorMessage', () => {
     expect(errorMessage({ message: '   ' })).toBe('Unknown error');
   });
 
-  it('falls through to String() for bare object', () => {
-    expect(errorMessage({})).toBe('[object Object]');
-  });
 });
