@@ -21568,6 +21568,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1048,
+        "title": "Harden errorMessage: missing test cases + try/catch on String(err)",
+        "description": "Two small improvements to errorMessage in both gui/sidecar/src/utils.ts and gui/src/utils/errorClassifier.ts:\n\n1. **Test coverage gaps** (apply to both test files):\n   - `errorClassifier.test.ts` is missing `expect(errorMessage({ message: null })).toBe('Unknown error')` — the sidecar test has it but the gui/src counterpart doesn't.\n   - Neither file tests `{ message: undefined }` which now returns `'Unknown error'` (was `'[object Object]'` before the behavior fix). Add to both.\n\n2. **Robustness fix** (apply to both implementation files):\n   - `String(err)` in the final fallback can throw if the object's `toString()` throws (e.g. a Proxy). Wrap in try/catch: `try { return String(err).trim() || 'Unknown error'; } catch { return 'Unknown error'; }`\n   - Add a test case for this (e.g. an object with a throwing toString).\n\nBoth copies must be updated identically (see sync NOTE comments).\n\nOriginated from review suggestions [3], [4], [5], [7] on Task 1028.\n\nMemory hints: search for \"errorMessage implementation\", \"errorMessage test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21580,7 +21591,7 @@
       ],
       "created": "2026-04-07T19:28:38.245Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:28:38.276Z"
+      "updated": "2026-04-07T19:28:46.007Z"
     }
   }
 }
