@@ -18069,11 +18069,11 @@
         "description": "The sync_comments_test.sh only verifies that `// SYNC:` comment markers exist — it does not verify that the two sanitize_value function bodies are actually identical. A developer could modify one implementation (e.g., add a Value::Integer arm to one crate but not the other), leave the SYNC comment in place, and the test would still pass.\n\nAdd a second check that extracts both function bodies and diffs them. Example approach using awk:\n```bash\nextract_fn() { awk '/^fn sanitize_value/,/^}/' \"$1\"; }\ndiff <(extract_fn \"$EXPR_FILE\") <(extract_fn \"$STDLIB_FILE\") \\\n  || { echo 'FAIL: sanitize_value bodies differ'; FAIL=$((FAIL+1)); }\n```\n\nThis turns the test into an actual parity guard, not just a comment-presence check.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:34:14.135Z",
+        "updatedAt": "2026-04-07T13:34:15.458Z",
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
@@ -19867,7 +19867,7 @@
         "id": "966",
         "title": "Extract mock factories and add mockInvoke assertions in gotoDefinition tests",
         "description": "In gui/src/editor/gotoDefinition.ts: (3) Add .catch() to the requestDefinition promise chain to handle stale document RangeError. (4) Add bounds check `if (line+1 > view.state.doc.lines) return;` after isConnected guard.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "Focus on handling errors and ensuring bounds checks in the gotoDefinition functionality.",
@@ -19907,7 +19907,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T13:34:14.512Z"
+        "updatedAt": "2026-04-07T13:34:15.621Z"
       },
       {
         "id": "967",
@@ -20647,7 +20647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:34:15.216Z",
+      "lastModified": "2026-04-07T13:34:15.622Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
