@@ -21036,7 +21036,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1006"
+        ],
         "priority": "low",
         "subtasks": [],
         "metadata": {
