@@ -710,7 +710,22 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs
 }
 
-/// Convert a byte offset in source text to (line, column), both 1-based.
+/// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
+///
+/// The function iterates over Unicode scalar values and increments the column
+/// counter for each character, resetting to column 1 and advancing the line
+/// counter whenever a `'\n'` is encountered.
+///
+/// # Edge cases
+///
+/// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
+///   body never executes.
+/// - **Offset beyond `source.len()`**: the loop exhausts all characters
+///   without reaching the break condition and returns the position *after* the
+///   last character (silent clamping — no panic or error).
+/// - **Empty spans** (`start == end`): calling this function twice with the
+///   same offset produces identical `(line, col)` coordinates, as expected for
+///   zero-length diagnostic spans.
 pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
