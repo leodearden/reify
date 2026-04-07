@@ -1141,3 +1141,11 @@ fn byte_offset_to_line_col_basic_conversion() {
     // offset 6 → last char 'f' → (2, 3)
     assert_eq!(byte_offset_to_line_col(source, 6), (2, 3));
 }
+
+#[test]
+fn byte_offset_to_line_col_empty_source() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Empty source: offset 0 → initial position (1, 1)
+    assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
+}
