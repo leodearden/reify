@@ -409,3 +409,51 @@ async fn initialized_with_malformed_params_returns_error() {
         "error message should contain 'initialized params error', got: {err}"
     );
 }
+
+/// Malformed params for `textDocument/didChange` should return an Err
+/// containing "didChange params error".
+///
+/// Documents that the didChange arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+#[tokio::test]
+async fn did_change_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is clearly malformed for DidChangeTextDocumentParams (expects an object)
+    let result = lsp.handle_request("textDocument/didChange", json!(42)).await;
+
+    assert!(
+        result.is_err(),
+        "didChange with malformed params should return Err, got: {:?}",
+        result
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("didChange params error"),
+        "error message should contain 'didChange params error', got: {err}"
+    );
+}
+
+/// Malformed params for `textDocument/didClose` should return an Err
+/// containing "didClose params error".
+///
+/// Documents that the didClose arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+#[tokio::test]
+async fn did_close_with_malformed_params_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    // json!(42) is clearly malformed for DidCloseTextDocumentParams (expects an object)
+    let result = lsp.handle_request("textDocument/didClose", json!(42)).await;
+
+    assert!(
+        result.is_err(),
+        "didClose with malformed params should return Err, got: {:?}",
+        result
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("didClose params error"),
+        "error message should contain 'didClose params error', got: {err}"
+    );
+}
