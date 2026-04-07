@@ -1374,8 +1374,12 @@ impl<'a> Lowering<'a> {
 
         let default = node.child_by_field_name("default").and_then(|d| {
             if d.kind() == "auto_keyword" {
+                // Detect `auto(free)` vs bare `auto` by checking node text.
+                // Both forms are valid; the `free` flag indicates an
+                // underdetermined (non-unique) solver parameter.
+                let free = self.node_text(d).contains("free");
                 Some(Expr {
-                    kind: ExprKind::Auto,
+                    kind: ExprKind::Auto { free },
                     span: self.span(d),
                 })
             } else {
