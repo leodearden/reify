@@ -4461,7 +4461,7 @@
         "dependencies": [
           "242"
         ],
-        "status": "pending",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -4471,7 +4471,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-07T14:02:05.311Z"
       },
       {
         "id": "244",
@@ -20242,11 +20242,11 @@
         "description": "Some JSON-RPC implementations send `params: null` instead of `params: {}` for notifications with no meaningful payload (like `initialized`). The LSP spec defines `InitializedParams` as an empty interface `{}`, but `serde_json::from_value::<InitializedParams>(Value::Null)` returns `Err`, causing the bridge to reject a technically-valid notification.\n\nFix: Normalize `Value::Null` to `Value::Object(Default::default())` for the `initialized` arm (and any other notification arms with empty-param types) before deserialization. Add a test asserting that `json!(null)` is handled gracefully for `initialized`.\n\nExample guard:\n```rust\n\"initialized\" => {\n    let params = if params.is_null() { json!({}) } else { params };\n    let p: InitializedParams = serde_json::from_value(params)\n        .map_err(|e| format!(\"initialized params error: {e}\"))?;\n    server.initialized(p).await;\n    Ok(Value::Null)\n}\n```\n\nMemory hints: search \"initialized params strict deserialization\", search \"LSP malformed-params handling\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:32.668Z",
+        "updatedAt": "2026-04-07T14:02:05.266Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -20754,7 +20754,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:04.832Z",
+      "lastModified": "2026-04-07T14:02:05.311Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
