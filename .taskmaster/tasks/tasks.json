@@ -20829,6 +20829,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1007,
+        "title": "Implementation DRY and invariant hardening in gradient computation",
+        "description": "Four related cleanup passes on crates/reify-expr/src/lib.rs gradient computation:\n\n1. Call site (lines ~135-148): capture the outer gradient field's `codomain_type` (rename `..` to `codomain_type: grad_codomain_type`) and pass it to `compute_numerical_gradient_at_point` instead of `inner_codomain_type`. Simplify the function body: remove the domain_dim division since it was already performed by `compute_gradient`.\n2. Line ~842: before `gradient_components.into_iter().next().unwrap_or(Value::Undef)`, add `debug_assert!(!gradient_components.is_empty(), \"gradient loop must push exactly one component for n==1\")` to document the loop invariant.\n3. Lines ~791-806: extract a `populate()` closure that clears work_args and fills it (branching on single_point_param), then call it in place of both duplicated blocks.\n4. After the first iteration, add `#[cfg(debug_assertions)] { let runtime_dim = f_plus.dimension(); assert_eq!(runtime_dim, result_dim, \"codomain_type does not match runtime return dimension\"); }` to catch callers passing a wrong codomain_type.\n\nMemory hints: search for \"gradient codomain_type\" and \"unwrap_or Undef gradient\". Source: task 992 review suggestions [0], [1], [5], [10].",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20841,7 +20852,7 @@
       ],
       "created": "2026-04-07T15:06:41.145Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T15:06:41.150Z"
+      "updated": "2026-04-07T15:06:51.678Z"
     }
   }
 }
