@@ -72,6 +72,10 @@ pub struct AutoParam {
     pub param_type: Type,
     /// Optional lower and upper bounds for numeric resolution.
     pub bounds: Option<(f64, f64)>,
+    /// Whether this is an `auto(free)` parameter that skips uniqueness verification.
+    /// When `true`, the solver skips the perturbation-based uniqueness check and
+    /// returns `SolveResult::Solved { unique: false }` directly.
+    pub free: bool,
 }
 
 /// The result of a constraint solve attempt.
@@ -183,6 +187,7 @@ mod tests {
             id: ValueCellId::new("Bracket", "width"),
             param_type: Type::length(),
             bounds: Some((0.01, 1.0)),
+            free: false,
         };
         assert_eq!(ap.id, ValueCellId::new("Bracket", "width"));
         assert_eq!(ap.param_type, Type::length());
@@ -220,6 +225,7 @@ mod tests {
             id: ValueCellId::new("Bracket", "angle"),
             param_type: Type::angle(),
             bounds: None,
+            free: false,
         };
         assert!(ap.bounds.is_none());
 
@@ -283,6 +289,7 @@ mod tests {
                 id: ValueCellId::new("Bracket", "width"),
                 param_type: Type::length(),
                 bounds: Some((0.01, 1.0)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,

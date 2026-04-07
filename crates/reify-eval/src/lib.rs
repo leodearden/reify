@@ -716,6 +716,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: false,
                     });
                     entry.1.insert(node.id.clone());
                 }
@@ -1362,6 +1363,7 @@ impl Engine {
                         id: cell.id.clone(),
                         param_type: cell.cell_type.clone(),
                         bounds: None,
+                        free: false,
                     })
                     .collect();
 
@@ -1795,6 +1797,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: false,
                     });
                     entry.1.insert(node.id.clone());
                 }

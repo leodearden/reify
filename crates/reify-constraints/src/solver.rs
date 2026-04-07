@@ -729,6 +729,7 @@ mod tests {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }];
 
         let trial = build_trial_values(&base, &params, &[0.005]);
@@ -784,11 +785,13 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: angle_id.clone(),
                 param_type: Type::angle(),
                 bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
             },
         ];
 
@@ -1070,6 +1073,7 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Bracket", 0), gt_expr),
@@ -1134,6 +1138,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Part", 0), gt_expr),
@@ -1197,6 +1202,7 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Bracket", 0), ge_expr),
@@ -1277,11 +1283,13 @@ mod tests {
                     id: width_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
+                    free: false,
                 },
                 AutoParam {
                     id: height_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
+                    free: false,
                 },
             ],
             constraints: vec![
@@ -1347,6 +1355,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.050)), // bounds: 1mm to 50mm
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: ValueMap::new(),
@@ -1406,6 +1415,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None, // No explicit bounds
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Part", 0), gt_expr),
@@ -1857,6 +1867,7 @@ mod tests {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
+            free: false,
         }];
         let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
         let base_values = ValueMap::new();
@@ -1913,6 +1924,7 @@ mod tests {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
+            free: false,
         }];
         let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
         let base_values = ValueMap::new();
@@ -1971,6 +1983,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
@@ -2003,6 +2016,7 @@ mod tests {
             id: ValueCellId::new("S", "x"),
             param_type: Type::length(),
             bounds: Some((0.0, 1.0)),
+            free: false,
         }];
         let initial_1d = vec![0.5];
         let simplex = build_simplex(&initial_1d, &params_1d);
@@ -2014,11 +2028,13 @@ mod tests {
                 id: ValueCellId::new("S", "x"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "y"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
         ];
         let initial_2d = vec![0.5, 0.5];
@@ -2031,16 +2047,19 @@ mod tests {
                 id: ValueCellId::new("S", "x"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "y"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "z"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
         ];
         let initial_3d = vec![0.5, 0.5, 0.5];
@@ -2081,6 +2100,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.005, 0.100)), // 5mm–100mm
+                free: false,
             }],
             constraints: vec![(cnid("Part", 0), gt_expr)],
             current_values: current,
@@ -2133,6 +2153,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (cnid("Part", 0), gt_expr),
@@ -2177,11 +2198,13 @@ mod tests {
                 id: length_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: angle_id.clone(),
                 param_type: Type::angle(),
                 bounds: Some((0.0, std::f64::consts::TAU)),
+                free: false,
             },
         ];
 
@@ -2250,6 +2273,7 @@ mod tests {
             id: id.clone(),
             param_type: Type::Real,
             bounds: None,
+            free: false,
         }];
         let x = [3.125];
 
@@ -2286,6 +2310,7 @@ mod tests {
             id: ValueCellId::new("Part", "length"),
             param_type: Type::length(),
             bounds: Some((0.001, 1.0)),
+            free: false,
         }];
         // x has 2 elements but params has 1 — should panic
         let x = [0.025, 0.050];
@@ -2340,6 +2365,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
@@ -2465,6 +2491,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
@@ -2583,6 +2610,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,

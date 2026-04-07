@@ -26,6 +26,7 @@ fn single_param_feasibility_via_trait_object() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -68,6 +69,7 @@ fn maximize_objective() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -138,6 +140,7 @@ fn false_negative_small_violation() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 1.9999999)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
@@ -177,11 +180,13 @@ fn false_negative_multiple_small_violations() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.9999999)),
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.9999999)),
+                free: false,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -237,11 +242,13 @@ fn false_negative_mixed_scale() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.001999999)),
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::dimensionless_scalar(),
                 bounds: Some((0.0, 99.9999999)),
+                free: false,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -274,6 +281,7 @@ fn bounds_dont_hide_infeasibility() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
@@ -317,6 +325,7 @@ fn compound_and_constraint() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
@@ -361,6 +370,7 @@ fn minimize_undef_objective_returns_no_progress() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -398,6 +408,7 @@ fn maximize_undef_objective_returns_no_progress() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -431,6 +442,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Box", 0), gt_expr), (cnid("Box", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -482,6 +494,7 @@ fn optimize_with_feasible_initial_point() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, floor above constraint
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: current,
@@ -532,6 +545,7 @@ fn maximize_with_feasible_initial_point() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.050)), // upper bound 50mm < constraint 80mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -598,6 +612,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
             param_type: Type::length(),
             // Wide bounds [0, 100mm] — optimizer CAN explore below 5mm
             bounds: Some((0.0, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -648,6 +663,7 @@ fn infeasible_with_objective_still_detected() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
@@ -704,6 +720,7 @@ fn warm_start_optimizes_when_possible() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, lower bound above constraint floor
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -776,6 +793,7 @@ fn warm_start_scales_iterations_with_dimension() {
             id: pid.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.025)), // 5mm–25mm, extends beyond constraints
+            free: false,
         })
         .collect();
 
@@ -876,6 +894,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
                 id: id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+                free: false,
             })
             .collect(),
         constraints,
@@ -961,16 +980,19 @@ fn warm_start_feasible_no_objective_early_exit() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: z_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
         ],
         constraints,
@@ -1027,6 +1049,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm, can't reach 15mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
@@ -1099,16 +1122,19 @@ fn multi_param_warm_start_with_objective() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)),
+                free: false,
             },
             AutoParam {
                 id: p2_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)),
+                free: false,
             },
         ],
         constraints,
@@ -1193,11 +1219,13 @@ fn partial_feasibility_infeasible_when_unreachable() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.015)), // 1mm–15mm: CANNOT reach p1 > 20mm
+                free: false,
             },
         ],
         constraints,
@@ -1272,11 +1300,13 @@ fn partial_feasibility_solved_when_close_to_boundary() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm: easily reaches p1 > 20mm
+                free: false,
             },
         ],
         constraints,
@@ -1339,6 +1369,7 @@ fn warm_start_budget_requires_objective_invariant() {
         id: x_id.clone(),
         param_type: Type::length(),
         bounds: Some((0.005, 0.1)), // 5mm–100mm
+        free: false,
     }];
 
     // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
@@ -1437,16 +1468,19 @@ fn warm_start_fallback_returns_exact_initial_values() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: p2_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)),
+                free: false,
             },
         ],
         constraints,

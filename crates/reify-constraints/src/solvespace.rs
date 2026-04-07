@@ -1108,6 +1108,7 @@ mod tests {
             id: cell_id.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         }]
     }
 
