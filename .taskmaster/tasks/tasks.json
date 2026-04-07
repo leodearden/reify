@@ -20077,11 +20077,11 @@
         "description": "In gui/src/utils/pathUtils.ts: (1) Replace decodeURIComponent with `new URL(p).pathname` (wrapped in try/catch) to correctly handle %2F and other edge cases. (2) Update JSDoc to mention percent-decoding behavior and add @example with encoded URI. In gui/src/__tests__/pathUtils.test.ts: (3) Add test that bare paths with %20 are NOT decoded. (4) Add reverse-ordering isSameFile test for percent-encoded URIs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:18:31.012Z",
+        "updatedAt": "2026-04-07T16:48:04.347Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20100,11 +20100,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs: (1) Unify assert_orientation_approx and assert_orientation_approx_sign_insensitive into a single macro with tolerance parameter, eliminating duplication. (2) Add non-trivial quaternion test for sign_insensitive (not just negated identity). (3) Test per-component diagnostic for all 4 components (not just w). (4) Strengthen sign_insensitive_macro_rejects_wrong_value to check error message content. In crates/reify-cli/tests/cli_gui.rs: (5) Add test for extension validation firing before existence check.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:30:14.182Z",
+        "updatedAt": "2026-04-07T16:48:04.413Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.289Z",
+      "lastModified": "2026-04-07T16:48:04.413Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
