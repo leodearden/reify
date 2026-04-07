@@ -2623,7 +2623,7 @@
         "dependencies": [
           "159"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -2641,21 +2641,14 @@
           "milestone": "M8",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "SolveResult",
-              "ValueCellKind",
-              "auto(free)",
-              "verify_uniqueness"
-            ],
+            "entities": [],
             "queries": [
-              "auto(free) solver integration worktree reset scope gap",
-              "SolveResult Solved unique bool pattern match sites",
-              "task 160 prior implementation verify_uniqueness only 1 of 4 requirements"
+              "resolution for: auto(free): solver integration"
             ]
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:41:40.327Z"
+        "updatedAt": "2026-04-07T13:46:33.974Z"
       },
       {
         "id": "161",
@@ -20657,7 +20650,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:41:40.327Z",
+      "lastModified": "2026-04-07T13:46:33.975Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
