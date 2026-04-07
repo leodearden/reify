@@ -1,6 +1,7 @@
 // Stub — M1 implementation pending
 
 pub mod concurrent;
+pub mod warm_pool;
 
 use std::collections::HashSet;
 

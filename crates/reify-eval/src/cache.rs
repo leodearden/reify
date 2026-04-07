@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use reify_types::{
-    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId,
+    ConstraintNodeId, ContentHash, DeterminacyState, Freshness, GeometryHandleId, OpaqueState,
     RealizationNodeId, ResolutionNodeId, Satisfaction, Value, ValueCellId, VersionId,
 };
 
@@ -100,7 +100,7 @@ pub enum EvalOutcome {
 }
 
 /// Per-node cache entry storing the evaluation result and metadata.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct NodeCache {
     /// The cached evaluation result.
     pub result: CachedResult,
@@ -112,6 +112,22 @@ pub struct NodeCache {
     pub dependency_trace: DependencyTrace,
     /// The version at which this cache entry was last validated.
     pub basis_version: VersionId,
+    /// Optional warm-start state for the evaluator (type-erased).
+    /// Transient: not preserved across clones (warm state is an optimization hint).
+    pub warm_state: Option<OpaqueState>,
+}
+
+impl Clone for NodeCache {
+    fn clone(&self) -> Self {
+        Self {
+            result: self.result.clone(),
+            result_hash: self.result_hash,
+            freshness: self.freshness.clone(),
+            dependency_trace: self.dependency_trace.clone(),
+            basis_version: self.basis_version,
+            warm_state: None, // warm state is transient, not preserved across clones
+        }
+    }
 }
 
 impl NodeCache {
@@ -129,6 +145,7 @@ impl NodeCache {
             freshness,
             dependency_trace,
             basis_version,
+            warm_state: None,
         }
     }
 }
@@ -209,10 +226,11 @@ impl CacheStore {
             existing.basis_version = version;
             existing.dependency_trace = trace;
             existing.freshness = Freshness::Final;
+            existing.warm_state = None; // old warm state is stale after re-evaluation
             return EvalOutcome::Unchanged;
         }
 
-        // Changed or cold start: store full entry
+        // Changed or cold start: store full entry (clear any old warm state)
         self.caches.insert(
             node,
             NodeCache {
@@ -221,6 +239,7 @@ impl CacheStore {
                 freshness: Freshness::Final,
                 dependency_trace: trace,
                 basis_version: version,
+                warm_state: None,
             },
         );
         EvalOutcome::Changed
@@ -332,6 +351,27 @@ impl CacheStore {
     /// Reset the pending transition counter to 0.
     pub fn reset_pending_transition_count(&mut self) {
         self.pending_transition_count = 0;
+    }
+
+    /// Store warm-start state on an existing cached node.
+    ///
+    /// Returns `true` if the node was found and warm state was set,
+    /// `false` if the node is not in the cache (no-op).
+    pub fn donate_warm_state(&mut self, node: &NodeId, state: OpaqueState) -> bool {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.warm_state = Some(state);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Take the warm-start state out of a cached node (take semantics).
+    ///
+    /// Returns the `OpaqueState` if present, leaving `None` in its place.
+    /// A second call for the same node will return `None`.
+    pub fn get_warm_state(&mut self, node: &NodeId) -> Option<OpaqueState> {
+        self.caches.get_mut(node)?.warm_state.take()
     }
 
     /// Version fast path: if the node is cached and its basis_version matches
@@ -1398,5 +1438,107 @@ mod tests {
         let node = NodeId::Value(ValueCellId::new("T", "missing"));
         let marked = store.mark_pending(&node);
         assert!(!marked);
+    }
+
+    // --- warm_state on NodeCache tests ---
+
+    #[test]
+    fn node_cache_new_creates_entry_with_no_warm_state() {
+        let cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        assert!(cache.warm_state.is_none());
+    }
+
+    #[test]
+    fn node_cache_warm_state_can_be_set() {
+        let mut cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        let state = reify_types::OpaqueState::new(42i32, 4);
+        cache.warm_state = Some(state);
+        assert!(cache.warm_state.is_some());
+        let val = cache.warm_state.unwrap().downcast::<i32>();
+        assert_eq!(val, Some(42));
+    }
+
+    #[test]
+    fn cache_store_put_get_preserves_warm_state() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        let mut cache = NodeCache::new(
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+        );
+        cache.warm_state = Some(reify_types::OpaqueState::new(99i32, 4));
+        store.put(node.clone(), cache);
+
+        let entry = store.get(&node).unwrap();
+        assert!(entry.warm_state.is_some());
+        // Use downcast_ref to check without consuming
+        let val = entry.warm_state.as_ref().unwrap().downcast_ref::<i32>();
+        assert_eq!(val, Some(&99));
+    }
+
+    // --- CacheStore warm-state helper tests ---
+
+    #[test]
+    fn donate_warm_state_stores_and_get_retrieves_with_take_semantics() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        let state = reify_types::OpaqueState::new(100i32, 4);
+        let donated = store.donate_warm_state(&node, state);
+        assert!(donated);
+
+        // First get: returns the state
+        let retrieved = store.get_warm_state(&node);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().downcast::<i32>(), Some(100));
+
+        // Second get: take semantics — returns None
+        let retrieved2 = store.get_warm_state(&node);
+        assert!(retrieved2.is_none());
+    }
+
+    #[test]
+    fn donate_warm_state_on_nonexistent_node_returns_false() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "missing"));
+        let state = reify_types::OpaqueState::new(42i32, 4);
+        let donated = store.donate_warm_state(&node, state);
+        assert!(!donated);
+    }
+
+    #[test]
+    fn record_evaluation_clears_warm_state() {
+        let mut store = CacheStore::new();
+        let node = NodeId::Value(ValueCellId::new("T", "x"));
+        store.put(node.clone(), make_test_node_cache(42, 1));
+
+        // Donate warm state
+        let state = reify_types::OpaqueState::new(100i32, 4);
+        store.donate_warm_state(&node, state);
+        assert!(store.get(&node).unwrap().warm_state.is_some());
+
+        // Re-evaluate (same result = early cutoff)
+        store.record_evaluation(
+            node.clone(),
+            CachedResult::Value(Value::Int(42), DeterminacyState::Determined),
+            VersionId(2),
+            DependencyTrace::default(),
+        );
+
+        // Warm state should be cleared after re-evaluation
+        assert!(store.get(&node).unwrap().warm_state.is_none());
     }
 }
