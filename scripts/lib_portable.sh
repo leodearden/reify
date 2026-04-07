@@ -63,6 +63,13 @@ portable_timeout() {
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
             rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+            # Trap INT/TERM so that if the caller's shell is interrupted during the
+            # wait window the temp flag path is cleaned up.  Save and restore any
+            # existing handler so we don't clobber the caller's traps.
+            local _pt_old_int _pt_old_term
+            _pt_old_int=$(trap -p INT 2>/dev/null || true)
+            _pt_old_term=$(trap -p TERM 2>/dev/null || true)
+            trap 'rm -f "$timeout_flag" 2>/dev/null' INT TERM
             ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
@@ -88,7 +95,13 @@ portable_timeout() {
             # Flag path: timer may have touched the flag but the command exited
             # naturally (not SIGTERM).  Clean up the stale flag file.
             rm -f "$timeout_flag"
-        elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+        fi
+        # Restore caller's INT/TERM traps (only set in the flag-file path above).
+        if [ -n "$timeout_flag" ]; then
+            if [ -n "$_pt_old_int" ]; then eval "$_pt_old_int"; else trap - INT; fi
+            if [ -n "$_pt_old_term" ]; then eval "$_pt_old_term"; else trap - TERM; fi
+        fi
+        if [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
             # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
