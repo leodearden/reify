@@ -19071,11 +19071,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs, the three into_result warn-emission tests (tracing_warn_emitted_on_poison_into_result, _snapshot_values, _results at lines 2086-2159) are structurally identical — they differ only in which poison method is called. Extract a private helper like `assert_into_result_emits_one_warn(poison_fn: impl Fn(&ConcurrentEvalAdapter))` and reduce each #[test] to a one-liner.\n\nAdditionally, all three tests discard `_result` from `catch_unwind` without asserting `_result.is_ok()`. A panic after the warn! would be masked. Add `assert!(_result.is_ok(), \"into_result() should not panic on poison recovery\")` after the warn_count assertion.\n\nmemory_hints: search(\"warn_counting_subscriber helper\", project_id=\"reify\"), search(\"test deduplication helper poison\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:11:39.788Z",
+        "updatedAt": "2026-04-07T19:49:54.337Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -21647,9 +21647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:36:20.687Z",
+      "lastModified": "2026-04-07T19:49:54.337Z",
       "taskCount": 1050,
-      "completedCount": 736,
+      "completedCount": 737,
       "tags": [
         "master"
       ]
