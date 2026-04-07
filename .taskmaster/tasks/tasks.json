@@ -20304,6 +20304,17 @@
         "dependencies": [],
         "priority": "high",
         "subtasks": []
+      },
+      {
+        "id": 992,
+        "title": "Numerical gradient: hot-loop allocs, dim recompute, and edge-case tests",
+        "description": "compute_numerical_gradient_at_point in crates/reify-expr/src/lib.rs is called per-sample in a hot eval path. Per-axis it currently allocates 4 fresh Vecs (cloned coord vecs + arg vecs), recomputes f_plus.dimension(), and has an unwrap() that can panic. It also has zero coverage for the single-Point calling convention, Composed/Imported source variants, NaN/Inf points, and mishandles the Tensor coord-extraction arm.\n\n## Performance fixes (around lib.rs:684, 737, 753)\n1. Allocate `work_coords: Vec<f64>` and `work_args: Vec<Value>` ONCE before the loop. In each axis iteration: perturb in-place, build args via clear() + extend(), restore. Reduces from O(n) per axis to O(1) per axis.\n2. Hoist `make_arg` closure outside the for-i loop (it only captures domain_dim: Copy).\n3. Pass `grad_dim: DimensionVector` (or codomain_type) as a parameter so f_plus.dimension() is not recomputed per-iteration.\n4. Replace `gradient_components.into_iter().next().unwrap()` (line ~753) with .unwrap_or(Value::Undef) to remove the latent panic site.\n\n## Robustness\n5. Remove `Value::Tensor` from the coord-extraction match arm at line ~637 (or replace with explicit Value::Undef). A Tensor is logically multi-dimensional; treating it as a flat coord vector is mathematically wrong (would compute Jacobian-of-vectorised-elements, not gradient).\n6. Add #[cfg(debug_assertions)] warning before the loop when !single_point_param && params.len() != n, so arity mismatches stop being silent Undef.\n\n## Missing tests (crates/reify-expr/tests/gradient_tests.rs)\n7. gradient_3d_field_single_point_param: lambda with 1 Point param and n=3 (currently 0 coverage of single_point_param=true).\n8. gradient_imported_field_returns_undef (mirror of gradient_sampled_field_returns_undef).\n9. gradient_composed_field_returns_field (Composed source whitelisted but untested — silent regression risk).\n10. gradient_sample_with_nan_point_returns_undef and _with_inf_point_returns_undef — exercises the is_finite() guards.\n\nConvention 'silent defaults forbidden' applies — changes (5) and (6) honour it.\n\nSource: review escalation esc-281-66 (auto-dismissed, never triaged).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20316,7 +20327,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:21:51.001Z"
+      "updated": "2026-04-07T13:22:09.465Z"
     }
   }
 }
