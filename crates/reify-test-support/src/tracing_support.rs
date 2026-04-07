@@ -248,14 +248,15 @@ mod tests {
     /// No target_prefix is set, exercising the no-filter path.
     #[test]
     fn counting_subscriber_counts_warn_events() {
-        use std::collections::HashMap;
         use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
 
         let (subscriber, counters) = CountingSubscriberBuilder::new()
             .count_level(Level::WARN)
             .build();
 
-        let warn_arc = Arc::clone(&counters[&Level::WARN]);
+        let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
 
         assert_eq!(
             warn_arc.load(Ordering::Relaxed),
