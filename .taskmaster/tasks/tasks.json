@@ -21614,6 +21614,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1050,
+        "title": "Add did_open_with_malformed_params_returns_error test",
+        "description": "In crates/reify-lsp/tests/in_process_bridge.rs: The bridge has a dedicated `\"didOpen params error\"` error path in bridge.rs (symmetric with didChange and didClose), but there is no corresponding malformed-params test for `textDocument/didOpen`. Add `did_open_with_malformed_params_returns_error` following the same pattern as the existing didChange/didClose malformed-params tests: call `initialized_lsp().await`, send `handle_request(\"textDocument/didOpen\", json!(42))`, assert `result.is_err()`, and assert the error contains `\"didOpen params error\"`.\n\nMemory hints: search for \"LSP bridge test initialization pattern\" and \"initialized_lsp helper\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21626,7 +21637,7 @@
       ],
       "created": "2026-04-07T19:34:09.712Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:34:09.761Z"
+      "updated": "2026-04-07T19:34:14.139Z"
     }
   }
 }
