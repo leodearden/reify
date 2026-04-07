@@ -112,7 +112,7 @@ export function reifyGotoDefinition(
           // Same document: navigate to definition in current view.
           // Guard against stale LSP responses where the line number exceeds the
           // current document length (lines may have been deleted since mousedown).
-          if (location.range.start.line + 1 > view.state.doc.lines) return;
+          if (location.range.start.line < 0 || location.range.start.line + 1 > view.state.doc.lines) return;
           const targetLine = view.state.doc.line(location.range.start.line + 1);
           const targetPos = targetLine.from + location.range.start.character;
           view.dispatch({
