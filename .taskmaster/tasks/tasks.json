@@ -11238,7 +11238,7 @@
         "description": "Track when poison recovery occurs during concurrent evaluation so callers can detect potentially corrupt results, rather than silently propagating values computed from partially-updated state.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\nProblem: When evaluate() recovers a poisoned values lock, the current_values map may contain partial state from the panicked task. The expression is evaluated against this corrupt input, and the result is written to both values and snapshot_values as normal. Additionally, values and snapshot_values locks are acquired in separate scopes — if one is poisoned and the other isn't, they can become inconsistent. All of this happens silently.\n\nSolution:\n1. Add `tainted: Arc<AtomicBool>` field to ConcurrentEvalAdapter (initialized to false)\n2. Set tainted to true whenever any poison recovery occurs (in the lock helper methods from the companion task)\n3. Add `tainted: bool` field to ConcurrentEditResult\n4. In build_result_shared() and into_result(), set result.tainted = self.tainted.load(Ordering::Relaxed)\n5. Callers (edit_param_concurrent) can log a warning or take corrective action when tainted=true\n\nThis addresses review suggestions about silent corruption propagation and invariant violations between lock acquisitions (reviewer_robustness).\n\nmemory_hints:\n  search: \"ConcurrentEvalAdapter tainted poison corruption\"\n  entities: [\"ConcurrentEvalAdapter\", \"ConcurrentEditResult\"]",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11260,7 +11260,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:00:02.143Z"
+        "updatedAt": "2026-04-07T14:00:15.967Z"
       },
       {
         "id": "544",
@@ -18886,11 +18886,11 @@
         "description": "In `crates/reify-types/src/value.rs` function `value_ord_real_nan_and_neg_zero_still_consistent` (starting ~line 2111):\n1. Remove part (a) `assert_ne!(neg, pos, ...)` — already covered by `real_neg_zero_hash_differs_from_pos_zero`.\n2. Remove `assert_ne!(neg.cmp(&pos), Ordering::Equal, ...)` — strictly subsumed by the `assert_eq!(..., Ordering::Greater)` that follows.\n3. Remove duplicate `assert_ne!(nan.cmp(&inf), Ordering::Equal, ...)` and `assert_ne!(nan.cmp(&pos), Ordering::Equal, ...)` in section (e) — already asserted in section (d).\n4. Remove the cross-section duplicate of `assert_ne!(neg.cmp(&pos), Ordering::Equal)` — subsumed by the stronger assertion in section (b).\n5. Replace `assert_eq!(nan, nan, ...)` (same-variable reflexivity) with a two-instance test: `let nan2 = Value::Real(f64::NAN); assert_eq!(nan, nan2, \"two separately constructed NaN values with identical bit patterns must compare equal\");`\n\nMemory hints: search \"Value PartialEq Ord to_bits total_cmp invariant\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:00:01.366Z",
+        "updatedAt": "2026-04-07T14:00:15.896Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19971,7 +19971,13 @@
         "metadata": {
           "modules": [
             "gui/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add .catch() and line-bounds guard to gotoDefinition async callback"
+            ]
+          }
         }
       },
       {
@@ -20600,7 +20606,13 @@
             "gui/sidecar/src",
             "gui/src/utils",
             "gui/src/__tests__"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Sidecar errorMessage divergence + Editor.test scrollToLocation hardening"
+            ]
+          }
         },
         "updatedAt": "2026-04-07T14:00:09.326Z"
       },
@@ -20687,7 +20699,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:00:09.491Z",
+      "lastModified": "2026-04-07T14:00:15.967Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
