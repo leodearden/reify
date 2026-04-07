@@ -739,14 +739,14 @@ fn compute_numerical_gradient_at_point(
     // decomposed. An arity mismatch silently produces Undef via apply_lambda;
     // the warning surfaces the root cause during development.
     #[cfg(debug_assertions)]
-    if let Value::Lambda { params, .. } = lambda {
-        if !single_point_param && params.len() != n {
-            eprintln!(
-                "[reify-expr] gradient: lambda has {} params but point has {} coords",
-                params.len(),
-                n
-            );
-        }
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] gradient: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
     }
 
     // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
