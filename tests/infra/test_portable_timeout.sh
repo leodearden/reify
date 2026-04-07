@@ -176,5 +176,47 @@ assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is false on success" \
         [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
     '
 
+# -- Test 12: POSIX flag-file genuine timeout (happy path) --------------------
+echo ""
+echo "--- Test 12: POSIX flag-file genuine timeout (happy path) ---"
+
+# Force POSIX fallback: exclude directories containing timeout/gtimeout from PATH.
+# Because timeout, sleep, and mktemp often share the same directory (/usr/bin on
+# Linux), we first create a rescue dir with symlinks to essential commands so they
+# remain available after stripping that directory.  Unlike MKTEMP_FAIL_SETUP we do
+# NOT override TMPDIR, so mktemp succeeds and the flag-file happy-path is exercised.
+POSIX_FALLBACK_SETUP='
+    rescue_dir=$(mktemp -d)
+    for cmd in sleep kill grep rm mktemp ln touch; do
+        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+    done
+    trap "rm -rf \"$rescue_dir\"" EXIT
+    new_path="$rescue_dir"
+    IFS=: read -ra dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+            continue
+        fi
+        new_path="${new_path:+$new_path:}$d"
+    done
+    export PATH="$new_path"
+    hash -r
+    source "$LIB_PORTABLE"
+'
+
+assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        rc=0; portable_timeout 1 sleep 10 || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "POSIX fallback: _PORTABLE_TIMEOUT_TIMED_OUT true on genuine timeout" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
