@@ -501,6 +501,295 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
         .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
+/// Relative tolerance for uniqueness comparison between two solutions.
+const UNIQUENESS_REL_TOL: f64 = 1e-6;
+
+/// Absolute tolerance for uniqueness comparison between two solutions.
+const UNIQUENESS_ABS_TOL: f64 = 1e-10;
+
+/// Core solve logic: runs Nelder-Mead from a given initial point.
+///
+/// Returns `SolveResult` with `unique: true` as placeholder — the caller
+/// (`DimensionalSolver::solve`) is responsible for setting the correct
+/// uniqueness flag based on free/strict auto param classification.
+fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
+    // Check feasibility at the initial point for ALL problems (not just
+    // pure feasibility). This enables early-exit for no-objective problems
+    // and a reduced iteration budget for optimization warm-starts.
+    // NB: `trial_values` is used in two places — (1) the feasibility check
+    // immediately below, and (2) the fallback objective validation when the
+    // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+    // Do not inline into the feasibility check.
+    let trial_values =
+        build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let initially_feasible =
+        max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
+            <= FEASIBILITY_THRESHOLD;
+
+    // Pure feasibility (no objective) + already feasible: return immediately
+    if initially_feasible && problem.objective.is_none() {
+        let n_params = problem.auto_params.len();
+        tracing::debug!(
+            n_params,
+            "initial point already feasible with no objective; returning early"
+        );
+        return SolveResult::Solved {
+            values: build_solved_values(&problem.auto_params, initial),
+            unique: true,
+        };
+    }
+
+    // Choose iteration budget: scaled by simplex size when warm-starting.
+    // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
+    // the budget proportionally to give higher-dimensional problems enough
+    // iterations to converge.
+    // After the early-return above for `initially_feasible && objective.is_none()`,
+    // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+    let max_iters = if initially_feasible {
+        debug_assert!(
+            problem.objective.is_some(),
+            "warm-start budget path reached without objective — early-return invariant violated"
+        );
+        let n_params = problem.auto_params.len() as u64;
+        (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
+    } else {
+        MAX_ITERS
+    };
+
+    let cost_fn = ConstraintCostFunction {
+        auto_params: &problem.auto_params,
+        constraints: &problem.constraints,
+        base_values: &problem.current_values,
+        objective: &problem.objective,
+        functions: &problem.functions,
+    };
+
+    // Build simplex from the provided initial point
+    let simplex = build_simplex(initial, &problem.auto_params);
+
+    // Configure and run Nelder-Mead
+    let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
+        .with_sd_tolerance(1e-15)
+        .expect("sd_tolerance 1e-15 is always valid");
+
+    let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
+
+    let result = match executor.run() {
+        Ok(res) => res,
+        Err(e) => {
+            let n_params = problem.auto_params.len();
+            tracing::warn!(error = %e, n_params, "solver executor failed");
+            return SolveResult::NoProgress {
+                reason: format!("solver error: {}", e),
+            };
+        }
+    };
+
+    // Extract and log convergence information from the solver result.
+    let termination_reason = result.state().get_termination_reason().cloned();
+    let has_objective = problem.objective.is_some();
+    let n_params = problem.auto_params.len();
+    let iter_limited =
+        termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+    if iter_limited {
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            iter_limited,
+            "solver completed; hit iteration limit — objective may be suboptimal"
+        );
+    } else {
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            iter_limited,
+            "solver completed"
+        );
+    }
+
+    let best_param: Vec<f64> = match result.state().get_best_param() {
+        Some(p) => p.clone(),
+        None => {
+            let n_params = problem.auto_params.len();
+            tracing::warn!(n_params, "solver returned no best parameter");
+            return SolveResult::NoProgress {
+                reason: "solver returned no solution".to_string(),
+            };
+        }
+    };
+
+    // Clamp final solution to effective bounds
+    let clamped: Vec<f64> = best_param
+        .iter()
+        .zip(problem.auto_params.iter())
+        .map(|(val, ap)| {
+            let (lo, hi) = effective_bounds(ap);
+            val.clamp(lo, hi)
+        })
+        .collect();
+
+    // Check feasibility by re-evaluating constraint violations
+    // (best_cost may include the objective term, so we check violations separately)
+    let final_values =
+        build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_max_residual =
+        max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
+    if final_max_residual > FEASIBILITY_THRESHOLD {
+        // If the initial point was feasible but the optimizer drifted infeasible
+        // while chasing an objective, fall back to the initial feasible values
+        // rather than reporting a false Infeasible.
+        if initially_feasible {
+            // Validate that the objective is numeric at the initial point
+            // before promoting to Solved. The trial_values ValueMap was built
+            // from the same initial point and is still in scope.
+            if let Some(obj) = &problem.objective
+                && eval_objective(obj, &trial_values, &problem.functions).is_none()
+            {
+                return SolveResult::NoProgress {
+                    reason: "objective expression evaluated to undefined at fallback point"
+                        .to_string(),
+                };
+            }
+            // Construct fallback HashMap lazily — only on the error path
+            // where the optimizer drifted infeasible. The `initial` slice
+            // is still in scope from the parameter.
+            let fallback = build_solved_values(&problem.auto_params, initial);
+            tracing::debug!(
+                n_params,
+                final_max_residual,
+                "optimizer drifted infeasible while chasing objective; \
+                 falling back to initial feasible point"
+            );
+            return SolveResult::Solved {
+                values: fallback,
+                unique: true,
+            };
+        }
+        return SolveResult::Infeasible {
+            diagnostics: vec![reify_types::Diagnostic {
+                severity: reify_types::Severity::Error,
+                message: format!(
+                    "constraints could not be satisfied (max absolute residual: {:.2e})",
+                    final_max_residual
+                ),
+                labels: vec![],
+            }],
+        };
+    }
+
+    // Post-solve objective validation: if the objective is still non-numeric
+    // at the solution point, report NoProgress rather than Solved.
+    if let Some(obj) = &problem.objective
+        && eval_objective(obj, &final_values, &problem.functions).is_none()
+    {
+        return SolveResult::NoProgress {
+            reason: "objective expression evaluated to undefined at solution point".to_string(),
+        };
+    }
+
+    // Build solution values
+    let values = build_solved_values(&problem.auto_params, &clamped);
+
+    // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
+    // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
+    // full convergence. Convergence quality is logged via tracing::debug! (see above)
+    // including TerminationReason, iteration budget, and whether fallback was used.
+    // This information is NOT propagated through SolveResult to avoid a breaking API
+    // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
+    // inspect convergence details at runtime.
+    SolveResult::Solved {
+        values,
+        unique: true,
+    }
+}
+
+/// Verify solution uniqueness by re-solving from a perturbed starting point.
+///
+/// Creates a perturbed initial point by reflecting each parameter to the
+/// opposite end of its effective bounds range. If the solution found from
+/// the perturbed starting point matches the original within tolerance,
+/// the solution is considered unique.
+///
+/// Returns `true` if the solution is unique, `false` if a different
+/// solution was found (indicating the problem is underdetermined).
+fn verify_uniqueness(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    // Build perturbed initial point: reflect each param to the opposite
+    // end of its bounds range from the solution.
+    let perturbed: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|param| {
+            let (lo, hi) = effective_bounds(param);
+            let mid = (lo + hi) / 2.0;
+            let solution_val = solved_values
+                .get(&param.id)
+                .and_then(|v| v.as_f64())
+                .unwrap_or(mid);
+            if solution_val < mid {
+                // Solution is in the lower half — start near the high end
+                lo + 0.9 * (hi - lo)
+            } else {
+                // Solution is in the upper half — start near the low end
+                lo + 0.1 * (hi - lo)
+            }
+        })
+        .collect();
+
+    tracing::debug!(
+        n_params = problem.auto_params.len(),
+        "verifying uniqueness via perturbation"
+    );
+
+    // Re-solve from the perturbed starting point
+    match solve_core(problem, &perturbed) {
+        SolveResult::Solved {
+            values: perturbed_values,
+            ..
+        } => {
+            // Compare solutions: all params must match within tolerance
+            for param in &problem.auto_params {
+                let s1 = solved_values
+                    .get(&param.id)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let s2 = perturbed_values
+                    .get(&param.id)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let diff = (s1 - s2).abs();
+                let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
+                if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
+                    tracing::debug!(
+                        param = %param.id,
+                        s1,
+                        s2,
+                        diff,
+                        "uniqueness check failed: solutions differ"
+                    );
+                    return false;
+                }
+            }
+            tracing::debug!("uniqueness check passed: perturbed solution matches");
+            true
+        }
+        _ => {
+            // If the perturbed solve fails (Infeasible/NoProgress), we can't
+            // prove non-uniqueness — conservatively assume unique.
+            tracing::debug!("uniqueness check: perturbed solve did not converge; assuming unique");
+            true
+        }
+    }
+}
+
 impl ConstraintSolver for DimensionalSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         // Trivial case: no auto parameters to solve for
@@ -511,200 +800,23 @@ impl ConstraintSolver for DimensionalSolver {
             };
         }
 
-        // Check feasibility at the initial point for ALL problems (not just
-        // pure feasibility). This enables early-exit for no-objective problems
-        // and a reduced iteration budget for optimization warm-starts.
         let initial = extract_initial_point(problem);
-        // NB: `trial_values` is used in two places — (1) the feasibility check
-        // immediately below, and (2) the fallback objective validation when the
-        // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
-        // Do not inline into the feasibility check.
-        let trial_values =
-            build_trial_values(&problem.current_values, &problem.auto_params, &initial);
-        let initially_feasible =
-            max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
-                <= FEASIBILITY_THRESHOLD;
+        let result = solve_core(problem, &initial);
 
-        // Pure feasibility (no objective) + already feasible: return immediately
-        if initially_feasible && problem.objective.is_none() {
-            let n_params = problem.auto_params.len();
-            tracing::debug!(
-                n_params,
-                "initial point already feasible with no objective; returning early"
-            );
-            return SolveResult::Solved {
-                values: build_solved_values(&problem.auto_params, &initial),
-                unique: true,
-            };
-        }
-
-        // Choose iteration budget: scaled by simplex size when warm-starting.
-        // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
-        // the budget proportionally to give higher-dimensional problems enough
-        // iterations to converge.
-        // After the early-return above for `initially_feasible && objective.is_none()`,
-        // reaching here with `initially_feasible=true` implies `objective.is_some()`.
-        let max_iters = if initially_feasible {
-            debug_assert!(
-                problem.objective.is_some(),
-                "warm-start budget path reached without objective — early-return invariant violated"
-            );
-            let n_params = problem.auto_params.len() as u64;
-            (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
-        } else {
-            MAX_ITERS
-        };
-
-        let cost_fn = ConstraintCostFunction {
-            auto_params: &problem.auto_params,
-            constraints: &problem.constraints,
-            base_values: &problem.current_values,
-            objective: &problem.objective,
-            functions: &problem.functions,
-        };
-
-        // Build simplex from the already-extracted initial point
-        let simplex = build_simplex(&initial, &problem.auto_params);
-
-        // Configure and run Nelder-Mead
-        let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
-            .with_sd_tolerance(1e-15)
-            .expect("sd_tolerance 1e-15 is always valid");
-
-        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
-
-        let result = match executor.run() {
-            Ok(res) => res,
-            Err(e) => {
-                let n_params = problem.auto_params.len();
-                tracing::warn!(error = %e, n_params, "solver executor failed");
-                return SolveResult::NoProgress {
-                    reason: format!("solver error: {}", e),
+        match result {
+            SolveResult::Solved { values, .. } => {
+                // Check if any param requires uniqueness verification (strict auto)
+                let has_strict = problem.auto_params.iter().any(|p| !p.free);
+                let unique = if has_strict {
+                    verify_uniqueness(problem, &values)
+                } else {
+                    // All params are free — uniqueness not checked (default true,
+                    // will be changed to false in step-8 when free fast-path is added)
+                    true
                 };
+                SolveResult::Solved { values, unique }
             }
-        };
-
-        // Extract and log convergence information from the solver result.
-        let termination_reason = result.state().get_termination_reason().cloned();
-        let has_objective = problem.objective.is_some();
-        let n_params = problem.auto_params.len();
-        let iter_limited =
-            termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
-        if iter_limited {
-            tracing::debug!(
-                ?termination_reason,
-                n_params,
-                max_iters,
-                has_objective,
-                initially_feasible,
-                iter_limited,
-                "solver completed; hit iteration limit — objective may be suboptimal"
-            );
-        } else {
-            tracing::debug!(
-                ?termination_reason,
-                n_params,
-                max_iters,
-                has_objective,
-                initially_feasible,
-                iter_limited,
-                "solver completed"
-            );
-        }
-
-        let best_param: Vec<f64> = match result.state().get_best_param() {
-            Some(p) => p.clone(),
-            None => {
-                let n_params = problem.auto_params.len();
-                tracing::warn!(n_params, "solver returned no best parameter");
-                return SolveResult::NoProgress {
-                    reason: "solver returned no solution".to_string(),
-                };
-            }
-        };
-
-        // Clamp final solution to effective bounds
-        let clamped: Vec<f64> = best_param
-            .iter()
-            .zip(problem.auto_params.iter())
-            .map(|(val, ap)| {
-                let (lo, hi) = effective_bounds(ap);
-                val.clamp(lo, hi)
-            })
-            .collect();
-
-        // Check feasibility by re-evaluating constraint violations
-        // (best_cost may include the objective term, so we check violations separately)
-        let final_values =
-            build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
-        let final_max_residual =
-            max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
-        if final_max_residual > FEASIBILITY_THRESHOLD {
-            // If the initial point was feasible but the optimizer drifted infeasible
-            // while chasing an objective, fall back to the initial feasible values
-            // rather than reporting a false Infeasible.
-            if initially_feasible {
-                // Validate that the objective is numeric at the initial point
-                // before promoting to Solved. The trial_values ValueMap was built
-                // from the same initial point and is still in scope.
-                if let Some(obj) = &problem.objective
-                    && eval_objective(obj, &trial_values, &problem.functions).is_none()
-                {
-                    return SolveResult::NoProgress {
-                        reason: "objective expression evaluated to undefined at fallback point"
-                            .to_string(),
-                    };
-                }
-                // Construct fallback HashMap lazily — only on the error path
-                // where the optimizer drifted infeasible. The `initial` Vec<f64>
-                // is still in scope from the extraction at the top of solve().
-                let fallback = build_solved_values(&problem.auto_params, &initial);
-                tracing::debug!(
-                    n_params,
-                    final_max_residual,
-                    "optimizer drifted infeasible while chasing objective; \
-                     falling back to initial feasible point"
-                );
-                return SolveResult::Solved {
-                    values: fallback,
-                    unique: true,
-                };
-            }
-            return SolveResult::Infeasible {
-                diagnostics: vec![reify_types::Diagnostic {
-                    severity: reify_types::Severity::Error,
-                    message: format!(
-                        "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
-                    ),
-                    labels: vec![],
-                }],
-            };
-        }
-
-        // Post-solve objective validation: if the objective is still non-numeric
-        // at the solution point, report NoProgress rather than Solved.
-        if let Some(obj) = &problem.objective
-            && eval_objective(obj, &final_values, &problem.functions).is_none()
-        {
-            return SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point".to_string(),
-            };
-        }
-
-        // Build solution values
-        let values = build_solved_values(&problem.auto_params, &clamped);
-
-        // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
-        // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
-        // full convergence. Convergence quality is logged via tracing::debug! (see above)
-        // including TerminationReason, iteration budget, and whether fallback was used.
-        // This information is NOT propagated through SolveResult to avoid a breaking API
-        // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
-        // inspect convergence details at runtime.
-        SolveResult::Solved {
-            values,
-            unique: true,
+            other => other, // Infeasible, NoProgress pass through unchanged
         }
     }
 }
