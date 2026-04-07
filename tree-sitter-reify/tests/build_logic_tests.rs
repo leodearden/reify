@@ -775,8 +775,11 @@ fn test_unix_permission_tests_have_root_guard() {
     // The set of unix test functions is discovered dynamically by
     // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
     // automatically checked without updating a hardcoded list.
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/build_logic_tests.rs"
+    ))
+    .expect("should be able to read this test file");
 
     let unix_test_fns = find_cfg_unix_test_fns(&source);
 
