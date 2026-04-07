@@ -811,11 +811,10 @@ fn compute_numerical_gradient_at_point(
         }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
         // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param {
-            if let Some(Value::Point(inner)) = work_args.pop() {
+        if single_point_param
+            && let Some(Value::Point(inner)) = work_args.pop() {
                 point_scratch = inner;
             }
-        }
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
@@ -828,11 +827,10 @@ fn compute_numerical_gradient_at_point(
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
         // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param {
-            if let Some(Value::Point(inner)) = work_args.pop() {
+        if single_point_param
+            && let Some(Value::Point(inner)) = work_args.pop() {
                 point_scratch = inner;
             }
-        }
 
         // Restore coord[i] to original value.
         // Use exact restore (direct assignment) instead of arithmetic
