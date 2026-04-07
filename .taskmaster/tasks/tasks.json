@@ -18846,11 +18846,11 @@
         "description": "In crates/reify-constraints/tests/solver_tracing.rs, the EventCounter::new_span at line 39-41 still uses Id::from_u64(1) for every span — the exact bug task 851 fixed elsewhere. At minimum, replace the static ID with an AtomicU64 counter (same pattern as WarnCountingSubscriber). Optionally extend crates/reify-test-support/src/tracing_support.rs with a builder API (e.g. CountingSubscriberBuilder) accepting a level predicate and optional target prefix, so solver_tracing.rs can replace its EventCounter entirely with the shared utility.\n\nmemory_hints: search(\"task 851 Id::from_u64 span ID fix\", project_id=\"reify\"), search(\"warn_counting_subscriber shared test utility\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:51:25.664Z",
+        "updatedAt": "2026-04-07T16:04:41.329Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints",
@@ -20849,11 +20849,11 @@
         "description": "Three related implementation fixes in crates/reify-expr/src/lib.rs around the gradient hot loop:\n\n1. Eliminate the redundant `coords` Vec (line ~778): read `coord_i = work_coords[i]` before perturbation instead of maintaining a separate clone. Saves one O(n) allocation.\n2. Add `point_scratch: Vec<Value>` buffer (lines ~793, 803): reuse it across axis iterations instead of allocating a fresh inner Vec inside each `Value::Point(...)` call, reducing the single_point_param path from O(n²) to O(1) inner-Vec allocations.\n3. Replace arithmetic restore `work_coords[i] += h` (line ~810) with `work_coords[i] = coord_i` — eliminates ~4 ULP round-trip accumulation that contaminates subsequent axis iterations in the single_point_param path.\n\nMemory hints: search for \"compute_numerical_gradient_at_point\" and \"gradient hot loop allocation\" for prior context. Source: task 992 review suggestions [3], [2], [11].",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:37:57.424Z",
+        "updatedAt": "2026-04-07T16:04:41.375Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20999,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:04:41.270Z",
+      "lastModified": "2026-04-07T16:04:41.375Z",
       "taskCount": 1014,
       "completedCount": 721,
       "tags": [
