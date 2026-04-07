@@ -4545,7 +4545,7 @@
         "dependencies": [
           "246"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -4555,7 +4555,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:17.009Z"
+        "updatedAt": "2026-04-07T14:02:24.302Z"
       },
       {
         "id": "248",
@@ -12681,7 +12681,13 @@
             "crates/reify-eval",
             "crates/reify-lsp",
             "crates/reify-syntax"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: LSP: strengthen test assertions for guarded-group member lookup"
+            ]
+          }
         },
         "updatedAt": "2026-04-07T14:02:19.735Z"
       },
@@ -20760,7 +20766,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:20.752Z",
+      "lastModified": "2026-04-07T14:02:24.302Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
