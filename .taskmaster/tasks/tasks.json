@@ -18447,11 +18447,11 @@
         "description": "Add two robustness improvements to tests/sync_comments_test.sh:\n\n1. **Source error handling (line 15):** Change `source \"$REPO_ROOT/tests/infra/test_helpers.sh\"` to include an error handler: `source \"$REPO_ROOT/tests/infra/test_helpers.sh\" || { echo \"ERROR: failed to source test_helpers.sh\"; exit 1; }`. Currently if test_helpers.sh exists but fails to parse/execute (syntax error, permission denied), `source` silently returns non-zero and the script continues with `assert` and `test_summary` undefined, producing unhelpful \"command not found\" errors.\n\n2. **File-existence guards (before line 18):** Add guards for the target files before the assert calls:\n   ```bash\n   [ -f \"$EXPR_FILE\" ] || { echo \"ERROR: $EXPR_FILE not found\"; exit 1; }\n   [ -f \"$STDLIB_FILE\" ] || { echo \"ERROR: $STDLIB_FILE not found\"; exit 1; }\n   ```\n   The shared `assert` helper redirects stderr to /dev/null (`\"$@\" >/dev/null 2>&1`), so if either file is missing, grep's \"No such file or directory\" is swallowed and the test reports a generic FAIL with no indication the file itself is missing.\n\nThis follows the existing guard pattern already used on line 14 for test_helpers.sh itself.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", search \"sync_comments_test.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T03:10:31.391Z",
+        "updatedAt": "2026-04-07T14:02:29.579Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -20645,7 +20645,7 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs has an off-by-one in fn-body extraction that silently truncates by 1 byte (latent trap if guard pattern moves to function end). Two source-inspection tests redundantly read the same 800-line file from disk in parallel. Both use a hardcoded relative path `tests/build_logic_tests.rs` which breaks if cargo test is invoked from a non-default directory.\n\n## Off-by-one fix (lines ~721-724)\nThe `fn_section[1..].find(...)` returns an offset relative to the sub-slice but is then used as an index into fn_section, making fn_body 1 byte short. Change to:\n```rust\nlet fn_end = fn_section[1..].find(\"\\n#[test]\").map(|i| i + 1).unwrap_or(fn_section.len());\n```\n\n## Path robustness\nReplace the hardcoded \"tests/build_logic_tests.rs\" in both test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` to make the tests directory-independent.\n\n## Merge duplicate file reads\nMerge both source-inspection assertions into a single test function that reads the file once. They run concurrently today and read the growing 800+ line file twice.\n\n## Strengthen drop test\nIn test_readonly_guard_drop_logs_error, tighten the assertion from a bare contains(\"eprintln!\") to also require contains(\"if let Err\") (or the specific 'failed to restore permissions' message), so an unrelated debug eprintln does not satisfy the check.\n\nSource: review escalation esc-783-53 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20663,7 +20663,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:01:56.729Z"
+        "updatedAt": "2026-04-07T14:02:29.778Z"
       },
       {
         "id": "1000",
@@ -20778,7 +20778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:29.114Z",
+      "lastModified": "2026-04-07T14:02:29.784Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
