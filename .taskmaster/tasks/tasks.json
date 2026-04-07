@@ -2623,7 +2623,7 @@
         "dependencies": [
           "159"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -2655,7 +2655,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-03T22:57:12.233Z"
+        "updatedAt": "2026-04-07T13:34:14.940Z"
       },
       {
         "id": "161",
@@ -20647,7 +20647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:34:14.512Z",
+      "lastModified": "2026-04-07T13:34:14.940Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
