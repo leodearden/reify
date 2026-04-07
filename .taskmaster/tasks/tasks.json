@@ -18856,11 +18856,11 @@
         "description": "In crates/reify-constraints/tests/solver_tracing.rs, the EventCounter::new_span at line 39-41 still uses Id::from_u64(1) for every span — the exact bug task 851 fixed elsewhere. At minimum, replace the static ID with an AtomicU64 counter (same pattern as WarnCountingSubscriber). Optionally extend crates/reify-test-support/src/tracing_support.rs with a builder API (e.g. CountingSubscriberBuilder) accepting a level predicate and optional target prefix, so solver_tracing.rs can replace its EventCounter entirely with the shared utility.\n\nmemory_hints: search(\"task 851 Id::from_u64 span ID fix\", project_id=\"reify\"), search(\"warn_counting_subscriber shared test utility\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:48:09.149Z",
+        "updatedAt": "2026-04-07T19:02:40.423Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints",
@@ -21194,9 +21194,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:53:10.894Z",
+      "lastModified": "2026-04-07T19:02:40.455Z",
       "taskCount": 1023,
-      "completedCount": 723,
+      "completedCount": 724,
       "tags": [
         "master"
       ]
