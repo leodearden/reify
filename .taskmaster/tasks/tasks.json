@@ -21254,6 +21254,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1029,
+        "title": "Extract `makeMockView` factory and `BASE_MOUSE_EVENT` constant to DRY up gotoDefinition test fixtures",
+        "description": "In `gui/src/__tests__/gotoDefinition.test.ts`: (1) Add a `makeMockView(overrides?)` factory function near the top of the file that returns the default mock view shape (with `lines: 100`, `lineAt`, `line`, `dispatch: vi.fn()`, `dom.isConnected: true`). Replace all 7 copy-pasted `mockView` literals with calls to `makeMockView(...)`, passing only the per-test overrides (e.g. `{ dom: { isConnected: false } }` or `{ state: { doc: { lines: 5 } } }`). (2) Add a module-level `const BASE_MOUSE_EVENT = { ctrlKey: true, metaKey: false, clientX: 100, clientY: 50 } as MouseEvent;` and replace all 7 copy-pasted `mockEvent` literals with it.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21266,7 +21277,7 @@
       ],
       "created": "2026-04-07T19:09:20.933Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:09:26.588Z"
+      "updated": "2026-04-07T19:09:27.437Z"
     }
   }
 }
