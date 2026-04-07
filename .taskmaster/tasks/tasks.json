@@ -17591,11 +17591,11 @@
         "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:48:18.557Z",
+        "updatedAt": "2026-04-07T19:30:56.472Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -21602,9 +21602,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:30:55.721Z",
+      "lastModified": "2026-04-07T19:30:56.472Z",
       "taskCount": 1048,
-      "completedCount": 734,
+      "completedCount": 735,
       "tags": [
         "master"
       ]
