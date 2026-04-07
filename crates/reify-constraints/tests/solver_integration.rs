@@ -325,7 +325,7 @@ fn compound_and_constraint() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
-            free: false,
+            free: true, // not testing uniqueness — range constraint is inherently underdetermined
         }],
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
@@ -442,7 +442,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
-            free: false,
+            free: true, // not testing uniqueness — range constraint is inherently underdetermined
         }],
         constraints: vec![(cnid("Box", 0), gt_expr), (cnid("Box", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -980,19 +980,19 @@ fn warm_start_feasible_no_objective_early_exit() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             },
             AutoParam {
                 id: z_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             },
         ],
         constraints,
@@ -1300,13 +1300,13 @@ fn partial_feasibility_solved_when_close_to_boundary() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
-                free: false,
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm: easily reaches p1 > 20mm
-                free: false,
+                free: true,
             },
         ],
         constraints,
@@ -1369,7 +1369,7 @@ fn warm_start_budget_requires_objective_invariant() {
         id: x_id.clone(),
         param_type: Type::length(),
         bounds: Some((0.005, 0.1)), // 5mm–100mm
-        free: false,
+        free: true, // not testing uniqueness — case (b) is underdetermined
     }];
 
     // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
