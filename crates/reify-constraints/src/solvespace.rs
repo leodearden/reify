@@ -1325,9 +1325,19 @@ mod tests {
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err(BuilderError) — a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
+    ///
+    /// Uses a non-empty auto_params (for a different cell_id) to reflect
+    /// real-world usage where some auto params are always present alongside
+    /// the non-auto param being tested.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
+        let mut builder = SystemBuilder::new();
+        // The cell_id under test: non-auto, absent from current_values → triggers Err.
+        let cell_id = ValueCellId::new("Test", "x");
+        // A different auto param makes auto_params non-empty (realistic setup).
+        let other_id = ValueCellId::new("Other", "y");
+        let auto_params = auto_params_for(&other_id);
+        let current_values = ValueMap::new();
 
         let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
