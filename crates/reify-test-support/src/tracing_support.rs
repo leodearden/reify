@@ -1,5 +1,6 @@
 //! Shared tracing test utilities for reify crates.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -19,6 +20,137 @@ pub fn warn_counting_subscriber() -> (impl tracing::Subscriber + Send + Sync, Ar
     let warn_count_clone = Arc::clone(&warn_count);
     (WarnCountingSubscriber::new(warn_count_clone), warn_count)
 }
+
+// ── CountingSubscriberBuilder ─────────────────────────────────────────────────
+
+/// Builder for a minimal [`tracing::Subscriber`] that counts events at
+/// registered levels and optionally filters by target prefix.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (subscriber, counters) = CountingSubscriberBuilder::new()
+///     .count_level(tracing::Level::WARN)
+///     .count_level(tracing::Level::DEBUG)
+///     .target_prefix("reify_constraints")
+///     .build();
+/// ```
+pub struct CountingSubscriberBuilder {
+    levels: Vec<tracing::Level>,
+    target_prefix: Option<String>,
+}
+
+impl CountingSubscriberBuilder {
+    /// Create a new builder with no registered levels and no target filter.
+    pub fn new() -> Self {
+        Self {
+            levels: Vec::new(),
+            target_prefix: None,
+        }
+    }
+
+    /// Register a level to count.  May be called multiple times for different
+    /// levels; each call adds an independent counter for that level.
+    pub fn count_level(mut self, level: tracing::Level) -> Self {
+        self.levels.push(level);
+        self
+    }
+
+    /// Set an optional target-prefix filter.  When set, only events whose
+    /// target starts with `prefix` are counted; all others are ignored inside
+    /// `event()`.
+    pub fn target_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.target_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Build the subscriber and return it alongside a map of counters keyed by
+    /// level.  The returned `Arc<AtomicUsize>` values are shared with the
+    /// subscriber so external reads observe internal increments.
+    pub fn build(
+        self,
+    ) -> (
+        impl tracing::Subscriber + Send + Sync,
+        HashMap<tracing::Level, Arc<AtomicUsize>>,
+    ) {
+        let counters: HashMap<tracing::Level, Arc<AtomicUsize>> = self
+            .levels
+            .into_iter()
+            .map(|level| (level, Arc::new(AtomicUsize::new(0))))
+            .collect();
+
+        let subscriber = CountingSubscriber {
+            counters: counters.clone(),
+            target_prefix: self.target_prefix,
+            span_counter: AtomicU64::new(1),
+        };
+
+        (subscriber, counters)
+    }
+}
+
+impl Default for CountingSubscriberBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── CountingSubscriber (private) ──────────────────────────────────────────────
+
+struct CountingSubscriber {
+    counters: HashMap<tracing::Level, Arc<AtomicUsize>>,
+    target_prefix: Option<String>,
+    /// Monotonically increasing counter used to generate unique span IDs.
+    ///
+    /// # Span ID uniqueness
+    ///
+    /// Unlike a naïve implementation that returns `Id::from_u64(1)` for every
+    /// span, this subscriber uses an [`AtomicU64`] to issue monotonically
+    /// increasing IDs, avoiding the "all spans share the same ID" bug.
+    span_counter: AtomicU64,
+}
+
+impl tracing::Subscriber for CountingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        // Accept only events at registered levels; reject everything else
+        // at the gate so no unregistered events reach event().
+        self.counters.contains_key(metadata.level())
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Relaxed ordering is correct: the only invariant is uniqueness, which
+        // fetch_add guarantees atomically regardless of memory ordering.
+        let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
+        // Safety: Id::from_u64 requires a non-zero value; our counter starts at 1.
+        tracing::span::Id::from_u64(id)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(
+        &self,
+        _span: &tracing::span::Id,
+        _follows: &tracing::span::Id,
+    ) {
+    }
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        // Apply optional target-prefix filter before counting.
+        if let Some(prefix) = &self.target_prefix
+            && !event.metadata().target().starts_with(prefix.as_str())
+        {
+            return;
+        }
+        if let Some(counter) = self.counters.get(event.metadata().level()) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 
 // ── private implementation ────────────────────────────────────────────────────
 
