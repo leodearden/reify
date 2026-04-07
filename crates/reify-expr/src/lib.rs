@@ -135,6 +135,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
+                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
@@ -142,6 +143,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                inner_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -685,6 +687,7 @@ fn compute_numerical_gradient_at_point(
     lambda: &Value,
     point: &Value,
     domain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     // Decompose point into f64 coordinates.
@@ -696,7 +699,7 @@ fn compute_numerical_gradient_at_point(
         Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
         Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
         Value::Scalar { .. } => return Value::Undef, // NaN or Inf
-        Value::Point(items) | Value::Tensor(items) | Value::Vector(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
@@ -732,47 +735,79 @@ fn compute_numerical_gradient_at_point(
         _ => false,
     };
 
+    // Warn in debug builds when arity doesn't match and calling convention is
+    // decomposed. An arity mismatch silently produces Undef via apply_lambda;
+    // the warning surfaces the root cause during development.
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] gradient: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
+
+    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
+    // The gradient is df/dx, so its dimension is [codomain] / [domain].
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    };
+    let grad_dim = match domain_dim {
+        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
+        _ => result_dim,
+    };
+
+    // Hoist make_arg before the loop — it only captures domain_dim (Copy),
+    // so constructing it once per axis would be redundant.
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
+    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
+    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
+    let mut work_coords = coords.clone();
+    // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
         let coord_i = coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
-        // Build perturbed coordinate vectors
-        let mut plus_coords = coords.clone();
-        plus_coords[i] += h;
-        let mut minus_coords = coords.clone();
-        minus_coords[i] -= h;
-
-        // Construct args for apply_lambda: use Scalar with domain dimension
-        // when the domain is dimensioned, otherwise use Real.
-        let make_arg = |val: f64| -> Value {
-            match domain_dim {
-                Some(dim) => Value::Scalar {
-                    si_value: val,
-                    dimension: dim,
-                },
-                None => Value::Real(val),
-            }
-        };
-
-        // Build the argument list based on calling convention
-        let plus_args: Vec<Value>;
-        let minus_args: Vec<Value>;
+        // Perturb forward (+h), evaluate
+        work_coords[i] += h;
+        work_args.clear();
         if single_point_param {
-            // Single-Point convention: wrap coords in a Value::Point
-            let plus_point = Value::Point(plus_coords.into_iter().map(&make_arg).collect());
-            let minus_point = Value::Point(minus_coords.into_iter().map(&make_arg).collect());
-            plus_args = vec![plus_point];
-            minus_args = vec![minus_point];
+            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
         } else {
-            // Decomposed convention: pass individual scalar/real values
-            plus_args = plus_coords.into_iter().map(&make_arg).collect();
-            minus_args = minus_coords.into_iter().map(&make_arg).collect();
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
+        let f_plus = apply_lambda(lambda, &work_args, ctx);
 
-        let f_plus = apply_lambda(lambda, &plus_args, ctx);
-        let f_minus = apply_lambda(lambda, &minus_args, ctx);
+        // Swing to backward (−h from original = −2h from current), evaluate
+        work_coords[i] -= 2.0 * h;
+        work_args.clear();
+        if single_point_param {
+            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+        } else {
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+        }
+        let f_minus = apply_lambda(lambda, &work_args, ctx);
+
+        // Restore coord[i] to original value
+        work_coords[i] += h;
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
@@ -794,13 +829,6 @@ fn compute_numerical_gradient_at_point(
             return Value::Undef;
         }
 
-        // Compute gradient component dimension: result_dim / domain_dim.
-        // The gradient is df/dx, so its dimension is [codomain] / [domain].
-        let result_dim = f_plus.dimension();
-        let grad_dim = match domain_dim {
-            Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-            _ => result_dim,
-        };
         if grad_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
@@ -812,7 +840,7 @@ fn compute_numerical_gradient_at_point(
     }
 
     if n == 1 {
-        gradient_components.into_iter().next().unwrap()
+        gradient_components.into_iter().next().unwrap_or(Value::Undef)
     } else {
         Value::Vector(gradient_components)
     }

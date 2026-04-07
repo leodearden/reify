@@ -2499,3 +2499,459 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
         other => panic!("gradient should return a Field, got {:?}", other),
     }
 }
+
+// ── Step-1: Imported field ─────────────────────────────────────────────
+
+/// Gradient of an Imported field returns Undef.
+///
+/// Mirrors gradient_sampled_field_returns_undef. Imported fields don't have a
+/// callable lambda. compute_gradient rejects non-Analytical/Composed sources at
+/// line 586, so gradient(ImportedField) → Undef immediately.
+#[test]
+fn gradient_imported_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Imported,
+        lambda: Box::new(lambda),
+    };
+
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type),
+            },
+        )],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "gradient of Imported field must return Undef"
+    );
+}
+
+// ── Step-2: Composed field ────────────────────────────────────────────
+
+/// Gradient of a Composed field returns a gradient Field.
+///
+/// Composed is whitelisted at compute_gradient line 586. This test verifies
+/// that gradient(ComposedField) produces Value::Field { source: Gradient, .. }
+/// rather than Undef, so that the Composed path doesn't silently regress.
+#[test]
+fn gradient_composed_field_returns_field() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2 * x
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Composed,
+        lambda: Box::new(lambda),
+    };
+
+    let expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type),
+            },
+        )],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert!(
+        matches!(&result, Value::Field { source: FieldSourceKind::Gradient, .. }),
+        "gradient of Composed field must return a gradient Field, got {:?}",
+        result
+    );
+}
+
+// ── Steps 3-5: 1-param lambda helper and non-trivial gradient tests ───
+
+/// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
+///
+/// dot(p, [1,2,3]) = x + 2y + 3z, so its gradient is the constant vector
+/// (1.0, 2.0, 3.0). Exercises single_point_param=true with a non-trivial
+/// (and verifiably-correct) gradient.
+#[test]
+fn gradient_3d_field_single_point_param() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| dot(p, Point3(1.0, 2.0, 3.0))
+    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(5.0, 7.0, 11.0) — linear field so gradient is constant
+    let point = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            let expected = [1.0_f64, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-3,
+                    "gradient component {} of dot(p,[1,2,3]) should be ~{}, got {}",
+                    i, exp, val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector; got {:?}",
+            sample_result
+        ),
+    }
+}
+
+/// NaN in a Point coordinate causes gradient sampling to return Undef
+/// via the single-point-param path.
+///
+/// Build a 3D field with a 1-param lambda |p| dot(p, [1,2,3]).
+/// Sample the gradient at Point3(1.0, NaN, 3.0). The is_finite guard in
+/// compute_numerical_gradient_at_point must catch NaN before perturbing.
+#[test]
+fn gradient_sample_with_nan_point_returns_undef() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1.0, NaN, 3.0)
+    let nan_point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(f64::NAN),
+        Value::Real(3.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with NaN coordinate must return Undef (single-point-param path)"
+    );
+}
+
+/// Inf in a Point coordinate causes gradient sampling to return Undef
+/// via the single-point-param path.
+///
+/// Build a 3D field with a 1-param lambda |p| dot(p, [1,2,3]).
+/// Sample the gradient at Point3(1.0, Inf, 3.0). The is_finite guard
+/// must catch Inf before perturbing (existing test only covers 1D Real).
+#[test]
+fn gradient_sample_with_inf_point_returns_undef() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1.0, Inf, 3.0)
+    let inf_point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(f64::INFINITY),
+        Value::Real(3.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(inf_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with Inf coordinate must return Undef (single-point-param path)"
+    );
+}
+
+// ── Step-6: Tensor point rejection ────────────────────────────────────
+
+/// Sampling a gradient field with a Value::Tensor point returns Undef.
+///
+/// A Tensor is rank-r (nested Vec<Value>), not a flat coordinate list.
+/// Treating Tensor the same as Point/Vector extracts wrong coords and computes
+/// a meaningless Jacobian of flattened elements instead of a gradient.
+///
+/// Pre-fix: Tensor is matched alongside Point/Vector at line 699, coords are
+/// extracted, gradient succeeds → test FAILS.
+/// Post-fix: Tensor falls through to `_ => Undef` → test passes.
+#[test]
+fn gradient_tensor_point_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        reify_types::BinOp::Add,
+        CompiledExpr::binop(
+            reify_types::BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample with a Tensor instead of a Point — must return Undef
+    let tensor_point = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(tensor_point, Type::vec3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at a Tensor point must return Undef (Tensor is not a coordinate list)"
+    );
+}
