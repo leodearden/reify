@@ -26,7 +26,7 @@ assert \
 
 # Extract the function name referenced in reify-expr's SYNC comment and verify
 # it actually exists as a function definition in reify-stdlib
-_expr_ref_fn=$(grep -oE 'reify-stdlib::[a-z_]+' "$EXPR_FILE" | head -1 | sed 's/.*:://' || true)
+_expr_ref_fn=$(grep 'SYNC' "$EXPR_FILE" | grep -oE 'reify-stdlib::[a-z_]+' | head -1 | sed 's/.*:://' || true)
 assert \
     "SYNC comment in reify-expr references a reify-stdlib function" \
     test -n "$_expr_ref_fn"
@@ -38,7 +38,7 @@ fi
 
 # Extract the function name referenced in reify-stdlib's SYNC comment and verify
 # it actually exists as a function definition in reify-expr
-_stdlib_ref_fn=$(grep -oE 'reify-expr::[a-z_]+' "$STDLIB_FILE" | head -1 | sed 's/.*:://' || true)
+_stdlib_ref_fn=$(grep 'SYNC' "$STDLIB_FILE" | grep -oE 'reify-expr::[a-z_]+' | head -1 | sed 's/.*:://' || true)
 assert \
     "SYNC comment in reify-stdlib references a reify-expr function" \
     test -n "$_stdlib_ref_fn"
