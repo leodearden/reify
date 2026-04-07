@@ -21583,11 +21583,19 @@
         "description": "The `errorMessage` function is intentionally duplicated across `gui/sidecar/src/utils.ts` and `gui/src/utils/errorClassifier.ts` with only a NOTE comment enforcing sync. This is fragile — nothing mechanical prevents drift.\n\nOptions (pick one):\n1. **Shared package** — create `gui/packages/shared-utils` (or similar) exporting `errorMessage`, consumed as a workspace dependency by both `gui/src` and `gui/sidecar`.\n2. **CI lint rule** — add a script/test that diffs or checksums the two function bodies and fails CI on divergence.\n\nOption 1 is preferred if the bundler constraints (tsup vs Vite) allow it. If not, option 2 is a pragmatic fallback.\n\nOriginated from review suggestions [0], [2], [8] on Task 1028.\n\nMemory hints: search for \"errorMessage implementation\", \"sidecar utils duplication\", \"gui sidecar bundle constraints\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:29:03.242Z"
+        "updatedAt": "2026-04-07T19:36:20.687Z",
+        "metadata": {
+          "modules": [
+            "gui/package.json",
+            "gui/packages",
+            "gui/sidecar",
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1048",
@@ -21639,7 +21647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:36:05.668Z",
+      "lastModified": "2026-04-07T19:36:20.687Z",
       "taskCount": 1050,
       "completedCount": 736,
       "tags": [
