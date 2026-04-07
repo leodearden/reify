@@ -21013,6 +21013,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1016,
+        "title": "Gradient tests correctness and DRY cleanup",
+        "description": "Correctness and DRY improvements in crates/reify-expr/tests/gradient_tests.rs:\n\n1. Replace the ~40-line inline field construction in gradient_single_point_param_irrational_coords with a call to make_3d_dot_product_gradient_field().\n2. Change the lambda in gradient_single_point_param_irrational_coords from dot(p,[1,2,3]) (linear, constant gradient) to dot(p,p)=x²+y²+z² so the test actually exercises the exact-restore fix — expected values become (2/3, 2π/7, 2√2) at the irrational sample point.\n3. Clarify gradient_single_point_param_quadratic's doc comment to say it tests correctness (not FP-restore) and optionally tighten its tolerance from 1e-3 to 1e-9.\n4. Extract the per-component abs-diff assertion loop into a shared assert_gradient_vector(result, expected, tol, label) helper and replace the 3+ verbatim copies.\n\nMemory hints: search for \"compute_numerical_gradient_at_point\" and \"gradient test helpers\" for prior context. Source: task 1006 review suggestions [0], [9], [10], [8].",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21025,7 +21036,7 @@
       ],
       "created": "2026-04-07T16:16:55.106Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T16:16:55.235Z"
+      "updated": "2026-04-07T16:17:04.673Z"
     }
   }
 }
