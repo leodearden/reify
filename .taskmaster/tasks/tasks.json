@@ -3721,7 +3721,7 @@
         "dependencies": [
           "208"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3737,7 +3737,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:59.621Z"
+        "updatedAt": "2026-04-07T16:03:56.631Z"
       },
       {
         "id": "210",
@@ -4461,7 +4461,7 @@
         "dependencies": [
           "242"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -4471,7 +4471,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:07.631Z"
+        "updatedAt": "2026-04-07T16:03:56.659Z"
       },
       {
         "id": "244",
@@ -4545,7 +4545,7 @@
         "dependencies": [
           "246"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -4561,7 +4561,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:28.684Z"
+        "updatedAt": "2026-04-07T16:03:56.686Z"
       },
       {
         "id": "248",
@@ -5147,7 +5147,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5157,7 +5157,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:04:45.482Z"
+        "updatedAt": "2026-04-07T16:03:56.708Z"
       },
       {
         "id": "274",
@@ -6112,7 +6112,7 @@
         "dependencies": [
           "314"
         ],
-        "status": "blocked",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
@@ -6124,7 +6124,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:04:52.527Z"
+        "updatedAt": "2026-04-07T16:03:56.730Z"
       },
       {
         "id": "316",
@@ -7148,11 +7148,11 @@
         "description": "Fix cross-trait requirement check (lib.rs:4137,4155-4172) matching name+type only, not kind — a param requirement can be silently satisfied by a let default. Restrict cross-check to kind-matching defaults. Improve trait conflict error messages to identify which specific traits are in conflict (currently unnamed).\n\nMissing tests to add:\n- requirement_type_mismatch_from_cross_trait_default error branch (entirely untested)\n- requirement_satisfied_by_cross_trait_default should assert value cell exists, not just 0 errors\n\nMemory hints: search \"cross-trait requirement kind param let mismatch\", entities: compile_traits, trait_merge",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:30.309Z",
+        "updatedAt": "2026-04-07T16:03:56.751Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8119,11 +8119,11 @@
         "description": "Three correctness issues in the termination checking pass in crates/reify-compiler/src/lib.rs:\n\n1. BinOp::Add accepted as 'modifying' in termination_is_modifying() (~line 2783) but n+1 with guard n>0 is non-terminating. Either remove Add from the accepted ops or add sign analysis. Add a documenting test either way.\n\n2. termination_args_contain_undef() (~line 2756) checks ALL sub args for undef, not just termination-relevant ones. Scope to guard-referenced params only.\n\n3. When compile_expr fails on a where-clause condition (~line 3209-3213), it returns literal Undef as fallback. The termination check then emits a spurious 'guard doesn't reference params' error. Store None in guard_expr when compilation fails instead of wrapping the Undef.\n\nAdd corresponding tests in crates/reify-compiler/tests/termination_check_tests.rs.\n\nSource: review suggestions from esc-204-20 (task 204).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:53.491Z",
+        "updatedAt": "2026-04-07T16:03:56.775Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8198,11 +8198,11 @@
         "description": "Three allocation issues in the gradient sampling path (crates/reify-expr/src/lib.rs):\n\n1. Use Arc instead of Box+clone for the lambda slot in eval_gradient (~line 429) to avoid deep-cloning the original field on every gradient() call.\n2. Reuse a mutable buffer in compute_numerical_gradient instead of cloning coords Vec 6 times per sample (lines 475-476).\n3. Reduce or eliminate captures.clone() in apply_lambda (~line 376) which is called 6 times per gradient sample.\n\nSource: review suggestions from esc-281-11 (task 281).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:41.849Z",
+        "updatedAt": "2026-04-07T16:03:56.798Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8295,13 +8295,13 @@
         "description": "Three correctness bugs in crates/reify-compiler/src/lib.rs:\n\n1. compile_purpose() (~line 1719) doesn't call set_unit_registry(), so QuantityLiterals referencing user-declared units inside purpose constraints silently fail to resolve.\n2. Affine units in conversion expressions (evaluate_const_expr QuantityLiteral branch) incorrectly apply the full transform (value*factor+offset). In conversion-factor context, only the scaling factor should be used.\n3. unwrap_or(1.0) in compile_unit silently uses factor=1.0 when conversion expression fails. Per project convention, logic errors should be noisy.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "208"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:38.148Z",
+        "updatedAt": "2026-04-07T16:03:56.823Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -10390,7 +10390,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10411,7 +10411,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:07:05.732Z"
+        "updatedAt": "2026-04-07T16:03:56.847Z"
       },
       {
         "id": "508",
@@ -11249,7 +11249,7 @@
         "description": "Track when poison recovery occurs during concurrent evaluation so callers can detect potentially corrupt results, rather than silently propagating values computed from partially-updated state.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\nProblem: When evaluate() recovers a poisoned values lock, the current_values map may contain partial state from the panicked task. The expression is evaluated against this corrupt input, and the result is written to both values and snapshot_values as normal. Additionally, values and snapshot_values locks are acquired in separate scopes — if one is poisoned and the other isn't, they can become inconsistent. All of this happens silently.\n\nSolution:\n1. Add `tainted: Arc<AtomicBool>` field to ConcurrentEvalAdapter (initialized to false)\n2. Set tainted to true whenever any poison recovery occurs (in the lock helper methods from the companion task)\n3. Add `tainted: bool` field to ConcurrentEditResult\n4. In build_result_shared() and into_result(), set result.tainted = self.tainted.load(Ordering::Relaxed)\n5. Callers (edit_param_concurrent) can log a warning or take corrective action when tainted=true\n\nThis addresses review suggestions about silent corruption propagation and invariant violations between lock acquisitions (reviewer_robustness).\n\nmemory_hints:\n  search: \"ConcurrentEvalAdapter tainted poison corruption\"\n  entities: [\"ConcurrentEvalAdapter\", \"ConcurrentEditResult\"]",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11271,7 +11271,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:04:53.295Z"
+        "updatedAt": "2026-04-07T16:03:56.872Z"
       },
       {
         "id": "544",
@@ -12673,7 +12673,7 @@
         "description": "Review suggestions from task 437. Test gaps: (1) analysis.rs guarded-group tests assert only info.name/info.kind but not info.span or info.cell_type — span is the thing that was broken. (2) goto_def tests check only line number, not character offset. (3) No direct unit tests for find_named_member_span on hand-constructed MemberDecl slices (edge cases: empty slice, name in else_members only, depth-2 match). (4) No regression test for refactored find_parsed_member_span_and_doc (top-level members still resolve). (5) Revolve missing-arg test only exercises missing 'ox', not other required fields.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12695,7 +12695,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:06:46.611Z"
+        "updatedAt": "2026-04-07T16:03:56.897Z"
       },
       {
         "id": "604",
@@ -17644,11 +17644,11 @@
         "description": "In tree-sitter-reify/src/.grammar_hash.stamp: confirm whether the stamp update was intentional; if not, revert it and land it in a separate commit tied to the actual grammar change. In gui/src-tauri/src/engine.rs: (1) add a comment near line 285 noting 'Assumes all diagnostic spans refer to the single loaded source file — file_path from multi-file diagnostics would need threading here'; (2) add documentation or a Result return to byte_offset_to_line_col (line 682) clarifying that empty spans produce identical start/end coordinates and that offsets beyond source.len() are silently clamped.\n\nmemory_hints: search(\"grammar_hash.stamp tree-sitter-reify byte_offset_to_line_col edge cases\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:04:51.966Z",
+        "updatedAt": "2026-04-07T16:03:56.920Z",
         "metadata": {
           "modules": [
             "gui/src-tauri",
@@ -17956,11 +17956,11 @@
         "description": "The existing add_pattern_to_builder_propagates_coord_error test only exercises the Coincident variant with an error on pt_a. Two gaps remain:\n\n1. Line-based variants (Parallel, Angle, Perpendicular) call add_point 4 times per pattern (once per endpoint). None of these propagation sites are tested. Add a test using e.g. GeometricPattern::Parallel where one of the 4 endpoint PointRef::Auto coords has a missing cell_id, confirming errors from the 3rd/4th add_point call propagate correctly.\n\n2. Within Coincident, only pt_a (line 974) is exercised. The pt_b path (line 975) is never triggered because pt_b is always PointRef::Fixed in the test. Add a sub-case where pt_a is Fixed and pt_b is Auto with a missing cell_id.\n\nThese cover structurally different code paths in the match arms.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:49.637Z",
+        "updatedAt": "2026-04-07T16:03:56.945Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -18053,11 +18053,11 @@
         "description": "Three small improvements to the Orientation Ord tie-breaking tests (value.rs:3313-3370):\n\n1. **Descriptive variable names:** Replace alphabetical sequence variables (g/h/i/j) with semantically meaningful names (e.g. `higher_y`/`lower_y`, `greater_z`/`lesser_z`). Also consider renaming e/f in the existing `equal_w_different_x` test. The cross-function alphabetical sequence (a→j) is an invisible maintenance risk.\n\n2. **Extract `make_orientation(w, x, y, z)` helper:** A general constructor helper parallel to the existing `make_orientation_identity()` at line ~4166. This would DRY up the 6-line struct literal repeated in `equal_w_different_x`, `equal_wx_different_y`, and `equal_wxy_different_z`.\n\n3. **Add missing regression comment to z-only test:** The `value_orientation_ord_equal_wxy_different_z` test is missing the \"A wrong impl…\" comment that all peer tie-breaking tests carry. Add: `// A wrong impl that drops z comparison entirely would say i == j, not i > j.` (using the new variable names).\n\nMemory hints: search \"Orientation Ord field order\" for implementation context; search \"descriptive variable names convention\" for naming norms.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:04:43.407Z",
+        "updatedAt": "2026-04-07T16:03:56.968Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -18454,11 +18454,11 @@
         "description": "Add two robustness improvements to tests/sync_comments_test.sh:\n\n1. **Source error handling (line 15):** Change `source \"$REPO_ROOT/tests/infra/test_helpers.sh\"` to include an error handler: `source \"$REPO_ROOT/tests/infra/test_helpers.sh\" || { echo \"ERROR: failed to source test_helpers.sh\"; exit 1; }`. Currently if test_helpers.sh exists but fails to parse/execute (syntax error, permission denied), `source` silently returns non-zero and the script continues with `assert` and `test_summary` undefined, producing unhelpful \"command not found\" errors.\n\n2. **File-existence guards (before line 18):** Add guards for the target files before the assert calls:\n   ```bash\n   [ -f \"$EXPR_FILE\" ] || { echo \"ERROR: $EXPR_FILE not found\"; exit 1; }\n   [ -f \"$STDLIB_FILE\" ] || { echo \"ERROR: $STDLIB_FILE not found\"; exit 1; }\n   ```\n   The shared `assert` helper redirects stderr to /dev/null (`\"$@\" >/dev/null 2>&1`), so if either file is missing, grep's \"No such file or directory\" is swallowed and the test reports a generic FAIL with no indication the file itself is missing.\n\nThis follows the existing guard pattern already used on line 14 for test_helpers.sh itself.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", search \"sync_comments_test.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:49.378Z",
+        "updatedAt": "2026-04-07T16:03:56.997Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -18569,11 +18569,11 @@
         "description": "Two code quality improvements in `crates/reify-types/src/value.rs`:\n1. Add two private helpers inside `#[cfg(test)] mod tests` (around line 3147):\n   ```rust\n   fn complex_with(re: f64, im: f64) -> Value {\n       Value::Complex { re, im, dimension: DimensionVector::DIMENSIONLESS }\n   }\n   fn orientation_with(w: f64, x: f64, y: f64, z: f64) -> Value {\n       Value::Orientation { w, x, y, z }\n   }\n   ```\n   Then update the six new negative-float test bodies to use these helpers.\n2. Hoist the verbatim `// to_bits() gets this WRONG: ...` rationale comment (repeated ~5 times around line 2132 and nearby tests) into a single block comment at the top of the float ordering test section, and remove the per-test copies.\n\nMemory hints: search \"Value test helpers complex_with orientation_with DRY\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:04:50.298Z",
+        "updatedAt": "2026-04-07T16:03:57.019Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -18707,11 +18707,11 @@
         "description": "Consolidate several review findings from task 836 into a single improvement pass on `gui/src-tauri/src/engine.rs`:\n\n1. **Unify resolve_source failure semantics** — The method returns `Option<(String, &str)>` but the `None` arm of `module_name` panics via `unreachable!()`. This hybrid contract (graceful via `?` for source_map miss, panic for module_name miss) is incoherent. Preferred fix: change signature to return `(&str, &str)` with `debug_assert!(self.compiled.is_some())` at entry, making the precondition explicit in the type. Alternative: convert `unreachable!` to `return None` for fully graceful semantics.\n\n2. **Optimize allocations** — `resolve_source` allocates a new `String` via `format!(\"{}.ri\", name)` on every call. Use `HashMap::get_key_value` to return `(&str, &str)` instead of `(String, &str)`, eliminating per-call allocation. Also eliminate the per-diagnostic `file_path.clone()` in `get_diagnostics` (line 315).\n\n3. **Extract module_key helper** — `format!(\"{}.ri\", module_name)` appears in 3 places (load_from_source:81, update_source:180, resolve_source:236). Extract a private `fn module_key(name: &str) -> String` to DRY this up.\n\nmemory_hints: search(\"resolve_source engine.rs Option unreachable module_key allocation\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:30.005Z",
+        "updatedAt": "2026-04-07T16:03:57.042Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -18724,11 +18724,11 @@
         "description": "Consolidate several test-related review findings from task 836 into a single pass on `gui/src-tauri/src/tests/engine_tests.rs`:\n\n1. **Fix test naming conflicts** — Two tests both claim to be \"Step-3\": the new `diagnostics_file_key_consistent_after_update_source` and the pre-existing `engine_get_diagnostics_clean_source_returns_empty`. Renumber to avoid ambiguity (e.g., use Step-R1/R2/R3 for the refactor-pinning tests, or drop ordinal labels entirely).\n\n2. **Improve test coverage for resolve_source fallback** — The Step-1 test (`get_source_location_returns_none_without_module`) never reaches `resolve_source` (returns early at `compiled.as_ref()?`). Add a test that constructs a session where `compiled` and `module_name` are set but the matching `source_map` entry is missing, verifying `get_diagnostics` returns `[]` and `get_source_location` returns `None`.\n\n3. **Harden fragile test assumption** — Tests `diagnostics_and_source_location_agree_on_file_key` and `diagnostics_file_key_consistent_after_update_source` rely on `port mount : NonExistentTrait` producing a warning (not error). Add an explicit severity assertion or comment documenting why this must remain a warning.\n\nmemory_hints: search(\"engine_tests.rs Step-3 naming conflict resolve_source coverage\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:52.254Z",
+        "updatedAt": "2026-04-07T16:03:57.067Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -18922,11 +18922,11 @@
         "description": "In `crates/reify-types/src/value.rs` function `value_ord_real_nan_and_neg_zero_still_consistent` (starting ~line 2111):\n1. Remove part (a) `assert_ne!(neg, pos, ...)` — already covered by `real_neg_zero_hash_differs_from_pos_zero`.\n2. Remove `assert_ne!(neg.cmp(&pos), Ordering::Equal, ...)` — strictly subsumed by the `assert_eq!(..., Ordering::Greater)` that follows.\n3. Remove duplicate `assert_ne!(nan.cmp(&inf), Ordering::Equal, ...)` and `assert_ne!(nan.cmp(&pos), Ordering::Equal, ...)` in section (e) — already asserted in section (d).\n4. Remove the cross-section duplicate of `assert_ne!(neg.cmp(&pos), Ordering::Equal)` — subsumed by the stronger assertion in section (b).\n5. Replace `assert_eq!(nan, nan, ...)` (same-variable reflexivity) with a two-instance test: `let nan2 = Value::Real(f64::NAN); assert_eq!(nan, nan2, \"two separately constructed NaN values with identical bit patterns must compare equal\");`\n\nMemory hints: search \"Value PartialEq Ord to_bits total_cmp invariant\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:10.991Z",
+        "updatedAt": "2026-04-07T16:03:57.094Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -18945,11 +18945,11 @@
         "description": "In `crates/reify-types/src/value.rs`:\n1. (lines ~972-975) Qualify the NaN-payload claim in the `impl PartialEq for Value` doc: note that `content_hash()` normalises all NaN payloads to a canonical bit pattern, so NaN-payload differences affect only `PartialEq`, not content-addressing. Change 'must hash and compare differently' to something like 'NaN values with the same bit pattern compare equal; note that `content_hash()` normalises all NaN payloads so NaN-payload differences affect only `PartialEq`, not content-addressing.'\n2. (lines ~970-975) Add a caveat that `Point`, `Vector`, `Frame`, `Transform`, `Plane`, `Axis`, `BoundingBox`, `Matrix`, `Tensor` delegate equality to their inner type, so the bit-identity and Eq/Ord contract claims apply only to `Real`, `Scalar`, `Complex`, and `Orientation`.\n3. (lines ~972-980 and ~1174-1176) De-duplicate the Eq/Ord contract text: state the full contract once in the `PartialEq` doc and replace the `Ord` doc's restatement with a cross-reference like `/// See `impl PartialEq for Value` for the shared Eq/Ord contract.`\n\nMemory hints: search \"Value PartialEq Ord to_bits content_hash NaN canonicalization\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:43.355Z",
+        "updatedAt": "2026-04-07T16:03:57.118Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -18968,11 +18968,11 @@
         "description": "In `crates/reify-types/src/value.rs`, add a new test (or extend `value_ord_real_nan_and_neg_zero_still_consistent`) to cover the three other float-bearing variants listed in the doc comment:\n- `Value::Scalar`: assert `Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH } != Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }` (to_bits PartialEq) and that their cmp is not Equal.\n- `Value::Complex`: assert that two Complex values differing only in a NaN component or negative-zero compare as expected under bit-identity.\n- `Value::Orientation`: same spot-check for a NaN or negative-zero quaternion component.\nThis ensures regressions in each variant's independent to_bits() call site are caught.\n\nMemory hints: search \"Value Scalar Complex Orientation to_bits PartialEq bit-identity\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:13.512Z",
+        "updatedAt": "2026-04-07T16:03:57.144Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19044,11 +19044,11 @@
         "description": "In both crates/reify-stdlib/src/lib.rs (lines 1449-1462) and crates/reify-expr/src/lib.rs (after adding the Orientation arm), replace `w.is_nan() || w.is_infinite() || x.is_nan() || x.is_infinite() || y.is_nan() || y.is_infinite() || z.is_nan() || z.is_infinite()` with `!w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite()`. Apply the same simplification to the Complex arm in reify-stdlib (lines 1449-1452): replace `re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite()` with `!re.is_finite() || !im.is_finite()`.\n\nis_finite() returns false for both NaN and infinity in a single intrinsic call, halving the predicate cost on the hot path. sanitize_value has 40+ call sites and is called on every numeric stdlib return.\n\nMemory hints: search \"sanitize_value is_finite performance\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:39.794Z",
+        "updatedAt": "2026-04-07T16:03:57.174Z",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -19125,11 +19125,11 @@
         "description": "The `get_diagnostics_maps_warning_fields_to_diagnostic_info` test in gui/src-tauri/src/tests/mcp_context_tests.rs had span assertions and `code.is_none()` removed during task 839 with the rationale that engine_tests covers them. However, these tests exercise different layers: the engine test validates DiagnosticData, while this test validates the mapping closure at mcp_context.rs:138-147 that produces DiagnosticInfo. A field-swap bug in the closure (e.g., `line: d.column`) would go undetected.\n\nChanges needed:\n1. Add back to `get_diagnostics_maps_warning_fields_to_diagnostic_info`: `assert!(first.line >= 1)`, `assert!(first.end_line >= first.line)`, and `assert!(first.code.is_none())`\n2. In `get_diagnostics_clean_source_returns_empty`: add `.expect(\"get_diagnostics should not fail for a healthy lock\")` or `assert!(result.is_ok())` to preserve the lock-health intent of the removed `get_diagnostics_delegates_to_engine` test\n\nmemory_hints: search(\"MCP context diagnostic mapping closure DiagnosticInfo\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:34.259Z",
+        "updatedAt": "2026-04-07T16:03:57.197Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -19276,7 +19276,13 @@
         "metadata": {
           "modules": [
             "gui/src-tauri"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden Tauri LSP bridge parameter validation tests"
+            ]
+          }
         }
       },
       {
@@ -19346,11 +19352,11 @@
         "description": "In tests/sync_comments_test.sh, add checks that fn sanitize_value (or the referenced function name) actually exists in both the EXPR and STDLIB files, so stale SYNC comments are caught when functions are renamed.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:40.180Z",
+        "updatedAt": "2026-04-07T16:03:57.222Z",
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
@@ -19735,11 +19741,11 @@
         "description": "In crates/reify-types/src/value.rs, update 4 stale comments referencing 'to_bits' ordering to say 'total_cmp()' / 'IEEE 754 total order' in: value_ord_within_real_and_nan, value_orientation_ord_within_type, value_frame_ord_same_origin_compare_basis. Add ordering comment to Orientation Ord arm matching Scalar/Complex style.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:15.473Z",
+        "updatedAt": "2026-04-07T16:03:57.251Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19752,11 +19758,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Replace `let _ = pos.cmp(&neg)` in value_ord_neg_zero with `assert!(neg < pos)`. (2) Test NaN ordering with two independently constructed NaN values. (3) Add BTreeSet edge-case test with NEG_INFINITY, -1.0, -0.0, 0.0, 1.0, INFINITY.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:03.215Z",
+        "updatedAt": "2026-04-07T16:03:57.276Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19775,11 +19781,11 @@
         "description": "In crates/reify-eval/src/lib.rs: (1) Collect preserved_counts removals in a Vec during collection sub loop and apply after loop (fixes shared-count_cell bug where first removal causes second sub to fall back to 0). (2) Move removal to after snapshot commit for transaction safety. (3) Add retain() to prune orphaned preserved_counts after computing active subs.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:29.073Z",
+        "updatedAt": "2026-04-07T16:03:57.300Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -19826,11 +19832,11 @@
         "description": "12 reviewer suggestions from tasks 854/889 review. All in crates/reify-types/src/value.rs:\n\n1. Fix 3 stale to_bits() comments (lines ~2068, ~3419, ~4483) — now uses total_cmp()\n2. value_ord_neg_zero: replace no-op `let _ = pos.cmp(&neg)` with actual assert!(neg < pos)\n3. NaN self-comparison: add second independent NaN binding for honest regression guard\n4. Add value_ord_range_negative_bounds test (Range delegates to Value::cmp but has no negative test)\n5. Add BTreeSet test with -0.0, 0.0, NEG_INFINITY, INFINITY boundary cases\n6. Add Orientation Ord comment: w→x→y→z component priority chain\n7. Extract orient() helper to reduce Orientation test from 70 to ~30 lines\n8. Consolidate redundant value_ord_real_negative_vs_positive and value_ord_real_negative_magnitude into BTreeSet test\n9. Deduplicate to_bits() explanation comment (repeated 3x) into single module-level doc comment\n10. Separate PartialEq assertion from Ord test in value_ord_real_nan_and_neg_zero_still_consistent\n\nReviewers: architect_reviewer, test_analyst, robustness, reuse_auditor",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:42.424Z",
+        "updatedAt": "2026-04-07T16:03:57.326Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19849,11 +19855,11 @@
         "description": "Review suggestions from task 832 (add_line_pair extraction). All changes in crates/reify-constraints/src/solvespace.rs:\n\n1. Fix doc comment entity count accuracy — add_point deduplicates shared endpoints, so 'Add 4 point entities' is not always true. Revise to say 'up to 4' and qualify dedup behavior.\n2. Consider a named return type (type alias or struct) for the (Slvs_hEntity, Slvs_hEntity) return to make positional meaning explicit.\n3. Add partial-mutation doc note — on Err, prior point entities are already registered in the builder. Document this side-effect contract.\n4. Add shared-endpoint dedup test — test with two lines sharing an endpoint, assert entity count is 5 (3 unique points + 2 line segments).\n5. Add entity-type assertion — verify returned handles are line-segment entities, not point entities.\n6. Improve error propagation coverage — test error at line_b.start or line_b.end (not just line_a.start) to confirm all four ? sites propagate errors.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:08.816Z",
+        "updatedAt": "2026-04-07T16:03:57.349Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19866,11 +19872,11 @@
         "description": "Review suggestions from task 832 (add_line_pair extraction). All changes in crates/reify-constraints/src/solvespace.rs:\n\n1. Fix doc comment entity count accuracy — add_point deduplicates shared endpoints, so 'Add 4 point entities' is not always true. Revise to say 'up to 4' and qualify dedup behavior.\n2. Consider a named return type (type alias or struct) for the (Slvs_hEntity, Slvs_hEntity) return to make positional meaning explicit.\n3. Add partial-mutation doc note — on Err, prior point entities are already registered in the builder. Document this side-effect contract.\n4. Add shared-endpoint dedup test — test with two lines sharing an endpoint, assert entity count is 5 (3 unique points + 2 line segments).\n5. Add entity-type assertion — verify returned handles are line-segment entities, not point entities.\n6. Improve error propagation coverage — test error at line_b.start or line_b.end (not just line_a.start) to confirm all four ? sites propagate errors.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:42.963Z",
+        "updatedAt": "2026-04-07T16:03:57.372Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19926,11 +19932,11 @@
         "description": "Revise module-level doc comment in crates/reify-runtime/src/concurrent_eval.rs to describe the observable poison-recovery contract rather than explaining why into_result() uses inline recovery vs helper methods.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:48.667Z",
+        "updatedAt": "2026-04-07T16:03:57.394Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -20062,11 +20068,11 @@
         "description": "In gui/src/utils/pathUtils.ts: (1) Replace decodeURIComponent with `new URL(p).pathname` (wrapped in try/catch) to correctly handle %2F and other edge cases. (2) Update JSDoc to mention percent-decoding behavior and add @example with encoded URI. In gui/src/__tests__/pathUtils.test.ts: (3) Add test that bare paths with %20 are NOT decoded. (4) Add reverse-ordering isSameFile test for percent-encoded URIs.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:08.453Z",
+        "updatedAt": "2026-04-07T16:03:57.416Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20085,11 +20091,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs: (1) Unify assert_orientation_approx and assert_orientation_approx_sign_insensitive into a single macro with tolerance parameter, eliminating duplication. (2) Add non-trivial quaternion test for sign_insensitive (not just negated identity). (3) Test per-component diagnostic for all 4 components (not just w). (4) Strengthen sign_insensitive_macro_rejects_wrong_value to check error message content. In crates/reify-cli/tests/cli_gui.rs: (5) Add test for extension validation firing before existence check.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:41.890Z",
+        "updatedAt": "2026-04-07T16:03:57.439Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -20120,11 +20126,11 @@
         "description": "In crates/reify-types/src/value.rs tests: (1) Fix stale 'line 968' reference (PartialEq is at line 976). (2) Unify test naming convention (value_ord_real_* vs value_ord_within_*). (3) Pin concrete ordering direction in value_ord_real_negative_zero (assert pos.cmp(&neg) == Greater). (4) Add Ord tests for non-canonical NaN bit patterns (negative NaN via f64::from_bits, signaling NaN).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:49.963Z",
+        "updatedAt": "2026-04-07T16:03:57.462Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -20198,11 +20204,11 @@
         "description": "Follow-up from task 923 review. Seven suggestions across 5 reviewers, all in crates/reify-stdlib/src/lib.rs:\n\n1. **Tolerance API inconsistency** (architect, reuse_auditor): `assert_orientation_approx!` hardcodes 1e-12 while `assert_orientation_approx_sign_insensitive!` takes `$tol`. Add optional tolerance arm to the strict macro for symmetry.\n\n2. **Degenerate negative-sign test** (test_analyst): `sign_insensitive_macro_negative` uses (-1,0,0,0) where x/y/z are trivially zero. Add a test with a fully non-trivial quaternion (e.g. negated 45-degree rotation).\n\n3. **Per-component diagnostic only validates w:** (test_analyst): Add catch_unwind tests for x, y, z component labels too.\n\n4. **Rejection test ignores message** (test_analyst): `sign_insensitive_macro_rejects_wrong_value` only checks `is_err()`. Inspect the panic message content.\n\n5. **Non-Orientation arm untested** (test_analyst): Add a catch_unwind test passing a non-Orientation value to the sign-insensitive macro.\n\n6. **$tol multiple evaluation** (robustness): Macro evaluates `$tol` 9 times. Capture into a local binding for hygiene.\n\n7. **Shared inner helper macro** (reuse_auditor): Both macros repeat per-component abs-diff logic. Extract a private helper macro.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:16.759Z",
+        "updatedAt": "2026-04-07T16:03:57.493Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -20291,11 +20297,11 @@
         "description": "Some JSON-RPC implementations send `params: null` instead of `params: {}` for notifications with no meaningful payload (like `initialized`). The LSP spec defines `InitializedParams` as an empty interface `{}`, but `serde_json::from_value::<InitializedParams>(Value::Null)` returns `Err`, causing the bridge to reject a technically-valid notification.\n\nFix: Normalize `Value::Null` to `Value::Object(Default::default())` for the `initialized` arm (and any other notification arms with empty-param types) before deserialization. Add a test asserting that `json!(null)` is handled gracefully for `initialized`.\n\nExample guard:\n```rust\n\"initialized\" => {\n    let params = if params.is_null() { json!({}) } else { params };\n    let p: InitializedParams = serde_json::from_value(params)\n        .map_err(|e| format!(\"initialized params error: {e}\"))?;\n    server.initialized(p).await;\n    Ok(Value::Null)\n}\n```\n\nMemory hints: search \"initialized params strict deserialization\", search \"LSP malformed-params handling\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:12.425Z",
+        "updatedAt": "2026-04-07T16:03:57.517Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -20430,7 +20436,7 @@
         "description": "Address reviewer suggestions from task 855 review, all in crates/reify-constraints/src/solvespace.rs test module:\n\n- S2: Consider removing meta-tests (missing_coord_setup_returns_expected_tuple, assert_missing_err_passes_on_matching_error) — they test trivial helpers already exercised by 3 real tests (~50 lines of test code for ~30 lines of helper)\n- S3: Use vcid() from reify-test-support instead of ValueCellId::new() in missing_coord_setup, matching convention used in integration tests\n- S4: Rename missing_coord_setup(\"Fixed\", \"y\") field arg — \"y\" is used as x-coordinate in add_point_propagates_missing_value_error\n- S5: Consider adding context parameter to assert_missing_err panic message, or add #[should_panic] negative test\n- S6: builder.params private field access in meta-test couples to internal field name\n\nAll suggestions are in the same file and can be addressed together.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20442,7 +20448,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-04-07T14:06:24.187Z"
+        "updatedAt": "2026-04-07T16:03:57.541Z"
       },
       {
         "id": "990",
@@ -20450,7 +20456,7 @@
         "description": "Three #[ignore = \"requires task 153\"] tests in crates/reify-eval/tests/self_keyword_eval.rs match dimensioned scalars against Value::Real(f64), but the codebase stores 5mm/3mm/7mm as Value::Scalar { si_value, .. }. When these tests are un-ignored they will panic with cryptic mismatches. Task 153 is marked done but the tests remain ignored — fix the patterns first so they can be enabled cleanly.\n\nAffected tests at lines 80, 126, 173:\n- self_param_eval_produces_correct_value\n- self_in_let_arithmetic_eval\n- self_in_constraint_eval_satisfied (x-value assertion)\n\nReplace `Value::Real(t)` / `Value::Real(v)` match arms with `Value::Scalar { si_value: t, .. }` / `Value::Scalar { si_value: v, .. }`. Reference patterns: incremental.rs:1097 and occurrence_eval.rs:56 use `Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10`.\n\nAlso: change the `1e-15` tolerance check at line 92-95 to `1e-9` to match the surrounding assertions and prevent fragility from float operations in the eval path.\n\nOnce the patterns are correct, also remove the #[ignore] guards if task 153's compiler support is genuinely complete.\n\nSource: review escalations esc-154-29, esc-154-30 (auto-dismissed apr 1, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -20462,7 +20468,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-07T14:05:53.088Z"
+        "updatedAt": "2026-04-07T16:03:57.568Z"
       },
       {
         "id": "991",
@@ -20544,7 +20550,7 @@
         "description": "Unifying MAX_WAIT_SECS=120 in scripts/tree-sitter-generate.sh for both the mkdir-lock attempt count and the stale-age threshold collapsed the original 75s/120s safety buffer to zero — stale recovery now never fires for locks that became stale during our wait. Separately, the kill-based timeout fallback orphans `sleep 60` subprocesses (reparented to PID 1) and lacks SIGKILL escalation if tree-sitter generate ignores SIGTERM.\n\n## Stale-lock regression (the central issue, lines 84, 93)\nRestore independent thresholds: keep MAX_WAIT_SECS=120 for flock timeout AND for the stale age comparison, but use a separate MAX_LOCK_ATTEMPTS=75 for the mkdir poll loop count. The current code makes both equal to 120, eliminating the original ~45-second safety buffer where a process started near the same time as our wait could legitimately hold the lock for ~120s without being recovered as stale. Also: change `if [ \"$_lock_age\" -gt $MAX_WAIT_SECS ]` to `-ge` so a lock exactly at the threshold is recoverable.\n\n## Kill-fallback orphans + signal escalation (line 148)\nIn the kill-based timeout subshell (`( sleep 60 && kill $_gen_pid ) &`), capture the sleep PID inside the subshell so cancellation can target both the subshell and its sleep child. Or use process-group termination (`set -m; ...; kill -- -$_timer_pid`).\n\nAfter SIGTERM, sleep briefly and SIGKILL if tree-sitter generate is still alive (`kill $_gen_pid; sleep 2; kill -9 $_gen_pid 2>/dev/null || true`). Also remove partial output files (parser.c, grammar.json, node-types.json) on the timeout error path to prevent leaving an unfinished parser.c on disk.\n\n## .gitignore\nAdd `tree-sitter-reify/src/.generate.lock.d` (or the glob `tree-sitter-reify/src/.generate.lock*`) to .gitignore so the mkdir lock directory cannot leak as untracked state on POSIX systems where the script crashes mid-lock.\n\nSource: review escalation esc-751-42 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20567,7 +20573,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:03:32.624Z"
+        "updatedAt": "2026-04-07T16:03:57.590Z"
       },
       {
         "id": "995",
@@ -20603,7 +20609,7 @@
         "description": "The bridge.rs doc comment promises 'Notifications do not silently succeed on bad params; the error is propagated to the caller', but the `initialized` arm in crates/reify-lsp/src/bridge.rs:117-119 hardcodes `InitializedParams {}` and discards `params`. `handle_request(\"initialized\", json!(42))` returns Ok(Value::Null) instead of Err(...) — directly contradicting the contract. The malformed-params notification test only covers didOpen, so this divergence is invisible.\n\n## Fix the contract divergence\nIn crates/reify-lsp/src/bridge.rs:117-119, deserialize params for `initialized` to match all other notification arms:\n```rust\nlet _: InitializedParams = serde_json::from_value(params)\n    .map_err(|e| format!(\"initialized params error: {e}\"))?;\nserver.initialized(InitializedParams {}).await\n```\nAlternatively, if treating `initialized` as exempt is intentional, explicitly carve it out in the doc comment.\n\n## Tests (crates/reify-lsp/tests/in_process_bridge.rs)\n1. Add `notification_initialized_with_malformed_params_returns_error` mirroring the existing didOpen test (or, if exempt path is chosen, document and assert the actual Ok(Value::Null) behaviour).\n2. Add malformed-params tests for `textDocument/didChange` and `textDocument/didClose` (asymmetric coverage today — only didOpen is exercised).\n3. Add a `shutdown_returns_ok_null` test (currently shutdown arm has zero coverage).\n4. Tighten `notification_with_malformed_params_returns_error` to assert the error string contains \"didOpen params error\".\n5. Tighten `unsupported_method_returns_error` to assert the error message contains \"unsupported LSP method:\".\n\nSource: review escalation esc-868-50 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20623,7 +20629,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:06:39.577Z"
+        "updatedAt": "2026-04-07T16:03:57.613Z"
       },
       {
         "id": "997",
@@ -20736,7 +20742,7 @@
         "description": "Three small test-strengthening tasks bundled (low individual cost):\n\n## (1) type_alias_tests: assert documented invariant for empty-RHS recovery\ncrates/reify-syntax/tests/type_alias_tests.rs:parse_type_alias_empty_rhs_no_panic comment explicitly states `errors` is expected to be empty (Tree-sitter silent recovery), but never asserts it. A future grammar change emitting parse errors for `type Foo =` would go undetected.\n\nImmediately after capturing errors, add:\n```rust\nassert!(errors.is_empty(), \"expected no parse errors for empty-RHS recovery, got: {errors:?}\");\n```\n\nSource: esc-758-40.\n\n## (2) deferred() helper: missing reject() argument coverage\ngui/src/__tests__/test-utils.test.ts: deferred<T>().reject takes `reason?: unknown`. Current coverage only tests reject(new Error(...)). Edge cases like reject() with no argument and reject('string') are unverified.\n\nAdd tests for:\n- d.reject() with no argument → `await expect(d.promise).rejects.toBeUndefined()`\n- d.reject('string reason') → rejects with the string primitive\n\nSource: esc-813-19 / esc-813-23.\n\n## (3) lsp_request_impl null-params test: avoid vacuously-passing if-let\ngui/src-tauri/src/tests/lsp_bridge_tests.rs:lsp_request_impl_accepts_valid_json_null_literal wraps its body in `if let Err(ref e) = result { ... }`. If result is Ok(_), zero assertions execute and the test passes silently.\n\nMake the assertion unconditional:\n```rust\nlet err = result.unwrap_err();\nassert!(!err.contains(\"invalid JSON params\"), \"null literal should not trigger a JSON parse error, got: {err}\");\n```\n\nAdd a test case for `\"\"` (empty string params, a realistic accidental input).\n\nSource: esc-869-84.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20752,7 +20758,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-04-07T14:04:45.142Z"
+        "updatedAt": "2026-04-07T16:03:57.635Z"
       },
       {
         "id": "1002",
@@ -20781,7 +20787,7 @@
         "description": "crates/reify-eval/src/lib.rs has 2 instances of `values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef)` for guard cells:\n- Line 1767 (initial guard_state_hash computation)\n- Line 2042 (edit_param guard fingerprint recomputation in topology_fingerprint update)\n\nThese use the silent default pattern that violates feedback_silent_defaults_pattern.md. The original integration review (esc-review-20260401T113255-25) flagged a third site that has since been removed/refactored.\n\n## Design question\nDuring the FIRST evaluation pass, guard cells may not have been evaluated yet, so Undef is the correct 'undetermined' state. But during re-evaluation (line 2042 — edit_param path), all guard cells SHOULD have values from the prior snapshot.\n\nDecide one of:\n- (a) Replace `.unwrap_or(Value::Undef)` on line 2042 with `.expect(\"guard cell must be present after initial evaluation\")` — and keep line 1767 as-is with an explicit comment exempting it.\n- (b) Both sites are correct as-is, but each needs an explicit comment explaining why Undef is the correct fallback (when can guard_cell legitimately be missing here?).\n\nInvestigate what happens when a guard cell is missing during re-evaluation in practice — does it currently cause silent wrong topology fingerprints? Add a regression test for whichever direction is chosen.\n\n## Related convention\nfeedback_silent_defaults_pattern.md: Errors must be noisy — never silently swallow logic errors with unwrap_or(Value::Undef). Recent fix in commit 3c99ec707 removed a similar silent default from Pattern eval_arg.\n\nSource: integration-review escalation esc-review-20260401T113255-25 (auto-dismissed when orchestrator restarted).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20793,7 +20799,7 @@
             "crates/reify-eval/src"
           ]
         },
-        "updatedAt": "2026-04-07T14:06:37.182Z"
+        "updatedAt": "2026-04-07T16:03:57.659Z"
       },
       {
         "id": "1004",
@@ -20993,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:03:51.890Z",
+      "lastModified": "2026-04-07T16:03:57.659Z",
       "taskCount": 1014,
       "completedCount": 721,
       "tags": [
