@@ -732,6 +732,20 @@ fn compute_numerical_gradient_at_point(
         _ => false,
     };
 
+    // Warn in debug builds when arity doesn't match and calling convention is
+    // decomposed. An arity mismatch silently produces Undef via apply_lambda;
+    // the warning surfaces the root cause during development.
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda {
+        if !single_point_param && params.len() != n {
+            eprintln!(
+                "[reify-expr] gradient: lambda has {} params but point has {} coords",
+                params.len(),
+                n
+            );
+        }
+    }
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
