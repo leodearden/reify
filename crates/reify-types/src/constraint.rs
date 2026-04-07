@@ -190,6 +190,28 @@ mod tests {
     }
 
     #[test]
+    fn auto_param_with_free_flag() {
+        use crate::identity::ValueCellId;
+        use crate::ty::Type;
+
+        let strict = AutoParam {
+            id: ValueCellId::new("Bracket", "width"),
+            param_type: Type::length(),
+            bounds: Some((0.01, 1.0)),
+            free: false,
+        };
+        assert!(!strict.free);
+
+        let free = AutoParam {
+            id: ValueCellId::new("Bracket", "height"),
+            param_type: Type::length(),
+            bounds: Some((0.01, 1.0)),
+            free: true,
+        };
+        assert!(free.free);
+    }
+
+    #[test]
     fn auto_param_without_bounds() {
         use crate::identity::ValueCellId;
         use crate::ty::Type;
