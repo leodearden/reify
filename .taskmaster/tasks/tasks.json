@@ -21100,6 +21100,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1022,
+        "title": "Deduplicate path literal in build_logic_tests.rs file-reading tests",
+        "description": "Whether option A or B is chosen for the test-merge restructuring, the path expression `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` appears at least twice in tree-sitter-reify/tests/build_logic_tests.rs. Extract to a module-level constant:\n\n```rust\nconst THIS_FILE: &str = concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\");\n```\n\nReplace all occurrences. If the complete merge (option B) is taken in the restructuring task, this literal will exist only once after the merge and the const is optional but still cleaner.\n\nThis task depends on the test-merge restructuring task being completed first so the final structure is known.\n\nmemory_hints: search \"build_logic_tests path literal\" in reify project",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21112,7 +21123,7 @@
       ],
       "created": "2026-04-07T16:31:12.816Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T16:31:17.678Z"
+      "updated": "2026-04-07T16:31:22.037Z"
     }
   }
 }
