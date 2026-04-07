@@ -33,4 +33,26 @@ describe('errorMessage', () => {
   it('returns "Unknown error" for whitespace-only string input', () => {
     expect(errorMessage('   ')).toBe('Unknown error');
   });
+
+  it('returns .message for plain object with string .message property', () => {
+    expect(errorMessage({ message: 'structured error' })).toBe('structured error');
+    expect(errorMessage({ code: 404, message: 'Not found' })).toBe('Not found');
+  });
+
+  it('returns "Unknown error" for plain object with empty string .message', () => {
+    expect(errorMessage({ message: '' })).toBe('Unknown error');
+  });
+
+  it('falls through to String() for plain object with non-string .message', () => {
+    expect(errorMessage({ message: null })).toBe('[object Object]');
+    expect(errorMessage({ message: 42 })).toBe('[object Object]');
+  });
+
+  it('returns "Unknown error" for plain object with whitespace-only .message', () => {
+    expect(errorMessage({ message: '   ' })).toBe('Unknown error');
+  });
+
+  it('falls through to String() for bare object', () => {
+    expect(errorMessage({})).toBe('[object Object]');
+  });
 });
