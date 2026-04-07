@@ -1,16 +1,39 @@
+pub mod cache;
+pub mod deps;
 pub mod graph;
 pub mod snapshot;
 
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_types::{
-    ConstraintChecker, ConstraintInput, Diagnostic, ExportFormat, GeometryHandleId,
-    GeometryKernel, Satisfaction, ValueMap,
+    ConstraintChecker, ConstraintInput, DeterminacyState, Diagnostic, ExportFormat,
+    GeometryHandleId, GeometryKernel, Satisfaction, ValueCellId, ValueMap, VersionId,
 };
+
+use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+use crate::deps::DependencyTrace;
 
 /// The engine facade — main entry point for evaluation.
 pub struct Engine {
     constraint_checker: Box<dyn ConstraintChecker>,
     geometry_kernel: Option<Box<dyn GeometryKernel>>,
+    cache: CacheStore,
+    /// Overridden param values (set by set_param_and_invalidate).
+    param_overrides: std::collections::HashMap<ValueCellId, reify_types::Value>,
+}
+
+/// Statistics about cache behavior during a cached evaluation.
+#[derive(Debug, Clone, Default)]
+pub struct CacheStats {
+    pub cache_hits: usize,
+    pub cache_misses: usize,
+    pub early_cutoffs: usize,
+}
+
+/// Result of a cached evaluation, wrapping EvalResult with stats.
+#[derive(Debug)]
+pub struct CachedEvalResult {
+    pub eval_result: EvalResult,
+    pub stats: CacheStats,
 }
 
 /// Result of evaluating a compiled module.
@@ -53,7 +76,28 @@ impl Engine {
         Self {
             constraint_checker,
             geometry_kernel,
+            cache: CacheStore::new(),
+            param_overrides: std::collections::HashMap::new(),
         }
+    }
+
+    /// Access the cache store (for testing/inspection).
+    pub fn cache_store(&self) -> &CacheStore {
+        &self.cache
+    }
+
+    /// Set a parameter override and invalidate cache entries that depend on it.
+    pub fn set_param_and_invalidate(
+        &mut self,
+        param: &ValueCellId,
+        value: reify_types::Value,
+    ) {
+        self.param_overrides.insert(param.clone(), value);
+        // Mark the param's own cache entry as dirty
+        let param_node = NodeId::Value(param.clone());
+        self.cache.invalidate(&param_node);
+        // Mark all nodes that depend on this param as dirty
+        self.cache.invalidate_dependents(std::slice::from_ref(param));
     }
 
     /// Evaluate a compiled module, returning computed values.
@@ -87,6 +131,151 @@ impl Engine {
         }
 
         EvalResult { values, diagnostics }
+    }
+
+    /// Evaluate a compiled module with caching and early cutoff.
+    ///
+    /// On first call (cold start), behaves like eval() but populates the cache.
+    /// On subsequent calls with the same version, uses version fast path.
+    /// On calls with a new version after invalidation, re-evaluates dirty nodes
+    /// and uses early cutoff to avoid propagating unchanged results.
+    pub fn eval_cached(
+        &mut self,
+        module: &CompiledModule,
+        version: VersionId,
+    ) -> CachedEvalResult {
+        let mut values = ValueMap::new();
+        let diagnostics = Vec::new();
+        let mut stats = CacheStats::default();
+
+        for template in &module.templates {
+            // First pass: evaluate Param defaults (or use overrides)
+            for cell in &template.value_cells {
+                if cell.kind == ValueCellKind::Param {
+                    let node_id = NodeId::Value(cell.id.clone());
+
+                    // Check version fast path
+                    if let Some(CachedResult::Value(val, _)) =
+                        self.cache.try_fast_path(&node_id, version)
+                    {
+                        values.insert(cell.id.clone(), val);
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    // Check if cache entry still exists and is not dirty.
+                    // For params without overrides, we can reuse cached values.
+                    if !self.param_overrides.contains_key(&cell.id)
+                        && !self.cache.is_dirty(&node_id)
+                        && let Some(entry) = self.cache.get(&node_id)
+                        && let CachedResult::Value(ref val, _) = entry.result
+                    {
+                        let val = val.clone();
+                        values.insert(cell.id.clone(), val);
+                        let trace = entry.dependency_trace.clone();
+                        let result = entry.result.clone();
+                        self.cache.record_evaluation(
+                            node_id,
+                            result,
+                            version,
+                            trace,
+                        );
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    stats.cache_misses += 1;
+
+                    // Use override if available, otherwise evaluate default
+                    let val = if let Some(override_val) = self.param_overrides.get(&cell.id) {
+                        override_val.clone()
+                    } else if let Some(ref expr) = cell.default_expr {
+                        reify_expr::eval_expr(expr, &values)
+                    } else {
+                        reify_types::Value::Undef
+                    };
+
+                    // Build dependency trace (params have no reads - they are roots)
+                    let trace = DependencyTrace::default();
+
+                    let cached_result =
+                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                    let outcome =
+                        self.cache
+                            .record_evaluation(node_id, cached_result, version, trace);
+                    if outcome == EvalOutcome::Unchanged {
+                        stats.early_cutoffs += 1;
+                    }
+
+                    values.insert(cell.id.clone(), val);
+                }
+            }
+
+            // Second pass: evaluate Let bindings
+            for cell in &template.value_cells {
+                if cell.kind == ValueCellKind::Let
+                    && let Some(ref expr) = cell.default_expr
+                {
+                    let node_id = NodeId::Value(cell.id.clone());
+
+                    // Check version fast path
+                    if let Some(CachedResult::Value(val, _)) =
+                        self.cache.try_fast_path(&node_id, version)
+                    {
+                        values.insert(cell.id.clone(), val);
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    // Check if cache entry still exists and is not dirty.
+                    // If so, the node's dependencies haven't changed, so we
+                    // can reuse the cached result and update its basis_version.
+                    if !self.cache.is_dirty(&node_id)
+                        && let Some(entry) = self.cache.get(&node_id)
+                        && let CachedResult::Value(ref val, _) = entry.result
+                    {
+                        let val = val.clone();
+                        values.insert(cell.id.clone(), val);
+                        let trace = entry.dependency_trace.clone();
+                        let result = entry.result.clone();
+                        self.cache.record_evaluation(
+                            node_id,
+                            result,
+                            version,
+                            trace,
+                        );
+                        stats.cache_hits += 1;
+                        continue;
+                    }
+
+                    stats.cache_misses += 1;
+                    self.cache.clear_dirty(&node_id);
+                    let val = reify_expr::eval_expr(expr, &values);
+
+                    // Build dependency trace from expression refs
+                    let trace = extract_dependency_trace(expr);
+
+                    let cached_result =
+                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                    let outcome =
+                        self.cache
+                            .record_evaluation(node_id, cached_result, version, trace);
+                    if outcome == EvalOutcome::Unchanged {
+                        stats.early_cutoffs += 1;
+                        // Early cutoff: clear dirty flags on nodes that
+                        // depend on this cell, since its result hasn't changed.
+                        self.cache.clear_dependents_dirty(&cell.id);
+                    }
+
+                    values.insert(cell.id.clone(), val);
+                }
+            }
+        }
+
+        CachedEvalResult {
+            eval_result: EvalResult { values, diagnostics },
+            stats,
+        }
     }
 
     /// Evaluate and check constraints.
@@ -306,6 +495,44 @@ fn compile_geometry_op(
                     })
                 }
             }
+        }
+    }
+}
+
+/// Extract a dependency trace from a compiled expression by collecting all ValueRef ids.
+fn extract_dependency_trace(expr: &reify_types::CompiledExpr) -> DependencyTrace {
+    let mut reads = Vec::new();
+    collect_value_refs(expr, &mut reads);
+    DependencyTrace { reads }
+}
+
+fn collect_value_refs(expr: &reify_types::CompiledExpr, out: &mut Vec<ValueCellId>) {
+    use reify_types::CompiledExprKind;
+    match &expr.kind {
+        CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ValueRef(id) => {
+            out.push(id.clone());
+        }
+        CompiledExprKind::BinOp { left, right, .. } => {
+            collect_value_refs(left, out);
+            collect_value_refs(right, out);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            collect_value_refs(operand, out);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs(arg, out);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_value_refs(condition, out);
+            collect_value_refs(then_branch, out);
+            collect_value_refs(else_branch, out);
         }
     }
 }
