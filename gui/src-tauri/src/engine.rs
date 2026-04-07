@@ -298,6 +298,11 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Build the newline table once (O(M)) so each span lookup is O(log M).
+        let line_offsets = build_line_offsets(source);
+        // Clone file_path once; move it into the closure to avoid re-cloning the source String.
+        let file_path = file_path.to_string();
+
         compiled
             .diagnostics
             .iter()
@@ -305,8 +310,10 @@ impl EngineSession {
                 // Use the first label's span if available; otherwise default to (1,1,1,1).
                 let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
                 {
-                    let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
-                    let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
+                    let (l, c) =
+                        offset_to_line_col_fast(&line_offsets, label.span.start as usize);
+                    let (el, ec) =
+                        offset_to_line_col_fast(&line_offsets, label.span.end as usize);
                     (l as u32, c as u32, el as u32, ec as u32)
                 } else {
                     (1, 1, 1, 1)
@@ -318,7 +325,7 @@ impl EngineSession {
                     column,
                     end_line,
                     end_column,
-                    severity: format!("{}", diag.severity),
+                    severity: diag.severity.to_string(),
                     message: diag.message.clone(),
                     code: None,
                 }
