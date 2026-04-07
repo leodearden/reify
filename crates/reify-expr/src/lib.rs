@@ -813,6 +813,34 @@ fn compute_numerical_gradient_at_point(
         populate(&mut work_args, &work_coords);
         let f_plus = apply_lambda(lambda, &work_args, ctx);
 
+        // On the first axis, verify that the lambda's runtime return dimension
+        // matches the declared codomain (via codomain_type). This catches callers
+        // who pass a mismatched codomain_type (e.g., declared MASS but returns Real).
+        //
+        // result_dim is the gradient's per-component dimension (codomain/domain),
+        // but f_plus comes from the original lambda, so its dimension is the
+        // ORIGINAL codomain's dimension. Reconstruct it: for dimensioned domains,
+        // original_codomain = result_dim * domain_dim; for dimensionless domains
+        // (domain_dim = None), original_codomain = result_dim.
+        #[cfg(debug_assertions)]
+        if i == 0 {
+            let runtime_dim = f_plus.dimension();
+            let expected_codomain_dim = match domain_dim {
+                Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => {
+                    result_dim.mul(&dd)
+                }
+                _ => result_dim,
+            };
+            assert_eq!(
+                runtime_dim,
+                expected_codomain_dim,
+                "codomain_type does not match runtime return dimension: \
+                 declared codomain expects dimension {:?} but lambda returned {:?}",
+                expected_codomain_dim,
+                runtime_dim,
+            );
+        }
+
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
         populate(&mut work_args, &work_coords);
