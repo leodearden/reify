@@ -1957,3 +1957,81 @@ fn e2e_function_with_structure_unchanged() {
     assert_eq!(template.constraints.len(), 3, "expected 3 constraints");
     assert_eq!(template.realizations.len(), 1, "expected 1 realization");
 }
+
+/// Compile `param x: Scalar = auto(free)` → ValueCellKind::Auto { free: true }.
+#[test]
+fn compile_auto_free_param() {
+    let source = r#"structure S {
+    param x: Scalar = auto(free)
+    param y: Scalar = 5mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 2);
+
+    // x should be Auto { free: true }
+    let x = &template.value_cells[0];
+    assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) param should compile to Auto {{ free: true }}"
+    );
+    assert!(x.kind.is_auto_free(), "auto(free) param should be is_auto_free()");
+    assert!(
+        x.default_expr.is_none(),
+        "auto(free) param should have no default_expr"
+    );
+
+    // y should be Param with a default_expr
+    let y = &template.value_cells[1];
+    assert_eq!(y.id, reify_types::ValueCellId::new("S", "y"));
+    assert_eq!(y.kind, ValueCellKind::Param);
+    assert!(
+        y.default_expr.is_some(),
+        "normal param should have default_expr"
+    );
+}
+
+/// Compile bare `auto` still produces Auto { free: false }.
+#[test]
+fn compile_bare_auto_remains_strict() {
+    let source = r#"structure S {
+    param x: Scalar = auto
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    let x = &template.value_cells[0];
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should produce Auto {{ free: false }}"
+    );
+    assert!(!x.kind.is_auto_free(), "bare auto should not be is_auto_free()");
+}
