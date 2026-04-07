@@ -1375,3 +1375,100 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
 
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
 }
+
+// --- Task 837 step-9: multibyte UTF-8 cross-validation tests ---
+
+/// offset_to_line_col_fast must match byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 2-byte UTF-8 sequences.
+///
+/// "héllo\nwörld": 'é' (U+00E9) = 2 bytes; 'ö' (U+00F6) = 2 bytes.
+/// The old byte-arithmetic implementation computes `offset - newline_pos` which
+/// gives byte distance, not codepoint count.  The new implementation must
+/// compute `source[line_start..offset].chars().count() + 1`.
+///
+/// Specific regression anchor:
+///   byte offset 3 = the first 'l' after 'é'.
+///   codepoint column = 3 (h=1, é=2, l=3) — NOT 4 (which byte distance gives).
+#[test]
+fn offset_to_line_col_fast_matches_original_multibyte_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    let line_offsets = build_line_offsets(source);
+    // Iterate only char-boundary offsets.
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "2-byte UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // Also check the EOF position (one past last byte).
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "2-byte UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+}
+
+/// Targeted assertion: byte offset 3 in "héllo\nwörld" must give column 3
+/// (codepoints h=1, é=2, l=3), NOT column 4 (byte distance from start).
+#[test]
+fn offset_to_line_col_fast_two_byte_char_column_is_codepoint_not_byte() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    // 'é' occupies bytes 1..=2; the 'l' following it starts at byte 3.
+    let line_offsets = build_line_offsets(source);
+    // col should be 3 (h,é,l = 3 codepoints), not 4 (byte distance 3 → +1=4).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 3),
+        (1, 3),
+        "byte 3 ('l' after 'é') should have codepoint column 3, not byte-based 4"
+    );
+    // 'r' on line 2: 'ö' at bytes 8..=9, so 'r' at byte 10.
+    // Codepoints on line 2 before 'r': w=1, ö=2  → 'r' = col 3.
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 10),
+        (2, 3),
+        "byte 10 ('r' after 'ö') should have codepoint column 3, not byte-based 4"
+    );
+}
+
+/// offset_to_line_col_fast matches byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 3-byte CJK UTF-8 sequences.
+///
+/// "ab\n你好world": '你' (U+4F60) = 3 bytes; '好' (U+597D) = 3 bytes.
+/// 'w' is the 3rd codepoint on line 2 (you=1, hao=2, w=3).
+/// Old byte arithmetic would give col = (9 - 2) = 7, which is wrong.
+#[test]
+fn offset_to_line_col_fast_matches_original_cjk_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "ab\n\u{4F60}\u{597D}world";
+    let line_offsets = build_line_offsets(source);
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "CJK UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // EOF check.
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "CJK UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+    // Targeted: 'w' at byte 9 should be (2, 3), not byte-arithmetic (2, 7).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 9),
+        (2, 3),
+        "byte 9 ('w' after two 3-byte CJK chars) should have codepoint column 3"
+    );
+}
