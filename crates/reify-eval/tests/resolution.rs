@@ -1975,3 +1975,65 @@ fn auto_free_threads_to_solver_and_warns() {
         result.diagnostics
     );
 }
+
+#[test]
+fn auto_free_emits_warning_diagnostic() {
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    // Mock returns Solved { unique: false } — simulating free-auto resolution
+    let solver = SpyConstraintSolver::new_solved_non_unique(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // The resolved value should still be populated
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in values");
+    assert!(
+        matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected mm(5.0) = 0.005 SI, got {:?}",
+        thickness_val
+    );
+
+    // A Warning-level diagnostic should be emitted with the param name
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("resolved via auto(free)")
+                && d.message.contains("thickness")
+        });
+    assert!(
+        warning.is_some(),
+        "expected warning diagnostic about 'thickness' resolved via auto(free), got {:?}",
+        result.diagnostics
+    );
+    let warning = warning.unwrap();
+    assert_eq!(
+        warning.severity,
+        reify_types::Severity::Warning,
+        "expected Warning severity, got {:?}",
+        warning.severity
+    );
+}
