@@ -57,10 +57,9 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
-    fn event(&self, event: &tracing::Event<'_>) {
-        if event.metadata().level() == &tracing::Level::WARN {
-            self.warn_count.fetch_add(1, Ordering::Relaxed);
-        }
+    fn event(&self, _event: &tracing::Event<'_>) {
+        // enabled() guarantees only WARN events are dispatched here.
+        self.warn_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
