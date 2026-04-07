@@ -19809,7 +19809,13 @@
         "metadata": {
           "modules": [
             "crates/reify-types"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Clean up Value Ord total_cmp() test suite: stale comments, weak assertions, missing Range coverage"
+            ]
+          }
         }
       },
       {
@@ -20503,7 +20509,7 @@
         "description": "Unifying MAX_WAIT_SECS=120 in scripts/tree-sitter-generate.sh for both the mkdir-lock attempt count and the stale-age threshold collapsed the original 75s/120s safety buffer to zero — stale recovery now never fires for locks that became stale during our wait. Separately, the kill-based timeout fallback orphans `sleep 60` subprocesses (reparented to PID 1) and lacks SIGKILL escalation if tree-sitter generate ignores SIGTERM.\n\n## Stale-lock regression (the central issue, lines 84, 93)\nRestore independent thresholds: keep MAX_WAIT_SECS=120 for flock timeout AND for the stale age comparison, but use a separate MAX_LOCK_ATTEMPTS=75 for the mkdir poll loop count. The current code makes both equal to 120, eliminating the original ~45-second safety buffer where a process started near the same time as our wait could legitimately hold the lock for ~120s without being recovered as stale. Also: change `if [ \"$_lock_age\" -gt $MAX_WAIT_SECS ]` to `-ge` so a lock exactly at the threshold is recoverable.\n\n## Kill-fallback orphans + signal escalation (line 148)\nIn the kill-based timeout subshell (`( sleep 60 && kill $_gen_pid ) &`), capture the sleep PID inside the subshell so cancellation can target both the subshell and its sleep child. Or use process-group termination (`set -m; ...; kill -- -$_timer_pid`).\n\nAfter SIGTERM, sleep briefly and SIGKILL if tree-sitter generate is still alive (`kill $_gen_pid; sleep 2; kill -9 $_gen_pid 2>/dev/null || true`). Also remove partial output files (parser.c, grammar.json, node-types.json) on the timeout error path to prevent leaving an unfinished parser.c on disk.\n\n## .gitignore\nAdd `tree-sitter-reify/src/.generate.lock.d` (or the glob `tree-sitter-reify/src/.generate.lock*`) to .gitignore so the mkdir lock directory cannot leak as untracked state on POSIX systems where the script crashes mid-lock.\n\nSource: review escalation esc-751-42 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20526,7 +20532,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:02:18.933Z"
+        "updatedAt": "2026-04-07T14:02:29.114Z"
       },
       {
         "id": "995",
@@ -20772,7 +20778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:26.023Z",
+      "lastModified": "2026-04-07T14:02:29.114Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
