@@ -18752,11 +18752,11 @@
         "description": "The `conjugate` method in reify-expr (line ~1217) constructs `Value::Complex { re: *re, im: -im, dimension }` without any NaN/Inf guard. If the input has NaN/Inf components, the output is a poisoned Complex. The reify-stdlib counterpart (task 667) was already fixed to wrap conjugate output in sanitize_value, but reify-expr's copy was missed.\n\nWith the Complex arm now removed from reify-expr's sanitize_value (task 860), wrapping in sanitize_value won't help. Instead, add a direct non-finite guard before the Complex construction — similar to the phase method's pattern at line ~1190: check for NaN/Inf in re/im and return Undef early.\n\nThis is a pre-existing gap widened by the Complex arm removal.\n\nMemory hints: search \"conjugate sanitize_value NaN\", search \"task 667 conjugate\", entities: conjugate, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T05:00:37.981Z",
+        "updatedAt": "2026-04-07T13:34:14.181Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -18868,11 +18868,11 @@
         "description": "In `crates/reify-types/src/value.rs` around lines 2136-2138:\n1. Replace the backwards comment '// NaN.to_bits() == 0x7FF8000000000000, which is **less than** INFINITY...' with the correct fact: '// NaN.to_bits() == 0x7FF8000000000000 > INFINITY.to_bits() == 0x7FF0000000000000, so NaN sorts after infinity under to_bits() unsigned order.'\n2. Remove the stream-of-consciousness hedge '// Actually let's assert consistent direction using cmp symmetry:'\n3. Replace the weak antisymmetry assertion `assert_eq!(nan.cmp(&inf), inf.cmp(&nan).reverse(), ...)` with a concrete directional assertion: `assert_eq!(nan.cmp(&inf), Ordering::Greater, \"NaN (0x7FF8…) must sort after INFINITY (0x7FF0…) under to_bits() unsigned order\");`\n\nMemory hints: search \"Value total_cmp NaN infinity ordering to_bits\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:39:22.975Z",
+        "updatedAt": "2026-04-07T13:34:14.253Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -20646,7 +20646,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:34:14.135Z",
+      "lastModified": "2026-04-07T13:34:14.254Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
