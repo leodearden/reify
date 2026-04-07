@@ -58,6 +58,7 @@ describe('reifyGotoDefinition', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: () => ({ from: 0 }),
         },
@@ -115,6 +116,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: () => ({ from: 0 }),
         },
@@ -155,6 +157,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
@@ -199,6 +202,7 @@ describe('isConnected guard', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
@@ -237,6 +241,7 @@ describe('isConnected guard', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
