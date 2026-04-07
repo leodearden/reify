@@ -2135,28 +2135,7 @@ mod poison_recovery_extended {
 
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Poison the values lock
-        adapter.poison_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // Only values is poisoned; snapshot_values and results locks are healthy.
-        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
-        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
-        assert_eq!(
-            count, 1,
-            "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
-        );
+        assert_into_result_emits_one_warn(ConcurrentEvalAdapter::poison_values);
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
