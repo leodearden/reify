@@ -20721,7 +20721,7 @@
         "description": "Two GUI/sidecar follow-ups from review backlog:\n\n## (1) Sidecar errorMessage missing plain-object branch\ngui/sidecar/src/utils.ts:errorMessage uses the legacy single-line implementation with no plain-object .message handling. gui/src/utils/errorClassifier.ts has the richer 3-branch implementation. Structured error objects (e.g. from IPC) reaching the sidecar will become '[object Object]'.\n\nApply the same plain-object handling to gui/sidecar/src/utils.ts:errorMessage that exists in gui/src/utils/errorClassifier.ts. Either copy the 3-branch implementation, or extract a shared helper into a common module both packages import (preferred).\n\nAdd vitest cases for: `{ message: null }` falls through to String() → '[object Object]', `{ message: '   ' }` returns '   ' (whitespace passthrough), and the bare object case.\n\nSource: esc-671-34 / esc-671-36.\n\n## (2) Editor.test scrollToLocation: weak assertions + misleading comments\nIn gui/src/__tests__/Editor.test.tsx, the mismatch test asserts `head > 0` instead of the deterministic `head == 9`, so a regression that jumps to the wrong position would still pass. Comment misattributes head to column.\n\n- Replace `expect(view.state.selection.main.head).toBeGreaterThan(0)` with `expect(view.state.selection.main.head).toBe(9)` (deterministic from end_column=10, 0-indexed). Also assert anchor === 4.\n- Fix the misleading comment: head is computed from end_column, not column.\n- Split the dual-purpose 'mismatch is a no-op' test into two named tests: one positive same-file case, one mismatch.\n\nSource: esc-898-51.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20743,7 +20743,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:18:12.737Z"
+        "updatedAt": "2026-04-07T16:48:04.656Z"
       },
       {
         "id": "1001",
@@ -20881,11 +20881,11 @@
         "description": "Four related cleanup passes on crates/reify-expr/src/lib.rs gradient computation:\n\n1. Call site (lines ~135-148): capture the outer gradient field's `codomain_type` (rename `..` to `codomain_type: grad_codomain_type`) and pass it to `compute_numerical_gradient_at_point` instead of `inner_codomain_type`. Simplify the function body: remove the domain_dim division since it was already performed by `compute_gradient`.\n2. Line ~842: before `gradient_components.into_iter().next().unwrap_or(Value::Undef)`, add `debug_assert!(!gradient_components.is_empty(), \"gradient loop must push exactly one component for n==1\")` to document the loop invariant.\n3. Lines ~791-806: extract a `populate()` closure that clears work_args and fills it (branching on single_point_param), then call it in place of both duplicated blocks.\n4. After the first iteration, add `#[cfg(debug_assertions)] { let runtime_dim = f_plus.dimension(); assert_eq!(runtime_dim, result_dim, \"codomain_type does not match runtime return dimension\"); }` to catch callers passing a wrong codomain_type.\n\nMemory hints: search for \"gradient codomain_type\" and \"unwrap_or Undef gradient\". Source: task 992 review suggestions [0], [1], [5], [10].",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:18:06.680Z",
+        "updatedAt": "2026-04-07T16:48:04.709Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.605Z",
+      "lastModified": "2026-04-07T16:48:04.709Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
