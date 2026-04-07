@@ -19321,11 +19321,11 @@
         "description": "In tests/check-pm-standardization.sh: (1) Match npm@ prefix not just field presence. (2) Add cross-file consistency check for packageManager version. (3) Batch git check-ignore calls. (4) Add preflight command -v git check.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:46:35.532Z",
+        "updatedAt": "2026-04-07T15:11:04.393Z",
         "metadata": {
           "modules": [
             "scripts/check-pm-standardization.sh",
@@ -20522,7 +20522,13 @@
           ],
           "modules": [
             "crates/reify-expr/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: point/vector binop: missing length-mismatch, Undef, zero-divisor tests"
+            ]
+          }
         },
         "updatedAt": "2026-04-07T15:07:37.188Z"
       },
@@ -20858,7 +20864,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:07:37.188Z",
+      "lastModified": "2026-04-07T15:11:04.393Z",
       "taskCount": 1008,
       "completedCount": 718,
       "tags": [
