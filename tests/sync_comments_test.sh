@@ -24,4 +24,18 @@ assert \
     "reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
 
+# Extract the function name referenced in reify-expr's SYNC comment and verify
+# it actually exists as a function definition in reify-stdlib
+_expr_ref_fn=$(grep -oE 'reify-stdlib::[a-z_]+' "$EXPR_FILE" | head -1 | sed 's/.*:://')
+assert \
+    "fn ${_expr_ref_fn} exists in reify-stdlib/src/lib.rs (as referenced by SYNC in reify-expr)" \
+    grep -q "fn ${_expr_ref_fn}" "$STDLIB_FILE"
+
+# Extract the function name referenced in reify-stdlib's SYNC comment and verify
+# it actually exists as a function definition in reify-expr
+_stdlib_ref_fn=$(grep -oE 'reify-expr::[a-z_]+' "$STDLIB_FILE" | head -1 | sed 's/.*:://')
+assert \
+    "fn ${_stdlib_ref_fn} exists in reify-expr/src/lib.rs (as referenced by SYNC in reify-stdlib)" \
+    grep -q "fn ${_stdlib_ref_fn}" "$EXPR_FILE"
+
 test_summary
