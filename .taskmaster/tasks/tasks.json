@@ -21265,11 +21265,11 @@
         "description": "Two coordinated changes to errorMessage in both packages:\n\n1. In gui/sidecar/src/utils.ts (and the identical copy in gui/src/utils/errorClassifier.ts): when an object has a non-string .message property, return 'Unknown error' instead of falling through to String(err) → '[object Object]' (suggestion [9]). Update the corresponding test expectations in gui/sidecar/src/__tests__/utils.test.ts.\n\n2. Add a sync-marker comment to each file: in gui/sidecar/src/utils.ts add `// NOTE: kept in sync with gui/src/utils/errorClassifier.ts – sidecar is a separate bundle` and a reciprocal comment in errorClassifier.ts (suggestion [0]).\n\nMemory hints: search for \"errorMessage implementation\" and \"sidecar utils duplication\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:11:43.709Z",
+        "updatedAt": "2026-04-07T19:12:46.455Z",
         "metadata": {
           "modules": [
             "gui/sidecar",
@@ -21426,7 +21426,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:12:45.532Z",
+      "lastModified": "2026-04-07T19:12:46.459Z",
       "taskCount": 1038,
       "completedCount": 727,
       "tags": [
