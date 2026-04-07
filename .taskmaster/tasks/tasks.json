@@ -20931,6 +20931,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1013,
+        "title": "Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests",
+        "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20943,7 +20954,7 @@
       ],
       "created": "2026-04-07T15:34:57.871Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T15:37:29.893Z"
+      "updated": "2026-04-07T15:37:36.315Z"
     }
   }
 }
