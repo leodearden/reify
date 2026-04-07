@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks } from './test-utils';
+import { flushMacrotasks, withSuppressedRejections } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -58,6 +58,7 @@ describe('reifyGotoDefinition', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: () => ({ from: 0 }),
         },
@@ -115,6 +116,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: () => ({ from: 0 }),
         },
@@ -155,6 +157,7 @@ describe('cross-file goto-definition (onNavigate)', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
@@ -199,6 +202,7 @@ describe('isConnected guard', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
@@ -237,6 +241,7 @@ describe('isConnected guard', () => {
       posAtCoords: () => 5,
       state: {
         doc: {
+          lines: 100,
           lineAt: () => ({ number: 1, from: 0, to: 10 }),
           line: (n: number) => ({ from: (n - 1) * 20 }),
         },
@@ -251,5 +256,99 @@ describe('isConnected guard', () => {
     // Neither onNavigate nor dispatch should be called — editor was destroyed
     expect(onNavigate).not.toHaveBeenCalled();
     expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('line-bounds guard', () => {
+  it('does not dispatch when LSP line exceeds document line count (stale response)', async () => {
+    const currentUri = 'file:///current.ri';
+    // LSP reports line 10 (0-based), so line+1=11, but doc only has 5 lines
+    const staleLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 10, character: 0 }, end: { line: 10, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(staleLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 5,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Stale LSP line (11 > 5) should be rejected before reaching doc.line()
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('.catch() error handler', () => {
+  it('logs a warning when doc.line() throws RangeError (no unhandled rejection)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Same-file response so the code reaches doc.line()
+    const sameFileLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: 0 }, end: { line: 5, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const rangeError = new RangeError('line out of range');
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // Simulate doc.line() throwing a RangeError
+          line: () => { throw rangeError; },
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withSuppressedRejections(async () => {
+        mousedownHandler(mockEvent, mockView);
+        await flushMacrotasks();
+      });
+      // .catch() should log a warning with the expected prefix and the error
+      expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
+      // dispatch should not have been called (line() threw before it could be called)
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
