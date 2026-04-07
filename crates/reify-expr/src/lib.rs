@@ -781,6 +781,16 @@ fn compute_numerical_gradient_at_point(
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
 
+    // point_scratch: reusable inner Vec for the single_point_param path.
+    // Pre-allocated once; only the perturbed element is updated each axis,
+    // reducing inner-Vec allocations from O(n) to O(1).
+    // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
+    let mut point_scratch: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
@@ -791,27 +801,46 @@ fn compute_numerical_gradient_at_point(
         work_coords[i] += h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+            // Update only the perturbed element; transfer ownership via take.
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param {
+            if let Some(Value::Point(inner)) = work_args.pop() {
+                point_scratch = inner;
+            }
+        }
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param {
+            if let Some(Value::Point(inner)) = work_args.pop() {
+                point_scratch = inner;
+            }
+        }
 
         // Restore coord[i] to original value.
         // Use exact restore (direct assignment) instead of arithmetic
         // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
         // drift from x + h - 2h + h ≠ x in floating-point).
         work_coords[i] = coord_i;
+        // Keep point_scratch in sync with the invariant.
+        if single_point_param {
+            point_scratch[i] = make_arg(coord_i);
+        }
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
