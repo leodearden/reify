@@ -74,7 +74,9 @@ async fn make_ready_spawn_fn(
     let reader = BufReader::new(data_reader);
     let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
     let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-    writer_tx.send(data_writer).expect("writer_tx receiver dropped");
+    writer_tx
+        .send(data_writer)
+        .expect("writer_tx receiver dropped");
     Ok(handle)
 }
 
@@ -2273,7 +2275,9 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             flag.store(true, Ordering::SeqCst);
 
             // Keep data_writer alive so the reader doesn't see EOF.
-            writer_tx.send(data_writer).expect("writer_tx receiver dropped");
+            writer_tx
+                .send(data_writer)
+                .expect("writer_tx receiver dropped");
             Ok(handle)
         }
     };

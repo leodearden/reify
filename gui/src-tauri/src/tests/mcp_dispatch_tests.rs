@@ -197,7 +197,9 @@ fn dispatch_get_selection_returns_selected_entity() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: None,
     }));
-    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
     let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
         .expect("dispatch should succeed");
     assert_eq!(
@@ -217,7 +219,9 @@ fn dispatch_get_selection_returns_both_fields() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: Some("Bracket.width".to_string()),
     }));
-    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
     let result = mcp_tool_call_impl("reify_get_selection", serde_json::json!({}), &ctx)
         .expect("dispatch should succeed");
     assert_eq!(

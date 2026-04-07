@@ -3,14 +3,21 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-use reify_compiler::{compile, compile_with_prelude, compile_with_stdlib, stdlib_loader, CompiledModule, UnitEntry, UnitRegistry};
+use reify_compiler::{
+    CompiledModule, UnitEntry, UnitRegistry, compile, compile_with_prelude, compile_with_stdlib,
+    stdlib_loader,
+};
 use reify_types::{DimensionVector, ModulePath, Severity, SourceSpan};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn parse_and_compile(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("unit_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     compile(&parsed)
 }
 
@@ -102,7 +109,9 @@ fn seed_prelude_unit_inserts_and_lookups() {
         content_hash: reify_types::ContentHash::of_str("mm"),
     };
     reg.seed_prelude_unit(entry);
-    let found = reg.lookup("mm").expect("seed_prelude_unit should make mm visible");
+    let found = reg
+        .lookup("mm")
+        .expect("seed_prelude_unit should make mm visible");
     assert_eq!(found.name, "mm");
     assert!((found.factor - 0.001).abs() < 1e-12);
 }
@@ -143,72 +152,144 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
 #[test]
 fn resolve_dimension_type_length() {
     let module = parse_and_compile("unit meter : Length");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "meter").expect("meter not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "meter")
+        .expect("meter not found");
     assert_eq!(unit.dimension, DimensionVector::LENGTH);
 }
 
 #[test]
 fn resolve_dimension_type_mass() {
     let module = parse_and_compile("unit kilogram : Mass");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "kilogram").expect("kilogram not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "kilogram")
+        .expect("kilogram not found");
     assert_eq!(unit.dimension, DimensionVector::MASS);
 }
 
 #[test]
 fn resolve_dimension_type_time() {
     let module = parse_and_compile("unit second : Time");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "second").expect("second not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "second")
+        .expect("second not found");
     assert_eq!(unit.dimension, DimensionVector::TIME);
 }
 
 #[test]
 fn resolve_dimension_type_temperature() {
     let module = parse_and_compile("unit kelvin : Temperature");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "kelvin").expect("kelvin not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "kelvin")
+        .expect("kelvin not found");
     assert_eq!(unit.dimension, DimensionVector::TEMPERATURE);
 }
 
 #[test]
 fn resolve_dimension_type_angle() {
     let module = parse_and_compile("unit radian : Angle");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "radian").expect("radian not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "radian")
+        .expect("radian not found");
     assert_eq!(unit.dimension, DimensionVector::ANGLE);
 }
 
 #[test]
 fn resolve_dimension_type_area() {
     let module = parse_and_compile("unit sq_meter : Area");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "sq_meter").expect("sq_meter not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "sq_meter")
+        .expect("sq_meter not found");
     assert_eq!(unit.dimension, DimensionVector::AREA);
 }
 
 #[test]
 fn resolve_dimension_type_volume() {
     let module = parse_and_compile("unit cubic_meter : Volume");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "cubic_meter").expect("cubic_meter not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "cubic_meter")
+        .expect("cubic_meter not found");
     assert_eq!(unit.dimension, DimensionVector::VOLUME);
 }
 
 #[test]
 fn resolve_dimension_type_force() {
     let module = parse_and_compile("unit newton : Force");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "newton").expect("newton not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "newton")
+        .expect("newton not found");
     assert_eq!(unit.dimension, reify_types::dimension::FORCE);
 }
 
 #[test]
 fn resolve_dimension_type_current() {
     let module = parse_and_compile("unit ampere : Current");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "ampere").expect("ampere not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "ampere")
+        .expect("ampere not found");
     assert_eq!(unit.dimension, DimensionVector::CURRENT);
 }
 
@@ -216,9 +297,15 @@ fn resolve_dimension_type_current() {
 fn resolve_dimension_type_unknown_emits_error() {
     let module = parse_and_compile("unit foo : UnknownDimension");
     let errors = errors_only(&module);
-    assert!(!errors.is_empty(), "expected error for unknown dimension type");
     assert!(
-        errors.iter().any(|d| d.message.contains("unknown dimension") || d.message.contains("UnknownDimension")),
+        !errors.is_empty(),
+        "expected error for unknown dimension type"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("unknown dimension")
+                || d.message.contains("UnknownDimension")),
         "error should mention the unknown dimension; got: {:?}",
         errors
     );
@@ -230,37 +317,81 @@ fn resolve_dimension_type_unknown_emits_error() {
 fn evaluate_const_number_literal() {
     // A unit with a plain number literal as its conversion factor.
     let module = parse_and_compile("unit cm : Length = 0.01");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "cm").expect("cm not found");
-    assert!((unit.factor - 0.01).abs() < 1e-12, "factor should be 0.01, got {}", unit.factor);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "cm")
+        .expect("cm not found");
+    assert!(
+        (unit.factor - 0.01).abs() < 1e-12,
+        "factor should be 0.01, got {}",
+        unit.factor
+    );
 }
 
 #[test]
 fn evaluate_const_binop_multiply() {
     // Conversion factor as a binary multiplication: 25.4 * 0.001
     let module = parse_and_compile("unit inch_mm : Length = 25.4 * 0.001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "inch_mm").expect("inch_mm not found");
-    assert!((unit.factor - 0.0254).abs() < 1e-9, "factor should be 0.0254, got {}", unit.factor);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "inch_mm")
+        .expect("inch_mm not found");
+    assert!(
+        (unit.factor - 0.0254).abs() < 1e-9,
+        "factor should be 0.0254, got {}",
+        unit.factor
+    );
 }
 
 #[test]
 fn evaluate_const_binop_divide() {
     // Conversion factor as division: 1 / 1000
     let module = parse_and_compile("unit milli : Length = 1 / 1000");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "milli").expect("milli not found");
-    assert!((unit.factor - 0.001).abs() < 1e-12, "factor should be 0.001, got {}", unit.factor);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "milli")
+        .expect("milli not found");
+    assert!(
+        (unit.factor - 0.001).abs() < 1e-12,
+        "factor should be 0.001, got {}",
+        unit.factor
+    );
 }
 
 #[test]
 fn evaluate_const_quantity_literal_cross_ref() {
     // thou = 0.0254mm uses a QuantityLiteral referencing mm from registry
     let module = parse_and_compile(
-        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm"
+        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let thou = module
+        .units
+        .iter()
+        .find(|u| u.name == "thou")
+        .expect("thou not found");
     assert!(
         (thou.factor - 0.0000254).abs() < 1e-12,
         "thou factor should be 0.0000254, got {}",
@@ -274,8 +405,16 @@ fn evaluate_const_quantity_literal_cross_ref() {
 fn compile_unit_base_unit_no_conversion() {
     // Base unit with no conversion expression: factor defaults to 1.0.
     let module = parse_and_compile("unit meter : Length");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "meter").expect("meter not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "meter")
+        .expect("meter not found");
     assert!((unit.factor - 1.0).abs() < 1e-12);
     assert!(unit.offset.is_none());
     assert_eq!(unit.dimension, DimensionVector::LENGTH);
@@ -284,8 +423,16 @@ fn compile_unit_base_unit_no_conversion() {
 #[test]
 fn compile_unit_derived_unit_with_factor() {
     let module = parse_and_compile("unit mm : Length = 0.001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "mm").expect("mm not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "mm")
+        .expect("mm not found");
     assert!((unit.factor - 0.001).abs() < 1e-12);
     assert!(unit.offset.is_none());
 }
@@ -294,8 +441,16 @@ fn compile_unit_derived_unit_with_factor() {
 fn compile_unit_affine_with_offset() {
     // degC: factor=1.0, offset=273.15
     let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "degC").expect("degC not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "degC")
+        .expect("degC not found");
     assert!((unit.factor - 1.0).abs() < 1e-12);
     assert!(unit.offset.is_some());
     assert!((unit.offset.unwrap() - 273.15).abs() < 1e-9);
@@ -313,18 +468,39 @@ fn compile_unit_unknown_dimension_emits_error() {
 #[test]
 fn compiled_module_has_units_field() {
     let module = parse_and_compile("unit mm : Length = 0.001\nunit m : Length");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    assert_eq!(module.units.len(), 2, "expected 2 compiled units, got {:?}", module.units.iter().map(|u| &u.name).collect::<Vec<_>>());
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(
+        module.units.len(),
+        2,
+        "expected 2 compiled units, got {:?}",
+        module.units.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn compiled_units_have_correct_dimensions_and_factors() {
     let module = parse_and_compile("unit mm : Length = 0.001\nunit m : Length");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let mm = module.units.iter().find(|u| u.name == "mm").expect("mm not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let mm = module
+        .units
+        .iter()
+        .find(|u| u.name == "mm")
+        .expect("mm not found");
     assert_eq!(mm.dimension, DimensionVector::LENGTH);
     assert!((mm.factor - 0.001).abs() < 1e-12);
-    let m = module.units.iter().find(|u| u.name == "m").expect("m not found");
+    let m = module
+        .units
+        .iter()
+        .find(|u| u.name == "m")
+        .expect("m not found");
     assert!((m.factor - 1.0).abs() < 1e-12);
 }
 
@@ -334,14 +510,29 @@ fn compiled_units_have_correct_dimensions_and_factors() {
 fn quantity_literal_uses_registry_unit() {
     // Define thou in the source, then use it in a structure param default.
     let module = parse_and_compile(
-        "unit thou : Length = 0.0000254\nstructure Bracket { param width : Length = 10thou }"
+        "unit thou : Length = 0.0000254\nstructure Bracket { param width : Length = 10thou }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "Bracket").expect("Bracket not found");
-    let width_cell = template.value_cells.iter().find(|c| c.id.member == "width").expect("width not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("Bracket not found");
+    let width_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "width")
+        .expect("width not found");
     // Default value should be 10 * 0.0000254 = 0.000254
     if let Some(default_expr) = &width_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &default_expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &default_expr.kind
+        {
             assert!(
                 (si_value - 0.000254).abs() < 1e-9,
                 "expected si_value≈0.000254, got {}",
@@ -360,21 +551,40 @@ fn hardcoded_units_still_work_without_declarations() {
     // All hardcoded units should still work when no unit declarations are present.
     // Covers mm (Length), deg (Angle), and kg (Mass) fallback paths.
     let module = parse_and_compile(
-        "structure S { param a : Length = 10mm\n param b : Angle = 90deg\n param c : Mass = 1kg }"
+        "structure S { param a : Length = 10mm\n param b : Angle = 90deg\n param c : Mass = 1kg }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
 
     // Helper: extract si_value from a param's default_expr
     let check = |name: &str, expected: f64, desc: &str| {
-        let cell = template.value_cells.iter().find(|c| c.id.member == name)
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == name)
             .unwrap_or_else(|| panic!("{} not found", name));
-        let expr = cell.default_expr.as_ref()
+        let expr = cell
+            .default_expr
+            .as_ref()
             .unwrap_or_else(|| panic!("{} has no default_expr", name));
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - expected).abs() < 1e-9,
-                "{} expected {}, got {}", desc, expected, si_value
+                "{} expected {}, got {}",
+                desc,
+                expected,
+                si_value
             );
         } else {
             panic!("expected scalar literal for {}", name);
@@ -382,7 +592,11 @@ fn hardcoded_units_still_work_without_declarations() {
     };
 
     check("a", 0.01, "10mm should be 0.01m");
-    check("b", 90.0 * std::f64::consts::PI / 180.0, "90deg should be PI/2 rad");
+    check(
+        "b",
+        90.0 * std::f64::consts::PI / 180.0,
+        "90deg should be PI/2 rad",
+    );
     check("c", 1.0, "1kg should be 1.0kg");
 }
 
@@ -394,7 +608,9 @@ fn duplicate_unit_name_emits_error() {
     let errors = errors_only(&module);
     assert!(!errors.is_empty(), "expected duplicate unit error");
     assert!(
-        errors.iter().any(|d| d.message.contains("duplicate") && d.message.contains("mm")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("duplicate") && d.message.contains("mm")),
         "error should mention 'duplicate' and 'mm'; got: {:?}",
         errors
     );
@@ -406,10 +622,18 @@ fn duplicate_unit_name_emits_error() {
 fn unit_cross_ref_in_conversion_expr() {
     // thou = 0.0254mm: should resolve mm from registry -> factor = 0.0254 * 0.001 = 0.0000254
     let module = parse_and_compile(
-        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm"
+        "unit m : Length\nunit mm : Length = 0.001\nunit thou : Length = 0.0254mm",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let thou = module
+        .units
+        .iter()
+        .find(|u| u.name == "thou")
+        .expect("thou not found");
     assert!(
         (thou.factor - 0.0000254).abs() < 1e-12,
         "thou should have factor 0.0000254, got {}",
@@ -422,16 +646,32 @@ fn unit_cross_ref_in_conversion_expr() {
 #[test]
 fn pub_unit_has_is_pub_true() {
     let module = parse_and_compile("pub unit mm : Length = 0.001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "mm").expect("mm not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "mm")
+        .expect("mm not found");
     assert!(unit.is_pub, "pub unit should have is_pub=true");
 }
 
 #[test]
 fn private_unit_has_is_pub_false() {
     let module = parse_and_compile("unit internal_mm : Length = 0.001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "internal_mm").expect("internal_mm not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "internal_mm")
+        .expect("internal_mm not found");
     assert!(!unit.is_pub, "private unit should have is_pub=false");
 }
 
@@ -440,20 +680,38 @@ fn private_unit_has_is_pub_false() {
 #[test]
 fn integration_unit_in_structure_param() {
     let module = parse_and_compile(
-        "unit mm : Length = 0.001\nstructure Bracket { param width : Length = 50mm }"
+        "unit mm : Length = 0.001\nstructure Bracket { param width : Length = 50mm }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "Bracket").expect("Bracket not found");
-    let width_cell = template.value_cells.iter().find(|c| c.id.member == "width").expect("width not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("Bracket not found");
+    let width_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "width")
+        .expect("width not found");
     if let Some(default_expr) = &width_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &default_expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &default_expr.kind
+        {
             assert!(
                 (si_value - 0.05).abs() < 1e-9,
                 "50mm should be 0.05m, got {}",
                 si_value
             );
         } else {
-            panic!("expected scalar literal for width, got {:?}", default_expr.kind);
+            panic!(
+                "expected scalar literal for width, got {:?}",
+                default_expr.kind
+            );
         }
     } else {
         panic!("width has no default_expr");
@@ -466,10 +724,24 @@ fn integration_unit_in_structure_param() {
 fn offset_only_unit_has_factor_one() {
     // `unit kelvin : Temperature offset 273.15` -> factor=1.0, offset=Some(273.15)
     let module = parse_and_compile("unit kelvin : Temperature offset 273.15");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "kelvin").expect("kelvin not found");
-    assert!((unit.factor - 1.0).abs() < 1e-12, "offset-only unit factor should be 1.0");
-    assert!(unit.offset.is_some(), "offset-only unit should have Some(offset)");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "kelvin")
+        .expect("kelvin not found");
+    assert!(
+        (unit.factor - 1.0).abs() < 1e-12,
+        "offset-only unit factor should be 1.0"
+    );
+    assert!(
+        unit.offset.is_some(),
+        "offset-only unit should have Some(offset)"
+    );
     assert!((unit.offset.unwrap() - 273.15).abs() < 1e-9);
 }
 
@@ -477,13 +749,28 @@ fn offset_only_unit_has_factor_one() {
 fn offset_unit_quantity_literal_applies_offset() {
     // 100kelvin QuantityLiteral: si_value = 100 * 1.0 + 273.15 = 373.15
     let module = parse_and_compile(
-        "unit kelvin : Temperature offset 273.15\nstructure S { param t : Temperature = 100kelvin }"
+        "unit kelvin : Temperature offset 273.15\nstructure S { param t : Temperature = 100kelvin }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
-    let t_cell = template.value_cells.iter().find(|c| c.id.member == "t").expect("t not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let t_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("t not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - 373.15).abs() < 1e-9,
                 "100kelvin should be 373.15K, got {}",
@@ -559,15 +846,30 @@ fn regression_hardcoded_units_all_still_resolve() {
             param g : Mass = 1g\n\
             param h : Length = 1in\n\
             param i : Time = 1s\n\
-        }"
+        }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let check = |name: &str, expected_si: f64| {
-        let cell = template.value_cells.iter().find(|c| c.id.member == name)
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == name)
             .unwrap_or_else(|| panic!("{} not found", name));
         if let Some(expr) = &cell.default_expr {
-            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+            if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+                si_value,
+                ..
+            }) = &expr.kind
+            {
                 assert!(
                     (si_value - expected_si).abs() < 1e-9,
                     "{}: expected {}, got {}",
@@ -582,15 +884,15 @@ fn regression_hardcoded_units_all_still_resolve() {
             panic!("{}: no default_expr", name);
         }
     };
-    check("a", 0.001);   // 1mm
-    check("b", 0.01);    // 1cm
-    check("c", 1.0);     // 1m
+    check("a", 0.001); // 1mm
+    check("b", 0.01); // 1cm
+    check("c", 1.0); // 1m
     check("d", std::f64::consts::PI / 180.0); // 1deg
-    check("e", 1.0);     // 1rad
-    check("f", 1.0);     // 1kg
-    check("g", 0.001);   // 1g
-    check("h", 0.0254);  // 1in (inch = 0.0254m)
-    check("i", 1.0);     // 1s (second, SI base unit)
+    check("e", 1.0); // 1rad
+    check("f", 1.0); // 1kg
+    check("g", 0.001); // 1g
+    check("h", 0.0254); // 1in (inch = 0.0254m)
+    check("i", 1.0); // 1s (second, SI base unit)
 }
 
 // ─── step-40: affine units rejected in conversion expressions ─────────────────
@@ -603,7 +905,7 @@ fn affine_unit_rejected_in_conversion_expression() {
     // value expressions (e.g., '25degC' → 298.15K), not for defining conversion
     // factors.
     let module = parse_and_compile(
-        "unit degC : Temperature = 1 offset 273.15\nunit mytemp : Temperature = 1.0degC"
+        "unit degC : Temperature = 1 offset 273.15\nunit mytemp : Temperature = 1.0degC",
     );
     // mytemp should NOT be registered (compile_unit returns None)
     assert!(
@@ -613,7 +915,9 @@ fn affine_unit_rejected_in_conversion_expression() {
     // An error diagnostic should mention that affine/offset units cannot be used
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| d.message.contains("affine") || d.message.contains("offset")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("affine") || d.message.contains("offset")),
         "expected diagnostic about affine/offset unit in conversion; got: {:?}",
         errors
     );
@@ -625,11 +929,17 @@ fn affine_unit_rejected_in_conversion_expression() {
 fn non_affine_unit_in_conversion_still_works_after_guard() {
     // Non-affine QuantityLiteral in conversion expressions must still work.
     // 'thou = 0.0254mm' references mm (no offset) — should produce factor ≈ 0.0000254.
-    let module = parse_and_compile(
-        "unit mm : Length = 0.001\nunit thou : Length = 0.0254mm"
+    let module = parse_and_compile("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    let thou = module
+        .units
+        .iter()
+        .find(|u| u.name == "thou")
+        .expect("thou not found");
     assert!(
         (thou.factor - 0.0000254).abs() < 1e-12,
         "thou should have factor 0.0000254, got {}",
@@ -643,13 +953,28 @@ fn affine_unit_still_works_in_runtime_value_expression() {
     // in structure params). '25degC' → si_value = 25*1 + 273.15 = 298.15K.
     // This goes through lookup_unit_in_registry(), NOT evaluate_const_expr().
     let module = parse_and_compile(
-        "unit degC : Temperature = 1 offset 273.15\nstructure S { param t : Temperature = 25degC }"
+        "unit degC : Temperature = 1 offset 273.15\nstructure S { param t : Temperature = 25degC }",
     );
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
-    let t_cell = template.value_cells.iter().find(|c| c.id.member == "t").expect("t not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let t_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "t")
+        .expect("t not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - 298.15).abs() < 1e-9,
                 "25degC should be 298.15K, got {}",
@@ -728,7 +1053,9 @@ fn zero_literal_factor_rejected() {
     );
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
         "expected zero-factor diagnostic; got: {:?}",
         errors
     );
@@ -744,7 +1071,9 @@ fn zero_from_arithmetic_factor_rejected() {
     );
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("non-zero") || d.message.contains("zero")),
         "expected zero-factor diagnostic; got: {:?}",
         errors
     );
@@ -755,7 +1084,11 @@ fn zero_from_arithmetic_factor_rejected() {
 #[test]
 fn non_finite_offset_rejected() {
     // Offset expression overflows: MAX + MAX → inf.
-    let src = format!("unit bad_off : Temperature = 1 offset {} + {}", f64::MAX, f64::MAX);
+    let src = format!(
+        "unit bad_off : Temperature = 1 offset {} + {}",
+        f64::MAX,
+        f64::MAX
+    );
     let module = parse_and_compile(&src);
     assert!(
         !module.units.iter().any(|u| u.name == "bad_off"),
@@ -798,8 +1131,16 @@ fn quantity_literal_overflow_rejected() {
 fn valid_arithmetic_factor_still_compiles() {
     // 25.4 * 0.001 = 0.0254 — valid, should compile fine.
     let module = parse_and_compile("unit inch : Length = 25.4 * 0.001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "inch").expect("inch not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "inch")
+        .expect("inch not found");
     assert!((unit.factor - 0.0254).abs() < 1e-9);
 }
 
@@ -807,8 +1148,16 @@ fn valid_arithmetic_factor_still_compiles() {
 fn valid_offset_still_compiles() {
     // 1 offset 273.15 — valid affine unit.
     let module = parse_and_compile("unit degC : Temperature = 1 offset 273.15");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "degC").expect("degC not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "degC")
+        .expect("degC not found");
     assert!((unit.offset.unwrap() - 273.15).abs() < 1e-9);
 }
 
@@ -816,8 +1165,16 @@ fn valid_offset_still_compiles() {
 fn valid_quantity_literal_cross_ref_still_compiles() {
     // 0.0254mm — valid cross-reference.
     let module = parse_and_compile("unit mm : Length = 0.001\nunit thou : Length = 0.0254mm");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let thou = module.units.iter().find(|u| u.name == "thou").expect("thou not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let thou = module
+        .units
+        .iter()
+        .find(|u| u.name == "thou")
+        .expect("thou not found");
     assert!((thou.factor - 0.0000254).abs() < 1e-12);
 }
 
@@ -826,8 +1183,16 @@ fn valid_negative_factor_still_compiles() {
     // Negative factor is finite and non-zero — should compile.
     // (Semantically odd but not a validation error at this level.)
     let module = parse_and_compile("unit neg : Length = 0 - 1");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "neg").expect("neg not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "neg")
+        .expect("neg not found");
     assert!((unit.factor - (-1.0)).abs() < 1e-12);
 }
 
@@ -835,8 +1200,16 @@ fn valid_negative_factor_still_compiles() {
 fn valid_small_factor_still_compiles() {
     // Very small but finite factor.
     let module = parse_and_compile("unit pico : Length = 0.000000000001");
-    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let unit = module.units.iter().find(|u| u.name == "pico").expect("pico not found");
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let unit = module
+        .units
+        .iter()
+        .find(|u| u.name == "pico")
+        .expect("pico not found");
     assert!((unit.factor - 1e-12).abs() < 1e-24);
 }
 
@@ -856,7 +1229,9 @@ fn overflow_user_unit_in_structure_param_rejected() {
     let module = parse_and_compile(&src);
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
         "expected overflow diagnostic for non-finite quantity literal in structure param; got: {:?}",
         errors
     );
@@ -867,14 +1242,13 @@ fn overflow_hardcoded_unit_in_structure_param_rejected() {
     // Hardcoded mm path with value that parses as infinity.
     // si_value = inf * 0.001 = inf — must emit overflow diagnostic.
     let big_num = "9".repeat(309);
-    let src = format!(
-        "structure S {{ param y : Length = {}mm }}",
-        big_num
-    );
+    let src = format!("structure S {{ param y : Length = {}mm }}", big_num);
     let module = parse_and_compile(&src);
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| d.message.contains("overflow") || d.message.contains("finite")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("overflow") || d.message.contains("finite")),
         "expected overflow diagnostic for non-finite quantity literal in structure param; got: {:?}",
         errors
     );
@@ -892,10 +1266,21 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
         errors_only(&module)
     );
     // Verify the compiled value is correct: 10mm = 0.01m
-    let template = module.templates.iter().find(|t| t.name == "Foo").expect("Foo not found");
-    let x_cell = template.value_cells.iter().find(|c| c.id.member == "x").expect("x not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Foo")
+        .expect("Foo not found");
+    let x_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "x")
+        .expect("x not found");
     if let Some(expr) = &x_cell.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - 0.01).abs() < 1e-9,
                 "10mm should be 0.01m, got {}",
@@ -913,7 +1298,11 @@ fn valid_quantity_literal_in_structure_param_still_compiles() {
 
 fn compile_with_stdlib_helper(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("user_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     compile_with_prelude(&parsed, stdlib_loader::load_stdlib())
 }
 
@@ -933,10 +1322,21 @@ structure def Bracket {
         "compile_with_prelude should resolve prelude mm without errors, got: {:?}",
         errors
     );
-    let template = module.templates.iter().find(|t| t.name == "Bracket").expect("Bracket not found");
-    let width = template.value_cells.iter().find(|c| c.id.member == "width").expect("width not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Bracket")
+        .expect("Bracket not found");
+    let width = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "width")
+        .expect("width not found");
     if let Some(expr) = &width.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - 0.01).abs() < 1e-9,
                 "10mm should be 0.01m via prelude, got {}",
@@ -962,7 +1362,11 @@ fn prelude_unit_resolves_in_unit_conversion_expr() {
         "prelude mm should resolve in unit conversion, got errors: {:?}",
         errors
     );
-    let mylen = module.units.iter().find(|u| u.name == "mylen").expect("mylen not found");
+    let mylen = module
+        .units
+        .iter()
+        .find(|u| u.name == "mylen")
+        .expect("mylen not found");
     assert!(
         (mylen.factor - 0.0000254).abs() < 1e-12,
         "mylen factor should be 0.0254 * 0.001 = 0.0000254, got {}",
@@ -980,9 +1384,9 @@ fn local_unit_duplicate_of_prelude_emits_error() {
     let module = compile_with_stdlib_helper(source);
     let errors = errors_only(&module);
     assert!(
-        errors.iter().any(|d| {
-            d.message.contains("duplicate") && d.message.contains("mm")
-        }),
+        errors
+            .iter()
+            .any(|d| { d.message.contains("duplicate") && d.message.contains("mm") }),
         "expected a 'duplicate' error mentioning 'mm' when module-local unit shadows prelude, got: {:?}",
         errors
     );
@@ -1000,7 +1404,11 @@ structure def Plate {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let module = compile_with_stdlib(&parsed);
     let errors = errors_only(&module);
@@ -1010,10 +1418,21 @@ structure def Plate {
         errors
     );
 
-    let template = module.templates.iter().find(|t| t.name == "Plate").expect("Plate not found");
-    let thickness = template.value_cells.iter().find(|c| c.id.member == "thickness").expect("thickness not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Plate")
+        .expect("Plate not found");
+    let thickness = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "thickness")
+        .expect("thickness not found");
     if let Some(expr) = &thickness.default_expr {
-        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar { si_value, .. }) = &expr.kind {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
             assert!(
                 (si_value - 0.01).abs() < 1e-9,
                 "10mm should be 0.01m via compile_with_stdlib, got {}",
@@ -1048,10 +1467,7 @@ fn all_nine_hardcoded_units_resolve_via_stdlib() {
 
     for (unit, expected_factor) in cases {
         // Each unit is tested with value 1.0, so si_value == factor
-        let source = format!(
-            "structure def T_{u} {{ param v : Real = 1{u} }}",
-            u = unit
-        );
+        let source = format!("structure def T_{u} {{ param v : Real = 1{u} }}", u = unit);
         let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1093,10 +1509,7 @@ fn all_nine_hardcoded_units_resolve_via_stdlib() {
                 si_value
             );
         } else {
-            panic!(
-                "expected scalar literal for 1{}, got {:?}",
-                unit, expr.kind
-            );
+            panic!("expected scalar literal for 1{}, got {:?}", unit, expr.kind);
         }
     }
 }

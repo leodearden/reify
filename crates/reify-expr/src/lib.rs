@@ -164,9 +164,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" if evaluated_args.len() == 1 => {
-                    compute_gradient(&evaluated_args[0])
-                }
+                "gradient" if evaluated_args.len() == 1 => compute_gradient(&evaluated_args[0]),
                 "divergence" | "curl" if evaluated_args.len() == 1 => {
                     if !matches!(&evaluated_args[0], Value::Field { .. }) {
                         #[cfg(debug_assertions)]
@@ -585,7 +583,10 @@ fn compute_gradient(field_val: &Value) -> Value {
     // Gradient fields are excluded: their lambda slot contains a Value::Field (the
     // original field), not a callable Value::Lambda, so numerical differentiation
     // via apply_lambda is not possible.
-    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
         return Value::Undef;
     }
 
@@ -598,7 +599,10 @@ fn compute_gradient(field_val: &Value) -> Value {
     let n = match domain_type {
         Type::Real | Type::Int | Type::Scalar { .. } => 1,
         Type::Point { n, quantity } => {
-            if !matches!(quantity.as_ref(), Type::Real | Type::Int | Type::Scalar { .. }) {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
                 return Value::Undef;
             }
             *n
@@ -628,8 +632,7 @@ fn compute_gradient(field_val: &Value) -> Value {
         // Divide codomain by domain dimension when both are non-trivial.
         match (codomain_dim, domain_dim) {
             (Some(cd), Some(dd))
-                if cd != DimensionVector::DIMENSIONLESS
-                    && dd != DimensionVector::DIMENSIONLESS =>
+                if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
             {
                 let grad_dim = cd.div(&dd);
                 if grad_dim != DimensionVector::DIMENSIONLESS {
@@ -641,9 +644,7 @@ fn compute_gradient(field_val: &Value) -> Value {
                 }
             }
             _ => match codomain_type {
-                Type::Scalar { dimension }
-                    if *dimension == DimensionVector::DIMENSIONLESS =>
-                {
+                Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {
                     Type::Real
                 }
                 _ => codomain_type.clone(),
@@ -1465,7 +1466,11 @@ fn neg_scalar(v: Value) -> Value {
             if !re.is_finite() || !im.is_finite() {
                 return Value::Undef;
             }
-            Value::Complex { re: -re, im: -im, dimension }
+            Value::Complex {
+                re: -re,
+                im: -im,
+                dimension,
+            }
         }
         _ => Value::Undef,
     }
@@ -1512,9 +1517,7 @@ fn negate_value(v: Value) -> Value {
 /// Check if a tensor slice represents rank-2 data (all elements are Tensor).
 /// Returns `true` if the first element is a Tensor; callers must verify `.all()`.
 fn is_rank2(slice: &[Value]) -> bool {
-    slice
-        .first()
-        .is_some_and(|v| matches!(v, Value::Tensor(_)))
+    slice.first().is_some_and(|v| matches!(v, Value::Tensor(_)))
 }
 
 /// Validate rank-2 tensor operands for addition/subtraction.
@@ -3156,7 +3159,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 4.0).abs() < 1e-12);
                 assert!(dimension.is_dimensionless());
             }
@@ -3720,7 +3726,11 @@ mod tests {
             Value::Complex { re, im, dimension } => {
                 assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
                 assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
-                assert_eq!(dimension, DimensionVector::DIMENSIONLESS, "dimension should be DIMENSIONLESS");
+                assert_eq!(
+                    dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "dimension should be DIMENSIONLESS"
+                );
             }
             other => panic!("expected Complex, got {:?}", other),
         }
@@ -3741,7 +3751,11 @@ mod tests {
             Value::Complex { re, im, dimension } => {
                 assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
                 assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
-                assert_eq!(dimension, DimensionVector::LENGTH, "dimension should be LENGTH");
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "dimension should be LENGTH"
+                );
             }
             other => panic!("expected Complex, got {:?}", other),
         }
@@ -4044,8 +4058,15 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 0.003).abs() < 1e-12, "expected 0.003, got {}", si_value);
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.003).abs() < 1e-12,
+                    "expected 0.003, got {}",
+                    si_value
+                );
                 assert_eq!(dimension, DimensionVector::LENGTH);
             }
             other => panic!("expected Scalar{{0.003, LENGTH}}, got {:?}", other),
@@ -4189,7 +4210,10 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 let expected = std::f64::consts::FRAC_PI_4;
                 assert!(
                     (si_value - expected).abs() < 1e-12,
@@ -4220,7 +4244,10 @@ mod tests {
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 let expected = std::f64::consts::PI;
                 assert!(
                     (si_value - expected).abs() < 1e-12,
@@ -4312,7 +4339,10 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         match sanitize_value(v) {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 0.001).abs() < 1e-12);
                 assert_eq!(dimension, DimensionVector::LENGTH);
             }

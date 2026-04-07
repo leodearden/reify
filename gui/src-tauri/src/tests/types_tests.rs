@@ -473,10 +473,7 @@ fn format_value_field() {
     };
     assert_eq!(
         format_value(&v),
-        (
-            "Field<Real, Real>(Analytical)".to_string(),
-            String::new()
-        )
+        ("Field<Real, Real>(Analytical)".to_string(), String::new())
     );
 }
 
@@ -487,10 +484,7 @@ fn format_value_lambda() {
         body: Box::new(reify_types::CompiledExpr::literal(Value::Undef, Type::Real)),
         captures: reify_types::ValueMap::default(),
     };
-    assert_eq!(
-        format_value(&v),
-        ("<lambda>".to_string(), String::new())
-    );
+    assert_eq!(format_value(&v), ("<lambda>".to_string(), String::new()));
 }
 
 #[test]

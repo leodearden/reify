@@ -5,7 +5,7 @@ use reify_compiler::{
     SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{
-    CompiledExpr, ContentHash, ConstraintNodeId, RealizationNodeId, SourceSpan, Type, TypeParam,
+    CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, SourceSpan, Type, TypeParam,
     ValueCellId,
 };
 

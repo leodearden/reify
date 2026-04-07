@@ -305,9 +305,7 @@ impl CompiledExpr {
             CompiledExprKind::OptionNone => {}
             CompiledExprKind::MetaAccess { .. } => {}
             CompiledExprKind::DeterminacyPredicate { .. } => {}
-            CompiledExprKind::RangeConstructor {
-                lower, upper, ..
-            } => {
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
                 if let Some(lo) = lower {
                     lo.walk(f);
                 }
@@ -434,9 +432,7 @@ impl CompiledExpr {
             CompiledExprKind::DeterminacyPredicate { cell, .. } => {
                 refs.push(cell.clone());
             }
-            CompiledExprKind::RangeConstructor {
-                lower, upper, ..
-            } => {
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
                 if let Some(lo) = lower {
                     lo.collect_value_refs_inner(refs);
                 }
@@ -702,9 +698,7 @@ impl CompiledExpr {
                     cell.entity = to_entity.to_string();
                 }
             }
-            CompiledExprKind::RangeConstructor {
-                lower, upper, ..
-            } => {
+            CompiledExprKind::RangeConstructor { lower, upper, .. } => {
                 if let Some(lo) = lower {
                     lo.remap_entity(from_entity, to_entity);
                 }
@@ -759,11 +753,7 @@ impl CompiledExpr {
         upper_inclusive: bool,
         result_type: Type,
     ) -> Self {
-        let mut content_hash = ContentHash::of(&[
-            18,
-            lower_inclusive as u8,
-            upper_inclusive as u8,
-        ]);
+        let mut content_hash = ContentHash::of(&[18, lower_inclusive as u8, upper_inclusive as u8]);
         if let Some(lo) = &lower {
             content_hash = content_hash.combine(lo.content_hash);
         }

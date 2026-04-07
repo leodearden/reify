@@ -1,8 +1,6 @@
 use reify_types::{ContentHash, SourceSpan, Type, TypeParam};
 
-use reify_compiler::{
-    CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement,
-};
+use reify_compiler::{CompiledTrait, DefaultKind, RequirementKind, TraitDefault, TraitRequirement};
 
 /// Builder for `CompiledTrait`.
 ///
@@ -83,11 +81,7 @@ impl TraitDefBuilder {
                     DefaultKind::Let(_) => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
-                ContentHash::of_str(&format!(
-                    "{}:{}",
-                    d.name.as_deref().unwrap_or(""),
-                    kind_tag
-                ))
+                ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
             let all_hashes = std::iter::once(name_hash)
                 .chain(req_hashes)
@@ -198,11 +192,7 @@ impl CompiledTraitBuilder {
                     DefaultKind::Let(_) => "Let",
                     DefaultKind::Constraint(_) => "Constraint",
                 };
-                ContentHash::of_str(&format!(
-                    "{}:{}",
-                    d.name.as_deref().unwrap_or(""),
-                    kind_tag
-                ))
+                ContentHash::of_str(&format!("{}:{}", d.name.as_deref().unwrap_or(""), kind_tag))
             });
             let all_hashes = std::iter::once(name_hash)
                 .chain(req_hashes)

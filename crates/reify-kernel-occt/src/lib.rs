@@ -463,9 +463,7 @@ impl OcctKernel {
                         axis_origin[0], axis_origin[1], axis_origin[2]
                     )));
                 }
-                if !axis_dir[0].is_finite()
-                    || !axis_dir[1].is_finite()
-                    || !axis_dir[2].is_finite()
+                if !axis_dir[0].is_finite() || !axis_dir[1].is_finite() || !axis_dir[2].is_finite()
                 {
                     return Err(GeometryError::OperationFailed(format!(
                         "revolve axis_dir must be finite: [{}, {}, {}]",
@@ -784,9 +782,7 @@ mod tests {
                     "expected error containing '{expected_substring}', got: {msg}"
                 );
             }
-            Ok(_) => panic!(
-                "expected OperationFailed containing '{expected_substring}', got Ok"
-            ),
+            Ok(_) => panic!("expected OperationFailed containing '{expected_substring}', got Ok"),
             Err(other) => panic!(
                 "expected OperationFailed containing '{expected_substring}', got {:?}",
                 other

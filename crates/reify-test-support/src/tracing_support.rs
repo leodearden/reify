@@ -14,8 +14,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Unlike a naïve implementation that returns `Id::from_u64(1)` for every
 /// span, this subscriber uses an [`AtomicU64`] to issue monotonically
 /// increasing IDs, avoiding the "all spans share the same ID" bug.
-pub fn warn_counting_subscriber(
-) -> (impl tracing::Subscriber + Send + Sync, Arc<AtomicUsize>) {
+pub fn warn_counting_subscriber() -> (impl tracing::Subscriber + Send + Sync, Arc<AtomicUsize>) {
     let warn_count = Arc::new(AtomicUsize::new(0));
     let warn_count_clone = Arc::clone(&warn_count);
     (WarnCountingSubscriber::new(warn_count_clone), warn_count)
@@ -56,12 +55,7 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
     fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
 
-    fn record_follows_from(
-        &self,
-        _span: &tracing::span::Id,
-        _follows: &tracing::span::Id,
-    ) {
-    }
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
         if event.metadata().level() == &tracing::Level::WARN {
@@ -108,26 +102,15 @@ mod tests {
                 self.inner.enabled(metadata)
             }
 
-            fn new_span(
-                &self,
-                span: &tracing::span::Attributes<'_>,
-            ) -> tracing::span::Id {
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
                 self.inner.new_span(span)
             }
 
-            fn record(
-                &self,
-                span: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-            ) {
+            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
                 self.inner.record(span, values)
             }
 
-            fn record_follows_from(
-                &self,
-                span: &tracing::span::Id,
-                follows: &tracing::span::Id,
-            ) {
+            fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
                 self.inner.record_follows_from(span, follows)
             }
 

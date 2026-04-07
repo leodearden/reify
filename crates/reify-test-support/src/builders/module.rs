@@ -1,6 +1,5 @@
 use reify_compiler::{
-    CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait,
-    TopologyTemplate,
+    CompiledField, CompiledImport, CompiledModule, CompiledPurpose, CompiledTrait, TopologyTemplate,
 };
 use reify_types::{ContentHash, SourceSpan};
 
@@ -145,8 +144,8 @@ impl CompiledModuleBuilder {
 mod tests {
     use super::*;
     use crate::builders::{
-        literal, CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-        TraitDefBuilder,
+        CompiledFieldBuilder, CompiledPurposeBuilder, CompiledTraitBuilder, TraitDefBuilder,
+        literal,
     };
     use reify_types::{EnumDef, ModulePath, Type, Value};
 

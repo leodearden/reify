@@ -349,7 +349,11 @@ fn reject_unresolved_type_in_trait_conformance() {
     assert!(
         mentions_unresolved_and_name,
         "expected a diagnostic containing 'unresolved type' and 'NonexistentEnumType', got: {:?}",
-        compiled.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 
     // Assertion 3: specifically the conformance-path diagnostic must be present.
@@ -363,6 +367,10 @@ fn reject_unresolved_type_in_trait_conformance() {
         has_conformance_diagnostic,
         "expected conformance-path diagnostic 'unresolved type in conformance check: NonexistentEnumType', \
          got diagnostics: {:?}",
-        compiled.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

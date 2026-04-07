@@ -819,7 +819,11 @@ fn negate_tensor_of_complex_negates_re_and_im() {
         ]),
         Type::tensor(1, 2, Type::complex(Type::Real)),
     );
-    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(1, 2, Type::complex(Type::Real)));
+    let expr = CompiledExpr::unop(
+        UnOp::Neg,
+        operand,
+        Type::tensor(1, 2, Type::complex(Type::Real)),
+    );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(

@@ -244,16 +244,13 @@ fn find_named_member_span_depth<'a>(
                 if let Some(result) = find_named_member_span_depth(&g.members, name, depth + 1) {
                     return Some(result);
                 }
-                if let Some(result) =
-                    find_named_member_span_depth(&g.else_members, name, depth + 1)
+                if let Some(result) = find_named_member_span_depth(&g.else_members, name, depth + 1)
                 {
                     return Some(result);
                 }
             }
             MemberDecl::Port(port) => {
-                if let Some(result) =
-                    find_named_member_span_depth(&port.members, name, depth + 1)
-                {
+                if let Some(result) = find_named_member_span_depth(&port.members, name, depth + 1) {
                     return Some(result);
                 }
             }

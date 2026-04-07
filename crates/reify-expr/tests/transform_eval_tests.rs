@@ -223,11 +223,7 @@ fn transform_mul_vector_4d_returns_undef() {
 /// This exercises the make_components_3 DIMENSIONLESS branch.
 #[test]
 fn transform_mul_dimensionless_vector_preserves_real() {
-    let v = Value::Vector(vec![
-        Value::Real(1.0),
-        Value::Real(0.0),
-        Value::Real(0.0),
-    ]);
+    let v = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
     let result = eval_mul_expr(
         identity_transform(),
         Type::Transform(3),
@@ -243,14 +239,14 @@ fn transform_mul_dimensionless_vector_preserves_real() {
             for (i, item) in items.iter().enumerate() {
                 match item {
                     Value::Real(_) => {} // correct variant
-                    other => panic!(
-                        "component {i} should be Value::Real, got {:?}",
-                        other
-                    ),
+                    other => panic!("component {i} should be Value::Real, got {:?}", other),
                 }
             }
             // Verify values match input
-            assert_eq!(result, v, "identity transform should preserve dimensionless vector exactly");
+            assert_eq!(
+                result, v,
+                "identity transform should preserve dimensionless vector exactly"
+            );
         }
         other => panic!("expected Vector, got {:?}", other),
     }

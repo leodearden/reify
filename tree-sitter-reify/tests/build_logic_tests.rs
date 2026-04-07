@@ -11,9 +11,8 @@ use std::path::Path;
 /// Duplicates the content_hash logic from build.rs for testability.
 /// Returns hex-encoded u64 hash of file contents.
 fn content_hash(path: &Path) -> String {
-    let bytes = std::fs::read(path).unwrap_or_else(|e| {
-        panic!("Failed to read {} for hashing: {}", path.display(), e)
-    });
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
     let mut hasher = std::hash::DefaultHasher::new();
     bytes.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
@@ -27,7 +26,10 @@ fn test_content_hash_deterministic() {
 
     let hash1 = content_hash(&file);
     let hash2 = content_hash(&file);
-    assert_eq!(hash1, hash2, "hashing identical content must produce same hash");
+    assert_eq!(
+        hash1, hash2,
+        "hashing identical content must produce same hash"
+    );
 }
 
 #[test]
@@ -40,7 +42,10 @@ fn test_content_hash_changes_on_modification() {
     std::fs::write(&file, b"module.exports = grammar({name: 'v2'});").unwrap();
     let hash2 = content_hash(&file);
 
-    assert_ne!(hash1, hash2, "different content must produce different hashes");
+    assert_ne!(
+        hash1, hash2,
+        "different content must produce different hashes"
+    );
 }
 
 /// The expected output files that tree-sitter generate produces.
@@ -191,7 +196,10 @@ fn verify_outputs(src_dir: &Path) -> Result<(), String> {
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
     let src_dir = make_populated_src_dir(dir.path());
-    assert!(verify_outputs(&src_dir).is_ok(), "all files present should verify ok");
+    assert!(
+        verify_outputs(&src_dir).is_ok(),
+        "all files present should verify ok"
+    );
 
     // Remove each file in turn and verify it's detected as missing.
     for name in EXPECTED_OUTPUTS {
@@ -297,10 +305,7 @@ fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), S
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!(
-                        "'{}' timed out after {}s",
-                        cmd, timeout_secs
-                    ));
+                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -399,8 +404,7 @@ fn test_find_err_arm_braced_simple() {
         }
     "#;
 
-    let arm = find_err_arm_braced(source)
-        .expect("should find Err(e) arm in simple match block");
+    let arm = find_err_arm_braced(source).expect("should find Err(e) arm in simple match block");
 
     assert!(
         arm.contains("child.kill()"),
@@ -433,8 +437,7 @@ fn test_find_err_arm_braced_skips_format_braces() {
         }
     "#;
 
-    let arm = find_err_arm_braced(source)
-        .expect("should find Err(e) arm with format strings");
+    let arm = find_err_arm_braced(source).expect("should find Err(e) arm with format strings");
 
     assert!(
         arm.contains("child.kill()"),
@@ -459,7 +462,9 @@ fn test_out_dir_no_silent_fallback() {
     // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
     let out_dir_line = build_rs
         .lines()
-        .find(|line| line.contains("env::var(\"OUT_DIR\")") || line.contains("env::var( \"OUT_DIR\")"))
+        .find(|line| {
+            line.contains("env::var(\"OUT_DIR\")") || line.contains("env::var( \"OUT_DIR\")")
+        })
         .expect("build.rs should contain a line reading env::var(\"OUT_DIR\")");
 
     assert!(
@@ -484,7 +489,10 @@ fn test_subprocess_timeout_kills_hung_process() {
     let result = run_with_timeout("sleep", &["30"], 1);
     let elapsed = start.elapsed();
 
-    assert!(result.is_err(), "hung process should return error on timeout");
+    assert!(
+        result.is_err(),
+        "hung process should return error on timeout"
+    );
     let err = result.unwrap_err();
     assert!(
         err.to_lowercase().contains("timeout") || err.to_lowercase().contains("timed out"),
@@ -501,7 +509,7 @@ fn test_subprocess_timeout_kills_hung_process() {
 
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
-             // on Windows the readonly attribute does NOT block creating files within the directory.
+// on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_stamp_write_failure_no_panic() {
     if is_root() {
         eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
@@ -831,7 +839,7 @@ fn test_readonly_guard_drop_logs_error() {
 
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
-             // on Windows the readonly attribute does NOT block creating files within the directory.
+// on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
     if is_root() {
         eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
@@ -947,7 +955,7 @@ fn test_extract_test_fn_body_no_off_by_one() {
         "#[test]\n",
         "fn test_omega() {\n",
         "    let last = true;\n",
-        "}"   // NOTE: no trailing newline — the off-by-one clips this `}`
+        "}" // NOTE: no trailing newline — the off-by-one clips this `}`
     );
     let body_last = extract_test_fn_body(src_last, "fn test_omega()");
     let body_last = body_last.expect("extract_test_fn_body should find test_omega");

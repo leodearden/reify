@@ -3,9 +3,8 @@ use std::hash::{Hash, Hasher};
 /// Compute a content hash of a file's bytes, returning a hex-encoded u64.
 /// Used for staleness detection — not for security.
 fn content_hash(path: &std::path::Path) -> String {
-    let bytes = std::fs::read(path).unwrap_or_else(|e| {
-        panic!("Failed to read {} for hashing: {}", path.display(), e)
-    });
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
     let mut hasher = std::hash::DefaultHasher::new();
     bytes.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
@@ -23,11 +22,7 @@ fn content_hash(path: &std::path::Path) -> String {
 ///
 /// tree-sitter generate writes its useful diagnostics to stderr, which is
 /// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
-fn run_with_timeout(
-    cmd: &str,
-    args: &[&str],
-    timeout_secs: u64,
-) -> Result<(), String> {
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
 
@@ -56,10 +51,7 @@ fn run_with_timeout(
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait(); // Reap the process.
-                    return Err(format!(
-                        "'{}' timed out after {}s",
-                        cmd, timeout_secs
-                    ));
+                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -146,10 +138,8 @@ fn main() {
     println!("cargo:rerun-if-changed=grammar.js");
 
     // Auto-generate from grammar.js when missing or stale.
-    let output_paths: Vec<std::path::PathBuf> = EXPECTED_OUTPUTS
-        .iter()
-        .map(|n| src_dir.join(n))
-        .collect();
+    let output_paths: Vec<std::path::PathBuf> =
+        EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
     let output_refs: Vec<&std::path::Path> = output_paths.iter().map(|p| p.as_path()).collect();
     // Stamp file stored in OUT_DIR (cargo build directory).
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");

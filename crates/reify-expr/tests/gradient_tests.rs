@@ -234,9 +234,9 @@ fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
     // Sample at three points: x=1.0, x=2.0 (Undef-trigger), x=3.0
     let points = [1.0, 2.0, 3.0];
     let expected = [
-        Value::Real(1.0),  // 1.0 * 1.0
-        Value::Undef,      // x == 2.0 triggers Undef
-        Value::Real(9.0),  // 3.0 * 3.0
+        Value::Real(1.0), // 1.0 * 1.0
+        Value::Undef,     // x == 2.0 triggers Undef
+        Value::Real(9.0), // 3.0 * 3.0
     ];
 
     for (point_val, expected_val) in points.iter().zip(expected.iter()) {
@@ -598,7 +598,10 @@ fn gradient_undef_propagation_during_perturbation() {
     );
     let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
-    let domain_type = Type::Point { n: 2, quantity: Box::new(Type::Real) };
+    let domain_type = Type::Point {
+        n: 2,
+        quantity: Box::new(Type::Real),
+    };
     let codomain_type = Type::Real;
 
     let field = Value::Field {
@@ -619,7 +622,10 @@ fn gradient_undef_propagation_during_perturbation() {
         vec![CompiledExpr::literal(field, field_type.clone())],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
+            codomain: Box::new(Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Real),
+            }),
         },
     );
 
@@ -635,17 +641,32 @@ fn gradient_undef_propagation_during_perturbation() {
     // Sample gradient at (1.0, 0.0) — y=0 means perturbation y-h < 0 → lambda returns Undef
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(0.0)]);
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::Point { n: 2, quantity: Box::new(Type::Real) }),
-        codomain: Box::new(Type::Vector { n: 2, quantity: Box::new(Type::Real) }),
+        domain: Box::new(Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        }),
+        codomain: Box::new(Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        }),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::Point { n: 2, quantity: Box::new(Type::Real) }),
+            CompiledExpr::literal(
+                point,
+                Type::Point {
+                    n: 2,
+                    quantity: Box::new(Type::Real),
+                },
+            ),
         ],
-        Type::Vector { n: 2, quantity: Box::new(Type::Real) },
+        Type::Vector {
+            n: 2,
+            quantity: Box::new(Type::Real),
+        },
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1027,9 +1048,9 @@ fn gradient_at_origin() {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "gradient should have 3 components");
             for (i, comp) in components.iter().enumerate() {
-                let val = comp.as_f64().unwrap_or_else(|| {
-                    panic!("component {} should be numeric, got {:?}", i, comp)
-                });
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
                 assert!(
                     val.abs() < 1e-4,
                     "gradient component {} at origin should be ~0.0, got {}",
@@ -1423,7 +1444,10 @@ fn gradient_1param_magnitude_field() {
     // Lambda: |p| magnitude(p)
     let body = make_function_call(
         "magnitude",
-        vec![CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real))],
+        vec![CompiledExpr::value_ref(
+            p_id.clone(),
+            Type::point3(Type::Real),
+        )],
         Type::Real,
     );
     let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());

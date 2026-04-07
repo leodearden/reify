@@ -4,14 +4,18 @@
 //! dimensional aliases, transitive resolution, cycle detection, parameterized aliases,
 //! and integration with existing type resolution paths.
 
-use reify_compiler::{compile, CompiledModule, CompiledTypeAlias};
-use reify_types::{ContentHash, ModulePath, Severity, SourceSpan, Type, Diagnostic};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, compile};
+use reify_types::{ContentHash, Diagnostic, ModulePath, Severity, SourceSpan, Type};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 fn parse_and_compile(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("alias_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     compile(&parsed)
 }
 
@@ -62,9 +66,16 @@ fn compiled_alias_appears_in_module_output() {
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
-    assert!(errs.is_empty(), "alias should compile cleanly; got: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "alias should compile cleanly; got: {:?}",
+        errs
+    );
     let alias = module.type_aliases.iter().find(|a| a.name == "Pressure");
-    assert!(alias.is_some(), "Pressure alias should appear in module.type_aliases");
+    assert!(
+        alias.is_some(),
+        "Pressure alias should appear in module.type_aliases"
+    );
     assert_eq!(alias.unwrap().name, "Pressure");
 }
 
@@ -78,7 +89,8 @@ fn compiled_alias_duplicate_produces_diagnostic() {
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
     assert!(
-        errs.iter().any(|d| d.message.contains("duplicate") || d.message.contains("Duplicate")),
+        errs.iter()
+            .any(|d| d.message.contains("duplicate") || d.message.contains("Duplicate")),
         "duplicate alias should produce an error; got: {:?}",
         errs
     );
@@ -121,7 +133,11 @@ fn dimensional_alias_force_div_area() {
         errs
     );
     // Verify the param type is Scalar with FORCE/AREA dimension
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -152,7 +168,11 @@ fn dimensional_alias_force_mul_length() {
         "expected no errors for dimensional alias; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let e_cell = template
         .value_cells
         .iter()
@@ -187,14 +207,19 @@ fn chained_dimensional_alias_acceleration() {
         errs
     );
     // Acceleration should be LENGTH / TIME^2
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let a_cell = template
         .value_cells
         .iter()
         .find(|c| c.id.member == "a")
         .expect("a not found");
     // LENGTH / TIME = Velocity, then Velocity / TIME = LENGTH / TIME^2
-    let velocity_dim = reify_types::DimensionVector::LENGTH.div(&reify_types::DimensionVector::TIME);
+    let velocity_dim =
+        reify_types::DimensionVector::LENGTH.div(&reify_types::DimensionVector::TIME);
     let expected_dim = velocity_dim.div(&reify_types::DimensionVector::TIME);
     assert_eq!(
         a_cell.cell_type,
@@ -283,7 +308,11 @@ fn parameterized_alias_substitution() {
         "expected no errors for parameterized alias; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -317,7 +346,11 @@ fn parameterized_alias_with_default() {
         "expected no errors for alias with default type param; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -349,7 +382,11 @@ fn multi_param_alias_with_partial_defaults() {
         "expected no errors for multi-param alias with partial default; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -475,7 +512,11 @@ fn pub_alias_has_is_pub_true() {
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
-    assert!(errs.is_empty(), "pub alias should compile cleanly; got: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "pub alias should compile cleanly; got: {:?}",
+        errs
+    );
     // Verify via compiled module output
     let alias = module
         .type_aliases
@@ -492,7 +533,11 @@ fn non_pub_alias_has_is_pub_false() {
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
-    assert!(errs.is_empty(), "non-pub alias should compile cleanly; got: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "non-pub alias should compile cleanly; got: {:?}",
+        errs
+    );
     let alias = module
         .type_aliases
         .iter()
@@ -520,7 +565,11 @@ fn alias_list_of_string() {
         "alias with List<String> RHS should compile without errors; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -582,7 +631,11 @@ fn alias_interop_mixed_declarations() {
         errs
     );
     // Verify structure param type
-    let template = module.templates.iter().find(|t| t.name == "Tank").expect("Tank not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Tank")
+        .expect("Tank not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -627,7 +680,11 @@ fn alias_declared_after_use_forward_reference() {
         "forward-referenced alias should compile cleanly; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -693,7 +750,11 @@ fn alias_body_references_user_parameterized_alias() {
         "user-defined parameterized alias in alias body should compile; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -816,7 +877,11 @@ fn parameterized_alias_chain_with_type_param_forwarding() {
         "chained parameterized alias with type param forwarding should compile; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -856,7 +921,11 @@ fn alias_dependency_via_type_arg_reverse_order() {
         "alias with type arg dependency (reverse order) should compile without errors; got: {:?}",
         errs
     );
-    let template = module.templates.iter().find(|t| t.name == "S").expect("S not found");
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
     let p_cell = template
         .value_cells
         .iter()
@@ -998,7 +1067,11 @@ fn compiled_type_alias_in_module_output() {
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
-    assert!(errs.is_empty(), "pub alias should compile cleanly; got: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "pub alias should compile cleanly; got: {:?}",
+        errs
+    );
 
     let alias: &CompiledTypeAlias = module
         .type_aliases
@@ -1009,7 +1082,10 @@ fn compiled_type_alias_in_module_output() {
     // Verify semantic fields
     assert_eq!(alias.name, "Pressure");
     assert!(alias.is_pub, "pub type alias should have is_pub=true");
-    assert!(alias.type_params.is_empty(), "non-parameterized alias should have empty type_params");
+    assert!(
+        alias.type_params.is_empty(),
+        "non-parameterized alias should have empty type_params"
+    );
     assert!(
         matches!(alias.resolved_type, Some(Type::Scalar { .. })),
         "Pressure should resolve to a Scalar type; got: {:?}",
@@ -1018,7 +1094,10 @@ fn compiled_type_alias_in_module_output() {
 
     // Verify content_hash is valid (non-zero)
     let zero_hash = ContentHash::of_str("");
-    assert_ne!(alias.content_hash, zero_hash, "content_hash should be meaningful");
+    assert_ne!(
+        alias.content_hash, zero_hash,
+        "content_hash should be meaningful"
+    );
 }
 
 #[test]
@@ -1048,7 +1127,11 @@ fn compiled_type_alias_parameterized_in_module_output() {
     "#;
     let module = parse_and_compile(source);
     let errs = errors_only(&module);
-    assert!(errs.is_empty(), "parameterized alias should compile cleanly; got: {:?}", errs);
+    assert!(
+        errs.is_empty(),
+        "parameterized alias should compile cleanly; got: {:?}",
+        errs
+    );
 
     let alias: &CompiledTypeAlias = module
         .type_aliases

@@ -456,16 +456,20 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         }
 
         // re(z) / real(z): extract real part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "re" | "real" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
-            _ => Value::Undef,
-        })),
+        "re" | "real" => unary(args, |v| {
+            sanitize_value(match v {
+                Value::Complex { re, dimension, .. } => Value::from_component(*re, *dimension),
+                _ => Value::Undef,
+            })
+        }),
 
         // im(z) / imag(z): extract imaginary part. Returns Real if DIMENSIONLESS, Scalar otherwise.
-        "im" | "imag" => unary(args, |v| sanitize_value(match v {
-            Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
-            _ => Value::Undef,
-        })),
+        "im" | "imag" => unary(args, |v| {
+            sanitize_value(match v {
+                Value::Complex { im, dimension, .. } => Value::from_component(*im, *dimension),
+                _ => Value::Undef,
+            })
+        }),
 
         // conjugate(z): negate the imaginary part, preserve re and dimension.
         "conjugate" => unary(args, |v| match v {
@@ -958,7 +962,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                 _ => return Value::Undef,
             };
             // Defense-in-depth: reject NaN/Inf early (NaN bypasses IEEE 754 comparisons)
-            if xc.iter()
+            if xc
+                .iter()
                 .chain(yc.iter())
                 .chain(zc.iter())
                 .any(|v| !v.is_finite())
@@ -1064,7 +1069,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "curl" => Value::Undef,   // Numeric differentiation not yet implemented
 
         // --- Advanced linear algebra: determinant, inverse, transpose, outer, trace, eigenvalues ---
-
         "determinant" => unary(args, |v| {
             let (n, ncols, data, dim) = match matrix_components_f64(v) {
                 Some(c) => c,
@@ -1299,9 +1303,7 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
                             two_m * ((theta + 2.0 * std::f64::consts::PI) / 3.0).cos() + p3,
                             two_m * ((theta + 4.0 * std::f64::consts::PI) / 3.0).cos() + p3,
                         ];
-                        eigs.sort_by(|a, b| {
-                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                        });
+                        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                         Value::List(eigs.into_iter().map(make_val).collect())
                     }
                 }
@@ -1667,8 +1669,7 @@ fn matrix_components_f64(v: &Value) -> Option<(usize, usize, Vec<f64>, Dimension
     let rows = match v {
         Value::Matrix(r) if !r.is_empty() => Rows::Matrix(r),
         Value::Tensor(items)
-            if !items.is_empty()
-                && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
+            if !items.is_empty() && items.iter().all(|r| matches!(r, Value::Tensor(_))) =>
         {
             Rows::Tensor(items)
         }
@@ -3972,30 +3973,10 @@ mod tests {
         ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr) => {
             match $expr {
                 Value::Orientation { w, x, y, z } => {
-                    assert!(
-                        (w - $ew).abs() < 1e-12,
-                        "w: expected {}, got {}",
-                        $ew,
-                        w
-                    );
-                    assert!(
-                        (x - $ex).abs() < 1e-12,
-                        "x: expected {}, got {}",
-                        $ex,
-                        x
-                    );
-                    assert!(
-                        (y - $ey).abs() < 1e-12,
-                        "y: expected {}, got {}",
-                        $ey,
-                        y
-                    );
-                    assert!(
-                        (z - $ez).abs() < 1e-12,
-                        "z: expected {}, got {}",
-                        $ez,
-                        z
-                    );
+                    assert!((w - $ew).abs() < 1e-12, "w: expected {}, got {}", $ew, w);
+                    assert!((x - $ex).abs() < 1e-12, "x: expected {}, got {}", $ex, x);
+                    assert!((y - $ey).abs() < 1e-12, "y: expected {}, got {}", $ey, y);
+                    assert!((z - $ez).abs() < 1e-12, "z: expected {}, got {}", $ez, z);
                 }
                 other => panic!(
                     "expected Orientation({}, {}, {}, {}), got {:?}",
@@ -4673,7 +4654,11 @@ mod tests {
     #[test]
     fn orient_basis_nan_component_returns_undef() {
         // NaN in a basis vector must be rejected — NaN bypasses IEEE 754 comparisons.
-        let x = Value::Tensor(vec![Value::Real(f64::NAN), Value::Real(0.0), Value::Real(0.0)]);
+        let x = Value::Tensor(vec![
+            Value::Real(f64::NAN),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
         let y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
         let z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
         assert!(
@@ -4726,16 +4711,8 @@ mod tests {
     fn orient_axis_angle_non_unit_axis_normalizes() {
         // orient_axis_angle normalizes the axis vector — [2,0,0] with π/2 should
         // produce the same rotation as [1,0,0] with π/2: q = (cos(π/4), sin(π/4), 0, 0)
-        let axis_scaled = Value::Tensor(vec![
-            Value::Real(2.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let axis_unit = Value::Tensor(vec![
-            Value::Real(1.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let axis_scaled = Value::Tensor(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_unit = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
         let angle = Value::Real(std::f64::consts::FRAC_PI_2);
         let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
         let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
@@ -4759,19 +4736,21 @@ mod tests {
     fn orient_quaternion_dimensioned_scalar_returns_undef() {
         // Dimensioned Scalars (e.g. LENGTH) must be rejected — quaternion components
         // are pure numbers and should not carry physical dimensions.
-        assert!(eval_builtin(
-            "orient_quaternion",
-            &[
-                Value::Scalar {
-                    si_value: 1.0,
-                    dimension: DimensionVector::LENGTH,
-                },
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::LENGTH,
+                    },
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
@@ -4810,19 +4789,21 @@ mod tests {
     fn orient_quaternion_rejects_angle_dimension() {
         // ANGLE-dimensioned Scalars must also be rejected — quaternion components
         // are dimensionless, not angles.
-        assert!(eval_builtin(
-            "orient_quaternion",
-            &[
-                Value::Scalar {
-                    si_value: 1.0,
-                    dimension: DimensionVector::ANGLE,
-                },
-                Value::Real(0.0),
-                Value::Real(0.0),
-                Value::Real(0.0),
-            ]
-        )
-        .is_undef());
+        assert!(
+            eval_builtin(
+                "orient_quaternion",
+                &[
+                    Value::Scalar {
+                        si_value: 1.0,
+                        dimension: DimensionVector::ANGLE,
+                    },
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                ]
+            )
+            .is_undef()
+        );
     }
 
     #[test]
@@ -6076,17 +6057,8 @@ mod tests {
 
     /// Assert that evaluating `builtin` with a single `Complex { re, im, dimension }` argument
     /// returns `Value::Undef`. Panics with a descriptive message including the builtin name.
-    fn assert_complex_builtin_undef(
-        builtin: &str,
-        re: f64,
-        im: f64,
-        dimension: DimensionVector,
-    ) {
-        let z = Value::Complex {
-            re,
-            im,
-            dimension,
-        };
+    fn assert_complex_builtin_undef(builtin: &str, re: f64, im: f64, dimension: DimensionVector) {
+        let z = Value::Complex { re, im, dimension };
         assert!(
             eval_builtin(builtin, &[z]).is_undef(),
             "{builtin} with Complex{{re={re}, im={im}, dimension={dimension:?}}} must return Undef"
@@ -6111,12 +6083,7 @@ mod tests {
     fn complex_overflow_dimensioned_returns_undef_both_builtins() {
         // Same overflow but through the Scalar branch (non-dimensionless).
         for builtin in ["magnitude", "complex_magnitude"] {
-            assert_complex_builtin_undef(
-                builtin,
-                f64::MAX,
-                f64::MAX,
-                DimensionVector::LENGTH,
-            );
+            assert_complex_builtin_undef(builtin, f64::MAX, f64::MAX, DimensionVector::LENGTH);
         }
     }
 
@@ -6125,19 +6092,9 @@ mod tests {
         // A NaN component propagates through re.hypot(im) and sanitize_value catches it.
         for builtin in ["magnitude", "complex_magnitude"] {
             // re=NaN
-            assert_complex_builtin_undef(
-                builtin,
-                f64::NAN,
-                1.0,
-                DimensionVector::DIMENSIONLESS,
-            );
+            assert_complex_builtin_undef(builtin, f64::NAN, 1.0, DimensionVector::DIMENSIONLESS);
             // im=NaN (symmetric case)
-            assert_complex_builtin_undef(
-                builtin,
-                1.0,
-                f64::NAN,
-                DimensionVector::DIMENSIONLESS,
-            );
+            assert_complex_builtin_undef(builtin, 1.0, f64::NAN, DimensionVector::DIMENSIONLESS);
         }
     }
 
@@ -6178,24 +6135,14 @@ mod tests {
                 0.0,
                 DimensionVector::DIMENSIONLESS,
             );
-            assert_complex_builtin_undef(
-                builtin,
-                f64::INFINITY,
-                0.0,
-                DimensionVector::LENGTH,
-            );
+            assert_complex_builtin_undef(builtin, f64::INFINITY, 0.0, DimensionVector::LENGTH);
             assert_complex_builtin_undef(
                 builtin,
                 0.0,
                 f64::NEG_INFINITY,
                 DimensionVector::DIMENSIONLESS,
             );
-            assert_complex_builtin_undef(
-                builtin,
-                0.0,
-                f64::NEG_INFINITY,
-                DimensionVector::LENGTH,
-            );
+            assert_complex_builtin_undef(builtin, 0.0, f64::NEG_INFINITY, DimensionVector::LENGTH);
             // im=+Inf (symmetric of re=+Inf)
             assert_complex_builtin_undef(
                 builtin,
@@ -6203,12 +6150,7 @@ mod tests {
                 f64::INFINITY,
                 DimensionVector::DIMENSIONLESS,
             );
-            assert_complex_builtin_undef(
-                builtin,
-                0.0,
-                f64::INFINITY,
-                DimensionVector::LENGTH,
-            );
+            assert_complex_builtin_undef(builtin, 0.0, f64::INFINITY, DimensionVector::LENGTH);
             // re=-Inf (symmetric of im=-Inf)
             assert_complex_builtin_undef(
                 builtin,
@@ -6216,12 +6158,7 @@ mod tests {
                 0.0,
                 DimensionVector::DIMENSIONLESS,
             );
-            assert_complex_builtin_undef(
-                builtin,
-                f64::NEG_INFINITY,
-                0.0,
-                DimensionVector::LENGTH,
-            );
+            assert_complex_builtin_undef(builtin, f64::NEG_INFINITY, 0.0, DimensionVector::LENGTH);
         }
     }
 
@@ -7071,7 +7008,12 @@ mod tests {
         assert!(
             eval_builtin(
                 "frame3_identity",
-                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0), Value::Real(4.0)]
+                &[
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0)
+                ]
             )
             .is_undef()
         );
@@ -8008,7 +7950,7 @@ mod tests {
         let from = Value::Frame {
             origin: Box::new(Value::Point(vec![
                 Value::length(1.0),
-                Value::angle(0.0),  // dimension mismatch within same origin
+                Value::angle(0.0), // dimension mismatch within same origin
                 Value::length(0.0),
             ])),
             basis: Box::new(make_identity_orientation()),
@@ -8299,12 +8241,24 @@ mod tests {
         let length_dim = DimensionVector::LENGTH;
         let force_dim = reify_types::dimension::FORCE;
         let a = Value::Tensor(vec![
-            Value::Scalar { si_value: 1.0, dimension: length_dim },
-            Value::Scalar { si_value: 2.0, dimension: length_dim },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: length_dim,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: length_dim,
+            },
         ]);
         let b = Value::Tensor(vec![
-            Value::Scalar { si_value: 3.0, dimension: force_dim },
-            Value::Scalar { si_value: 4.0, dimension: force_dim },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: force_dim,
+            },
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: force_dim,
+            },
         ]);
         let result = eval_builtin("outer", &[a, b]);
         let d = matrix_components_f64(&result).unwrap();

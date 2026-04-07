@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_mcp;
 use reify_geometry::DispatchPlanner;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
@@ -22,6 +21,7 @@ use reify_gui::types::EvaluationStatus;
 use reify_gui::watcher::FileWatcher;
 use reify_kernel_occt::OcctKernelHandle;
 use reify_lsp::server::NotificationSink;
+use reify_mcp;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
 // --- Event emission helpers ---

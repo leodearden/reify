@@ -142,9 +142,7 @@ impl ConcurrentEvalAdapter {
     /// Get a snapshot of the current snapshot_values (for testing/inspection).
     ///
     /// Recovers gracefully from poisoned locks via `read_snapshot_values()` helper.
-    pub fn snapshot_values(
-        &self,
-    ) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
+    pub fn snapshot_values(&self) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
         self.read_snapshot_values().clone()
     }
 
@@ -382,12 +380,12 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
             self.lock_results().push(ConcurrentNodeResult {
-                    node: node.clone(),
-                    value: val,
-                    determinacy: DeterminacyState::Determined,
-                    trace,
-                    outcome,
-                });
+                node: node.clone(),
+                value: val,
+                determinacy: DeterminacyState::Determined,
+                trace,
+                outcome,
+            });
 
             return outcome;
         }

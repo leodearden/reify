@@ -809,7 +809,10 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     let session = EngineSession::new(Box::new(checker), None);
 
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
-    assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
+    assert!(
+        diags.is_empty(),
+        "no module loaded → diagnostics must be empty"
+    );
 }
 
 /// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
@@ -876,11 +879,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 
     // line and column must be valid 1-based values
-    assert!(
-        first.line >= 1,
-        "expected line >= 1, got {}",
-        first.line
-    );
+    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
     assert!(
         first.column >= 1,
         "expected column >= 1, got {}",
@@ -963,7 +962,10 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         !diags.is_empty(),
         "expected at least one diagnostic for unknown port type"
     );
-    assert_eq!(diags[0].file_path, "testmod.ri", "get_diagnostics file_path");
+    assert_eq!(
+        diags[0].file_path, "testmod.ri",
+        "get_diagnostics file_path"
+    );
 
     let loc = session
         .get_source_location("S.width")
@@ -991,7 +993,10 @@ fn diagnostics_file_key_consistent_after_update_source() {
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
-    assert!(!diags_before.is_empty(), "should have diagnostics after initial load");
+    assert!(
+        !diags_before.is_empty(),
+        "should have diagnostics after initial load"
+    );
     assert_eq!(
         diags_before[0].file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
@@ -1044,10 +1049,26 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
         .expect("injected 'test labelless' diagnostic not found in results");
 
     // (b) All coordinates default to (1,1,1,1)
-    assert_eq!(injected.line, 1, "expected line=1 for labelless, got {}", injected.line);
-    assert_eq!(injected.column, 1, "expected column=1 for labelless, got {}", injected.column);
-    assert_eq!(injected.end_line, 1, "expected end_line=1 for labelless, got {}", injected.end_line);
-    assert_eq!(injected.end_column, 1, "expected end_column=1 for labelless, got {}", injected.end_column);
+    assert_eq!(
+        injected.line, 1,
+        "expected line=1 for labelless, got {}",
+        injected.line
+    );
+    assert_eq!(
+        injected.column, 1,
+        "expected column=1 for labelless, got {}",
+        injected.column
+    );
+    assert_eq!(
+        injected.end_line, 1,
+        "expected end_line=1 for labelless, got {}",
+        injected.end_line
+    );
+    assert_eq!(
+        injected.end_column, 1,
+        "expected end_column=1 for labelless, got {}",
+        injected.end_column
+    );
 
     // (c) Severity preserved
     assert_eq!(
