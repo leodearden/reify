@@ -38,8 +38,8 @@ assert "script has no grep calls referencing hooks/project-checks" \
 assert "script has no grep calls referencing orchestrator.yaml" \
     bash -c "! grep -qE 'grep.*orchestrator|orchestrator.*grep' '$SCRIPT'"
 
-assert "script has exactly 3 'Check N:' echo statements" \
-    bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '3' ]"
+assert "script has exactly 4 'Check N:' echo statements" \
+    bash -c "[ \"\$(grep -cE 'echo \"Check [0-9]' '$SCRIPT')\" = '4' ]"
 
 # -- Test 3: orchestrator.yaml uses if/then/fi guards (not || true) ----------
 echo ""
@@ -72,5 +72,12 @@ echo "--- Test 5: Check 1 grep matches npm@ prefix ---"
 
 assert "Check 1 grep pattern includes 'npm@' prefix match" \
     bash -c "grep -qE 'grep.*npm@' '$SCRIPT'"
+
+# -- Test 6: script has cross-file consistency check -------------------------
+echo ""
+echo "--- Test 6: script has cross-file packageManager consistency check ---"
+
+assert "script contains 'sort -u' for cross-file consistency comparison" \
+    grep -q 'sort -u' "$SCRIPT"
 
 test_summary
