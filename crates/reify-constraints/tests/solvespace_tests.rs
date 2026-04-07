@@ -836,14 +836,19 @@ fn non_numeric_coord_returns_none() {
 }
 
 /// solve() must return SolveResult::NoProgress when a constraint expression
-/// contains a non-auto ValueRef cell_id that is absent from current_values.
+/// contains a non-auto ValueRef in a coordinate position.
 ///
-/// Because extract_coord only accepts auto params and literals, a ValueRef that
-/// is not in auto_params causes recognize_pattern to return None, which means
-/// solve() returns NoProgress with "unrecognized geometric constraint pattern".
-/// This exercises the NoProgress return path in solve() at the constraint-loop level.
+/// extract_coord (solvespace.rs line ~300) only accepts auto params and literals;
+/// a ValueRef that is not in auto_params causes extract_coord to return None,
+/// which cascades through extract_point_ref → recognize_pattern → None, hitting
+/// the `None =>` arm in solve() (line ~863) that returns
+/// NoProgress { reason: "unrecognized geometric constraint pattern" }.
+///
+/// This exercises the unrecognized-pattern NoProgress branch, NOT the
+/// builder-error NoProgress branch (Err arm, line ~858), which is unreachable
+/// via recognize_pattern.
 #[test]
-fn solve_returns_no_progress_for_missing_non_auto_value() {
+fn solve_non_auto_ref_in_coord_yields_unrecognized_pattern() {
     let solver = SolveSpaceSolver;
 
     const AUTO_ENTITY: &str = "Auto";
