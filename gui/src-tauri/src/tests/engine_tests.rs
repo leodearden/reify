@@ -1159,3 +1159,21 @@ fn byte_offset_to_line_col_offset_beyond_len() {
     // position after the last char: column incremented for 'a' and 'b' → (1, 3).
     assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
 }
+
+#[test]
+fn byte_offset_to_line_col_empty_span_identical_coords() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // When a diagnostic span has start == end (empty span), both calls to
+    // byte_offset_to_line_col with the same offset must return identical coords.
+    // offset 6 in "hello\nworld" (after '\n') → start of second line → (2, 1).
+    let source = "hello\nworld";
+    let offset = 6; // 'w' is the first char of "world"
+    let start_coord = byte_offset_to_line_col(source, offset);
+    let end_coord = byte_offset_to_line_col(source, offset);
+    assert_eq!(
+        start_coord, end_coord,
+        "empty span: identical offsets must produce identical coords"
+    );
+    assert_eq!(start_coord, (2, 1));
+}
