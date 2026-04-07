@@ -708,7 +708,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in setup.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -716,7 +716,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
-                        free: false,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
@@ -970,7 +970,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults and Auto cells to populate the value map
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     // Auto cells: Undef with DeterminacyState::Auto
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
@@ -1116,7 +1116,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1125,7 +1125,7 @@ impl Engine {
                     } else {
                         // Guard is false or Undef — member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
@@ -1156,7 +1156,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1165,7 +1165,7 @@ impl Engine {
                     } else {
                         // Guard is true or Undef — else member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
@@ -1328,7 +1328,7 @@ impl Engine {
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| cell.id.clone())
                     .collect();
 
@@ -1351,12 +1351,12 @@ impl Engine {
                 let auto_param_list: Vec<AutoParam> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| AutoParam {
                         id: cell.id.clone(),
                         param_type: cell.cell_type.clone(),
                         bounds: None,
-                        free: false,
+                        free: cell.kind.is_auto_free(),
                     })
                     .collect();
 
@@ -1714,7 +1714,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1745,7 +1745,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1783,7 +1783,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in new_snapshot.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -1791,7 +1791,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
-                        free: false,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
@@ -1980,7 +1980,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2015,7 +2015,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2307,7 +2307,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path

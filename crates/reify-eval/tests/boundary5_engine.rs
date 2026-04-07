@@ -193,7 +193,7 @@ fn e2e_parse_compile_eval_auto_param() {
         .iter()
         .find(|c| c.id == ValueCellId::new("S", "x"))
         .expect("x cell not found");
-    assert_eq!(x_cell.kind, ValueCellKind::Auto);
+    assert!(x_cell.kind.is_auto());
 
     // Evaluate and check
     let checker = reify_constraints::SimpleConstraintChecker;

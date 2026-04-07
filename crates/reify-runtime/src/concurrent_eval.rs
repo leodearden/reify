@@ -332,7 +332,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
             && let Some(cell_node) = self.graph.value_cells.get(vcid)
-            && (cell_node.kind == ValueCellKind::Let || cell_node.kind == ValueCellKind::Auto)
+            && (cell_node.kind == ValueCellKind::Let || cell_node.kind.is_auto())
             && cell_node.default_expr.is_some()
         {
             let expr = cell_node.default_expr.as_ref().unwrap();

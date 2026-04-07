@@ -390,7 +390,7 @@ fn compile_auto_param() {
     // x should be Auto with no default_expr
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
-    assert_eq!(x.kind, ValueCellKind::Auto);
+    assert!(x.kind.is_auto());
     assert!(
         x.default_expr.is_none(),
         "auto param should have no default_expr"
@@ -430,7 +430,7 @@ fn compiled_auto_param_span_not_zero() {
 
     let template = &compiled.templates[0];
     let x = &template.value_cells[0];
-    assert_eq!(x.kind, ValueCellKind::Auto);
+    assert!(x.kind.is_auto());
 
     // Auto param span must not be (0,0)
     assert_ne!(
@@ -1196,7 +1196,7 @@ fn e2e_minimize_round_trip() {
     let auto_cells: Vec<_> = template
         .value_cells
         .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Auto)
+        .filter(|vc| vc.kind.is_auto())
         .collect();
     assert_eq!(auto_cells.len(), 1, "expected 1 auto param");
     assert_eq!(

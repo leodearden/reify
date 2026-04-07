@@ -284,7 +284,20 @@ pub enum ValueCellKind {
     Param,
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
-    Auto,
+    /// `free`: when true this is an `auto(free)` parameter that skips uniqueness verification.
+    Auto { free: bool },
+}
+
+impl ValueCellKind {
+    /// Returns `true` for any `Auto` variant (strict or free).
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ValueCellKind::Auto { .. })
+    }
+
+    /// Returns `true` only for `Auto { free: true }`.
+    pub fn is_auto_free(&self) -> bool {
+        matches!(self, ValueCellKind::Auto { free: true })
+    }
 }
 
 /// Visibility of a declaration: `Public` if accessible from outside, `Private` if internal.
@@ -3479,7 +3492,7 @@ fn compile_purpose(
             let param_ids: Vec<ValueCellId> = template
                 .value_cells
                 .iter()
-                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
                 .map(|vc| vc.id.clone())
                 .collect();
             if !param_ids.is_empty() {
@@ -4798,7 +4811,7 @@ fn compile_entity(
                 let decl = if is_auto {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto,
+                        kind: ValueCellKind::Auto { free: false },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -5090,7 +5103,7 @@ fn compile_entity(
                             let decl = if is_auto {
                                 ValueCellDecl {
                                     id,
-                                    kind: ValueCellKind::Auto,
+                                    kind: ValueCellKind::Auto { free: false },
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
@@ -5919,7 +5932,7 @@ fn auto_match_port_members(
         let prefix = format!("{}.", port.name);
         port.members
             .iter()
-            .filter(|m| matches!(m.kind, ValueCellKind::Param | ValueCellKind::Auto))
+            .filter(|m| matches!(m.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
             .filter_map(|m| m.id.member.strip_prefix(&prefix).map(|s| s.to_string()))
             .collect()
     };
@@ -6481,7 +6494,7 @@ fn compile_guarded_members(
                 let decl = if is_auto {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto,
+                        kind: ValueCellKind::Auto { free: false },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,

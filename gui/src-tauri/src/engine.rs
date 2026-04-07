@@ -349,7 +349,7 @@ impl EngineSession {
 
                 let determinacy = match &val {
                     reify_types::Value::Undef => {
-                        if cell.kind == ValueCellKind::Auto {
+                        if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
@@ -361,7 +361,7 @@ impl EngineSession {
                 let kind = match cell.kind {
                     ValueCellKind::Param => "Param",
                     ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto => "Auto",
+                    ValueCellKind::Auto { .. } => "Auto",
                 };
 
                 values.push(ValueData {

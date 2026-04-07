@@ -458,7 +458,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -559,7 +559,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -720,7 +720,7 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -846,7 +846,7 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -971,7 +971,7 @@ fn eval_guard_false_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1039,7 +1039,7 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1167,7 +1167,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' in members
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1177,7 +1177,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'depth' in else_members
     let depth_decl = ValueCellDecl {
         id: depth_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
