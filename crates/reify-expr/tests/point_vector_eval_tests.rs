@@ -1683,9 +1683,10 @@ fn value_point_div_int_returns_point() {
     );
 }
 
-/// Value::Vector / Real(0.0) → Undef (division-by-zero early check).
-#[test]
-fn value_vector_div_zero_returns_undef() {
+// ─── div-zero helpers (task 993 cleanup) ───
+
+/// Helper: asserts that Value::Vector / zero → Undef.
+fn assert_vector_div_zero_returns_undef(zero: Value, zero_ty: Type) {
     let left = CompiledExpr::literal(
         Value::Vector(vec![
             Value::length(1.0),
@@ -1694,16 +1695,15 @@ fn value_vector_div_zero_returns_undef() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let right = CompiledExpr::literal(zero, zero_ty);
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
 
-/// Value::Point / Real(0.0) → Undef (division-by-zero early check for Point).
-#[test]
-fn value_point_div_zero_returns_undef() {
+/// Helper: asserts that Value::Point / zero → Undef.
+fn assert_point_div_zero_returns_undef(zero: Value, zero_ty: Type) {
     let left = CompiledExpr::literal(
         Value::Point(vec![
             Value::length(1.0),
@@ -1712,11 +1712,23 @@ fn value_point_div_zero_returns_undef() {
         ]),
         Type::point3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+    let right = CompiledExpr::literal(zero, zero_ty);
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector / Real(0.0) → Undef (division-by-zero early check).
+#[test]
+fn value_vector_div_real_zero_returns_undef() {
+    assert_vector_div_zero_returns_undef(Value::Real(0.0), Type::Real);
+}
+
+/// Value::Point / Real(0.0) → Undef (division-by-zero early check for Point).
+#[test]
+fn value_point_div_real_zero_returns_undef() {
+    assert_point_div_zero_returns_undef(Value::Real(0.0), Type::Real);
 }
 
 /// Scalar/Scalar division producing a dimensionless result must return
@@ -1787,11 +1799,37 @@ fn value_vector_with_undef_component_sub_propagates() {
     assert_eq!(result, Value::Undef);
 }
 
-/// Value::Vector / Int(0) → Undef (division-by-zero with integer zero).
-/// Mirrors value_vector_div_zero_returns_undef but uses Int(0) instead of Real(0.0)
-/// to confirm the as_f64() == 0.0 guard in eval_div catches integer zero.
+/// Value::Vector / Int(0) → Undef (integer zero caught by as_f64() == 0.0 guard).
 #[test]
 fn value_vector_div_int_zero_returns_undef() {
+    assert_vector_div_zero_returns_undef(Value::Int(0), Type::Int);
+}
+
+/// Value::Point / Int(0) → Undef (integer zero caught by as_f64() == 0.0 guard).
+#[test]
+fn value_point_div_int_zero_returns_undef() {
+    assert_point_div_zero_returns_undef(Value::Int(0), Type::Int);
+}
+
+// ─── task 993: missing guard coverage ───
+
+/// Empty Value::Vector + Value::Vector → Undef.
+/// Exercises the `if a.is_empty() { return Value::Undef }` guard in componentwise_binop.
+#[test]
+fn value_empty_vector_add_returns_undef() {
+    let left = CompiledExpr::literal(Value::Vector(vec![]), Type::vec2(Type::length()));
+    let right = CompiledExpr::literal(Value::Vector(vec![]), Type::vec2(Type::length()));
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::vec2(Type::length()));
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector - Value::Vector(with Undef component on RIGHT) → Undef.
+/// Existing test (value_vector_with_undef_component_sub_propagates) only covers Undef
+/// on the LEFT operand of Sub; this confirms the RIGHT operand path.
+#[test]
+fn value_vector_with_undef_component_sub_right_propagates() {
     let left = CompiledExpr::literal(
         Value::Vector(vec![
             Value::length(1.0),
@@ -1800,18 +1838,35 @@ fn value_vector_div_int_zero_returns_undef() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Int(0), Type::Int);
-    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
+    let right = CompiledExpr::literal(
+        Value::Vector(vec![Value::length(1.0), Value::Undef, Value::length(1.0)]),
+        Type::vec3(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
 }
 
-/// Value::Point / Int(0) → Undef (division-by-zero with integer zero for Point).
-/// Mirrors value_point_div_zero_returns_undef but uses Int(0) instead of Real(0.0)
-/// to confirm the as_f64() == 0.0 guard in eval_div catches integer zero for Points.
+/// Value::Vector / Scalar{ si_value: 0.0 } → Undef.
+/// Confirms the as_f64() == 0.0 guard in eval_div catches Scalar zero
+/// (existing tests only cover Int(0) and Real(0.0) zero variants).
 #[test]
-fn value_point_div_int_zero_returns_undef() {
+fn value_vector_div_scalar_zero_returns_undef() {
+    assert_vector_div_zero_returns_undef(
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        },
+        Type::dimensionless_scalar(),
+    );
+}
+
+/// Value::Point3 - Value::Point2 → Undef (length mismatch in Point-Point subtraction).
+/// Exercises componentwise_binop length guard in the Point-Point arm of eval_sub.
+/// Existing mismatch tests only cover Vector-Vector and Point-Vector arms.
+#[test]
+fn value_point3_sub_point2_mismatched_length_returns_undef() {
     let left = CompiledExpr::literal(
         Value::Point(vec![
             Value::length(1.0),
@@ -1820,9 +1875,19 @@ fn value_point_div_int_zero_returns_undef() {
         ]),
         Type::point3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Int(0), Type::Int);
-    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
+    let right = CompiledExpr::literal(
+        Value::Point(vec![Value::length(1.0), Value::length(2.0)]),
+        Type::point2(Type::length()),
+    );
+    let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
+}
+
+/// Value::Vector / Real(-0.0) → Undef (negative zero is still zero).
+/// Pins IEEE 754 -0.0 divisor behaviour: -0.0 == 0.0, so the guard must catch it.
+#[test]
+fn value_vector_div_negative_zero_returns_undef() {
+    assert_vector_div_zero_returns_undef(Value::Real(-0.0), Type::Real);
 }
