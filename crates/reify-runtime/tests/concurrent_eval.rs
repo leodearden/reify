@@ -2111,6 +2111,28 @@ mod poison_recovery_extended {
     /// Arc::try_unwrap succeeds (refcount == 1). The Err(arc) → read()/lock() →
     /// unwrap_or_else() shared-fallback paths are covered by the `poison_shared_fallback`
     /// module below.
+    fn assert_into_result_emits_one_warn(poison_fn: impl Fn(&ConcurrentEvalAdapter)) {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        poison_fn(&adapter);
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count, 1,
+            "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        );
+        assert!(result.is_ok(), "into_result() should not panic after poison recovery");
+    }
+
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
         let setup = simple_setup();
