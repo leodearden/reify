@@ -326,7 +326,9 @@ fn get_selection_returns_selected_entity_from_arc() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: None,
     }));
-    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
     let result = ctx.get_selection().expect("get_selection should succeed");
     assert_eq!(result.selected_entity, Some("Bracket".to_string()));
     assert_eq!(result.hovered_entity, None);
@@ -340,7 +342,9 @@ fn get_selection_returns_both_selected_and_hovered() {
         selected_entity: Some("Bracket".to_string()),
         hovered_entity: Some("Bracket.width".to_string()),
     }));
-    let ctx = TauriToolContext::builder(engine).with_selection(selection).build();
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection)
+        .build();
     let result = ctx.get_selection().expect("get_selection should succeed");
     assert_eq!(result.selected_entity, Some("Bracket".to_string()));
     assert_eq!(result.hovered_entity, Some("Bracket.width".to_string()));
@@ -351,7 +355,9 @@ fn get_selection_reflects_live_arc_updates() {
     let session = make_loaded_session();
     let engine = Arc::new(Mutex::new(session));
     let selection = Arc::new(RwLock::new(SelectionInfo::default()));
-    let ctx = TauriToolContext::builder(engine).with_selection(selection.clone()).build();
+    let ctx = TauriToolContext::builder(engine)
+        .with_selection(selection.clone())
+        .build();
 
     // Initially empty
     let result = ctx.get_selection().expect("get_selection should succeed");
@@ -367,10 +373,7 @@ fn get_selection_reflects_live_arc_updates() {
     // Subsequent call reflects the update
     let result = ctx.get_selection().expect("get_selection should succeed");
     assert_eq!(result.selected_entity, Some("Bracket.height".to_string()));
-    assert_eq!(
-        result.hovered_entity,
-        Some("Bracket.thickness".to_string())
-    );
+    assert_eq!(result.hovered_entity, Some("Bracket.thickness".to_string()));
 }
 
 // --- Builder tests ---

@@ -82,9 +82,7 @@ structure S {
         !error_diags.is_empty(),
         "expected at least one Error diagnostic"
     );
-    let has_label = error_diags
-        .iter()
-        .any(|d| d.message.contains("MinWall[0]"));
+    let has_label = error_diags.iter().any(|d| d.message.contains("MinWall[0]"));
     assert!(
         has_label,
         "expected at least one Error diagnostic containing 'MinWall[0]', got: {:?}",
@@ -360,8 +358,7 @@ structure S {
     );
     // Inline constraint has no label
     assert_eq!(
-        entry.label,
-        None,
+        entry.label, None,
         "inline constraint should have no label, got: {:?}",
         entry.label
     );
@@ -382,9 +379,6 @@ structure S {
     assert!(
         has_raw_id,
         "expected inline diagnostic containing 'S#constraint[0]' (raw ConstraintNodeId), got: {:?}",
-        error_diags
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        error_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

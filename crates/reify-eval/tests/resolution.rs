@@ -7,12 +7,12 @@ use reify_eval::cache::NodeId;
 use reify_eval::{ConcurrentEditResult, Engine};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
-    MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt,
-    literal, lt, mm, value_ref,
+    MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
+    lt, mm, value_ref,
 };
 use reify_types::{
-    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
-    Value, ValueCellId,
+    DeterminacyState, Diagnostic, ModulePath, OptimizationObjective, SnapshotId,
+    SnapshotProvenance, Type, Value, ValueCellId,
 };
 
 #[test]
@@ -959,9 +959,11 @@ fn eval_resolves_per_template_independently() {
     let spy = MultiCallSpyConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1092,14 +1094,17 @@ fn edit_param_resolves_per_template_not_cross_template() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
         // edit_param() re-resolution: Bracket only
         SolveResult::Solved {
             values: bracket_resolved_again,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1201,8 +1206,8 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
     // Same two-template module. After eval(), prepare_concurrent_edit on
     // Bracket.limit, then resolve_concurrent_edit. The solver call should
     // contain only Bracket's auto params.
-    use std::collections::HashSet;
     use reify_types::SolveResult;
+    use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_limit = ValueCellId::new("Bracket", "limit");
@@ -1218,12 +1223,15 @@ fn concurrent_edit_resolves_per_template_not_cross_template() {
     let spy = MultiCallSpyConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved,
+            unique: true,
         },
         SolveResult::Solved {
             values: bracket_resolved_again,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1341,9 +1349,11 @@ fn edit_param_matches_eval_for_multi_template_module() {
     let solver1 = SequencedMockConstraintSolver::new(vec![
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
     ]);
 
@@ -1383,8 +1393,8 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .template(bolt.clone())
         .build();
 
-    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver1));
+    let mut engine1 =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver1));
     let eval_result = engine1.eval(&module);
 
     // Record baseline resolved params from eval
@@ -1405,14 +1415,17 @@ fn edit_param_matches_eval_for_multi_template_module() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution: Bracket returns same result
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
     ]);
 
@@ -1421,8 +1434,8 @@ fn edit_param_matches_eval_for_multi_template_module() {
         .template(bolt)
         .build();
 
-    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(solver2));
+    let mut engine2 =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver2));
     engine2.eval(&module2);
 
     // Edit Bracket.limit to trigger Bracket's constraint re-resolution
@@ -1478,18 +1491,22 @@ fn scope_name_deterministic_for_multi_template() {
         // eval() call 1: Bracket
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // eval() call 2: Bolt
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution after editing Bracket.limit
         SolveResult::Solved {
             values: bracket_solved.clone(),
+            unique: true,
         },
         // edit_param() re-resolution after editing Bolt.clearance
         SolveResult::Solved {
             values: bolt_solved.clone(),
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1629,18 +1646,22 @@ fn edit_param_no_cross_group_value_contamination() {
         // eval() call 1 (either group)
         SolveResult::Solved {
             values: bracket_eval_solved,
+            unique: true,
         },
         // eval() call 2 (either group)
         SolveResult::Solved {
             values: bolt_eval_solved,
+            unique: true,
         },
         // edit_param() call 3 (first dirty group)
         SolveResult::Solved {
             values: edit_resolved_a,
+            unique: true,
         },
         // edit_param() call 4 (second dirty group)
         SolveResult::Solved {
             values: edit_resolved_b,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1731,7 +1752,8 @@ fn edit_param_no_cross_group_value_contamination() {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     assert_eq!(
-        cv_a, cv_b,
+        cv_a,
+        cv_b,
         "cross-group contamination: edit_param solver calls received different \
          current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
         problems[2]
@@ -1752,8 +1774,8 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
     // Same invariant as edit_param_no_cross_group_value_contamination but
     // exercised through the resolve_concurrent_edit path, which uses
     // result.values instead of a local values map.
-    use std::collections::HashSet;
     use reify_types::SolveResult;
+    use std::collections::HashSet;
 
     let bracket_thickness = ValueCellId::new("Bracket", "thickness");
     let bracket_clearance = ValueCellId::new("Bracket", "clearance");
@@ -1776,18 +1798,22 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
         // eval() call 1 (either group)
         SolveResult::Solved {
             values: bracket_eval_solved,
+            unique: true,
         },
         // eval() call 2 (either group)
         SolveResult::Solved {
             values: bolt_eval_solved,
+            unique: true,
         },
         // resolve_concurrent_edit() call 3 (first dirty group)
         SolveResult::Solved {
             values: edit_resolved_a,
+            unique: true,
         },
         // resolve_concurrent_edit() call 4 (second dirty group)
         SolveResult::Solved {
             values: edit_resolved_b,
+            unique: true,
         },
     ]);
     let captured = spy.captured_problems();
@@ -1883,7 +1909,8 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     assert_eq!(
-        cv_a, cv_b,
+        cv_a,
+        cv_b,
         "cross-group contamination: resolve_concurrent_edit solver calls received different \
          current_values maps. Call 2 auto_params={:?}, Call 3 auto_params={:?}",
         problems[2]
@@ -1896,5 +1923,176 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
             .iter()
             .map(|p| &p.id)
             .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn auto_free_threads_to_solver_and_warns() {
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    // Spy returns Solved { unique: false } to simulate a free-auto resolution
+    let spy = SpyConstraintSolver::new_solved_non_unique(solved_values);
+    let captured = spy.captured_problem();
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    let result = engine.eval(&module);
+
+    // (a) The AutoParam sent to the solver should have free=true
+    let problem = captured.lock().unwrap();
+    let problem = problem.as_ref().expect("solver should have been called");
+    assert_eq!(problem.auto_params.len(), 1);
+    assert!(
+        problem.auto_params[0].free,
+        "expected AutoParam.free=true for auto(free) cell"
+    );
+
+    // (b) A warning diagnostic should be emitted for auto(free) with non-unique result
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("resolved via auto(free)")),
+        "expected warning diagnostic about auto(free) resolution, got {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn auto_free_emits_warning_diagnostic() {
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    // Mock returns Solved { unique: false } — simulating free-auto resolution
+    let solver = SpyConstraintSolver::new_solved_non_unique(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // The resolved value should still be populated
+    let thickness_val = result
+        .values
+        .get(&thickness_id)
+        .expect("thickness should be in values");
+    assert!(
+        matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+        "expected mm(5.0) = 0.005 SI, got {:?}",
+        thickness_val
+    );
+
+    // A Warning-level diagnostic should be emitted with the param name
+    let warning = result
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("resolved via auto(free)")
+                && d.message.contains("thickness")
+        });
+    assert!(
+        warning.is_some(),
+        "expected warning diagnostic about 'thickness' resolved via auto(free), got {:?}",
+        result.diagnostics
+    );
+    let warning = warning.unwrap();
+    assert_eq!(
+        warning.severity,
+        reify_types::Severity::Warning,
+        "expected Warning severity, got {:?}",
+        warning.severity
+    );
+}
+
+#[test]
+fn strict_auto_non_unique_emits_error_diagnostic() {
+    // Integration test: real DimensionalSolver with an underdetermined strict auto
+    // problem. Two params with only inequality constraints (x > 10mm, y > 10mm) —
+    // many valid solutions exist. With strict auto (free: false), the solver detects
+    // non-uniqueness and returns Infeasible, which the eval engine surfaces as
+    // an Error diagnostic.
+
+    let template = TopologyTemplateBuilder::new("Part")
+        .auto_param("Part", "width", Type::length())
+        .auto_param("Part", "height", Type::length())
+        .constraint(
+            "Part",
+            0,
+            None,
+            gt(value_ref("Part", "width"), literal(mm(10.0))),
+        )
+        .constraint(
+            "Part",
+            1,
+            None,
+            gt(value_ref("Part", "height"), literal(mm(10.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // The solver should return Infeasible due to non-uniqueness, which the eval
+    // engine forwards as diagnostics. Both params should remain Undef.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("not uniquely determined")),
+        "expected error diagnostic about non-unique strict auto, got {:?}",
+        result.diagnostics
+    );
+
+    // The error diagnostic should have Error severity
+    let error_diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("not uniquely determined"))
+        .unwrap();
+    assert_eq!(
+        error_diag.severity,
+        reify_types::Severity::Error,
+        "expected Error severity, got {:?}",
+        error_diag.severity
     );
 }

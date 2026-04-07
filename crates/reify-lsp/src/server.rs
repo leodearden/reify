@@ -297,10 +297,9 @@ impl LanguageServer for ReifyLanguageServer {
                 // Build a resolver closure using ModuleResolver for cross-file navigation.
                 // Use explicit stdlib_path if configured; fall back to the dev-mode path
                 // relative to workspace root.
-                let stdlib_root = stdlib_path
-                    .unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
-                let resolver =
-                    reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
+                let stdlib_root =
+                    stdlib_path.unwrap_or_else(|| root.join("crates/reify-compiler/stdlib"));
+                let resolver = reify_compiler::module_dag::ModuleResolver::new(root, stdlib_root);
                 let resolve_import = |import_path: &str| -> Option<(Url, String)> {
                     let path = resolver.resolve_import_path(import_path).ok()?;
                     // Prefer editor buffer content over disk for open documents,
@@ -1020,10 +1019,7 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with a custom stdlib directory
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "reify-lsp-stdlib-{}",
-            std::process::id()
-        ));
+        let tmp_dir = std::env::temp_dir().join(format!("reify-lsp-stdlib-{}", std::process::id()));
         let custom_stdlib = tmp_dir.join("custom-stdlib");
         std::fs::create_dir_all(&custom_stdlib).unwrap();
 
@@ -1080,8 +1076,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // Should resolve to custom-stdlib/mymod.ri
-        let response = goto_result
-            .expect("goto-def should resolve Widget from custom stdlib");
+        let response = goto_result.expect("goto-def should resolve Widget from custom stdlib");
         match response {
             GotoDefinitionResponse::Scalar(loc) => {
                 assert!(
@@ -1177,10 +1172,8 @@ mod tests {
         let server = service.inner();
 
         // Create a temporary workspace with multiple .ri files
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "reify-lsp-concurrent-{}",
-            std::process::id()
-        ));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-concurrent-{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write three target files
@@ -1280,15 +1273,9 @@ structure Assembly {
         let _ = std::fs::remove_dir_all(&tmp_dir);
 
         // Assert all 3 completed and returned correct locations
-        let resp1 = r1
-            .unwrap()
-            .expect("request 1 should return a result");
-        let resp2 = r2
-            .unwrap()
-            .expect("request 2 should return a result");
-        let resp3 = r3
-            .unwrap()
-            .expect("request 3 should return a result");
+        let resp1 = r1.unwrap().expect("request 1 should return a result");
+        let resp2 = r2.unwrap().expect("request 2 should return a result");
+        let resp3 = r3.unwrap().expect("request 3 should return a result");
 
         match resp1 {
             GotoDefinitionResponse::Scalar(loc) => {
@@ -1378,14 +1365,16 @@ structure Assembly {
         // explicitly handled (logged) rather than silently dropped via unwrap_or.
         // This test validates the error-handling contract: panics in blocking tasks
         // produce recoverable JoinErrors that carry diagnostic information.
-        let result: std::result::Result<Option<String>, _> =
-            tokio::task::spawn_blocking(|| {
-                panic!("simulated panic in blocking task");
-            })
-            .await;
+        let result: std::result::Result<Option<String>, _> = tokio::task::spawn_blocking(|| {
+            panic!("simulated panic in blocking task");
+        })
+        .await;
 
         // JoinError must be Err, not silently mapped to Ok(None)
-        assert!(result.is_err(), "spawn_blocking panic should produce JoinError");
+        assert!(
+            result.is_err(),
+            "spawn_blocking panic should produce JoinError"
+        );
         let err = result.unwrap_err();
         assert!(err.is_panic(), "JoinError should indicate a panic");
         // The error message should contain diagnostic info for logging
@@ -1402,10 +1391,8 @@ structure Assembly {
         let server = service.inner();
 
         // Create a temporary workspace
-        let tmp_dir = std::env::temp_dir().join(format!(
-            "reify-lsp-docstore-{}",
-            std::process::id()
-        ));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("reify-lsp-docstore-{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         // Write parts.ri on disk with ONLY Hole (no Plate)
@@ -1424,8 +1411,7 @@ structure Assembly {
 
         // Open parts.ri in the editor with MODIFIED content that adds Plate on line 0.
         // The editor version differs from disk — Plate only exists in the editor buffer.
-        let editor_source =
-            "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
+        let editor_source = "structure Plate {\n    param width: Scalar = 5mm\n}\nstructure Hole {\n    param diameter: Scalar = 10mm\n}";
         let parts_uri = Url::from_file_path(tmp_dir.join("parts.ri")).unwrap();
         server
             .did_open(DidOpenTextDocumentParams {

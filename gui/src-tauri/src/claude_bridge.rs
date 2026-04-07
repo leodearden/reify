@@ -188,10 +188,7 @@ impl SidecarHandle {
         R: AsyncBufRead + Unpin + Send + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        Self::new_inner::<
-            R,
-            fn(String, Value),
-        >(stdin, reader, state, None)
+        Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
     }
 
     /// Construct a SidecarHandle with full event and MCP wiring.
@@ -275,11 +272,10 @@ impl SidecarHandle {
                             let selection_clone = Arc::clone(&mcp.selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
                             tokio::spawn(async move {
-                                let ctx = crate::mcp_context::TauriToolContext::builder(
-                                    engine_clone,
-                                )
-                                .with_selection(selection_clone)
-                                .build();
+                                let ctx =
+                                    crate::mcp_context::TauriToolContext::builder(engine_clone)
+                                        .with_selection(selection_clone)
+                                        .build();
                                 let result = crate::mcp_context::mcp_tool_call_impl(
                                     &tool_name, tool_input, &ctx,
                                 );

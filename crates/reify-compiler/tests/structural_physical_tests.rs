@@ -53,11 +53,7 @@ fn stdlib_file_parses_and_compiles_without_errors() {
 fn all_eight_traits_present() {
     let module = load_stdlib_module();
 
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
 
     let expected = [
         "Physical",
@@ -82,7 +78,8 @@ fn all_eight_traits_present() {
         assert!(
             trait_names.contains(name),
             "expected trait '{}' in compiled module, found: {:?}",
-            name, trait_names
+            name,
+            trait_names
         );
     }
 }
@@ -120,7 +117,8 @@ fn physical_trait_has_correct_members_and_refinements() {
         assert!(
             member_names.contains(expected_member),
             "Physical should have '{}' required member, got: {:?}",
-            expected_member, member_names
+            expected_member,
+            member_names
         );
     }
 
@@ -136,8 +134,7 @@ fn physical_trait_has_correct_members_and_refinements() {
             .unwrap_or_else(|| {
                 panic!(
                     "Physical should have '{}' in required_members, got: {:?}",
-                    param_name,
-                    member_names
+                    param_name, member_names
                 )
             });
         match &req.kind {
@@ -146,7 +143,8 @@ fn physical_trait_has_correct_members_and_refinements() {
                     *ty,
                     Type::Real,
                     "Physical param '{}' should be Real, got {:?}",
-                    param_name, ty
+                    param_name,
+                    ty
                 );
             }
             other => panic!(
@@ -163,9 +161,15 @@ fn physical_trait_has_correct_members_and_refinements() {
         .filter(|d| matches!(d.kind, DefaultKind::Let(_)))
         .collect();
     assert!(
-        let_defaults.iter().any(|d| d.name.as_deref() == Some("mass")),
+        let_defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some("mass")),
         "Physical trait should have a Let default named 'mass', got defaults: {:?}",
-        physical.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
+        physical
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -194,7 +198,11 @@ fn physical_own_params_are_real() {
                 panic!(
                     "Physical should have '{}' in required_members, got: {:?}",
                     param_name,
-                    physical.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+                    physical
+                        .required_members
+                        .iter()
+                        .map(|r| &r.name)
+                        .collect::<Vec<_>>()
                 )
             });
         match &req.kind {
@@ -203,7 +211,8 @@ fn physical_own_params_are_real() {
                     *ty,
                     Type::Real,
                     "Physical param '{}' should be Real, got {:?}",
-                    param_name, ty
+                    param_name,
+                    ty
                 );
             }
             other => panic!(
@@ -235,7 +244,11 @@ structure def Bracket : Physical {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -269,7 +282,11 @@ structure def Bracket : Physical {
     assert!(
         mass_cell.is_some(),
         "expected 'mass' value cell from Physical trait's let default, got cells: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -322,10 +339,7 @@ fn rigid_refines_physical_with_moment_of_inertia() {
                 ty
             );
         }
-        other => panic!(
-            "moment_of_inertia should be Param, got {:?}",
-            other
-        ),
+        other => panic!("moment_of_inertia should be Param, got {:?}", other),
     }
 }
 
@@ -355,9 +369,14 @@ fn elastically_deformable_refines_elastic_cross_module() {
 
     // Has max_elastic_strain required member
     assert!(
-        ed.required_members.iter().any(|r| r.name == "max_elastic_strain"),
+        ed.required_members
+            .iter()
+            .any(|r| r.name == "max_elastic_strain"),
         "ElasticallyDeformable should have 'max_elastic_strain' member, got: {:?}",
-        ed.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        ed.required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -376,7 +395,11 @@ structure def Rubber : ElasticallyDeformable {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -396,7 +419,9 @@ structure def Rubber : ElasticallyDeformable {
         .first()
         .expect("expected at least 1 template");
     assert!(
-        template.trait_bounds.contains(&"ElasticallyDeformable".to_string()),
+        template
+            .trait_bounds
+            .contains(&"ElasticallyDeformable".to_string()),
         "Rubber should have 'ElasticallyDeformable' trait bound, got: {:?}",
         template.trait_bounds
     );
@@ -420,7 +445,11 @@ structure def Block : Physical {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -462,7 +491,11 @@ structure def Incomplete : Physical {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -530,7 +563,8 @@ fn all_stdlib_modules_have_zero_error_diagnostics() {
         assert!(
             errors.is_empty(),
             "stdlib module '{}' has Error-severity diagnostics (silent failure at initialization boundary): {:?}",
-            module.path, errors
+            module.path,
+            errors
         );
 
         // Verify each non-units module has at least one trait def (not empty/broken).
@@ -573,7 +607,11 @@ structure def Beam : Rigid {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -608,16 +646,40 @@ structure def Beam : Rigid {
         .collect();
 
     // From Material (level 1, materials_mechanical.ri)
-    assert!(cell_names.contains(&"density"), "missing 'density' from Material, cells: {:?}", cell_names);
-    assert!(cell_names.contains(&"name"), "missing 'name' from Material, cells: {:?}", cell_names);
+    assert!(
+        cell_names.contains(&"density"),
+        "missing 'density' from Material, cells: {:?}",
+        cell_names
+    );
+    assert!(
+        cell_names.contains(&"name"),
+        "missing 'name' from Material, cells: {:?}",
+        cell_names
+    );
 
     // From Physical (level 2, structural_physical.ri)
-    assert!(cell_names.contains(&"volume"), "missing 'volume' from Physical, cells: {:?}", cell_names);
-    assert!(cell_names.contains(&"centroid_x"), "missing 'centroid_x' from Physical, cells: {:?}", cell_names);
+    assert!(
+        cell_names.contains(&"volume"),
+        "missing 'volume' from Physical, cells: {:?}",
+        cell_names
+    );
+    assert!(
+        cell_names.contains(&"centroid_x"),
+        "missing 'centroid_x' from Physical, cells: {:?}",
+        cell_names
+    );
 
     // From Rigid (level 3, structural_physical.ri)
-    assert!(cell_names.contains(&"moment_of_inertia"), "missing 'moment_of_inertia' from Rigid, cells: {:?}", cell_names);
+    assert!(
+        cell_names.contains(&"moment_of_inertia"),
+        "missing 'moment_of_inertia' from Rigid, cells: {:?}",
+        cell_names
+    );
 
     // Computed default from Physical: mass = volume * density
-    assert!(cell_names.contains(&"mass"), "missing 'mass' computed default from Physical, cells: {:?}", cell_names);
+    assert!(
+        cell_names.contains(&"mass"),
+        "missing 'mass' computed default from Physical, cells: {:?}",
+        cell_names
+    );
 }

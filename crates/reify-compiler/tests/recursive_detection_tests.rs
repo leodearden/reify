@@ -112,7 +112,10 @@ structure B {
         cycle_warnings.len(),
         1,
         "expected exactly 1 cycle warning for A<->B, got: {:?}",
-        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(
         cycle_warnings[0].message.contains(" -> "),
@@ -459,7 +462,11 @@ structure B {
         })
         .collect();
 
-    assert_eq!(cycle_warnings.len(), 1, "expected 1 cycle warning for A<->B");
+    assert_eq!(
+        cycle_warnings.len(),
+        1,
+        "expected 1 cycle warning for A<->B"
+    );
 
     let msg = &cycle_warnings[0].message;
     assert!(
@@ -505,7 +512,10 @@ structure C {
         1,
         "expected exactly 1 cycle warning for A->B->C->A, got {}: {:?}",
         cycle_warnings.len(),
-        cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        cycle_warnings
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(
         cycle_warnings[0].message.contains(" -> "),
@@ -544,8 +554,15 @@ structure S {
         "cycle warning should have at least one source label, got none"
     );
     assert!(
-        warning.labels.iter().any(|l| l.message.contains("references")),
+        warning
+            .labels
+            .iter()
+            .any(|l| l.message.contains("references")),
         "at least one label should mention 'references', got: {:?}",
-        warning.labels.iter().map(|l| &l.message).collect::<Vec<_>>()
+        warning
+            .labels
+            .iter()
+            .map(|l| &l.message)
+            .collect::<Vec<_>>()
     );
 }

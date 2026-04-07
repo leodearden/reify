@@ -12,7 +12,11 @@ use reify_types::*;
 
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -124,7 +128,11 @@ structure S {
                 CompiledExprKind::Literal(Value::Real(v)) => (v - 1.0).abs() < 1e-9,
                 _ => false,
             };
-            assert!(right_is_one, "right should be Literal(1), got {:?}", right.kind);
+            assert!(
+                right_is_one,
+                "right should be Literal(1), got {:?}",
+                right.kind
+            );
         }
         other => panic!("expected BinOp for first constraint, got {:?}", other),
     }
@@ -142,7 +150,11 @@ structure S {
                 CompiledExprKind::Literal(Value::Real(v)) => (v - 10.0).abs() < 1e-9,
                 _ => false,
             };
-            assert!(right_is_ten, "right should be Literal(10), got {:?}", right.kind);
+            assert!(
+                right_is_ten,
+                "right should be Literal(10), got {:?}",
+                right.kind
+            );
         }
         other => panic!("expected BinOp for second constraint, got {:?}", other),
     }
@@ -176,22 +188,27 @@ structure S {
     // Both constraints should have BinOp with nested BinOp(Div) left-hand side
     for cc in &tmpl.constraints {
         match &cc.expr.kind {
-            CompiledExprKind::BinOp { left, right: _, .. } => {
-                match &left.kind {
-                    CompiledExprKind::BinOp { op, left: inner_left, right: inner_right } => {
-                        assert_eq!(*op, BinOp::Div, "inner op should be Div");
-                        assert!(
-                            matches!(&inner_left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
-                            "inner left should be ValueRef(width)"
-                        );
-                        assert!(
-                            matches!(&inner_right.kind, CompiledExprKind::ValueRef(id) if id.member == "height"),
-                            "inner right should be ValueRef(height)"
-                        );
-                    }
-                    other => panic!("expected BinOp(Div) as left side of constraint, got {:?}", other),
+            CompiledExprKind::BinOp { left, right: _, .. } => match &left.kind {
+                CompiledExprKind::BinOp {
+                    op,
+                    left: inner_left,
+                    right: inner_right,
+                } => {
+                    assert_eq!(*op, BinOp::Div, "inner op should be Div");
+                    assert!(
+                        matches!(&inner_left.kind, CompiledExprKind::ValueRef(id) if id.member == "width"),
+                        "inner left should be ValueRef(width)"
+                    );
+                    assert!(
+                        matches!(&inner_right.kind, CompiledExprKind::ValueRef(id) if id.member == "height"),
+                        "inner right should be ValueRef(height)"
+                    );
                 }
-            }
+                other => panic!(
+                    "expected BinOp(Div) as left side of constraint, got {:?}",
+                    other
+                ),
+            },
             other => panic!("expected outer BinOp, got {:?}", other),
         }
     }
@@ -215,10 +232,13 @@ structure S {
     );
     let found = errors.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        (msg.contains("unknown") || msg.contains("not found"))
-            && d.message.contains("UnknownDef")
+        (msg.contains("unknown") || msg.contains("not found")) && d.message.contains("UnknownDef")
     });
-    assert!(found, "expected error mentioning 'unknown'/'not found' and 'UnknownDef', got: {:?}", errors);
+    assert!(
+        found,
+        "expected error mentioning 'unknown'/'not found' and 'UnknownDef', got: {:?}",
+        errors
+    );
 }
 
 // ── Step 15: missing required argument ───────────────────────────────────────
@@ -242,8 +262,14 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for missing argument 'b'"
     );
-    let found = errors.iter().any(|d| d.message.contains('b') || d.message.to_lowercase().contains("missing"));
-    assert!(found, "expected error mentioning missing argument 'b', got: {:?}", errors);
+    let found = errors
+        .iter()
+        .any(|d| d.message.contains('b') || d.message.to_lowercase().contains("missing"));
+    assert!(
+        found,
+        "expected error mentioning missing argument 'b', got: {:?}",
+        errors
+    );
 }
 
 // ── Step 17: extra/unknown argument ──────────────────────────────────────────
@@ -266,8 +292,14 @@ structure S {
         !errors.is_empty(),
         "expected at least one error for unknown argument 'b'"
     );
-    let found = errors.iter().any(|d| d.message.contains('b') || d.message.to_lowercase().contains("unknown"));
-    assert!(found, "expected error mentioning unknown argument 'b', got: {:?}", errors);
+    let found = errors
+        .iter()
+        .any(|d| d.message.contains('b') || d.message.to_lowercase().contains("unknown"));
+    assert!(
+        found,
+        "expected error mentioning unknown argument 'b', got: {:?}",
+        errors
+    );
 }
 
 // ── Step 19: where-clause on constraint instantiation ────────────────────────
@@ -302,7 +334,11 @@ structure S {
         !tmpl.guarded_groups.is_empty(),
         "expected at least one guarded_group"
     );
-    let total_guarded_constraints: usize = tmpl.guarded_groups.iter().map(|g| g.constraints.len()).sum();
+    let total_guarded_constraints: usize = tmpl
+        .guarded_groups
+        .iter()
+        .map(|g| g.constraints.len())
+        .sum();
     assert_eq!(
         total_guarded_constraints, 1,
         "expected 1 guarded constraint, found {total_guarded_constraints}"

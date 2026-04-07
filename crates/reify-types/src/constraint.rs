@@ -72,6 +72,10 @@ pub struct AutoParam {
     pub param_type: Type,
     /// Optional lower and upper bounds for numeric resolution.
     pub bounds: Option<(f64, f64)>,
+    /// Whether this is an `auto(free)` parameter that skips uniqueness verification.
+    /// When `true`, the solver skips the perturbation-based uniqueness check and
+    /// returns `SolveResult::Solved { unique: false }` directly.
+    pub free: bool,
 }
 
 /// The result of a constraint solve attempt.
@@ -87,6 +91,10 @@ pub enum SolveResult {
     Solved {
         /// Resolved values for auto parameters.
         values: HashMap<ValueCellId, Value>,
+        /// Whether the solution is uniquely determined. `true` for strict auto
+        /// parameters that pass perturbation-based uniqueness verification;
+        /// `false` for auto(free) parameters where uniqueness is skipped.
+        unique: bool,
     },
     /// The constraints are infeasible — no solution exists.
     Infeasible {
@@ -183,10 +191,33 @@ mod tests {
             id: ValueCellId::new("Bracket", "width"),
             param_type: Type::length(),
             bounds: Some((0.01, 1.0)),
+            free: false,
         };
         assert_eq!(ap.id, ValueCellId::new("Bracket", "width"));
         assert_eq!(ap.param_type, Type::length());
         assert_eq!(ap.bounds, Some((0.01, 1.0)));
+    }
+
+    #[test]
+    fn auto_param_with_free_flag() {
+        use crate::identity::ValueCellId;
+        use crate::ty::Type;
+
+        let strict = AutoParam {
+            id: ValueCellId::new("Bracket", "width"),
+            param_type: Type::length(),
+            bounds: Some((0.01, 1.0)),
+            free: false,
+        };
+        assert!(!strict.free);
+
+        let free = AutoParam {
+            id: ValueCellId::new("Bracket", "height"),
+            param_type: Type::length(),
+            bounds: Some((0.01, 1.0)),
+            free: true,
+        };
+        assert!(free.free);
     }
 
     #[test]
@@ -198,6 +229,7 @@ mod tests {
             id: ValueCellId::new("Bracket", "angle"),
             param_type: Type::angle(),
             bounds: None,
+            free: false,
         };
         assert!(ap.bounds.is_none());
 
@@ -261,6 +293,7 @@ mod tests {
                 id: ValueCellId::new("Bracket", "width"),
                 param_type: Type::length(),
                 bounds: Some((0.01, 1.0)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Bracket", 0), make_literal_expr())],
             current_values: values,
@@ -296,12 +329,44 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(ValueCellId::new("Bracket", "width"), Value::length(0.05));
 
-        let result = SolveResult::Solved { values };
+        let result = SolveResult::Solved {
+            values,
+            unique: true,
+        };
         match &result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 assert_eq!(values.len(), 1);
                 assert!(values.contains_key(&ValueCellId::new("Bracket", "width")));
             }
+            _ => panic!("expected Solved"),
+        }
+    }
+
+    #[test]
+    fn solve_result_solved_with_unique_flag() {
+        use crate::identity::ValueCellId;
+        use crate::value::Value;
+        use std::collections::HashMap;
+
+        // unique = true (strict auto, uniquely determined)
+        let mut values = HashMap::new();
+        values.insert(ValueCellId::new("Bracket", "width"), Value::length(0.05));
+        let result = SolveResult::Solved {
+            values,
+            unique: true,
+        };
+        match &result {
+            SolveResult::Solved { unique, .. } => assert!(unique),
+            _ => panic!("expected Solved"),
+        }
+
+        // unique = false (auto(free), not uniquely determined)
+        let result = SolveResult::Solved {
+            values: HashMap::new(),
+            unique: false,
+        };
+        match &result {
+            SolveResult::Solved { unique, .. } => assert!(!unique),
             _ => panic!("expected Solved"),
         }
     }

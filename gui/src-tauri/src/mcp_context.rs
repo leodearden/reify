@@ -65,9 +65,9 @@ impl TauriToolContextBuilder {
     /// If no selection was provided, creates a fresh unshared `Arc<RwLock<SelectionInfo>>`
     /// with empty fields (not connected to the frontend).
     pub fn build(self) -> TauriToolContext {
-        let selection = self.selection.unwrap_or_else(|| {
-            Arc::new(RwLock::new(SelectionInfo::default()))
-        });
+        let selection = self
+            .selection
+            .unwrap_or_else(|| Arc::new(RwLock::new(SelectionInfo::default())));
         TauriToolContext {
             engine: self.engine,
             event_emitter: self.event_emitter,
@@ -85,7 +85,6 @@ impl TauriToolContext {
             selection: None,
         }
     }
-
 }
 
 impl ReifyToolContext for TauriToolContext {

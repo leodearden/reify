@@ -710,10 +710,7 @@ impl<'a> Lowering<'a> {
                 "identifier" | "type_parameters" => {}
                 "ERROR" => {
                     self.push_error(
-                        format!(
-                            "syntax error in constraint body: {}",
-                            self.node_text(child)
-                        ),
+                        format!("syntax error in constraint body: {}", self.node_text(child)),
                         self.span(child),
                     );
                 }
@@ -1032,7 +1029,8 @@ impl<'a> Lowering<'a> {
                 self,
                 child,
                 "constraint instantiation",
-                self.lower_constraint_inst(child).map(MemberDecl::ConstraintInst)
+                self.lower_constraint_inst(child)
+                    .map(MemberDecl::ConstraintInst)
             ),
             "meta_block" => check_and_lower!(
                 self,
@@ -1356,10 +1354,7 @@ impl<'a> Lowering<'a> {
                 "out" => PortDirection::Out,
                 "bidi" => PortDirection::Bidi,
                 other => {
-                    self.push_error(
-                        format!("unknown port direction: {}", other),
-                        self.span(d),
-                    );
+                    self.push_error(format!("unknown port direction: {}", other), self.span(d));
                     PortDirection::Bidi
                 }
             });
@@ -1429,10 +1424,7 @@ impl<'a> Lowering<'a> {
                 }
                 "ERROR" => {
                     self.push_error(
-                        format!(
-                            "syntax error in port body: {}",
-                            self.node_text(child)
-                        ),
+                        format!("syntax error in port body: {}", self.node_text(child)),
                         self.span(child),
                     );
                 }
@@ -1511,20 +1503,14 @@ impl<'a> Lowering<'a> {
                 "connect_param_assignment" => {
                     if child.has_error() {
                         self.push_error(
-                            format!(
-                                "invalid connect parameter: {}",
-                                self.node_text(child)
-                            ),
+                            format!("invalid connect parameter: {}", self.node_text(child)),
                             self.span(child),
                         );
                         continue;
                     }
                     let Some(name_node) = child.child_by_field_name("name") else {
                         self.push_error(
-                            format!(
-                                "connect parameter missing name: {}",
-                                self.node_text(child)
-                            ),
+                            format!("connect parameter missing name: {}", self.node_text(child)),
                             self.span(child),
                         );
                         continue;
@@ -1565,10 +1551,7 @@ impl<'a> Lowering<'a> {
                         }
                         _ => {
                             self.push_error(
-                                format!(
-                                    "incomplete port mapping: {}",
-                                    self.node_text(child)
-                                ),
+                                format!("incomplete port mapping: {}", self.node_text(child)),
                                 self.span(child),
                             );
                         }
@@ -2584,7 +2567,11 @@ mod tests {
                         i,
                         text
                     );
-                    assert!(text.contains(&ci.name), "constraint_inst {} name in text", i);
+                    assert!(
+                        text.contains(&ci.name),
+                        "constraint_inst {} name in text",
+                        i
+                    );
                 }
             }
         }
@@ -3518,12 +3505,16 @@ mod tests {
     /// Helper: parse source, find the connect_body node, call lower_connect_body
     /// directly (bypassing check_and_lower!), and return the errors.
     fn lower_body_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "connect_body", |l, n| { l.lower_connect_body(n); })
+        lower_node_directly(source, "connect_body", |l, n| {
+            l.lower_connect_body(n);
+        })
     }
 
     /// Like `lower_body_directly`, but skips the clean-parse assertion.
     fn lower_body_with_errors(source: &str) -> Vec<ParseError> {
-        lower_node_with_errors(source, "connect_body", |l, n| { l.lower_connect_body(n); })
+        lower_node_with_errors(source, "connect_body", |l, n| {
+            l.lower_connect_body(n);
+        })
     }
 
     #[test]
@@ -3531,9 +3522,7 @@ mod tests {
     fn lower_node_directly_rejects_source_with_parse_errors() {
         // Deliberately broken source: `{ >= }` produces parse errors.
         // lower_node_directly should panic because root.has_error() is true.
-        lower_body_directly(
-            "structure S { port a : out T  port b : in T  connect a -> b { >= } }",
-        );
+        lower_body_directly("structure S { port a : out T  port b : in T  connect a -> b { >= } }");
     }
 
     #[test]
@@ -3657,9 +3646,7 @@ mod tests {
             errors
         );
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("unexpected")),
+            errors.iter().any(|e| e.message.contains("unexpected")),
             "expected at least one error containing 'unexpected', got: {:?}",
             errors
         );
@@ -3670,21 +3657,23 @@ mod tests {
     /// Helper: parse source, find the port_body node, call lower_port_body
     /// directly (bypassing check_and_lower!), and return the errors.
     fn lower_port_body_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "port_body", |l, n| { l.lower_port_body(n); })
+        lower_node_directly(source, "port_body", |l, n| {
+            l.lower_port_body(n);
+        })
     }
 
     /// Like `lower_port_body_directly`, but skips the clean-parse assertion.
     fn lower_port_body_with_errors(source: &str) -> Vec<ParseError> {
-        lower_node_with_errors(source, "port_body", |l, n| { l.lower_port_body(n); })
+        lower_node_with_errors(source, "port_body", |l, n| {
+            l.lower_port_body(n);
+        })
     }
 
     #[test]
     fn lower_port_body_error_node_emits_diagnostic() {
         // `{ >= }` produces an ERROR child inside port_body.
         // When lower_port_body is called directly, the ERROR arm should fire.
-        let errors = lower_port_body_with_errors(
-            "structure S { port a : in T { >= } }",
-        );
+        let errors = lower_port_body_with_errors("structure S { port a : in T { >= } }");
         assert!(
             !errors.is_empty(),
             "expected body-level diagnostic for ERROR node, got none"
@@ -3757,7 +3746,9 @@ mod tests {
     /// Helper: parse source, find the constraint_definition node, call
     /// lower_constraint_def directly, and return the errors.
     fn lower_constraint_def_directly(source: &str) -> Vec<ParseError> {
-        lower_node_directly(source, "constraint_definition", |l, n| { l.lower_constraint_def(n); })
+        lower_node_directly(source, "constraint_definition", |l, n| {
+            l.lower_constraint_def(n);
+        })
     }
 
     #[test]
@@ -3856,7 +3847,10 @@ mod tests {
         let source = "/* comment */\nstructure S { param x: Scalar = 1 }";
         let module = parse(source, ModulePath::single("test"));
         assert!(
-            !module.errors.iter().any(|e| e.message.contains("unexpected")),
+            !module
+                .errors
+                .iter()
+                .any(|e| e.message.contains("unexpected")),
             "expected no 'unexpected' errors for comment extras, got: {:?}",
             module.errors
         );

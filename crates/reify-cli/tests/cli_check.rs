@@ -122,7 +122,9 @@ fn check_indeterminate_constraint_exits_success() {
 
 #[test]
 fn check_violated_with_indeterminate_exits_failure() {
-    let (status, stdout, stderr) = run_check(&common::fixture_path("bracket_violated_with_indeterminate.ri"));
+    let (status, stdout, stderr) = run_check(&common::fixture_path(
+        "bracket_violated_with_indeterminate.ri",
+    ));
 
     assert!(
         !status.success(),

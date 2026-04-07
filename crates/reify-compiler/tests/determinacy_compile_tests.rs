@@ -149,8 +149,7 @@ structure S {
     constraint determined(x + 1.0)
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_det_err_ref"));
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_det_err_ref"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

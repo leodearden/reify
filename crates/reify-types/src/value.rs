@@ -833,8 +833,7 @@ impl Value {
                 let row_strs: Vec<String> = rows
                     .iter()
                     .map(|row| {
-                        let inner: Vec<String> =
-                            row.iter().map(|v| v.format_display()).collect();
+                        let inner: Vec<String> = row.iter().map(|v| v.format_display()).collect();
                         format!("[{}]", inner.join(", "))
                     })
                     .collect();
@@ -853,7 +852,11 @@ impl Value {
                 format!("[{}, {}, {}, {}]q", w, x, y, z)
             }
             Value::Frame { origin, basis } => {
-                format!("frame({}, {})", origin.format_display(), basis.format_display())
+                format!(
+                    "frame({}, {})",
+                    origin.format_display(),
+                    basis.format_display()
+                )
             }
             Value::Transform {
                 rotation,
@@ -864,10 +867,18 @@ impl Value {
                 translation.format_display()
             ),
             Value::Plane { origin, normal } => {
-                format!("plane({}, {})", origin.format_display(), normal.format_display())
+                format!(
+                    "plane({}, {})",
+                    origin.format_display(),
+                    normal.format_display()
+                )
             }
             Value::Axis { origin, direction } => {
-                format!("axis({}, {})", origin.format_display(), direction.format_display())
+                format!(
+                    "axis({}, {})",
+                    origin.format_display(),
+                    direction.format_display()
+                )
             }
             Value::BoundingBox { min, max } => {
                 format!("bbox({}, {})", min.format_display(), max.format_display())

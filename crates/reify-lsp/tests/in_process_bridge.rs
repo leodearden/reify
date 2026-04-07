@@ -109,7 +109,9 @@ async fn did_open_and_completion_returns_items() {
 async fn hover_returns_info_for_known_symbol() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
@@ -155,7 +157,9 @@ async fn hover_returns_info_for_known_symbol() {
 async fn hover_on_documented_structure_shows_doc_via_bridge() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
@@ -203,7 +207,9 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 async fn goto_definition_returns_location() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     let source = reify_test_support::bracket_source();
@@ -248,7 +254,9 @@ async fn goto_definition_returns_location() {
 async fn diagnostics_captured_after_did_open_with_syntax_error() {
     let lsp = InProcessLsp::new();
 
-    lsp.handle_request("initialize", json!({"capabilities": {}})).await.unwrap();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .unwrap();
     lsp.handle_request("initialized", json!({})).await.unwrap();
 
     // Open a document with a syntax error
@@ -294,7 +302,10 @@ async fn initialize_with_malformed_params_returns_error() {
     // json!(42) is clearly malformed for InitializeParams (expects an object)
     let result = lsp.handle_request("initialize", json!(42)).await;
 
-    assert!(result.is_err(), "server should return Err on malformed params");
+    assert!(
+        result.is_err(),
+        "server should return Err on malformed params"
+    );
     let err = result.unwrap_err();
     assert!(
         err.contains("initialize params error"),
@@ -312,9 +323,7 @@ async fn notification_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
 
     // json!(42) is not a valid DidOpenTextDocumentParams (expects an object)
-    let result = lsp
-        .handle_request("textDocument/didOpen", json!(42))
-        .await;
+    let result = lsp.handle_request("textDocument/didOpen", json!(42)).await;
 
     assert!(
         result.is_err(),
@@ -330,9 +339,7 @@ async fn notification_with_malformed_params_returns_error() {
 async fn unsupported_method_returns_error() {
     let lsp = InProcessLsp::new();
 
-    let result = lsp
-        .handle_request("textDocument/foobar", json!({}))
-        .await;
+    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
 
     assert!(
         result.is_err(),
@@ -350,13 +357,13 @@ async fn initialize_with_invalid_field_type_returns_error() {
     // processId is an Option<u32> in InitializeParams — passing a string makes
     // deserialization fail, exercising the error-propagation path.
     let result = lsp
-        .handle_request(
-            "initialize",
-            json!({ "processId": "not_a_number" }),
-        )
+        .handle_request("initialize", json!({ "processId": "not_a_number" }))
         .await;
 
-    assert!(result.is_err(), "server should return Err on invalid field type");
+    assert!(
+        result.is_err(),
+        "server should return Err on invalid field type"
+    );
     let err = result.unwrap_err();
     assert!(
         err.contains("initialize params error"),
@@ -378,9 +385,7 @@ async fn valid_notification_returns_ok_null() {
         .await
         .expect("initialize should succeed");
 
-    let result = lsp
-        .handle_request("initialized", json!({}))
-        .await;
+    let result = lsp.handle_request("initialized", json!({})).await;
 
     assert!(
         result.is_ok(),

@@ -39,8 +39,8 @@ fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
 /// Read m9_constraint_def.ri and verify it parses without errors.
 #[test]
 fn constraint_def_ri_parses() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
     assert!(
@@ -56,8 +56,8 @@ fn constraint_def_ri_parses() {
 /// Also confirms at least one template exists (structures are present).
 #[test]
 fn constraint_def_ri_compiles_no_errors() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
 
@@ -73,8 +73,8 @@ fn constraint_def_ri_compiles_no_errors() {
 /// Compile, eval and check — all constraint results must be Satisfied.
 #[test]
 fn constraint_def_all_constraints_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
 
@@ -105,8 +105,8 @@ fn constraint_def_all_constraints_satisfied() {
 /// Wall.thickness = 5mm = 0.005 SI; constraint carries label MinThickness[0].
 #[test]
 fn single_predicate_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -159,8 +159,8 @@ fn single_predicate_values() {
 /// Pipe.diameter = 20mm; Bounded[0] (x>=lo) and Bounded[1] (x<=hi) both Satisfied.
 #[test]
 fn multi_param_bounded_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -210,8 +210,8 @@ fn multi_param_bounded_values() {
 /// Beam uses SafeRatio; SafeRatio[0] (a/b > 0.5) and SafeRatio[1] (a/b < 2.0) both Satisfied.
 #[test]
 fn conjunction_predicate_labels() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -249,8 +249,8 @@ fn conjunction_predicate_labels() {
 /// Both produce MinThickness[0] that is Satisfied.
 #[test]
 fn reused_def_both_structures() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -267,7 +267,9 @@ fn reused_def_both_structures() {
         let entry = check_result
             .constraint_results
             .iter()
-            .find(|e| &e.id.entity.as_str() == entity && e.label == Some("MinThickness[0]".to_string()))
+            .find(|e| {
+                &e.id.entity.as_str() == entity && e.label == Some("MinThickness[0]".to_string())
+            })
             .unwrap_or_else(|| panic!("expected {entity} MinThickness[0]"));
         assert_eq!(
             entry.satisfaction,
@@ -283,8 +285,8 @@ fn reused_def_both_structures() {
 /// Substitution must be correct regardless of arg order.
 #[test]
 fn named_args_order_independent() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -322,8 +324,8 @@ fn named_args_order_independent() {
 /// The example file should produce >= 8 total active constraint results.
 #[test]
 fn total_constraint_count() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;
@@ -353,8 +355,8 @@ fn total_constraint_count() {
 /// No constraint results should be emitted for it.
 #[test]
 fn guarded_constraint_inactive() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .expect("examples/m9_constraint_def.ri should exist");
+    let source =
+        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let checker = SimpleConstraintChecker;

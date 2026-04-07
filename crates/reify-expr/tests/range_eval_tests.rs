@@ -59,12 +59,7 @@ fn eval_method(range_val: Value, method: &str, args: Vec<Value>, result_type: Ty
         .into_iter()
         .map(|v| CompiledExpr::literal(v, Type::Int))
         .collect();
-    let expr = CompiledExpr::method_call(
-        range_expr,
-        method.to_string(),
-        arg_exprs,
-        result_type,
-    );
+    let expr = CompiledExpr::method_call(range_expr, method.to_string(), arg_exprs, result_type);
     eval_expr(&expr, &EvalContext::simple(&ValueMap::new()))
 }
 
@@ -82,12 +77,7 @@ fn eval_range_two_sided_inclusive() {
     );
     assert_eq!(
         result,
-        Value::range(
-            Some(Value::Int(1)),
-            Some(Value::Int(10)),
-            true,
-            true,
-        )
+        Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true,)
     );
 }
 
@@ -103,12 +93,7 @@ fn eval_range_exclusive_upper() {
     );
     assert_eq!(
         result,
-        Value::range(
-            Some(Value::Int(1)),
-            Some(Value::Int(10)),
-            true,
-            false,
-        )
+        Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, false,)
     );
 }
 
@@ -164,12 +149,7 @@ fn eval_range_undef_upper_propagates() {
 #[test]
 fn range_lower_two_sided() {
     let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(
-        range,
-        "lower",
-        vec![],
-        Type::Option(Box::new(Type::Int)),
-    );
+    let result = eval_method(range, "lower", vec![], Type::Option(Box::new(Type::Int)));
     assert_eq!(result, Value::Option(Some(Box::new(Value::Int(1)))));
 }
 
@@ -177,12 +157,7 @@ fn range_lower_two_sided() {
 #[test]
 fn range_lower_lower_only_scalar() {
     let range = Value::range(Some(mm(5.0)), None, false, false);
-    let result = eval_method(
-        range,
-        "lower",
-        vec![],
-        Type::Option(Box::new(t_mm())),
-    );
+    let result = eval_method(range, "lower", vec![], Type::Option(Box::new(t_mm())));
     assert_eq!(result, Value::Option(Some(Box::new(mm(5.0)))));
 }
 
@@ -190,12 +165,7 @@ fn range_lower_lower_only_scalar() {
 #[test]
 fn range_lower_upper_only() {
     let range = Value::range(None, Some(Value::Int(10)), false, false);
-    let result = eval_method(
-        range,
-        "lower",
-        vec![],
-        Type::Option(Box::new(Type::Int)),
-    );
+    let result = eval_method(range, "lower", vec![], Type::Option(Box::new(Type::Int)));
     assert_eq!(result, Value::Option(None));
 }
 
@@ -205,12 +175,7 @@ fn range_lower_upper_only() {
 #[test]
 fn range_upper_two_sided() {
     let range = Value::range(Some(Value::Int(1)), Some(Value::Int(10)), true, true);
-    let result = eval_method(
-        range,
-        "upper",
-        vec![],
-        Type::Option(Box::new(Type::Int)),
-    );
+    let result = eval_method(range, "upper", vec![], Type::Option(Box::new(Type::Int)));
     assert_eq!(result, Value::Option(Some(Box::new(Value::Int(10)))));
 }
 
@@ -218,12 +183,7 @@ fn range_upper_two_sided() {
 #[test]
 fn range_upper_lower_only() {
     let range = Value::range(Some(Value::Int(5)), None, false, false);
-    let result = eval_method(
-        range,
-        "upper",
-        vec![],
-        Type::Option(Box::new(Type::Int)),
-    );
+    let result = eval_method(range, "upper", vec![], Type::Option(Box::new(Type::Int)));
     assert_eq!(result, Value::Option(None));
 }
 
@@ -231,12 +191,7 @@ fn range_upper_lower_only() {
 #[test]
 fn range_upper_upper_only_scalar() {
     let range = Value::range(None, Some(mm(10.0)), false, true);
-    let result = eval_method(
-        range,
-        "upper",
-        vec![],
-        Type::Option(Box::new(t_mm())),
-    );
+    let result = eval_method(range, "upper", vec![], Type::Option(Box::new(t_mm())));
     assert_eq!(result, Value::Option(Some(Box::new(mm(10.0)))));
 }
 
@@ -434,12 +389,8 @@ fn span_with_args_undef() {
     // Build span call with an extra argument (invalid)
     let range_expr = CompiledExpr::literal(range, Type::Range(Box::new(Type::Int)));
     let extra_arg = CompiledExpr::literal(Value::Int(1), Type::Int);
-    let expr = CompiledExpr::method_call(
-        range_expr,
-        "span".to_string(),
-        vec![extra_arg],
-        Type::Int,
-    );
+    let expr =
+        CompiledExpr::method_call(range_expr, "span".to_string(), vec![extra_arg], Type::Int);
     let result = eval_expr(&expr, &EvalContext::simple(&ValueMap::new()));
     assert_eq!(result, Value::Undef);
 }

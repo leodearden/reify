@@ -142,7 +142,10 @@ fn dimensional_tolerance_has_params_lets_and_constraint() {
         param_cells.len(),
         3,
         "DimensionalTolerance should have 3 Param cells (nominal, upper_deviation, lower_deviation), got: {:?}",
-        param_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        param_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 
     let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
@@ -260,11 +263,7 @@ fn geometric_tolerance_trait_and_subtrait_hierarchy() {
 fn all_fourteen_gdt_types_and_datum_present() {
     let module = load_stdlib_module();
 
-    let template_names: Vec<&str> = module
-        .templates
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let template_names: Vec<&str> = module.templates.iter().map(|t| t.name.as_str()).collect();
 
     let expected_gdt_and_datum = [
         // Form (4)
@@ -306,9 +305,16 @@ fn all_fourteen_gdt_types_and_datum_present() {
         .find(|t| t.name == "Angularity")
         .expect("expected 'Angularity' template");
     assert!(
-        angularity.value_cells.iter().any(|vc| vc.id.member == "nominal_angle"),
+        angularity
+            .value_cells
+            .iter()
+            .any(|vc| vc.id.member == "nominal_angle"),
         "Angularity should have 'nominal_angle' value cell, got: {:?}",
-        angularity.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        angularity
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -326,7 +332,11 @@ fn surface_fit_iso_conforms_structures_present() {
         .iter()
         .find(|t| t.name == "SurfaceFinish")
         .expect("expected 'SurfaceFinish' template");
-    let sf_cell_names: Vec<&str> = sf.value_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+    let sf_cell_names: Vec<&str> = sf
+        .value_cells
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
     for member in &["parameter", "value", "direction", "process"] {
         assert!(
             sf_cell_names.contains(member),
@@ -365,7 +375,11 @@ fn surface_fit_iso_conforms_structures_present() {
         .iter()
         .find(|t| t.name == "ISOToleranceGrade")
         .expect("expected 'ISOToleranceGrade' template");
-    let iso_cell_names: Vec<&str> = iso.value_cells.iter().map(|vc| vc.id.member.as_str()).collect();
+    let iso_cell_names: Vec<&str> = iso
+        .value_cells
+        .iter()
+        .map(|vc| vc.id.member.as_str())
+        .collect();
     assert!(
         iso_cell_names.contains(&"grade"),
         "ISOToleranceGrade should have 'grade' cell, got: {:?}",
@@ -385,7 +399,11 @@ fn surface_fit_iso_conforms_structures_present() {
     assert!(
         module.constraint_defs.iter().any(|c| c.name == "Conforms"),
         "expected 'Conforms' constraint def, found: {:?}",
-        module.constraint_defs.iter().map(|c| &c.name).collect::<Vec<_>>()
+        module
+            .constraint_defs
+            .iter()
+            .map(|c| &c.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -404,7 +422,11 @@ structure def S {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -424,14 +446,15 @@ structure def S {
         .first()
         .expect("expected at least 1 template");
 
-    let mc_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "mc");
+    let mc_cell = template.value_cells.iter().find(|vc| vc.id.member == "mc");
     assert!(
         mc_cell.is_some(),
         "expected 'mc' value cell, got cells: {:?}",
-        template.value_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         mc_cell.unwrap().cell_type,
@@ -511,7 +534,11 @@ structure def MyFlat : FormTolerance {
 "#;
     let prelude = stdlib_loader::load_stdlib();
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile_with_prelude(&parsed, prelude);
 
@@ -570,7 +597,11 @@ fn full_module_integrity() {
         module.trait_defs.len(),
         4,
         "expected 4 traits (GeometricTolerance, FormTolerance, OrientationTolerance, LocationTolerance), got: {:?}",
-        module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+        module
+            .trait_defs
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     // 19 templates: DimensionalTolerance(1) + 14 GD&T + Datum(1) + SurfaceFinish(1) + Fit(1) + ISOToleranceGrade(1)

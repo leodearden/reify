@@ -13,8 +13,7 @@ use reify_types::{
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy,
-    format_value,
+    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
@@ -304,14 +303,14 @@ impl EngineSession {
             .iter()
             .map(|diag| {
                 // Use the first label's span if available; otherwise default to (1,1,1,1).
-                let (line, column, end_line, end_column) =
-                    if let Some(label) = diag.labels.first() {
-                        let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
-                        let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
-                        (l as u32, c as u32, el as u32, ec as u32)
-                    } else {
-                        (1, 1, 1, 1)
-                    };
+                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
+                {
+                    let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
+                    let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
+                    (l as u32, c as u32, el as u32, ec as u32)
+                } else {
+                    (1, 1, 1, 1)
+                };
 
                 DiagnosticInfo {
                     file_path: file_path.clone(),
@@ -350,7 +349,7 @@ impl EngineSession {
 
                 let determinacy = match &val {
                     reify_types::Value::Undef => {
-                        if cell.kind == ValueCellKind::Auto {
+                        if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
@@ -362,7 +361,7 @@ impl EngineSession {
                 let kind = match cell.kind {
                     ValueCellKind::Param => "Param",
                     ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto => "Auto",
+                    ValueCellKind::Auto { .. } => "Auto",
                 };
 
                 values.push(ValueData {
@@ -681,23 +680,21 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             upper,
             lower_inclusive,
             upper_inclusive,
-        } => {
-            match (lower, upper) {
-                (Some(lo), Some(hi)) => {
-                    let op = if *upper_inclusive { ".." } else { "..<" };
-                    format!("{}{}{}", format_expr(lo), op, format_expr(hi))
-                }
-                (Some(bound), None) => {
-                    let op = if *lower_inclusive { ">=" } else { ">" };
-                    format!("{}{}", op, format_expr(bound))
-                }
-                (None, Some(bound)) => {
-                    let op = if *upper_inclusive { "<=" } else { "<" };
-                    format!("{}{}", op, format_expr(bound))
-                }
-                (None, None) => "..".to_string(),
+        } => match (lower, upper) {
+            (Some(lo), Some(hi)) => {
+                let op = if *upper_inclusive { ".." } else { "..<" };
+                format!("{}{}{}", format_expr(lo), op, format_expr(hi))
             }
-        }
+            (Some(bound), None) => {
+                let op = if *lower_inclusive { ">=" } else { ">" };
+                format!("{}{}", op, format_expr(bound))
+            }
+            (None, Some(bound)) => {
+                let op = if *upper_inclusive { "<=" } else { "<" };
+                format!("{}{}", op, format_expr(bound))
+            }
+            (None, None) => "..".to_string(),
+        },
     }
 }
 

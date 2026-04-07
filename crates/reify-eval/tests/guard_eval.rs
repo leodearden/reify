@@ -458,7 +458,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -527,7 +527,9 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     );
 
     // DeterminacyState in snapshot must remain Determined after guard deactivation
-    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
     let (snap_val, snap_det) = snapshot
         .values
         .get(&thickness_id)
@@ -557,7 +559,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -625,7 +627,9 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     );
 
     // DeterminacyState in snapshot must remain Determined after else branch deactivation
-    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
     let (snap_val, snap_det) = snapshot
         .values
         .get(&thickness_id)
@@ -716,7 +720,7 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -757,8 +761,14 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
     let mut solved2 = HashMap::new();
     solved2.insert(thickness_id.clone(), mm(8.0));
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let checker = MockConstraintChecker::new();
@@ -836,7 +846,7 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -877,8 +887,14 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
     let mut solved2 = HashMap::new();
     solved2.insert(thickness_id.clone(), mm(8.0));
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let checker = MockConstraintChecker::new();
@@ -930,7 +946,9 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
         "Step 3: thickness should retain preserved value (5mm / 0.005 SI) after else re-activation, got {:?}",
         thickness_react
     );
-    let snap3 = engine.snapshot().expect("snapshot after else re-activation");
+    let snap3 = engine
+        .snapshot()
+        .expect("snapshot after else re-activation");
     let (_, det3) = snap3.values.get(&thickness_id).expect("thickness in snap3");
     assert_eq!(
         *det3,
@@ -953,7 +971,7 @@ fn eval_guard_false_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1021,7 +1039,7 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1149,7 +1167,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' in members
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1159,7 +1177,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'depth' in else_members
     let depth_decl = ValueCellDecl {
         id: depth_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,

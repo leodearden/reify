@@ -3,7 +3,7 @@
 //! These cover: basic param/let lookup, GuardedGroup recursion,
 //! Port body recursion, missing-name returns None, and depth limiting.
 
-use reify_syntax::{find_named_member_span, MAX_MEMBER_NESTING_DEPTH};
+use reify_syntax::{MAX_MEMBER_NESTING_DEPTH, find_named_member_span};
 use reify_types::ModulePath;
 
 /// Helper: parse source and return the first structure's members.
@@ -77,10 +77,7 @@ fn guarded_group_members_found() {
 }"#;
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "guarded_p");
-    assert!(
-        result.is_some(),
-        "param inside where block should be found"
-    );
+    assert!(result.is_some(), "param inside where block should be found");
     let info = result.unwrap();
     let decl_text = &source[info.span.start as usize..info.span.end as usize];
     assert!(
@@ -101,10 +98,7 @@ fn guarded_group_else_members_found() {
 }"#;
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "else_p");
-    assert!(
-        result.is_some(),
-        "param inside else block should be found"
-    );
+    assert!(result.is_some(), "param inside else block should be found");
     let info = result.unwrap();
     let decl_text = &source[info.span.start as usize..info.span.end as usize];
     assert!(
@@ -122,10 +116,7 @@ fn port_body_param_found() {
 }"#;
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "d");
-    assert!(
-        result.is_some(),
-        "param inside port body should be found"
-    );
+    assert!(result.is_some(), "param inside port body should be found");
     let info = result.unwrap();
     let decl_text = &source[info.span.start as usize..info.span.end as usize];
     assert!(
@@ -141,10 +132,7 @@ fn port_body_let_found() {
 }"#;
     let members = parse_first_structure_members(source);
     let result = find_named_member_span(&members, "ratio");
-    assert!(
-        result.is_some(),
-        "let inside port body should be found"
-    );
+    assert!(result.is_some(), "let inside port body should be found");
     let info = result.unwrap();
     let decl_text = &source[info.span.start as usize..info.span.end as usize];
     assert!(

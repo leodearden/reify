@@ -446,7 +446,11 @@ mod tests {
         ];
         let (result, output) = run_report(&entries);
 
-        assert_eq!(result, ConstraintOutcome::AllSatisfied, "should return AllSatisfied when all satisfied");
+        assert_eq!(
+            result,
+            ConstraintOutcome::AllSatisfied,
+            "should return AllSatisfied when all satisfied"
+        );
         assert!(output.contains("  OK stress_limit"));
         assert!(output.contains("  OK size_bound"));
         assert!(!output.contains("VIOLATED"));
@@ -460,19 +464,30 @@ mod tests {
         ];
         let (result, output) = run_report(&entries);
 
-        assert_eq!(result, ConstraintOutcome::SomeViolated, "should return SomeViolated when any violated");
+        assert_eq!(
+            result,
+            ConstraintOutcome::SomeViolated,
+            "should return SomeViolated when any violated"
+        );
         assert!(output.contains("  OK max_force"));
         assert!(output.contains("VIOLATED clearance"));
     }
 
     #[test]
     fn indeterminate_formats_correctly_and_counts_as_satisfied() {
-        let entries = vec![
-            make_entry("Beam", 0, Some("load"), Satisfaction::Indeterminate),
-        ];
+        let entries = vec![make_entry(
+            "Beam",
+            0,
+            Some("load"),
+            Satisfaction::Indeterminate,
+        )];
         let (result, output) = run_report(&entries);
 
-        assert_eq!(result, ConstraintOutcome::SomeIndeterminate(1), "indeterminate should return SomeIndeterminate with count");
+        assert_eq!(
+            result,
+            ConstraintOutcome::SomeIndeterminate(1),
+            "indeterminate should return SomeIndeterminate with count"
+        );
         assert!(output.contains("INDETERMINATE load"));
     }
 
@@ -539,9 +554,7 @@ mod tests {
 
     #[test]
     fn uses_id_display_as_fallback_when_label_is_none() {
-        let entries = vec![
-            make_entry("Gear", 2, None, Satisfaction::Satisfied),
-        ];
+        let entries = vec![make_entry("Gear", 2, None, Satisfaction::Satisfied)];
         let (_result, output) = run_report(&entries);
 
         // ConstraintNodeId Display: "Gear#constraint[2]"
@@ -554,9 +567,12 @@ mod tests {
 
     #[test]
     fn uses_label_when_present() {
-        let entries = vec![
-            make_entry("Axle", 0, Some("torque_limit"), Satisfaction::Violated),
-        ];
+        let entries = vec![make_entry(
+            "Axle",
+            0,
+            Some("torque_limit"),
+            Satisfaction::Violated,
+        )];
         let (_result, output) = run_report(&entries);
 
         assert!(

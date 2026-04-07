@@ -430,7 +430,6 @@ impl fmt::Display for BuilderError {
 
 impl std::error::Error for BuilderError {}
 
-
 /// Builder that accumulates slvs params/entities/constraints.
 ///
 /// Uses two groups:
@@ -834,6 +833,7 @@ impl ConstraintSolver for SolveSpaceSolver {
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
@@ -855,7 +855,9 @@ impl ConstraintSolver for SolveSpaceSolver {
                             reason = %err.message,
                             "constraint pattern builder failed"
                         );
-                        return SolveResult::NoProgress { reason: err.message };
+                        return SolveResult::NoProgress {
+                            reason: err.message,
+                        };
                     }
                 }
                 None => {
@@ -897,7 +899,10 @@ impl ConstraintSolver for SolveSpaceSolver {
                         );
                     }
                 }
-                SolveResult::Solved { values }
+                SolveResult::Solved {
+                    values,
+                    unique: true,
+                }
             }
             SlvsSolveResult::Inconsistent { failed_ids } => SolveResult::Infeasible {
                 diagnostics: vec![Diagnostic {
@@ -1078,7 +1083,10 @@ mod tests {
     /// the `Ok` type so it works for `Result<Slvs_hParam, BuilderError>`,
     /// `Result<Slvs_hEntity, BuilderError>`, and `Result<(), BuilderError>` alike.
     #[track_caller]
-    fn assert_missing_err<T: std::fmt::Debug>(result: Result<T, BuilderError>, cell_id: &ValueCellId) {
+    fn assert_missing_err<T: std::fmt::Debug>(
+        result: Result<T, BuilderError>,
+        cell_id: &ValueCellId,
+    ) {
         assert!(
             result.is_err(),
             "expected Err for missing non-auto coord, got Ok({:?})",
@@ -1097,7 +1105,8 @@ mod tests {
         assert!(
             err.to_string().contains(&cell_id.to_string()),
             "Display should contain cell_id '{}', got: {}",
-            cell_id, err
+            cell_id,
+            err
         );
     }
 
@@ -1108,6 +1117,7 @@ mod tests {
             id: cell_id.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         }]
     }
 
@@ -1129,13 +1139,19 @@ mod tests {
             },
         );
 
-        let result =
-            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
         let h = result.expect("expected Ok for non-auto param present in current_values");
         // Verify the param was created with the correct value
-        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
-        assert_eq!(param.val, 42.0, "param value should match current_values entry");
+        let param = builder
+            .params
+            .iter()
+            .find(|p| p.h == h)
+            .expect("param not found in builder");
+        assert_eq!(
+            param.val, 42.0,
+            "param value should match current_values entry"
+        );
     }
 
     /// Auto param not yet in current_values should get the 0.01 default.
@@ -1149,11 +1165,14 @@ mod tests {
         // But NOT in current_values — should use 0.01 default
         let current_values = ValueMap::new();
 
-        let result =
-            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
         let h = result.expect("expected Ok for auto param");
-        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
+        let param = builder
+            .params
+            .iter()
+            .find(|p| p.h == h)
+            .expect("param not found in builder");
         assert_eq!(
             param.val, 0.01,
             "auto param without current value should use 0.01 default"
@@ -1171,8 +1190,15 @@ mod tests {
         let result = builder.add_auto_coord(&None, &auto_params, &current_values);
 
         let h = result.expect("expected Ok for None cell_id");
-        let param = builder.params.iter().find(|p| p.h == h).expect("param not found in builder");
-        assert_eq!(param.val, 0.0, "None cell_id should produce param with value 0.0");
+        let param = builder
+            .params
+            .iter()
+            .find(|p| p.h == h)
+            .expect("param not found in builder");
+        assert_eq!(
+            param.val, 0.0,
+            "None cell_id should produce param with value 0.0"
+        );
     }
 
     /// `add_line_pair` should create 4 point entities and 2 line segment entities,
@@ -1184,20 +1210,43 @@ mod tests {
         let current_values = ValueMap::new();
 
         let line_a = LineRef {
-            start: PointRef::Fixed { x: 0.0, y: 0.0, z: 0.0 },
-            end: PointRef::Fixed { x: 1.0, y: 0.0, z: 0.0 },
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
         };
         let line_b = LineRef {
-            start: PointRef::Fixed { x: 0.0, y: 1.0, z: 0.0 },
-            end: PointRef::Fixed { x: 1.0, y: 1.0, z: 0.0 },
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
         };
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
         let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
-        assert_ne!(line_a_e, line_b_e, "line entities should be distinct handles");
+        assert_ne!(
+            line_a_e, line_b_e,
+            "line entities should be distinct handles"
+        );
         // 4 Fixed points (each creates 1 entity) + 2 line segments = 6 entities
-        assert_eq!(builder.entities.len(), 6, "expected 4 point + 2 line entities");
+        assert_eq!(
+            builder.entities.len(),
+            6,
+            "expected 4 point + 2 line entities"
+        );
     }
 
     /// `add_line_pair` must propagate Err when a PointRef::Auto contains a
@@ -1219,11 +1268,23 @@ mod tests {
                 y: None,
                 z: None,
             },
-            end: PointRef::Fixed { x: 1.0, y: 0.0, z: 0.0 },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
         };
         let line_b = LineRef {
-            start: PointRef::Fixed { x: 0.0, y: 1.0, z: 0.0 },
-            end: PointRef::Fixed { x: 1.0, y: 1.0, z: 0.0 },
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
         };
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
@@ -1266,11 +1327,9 @@ mod tests {
     /// silently swallowed per the project's noisy-error convention.
     #[test]
     fn add_auto_coord_errors_on_missing_non_auto_value() {
-        let (mut builder, cell_id, auto_params, current_values) =
-            missing_coord_setup("Test", "x");
+        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
 
-        let result =
-            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
         assert_missing_err(result, &cell_id);
     }
@@ -1280,14 +1339,15 @@ mod tests {
     /// preserving the id as typed data for downstream consumers.
     #[test]
     fn add_auto_coord_returns_builder_error_with_cell_id() {
-        let (mut builder, cell_id, auto_params, current_values) =
-            missing_coord_setup("Test", "x");
+        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
 
-        let result =
-            builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
+        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
         let err = result.expect_err("expected Err, got Ok");
-        assert_eq!(err.cell_id, cell_id, "error should carry the original cell_id");
+        assert_eq!(
+            err.cell_id, cell_id,
+            "error should carry the original cell_id"
+        );
     }
 
     /// Error from add_auto_coord should propagate through add_point and
@@ -1335,7 +1395,11 @@ mod tests {
             .add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values)
             .expect("first call should succeed");
         let len_after_first = builder.params.len();
-        assert_eq!(len_after_first, initial_len + 1, "first call should insert exactly one param");
+        assert_eq!(
+            len_after_first,
+            initial_len + 1,
+            "first call should insert exactly one param"
+        );
 
         // Second call — should hit the cache and return the same handle
         let h2 = builder
@@ -1387,10 +1451,19 @@ mod tests {
     fn builder_error_has_cell_id_and_display() {
         let cell_id = ValueCellId::new("Test", "x");
         let message = "non-auto parameter Test.x missing from current_values".to_string();
-        let err = BuilderError { cell_id: cell_id.clone(), message: message.clone() };
+        let err = BuilderError {
+            cell_id: cell_id.clone(),
+            message: message.clone(),
+        };
 
-        assert_eq!(err.cell_id, cell_id, "cell_id field should match the provided ValueCellId");
-        assert_eq!(err.message, message, "message field should match the provided string");
+        assert_eq!(
+            err.cell_id, cell_id,
+            "cell_id field should match the provided ValueCellId"
+        );
+        assert_eq!(
+            err.message, message,
+            "message field should match the provided string"
+        );
         assert_eq!(
             err.to_string(),
             message,
@@ -1402,8 +1475,7 @@ mod tests {
     /// a ValueCellId matching the given entity/field, empty auto_params, and empty current_values.
     #[test]
     fn missing_coord_setup_returns_expected_tuple() {
-        let (builder, cell_id, auto_params, current_values) =
-            missing_coord_setup("Foo", "bar");
+        let (builder, cell_id, auto_params, current_values) = missing_coord_setup("Foo", "bar");
 
         assert!(
             builder.params.is_empty(),
@@ -1437,8 +1509,7 @@ mod tests {
     /// other two error-path tests.
     #[test]
     fn add_point_propagates_missing_value_error() {
-        let (mut builder, cell_id, auto_params, current_values) =
-            missing_coord_setup("Fixed", "y");
+        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Fixed", "y");
 
         let pt = PointRef::Auto {
             x: Some(cell_id.clone()),

@@ -331,7 +331,10 @@ mod tests {
         let mut diagnostics = Vec::new();
         detect_recursive_structures(&mut templates, &mut diagnostics);
 
-        assert!(templates[0].is_recursive, "S with two self-ref subs should be recursive");
+        assert!(
+            templates[0].is_recursive,
+            "S with two self-ref subs should be recursive"
+        );
 
         let cycle_warnings: Vec<_> = diagnostics
             .iter()
@@ -344,7 +347,10 @@ mod tests {
             cycle_warnings.len(),
             1,
             "expected exactly 1 cycle warning even with two self-referencing subs, got: {:?}",
-            cycle_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+            cycle_warnings
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 

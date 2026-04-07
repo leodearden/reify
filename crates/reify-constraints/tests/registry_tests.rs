@@ -4,8 +4,8 @@ use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
-    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Type,
-    Value, ValueMap,
+    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult,
+    Severity, Type, Value, ValueMap,
 };
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
@@ -27,6 +27,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -39,7 +40,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
     let reg_result = registry.solve(&problem);
 
     match (&dim_result, &reg_result) {
-        (SolveResult::Solved { values: v1 }, SolveResult::Solved { values: v2 }) => {
+        (SolveResult::Solved { values: v1, .. }, SolveResult::Solved { values: v2, .. }) => {
             let si1 = v1.get(&thickness_id).unwrap().as_f64().unwrap();
             let si2 = v2.get(&thickness_id).unwrap().as_f64().unwrap();
             // Both should be in feasible range
@@ -73,11 +74,13 @@ fn registry_solves_independent_subproblems() {
                 id: a_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true, // not testing uniqueness — range constraint is underdetermined
             },
             AutoParam {
                 id: b_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -88,7 +91,7 @@ fn registry_solves_independent_subproblems() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             assert!(values.contains_key(&a_id), "should have value for a");
             assert!(values.contains_key(&b_id), "should have value for b");
 
@@ -118,6 +121,7 @@ fn registry_uses_fallback_for_all_domains() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: true, // not testing uniqueness — range constraint is underdetermined
         }],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
@@ -156,11 +160,13 @@ fn cross_domain_shared_param_solved_via_fallback() {
                 id: a_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: b_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             },
         ],
         constraints: vec![
@@ -175,7 +181,7 @@ fn cross_domain_shared_param_solved_via_fallback() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
             let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
             // a > b, b > 5mm, a < 50mm
@@ -206,6 +212,7 @@ fn registry_backward_compat_compound_constraint() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: true, // not testing uniqueness — compound range constraint is underdetermined
         }],
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
@@ -215,7 +222,7 @@ fn registry_backward_compat_compound_constraint() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 x > 0.005 && x < 0.050,
@@ -251,6 +258,7 @@ fn registry_compat_infeasible_bounds() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
@@ -296,6 +304,7 @@ fn registry_compat_false_negative_small_violation() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 1.9999999)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
@@ -327,6 +336,7 @@ fn registry_compat_maximize_objective() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -338,7 +348,7 @@ fn registry_compat_maximize_objective() {
     // Either Solved (near 20mm) or Infeasible (boundary edge case) —
     // same as DimensionalSolver behavior
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.017,
@@ -420,11 +430,13 @@ fn objective_spanning_independent_components_merges_them() {
                 id: a_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: b_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
         ],
         constraints: vec![
@@ -440,7 +452,7 @@ fn objective_spanning_independent_components_merges_them() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let a_val = values.get(&a_id).unwrap().as_f64().unwrap();
             let b_val = values.get(&b_id).unwrap().as_f64().unwrap();
             // Both should be maximized toward 20mm (upper feasible bound).
@@ -532,11 +544,13 @@ fn registry_dispatches_geometric_to_solvespace() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Point", 0), constraint_expr)],
@@ -547,7 +561,7 @@ fn registry_dispatches_geometric_to_solvespace() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
             let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
             let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
@@ -620,16 +634,19 @@ fn registry_mixed_dimensional_and_geometric() {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![
@@ -644,7 +661,7 @@ fn registry_mixed_dimensional_and_geometric() {
 
     let result = registry.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Dimensional: thickness in [2mm, 20mm]
             let thickness = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
@@ -667,5 +684,102 @@ fn registry_mixed_dimensional_and_geometric() {
             "expected Solved for mixed dimensional+geometric, got {:?}",
             other
         ),
+    }
+}
+
+/// Registry merges uniqueness across sub-problems via conjunction:
+/// - all_unique=true  → unique=true
+/// - any_non_unique   → unique=false
+///
+/// Uses SequencedMockConstraintSolver to return different `unique` values
+/// for each decomposed sub-problem.
+#[test]
+fn registry_merges_unique_flag() {
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    // Two independent constraints → decomposed into 2 sub-problems
+    let c1 = gt(value_ref("Part", "a"), literal(mm(5.0)));
+    let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    // Case 1: first sub-problem unique, second NOT unique → merged = NOT unique
+    {
+        let mut vals_a = std::collections::HashMap::new();
+        vals_a.insert(a_id.clone(), mm(6.0));
+        let mut vals_b = std::collections::HashMap::new();
+        vals_b.insert(b_id.clone(), mm(11.0));
+
+        let mock = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: vals_a,
+                unique: true,
+            },
+            SolveResult::Solved {
+                values: vals_b,
+                unique: false,
+            },
+        ]);
+        let registry = SolverRegistry::new(Box::new(mock));
+        let result = registry.solve(&problem);
+        match result {
+            SolveResult::Solved { unique, .. } => {
+                assert!(
+                    !unique,
+                    "any sub-problem with unique=false should make merged unique=false"
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    // Case 2: both sub-problems unique → merged = unique
+    {
+        let mut vals_a = std::collections::HashMap::new();
+        vals_a.insert(a_id.clone(), mm(6.0));
+        let mut vals_b = std::collections::HashMap::new();
+        vals_b.insert(b_id.clone(), mm(11.0));
+
+        let mock = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: vals_a,
+                unique: true,
+            },
+            SolveResult::Solved {
+                values: vals_b,
+                unique: true,
+            },
+        ]);
+        let registry = SolverRegistry::new(Box::new(mock));
+        let result = registry.solve(&problem);
+        match result {
+            SolveResult::Solved { unique, .. } => {
+                assert!(
+                    unique,
+                    "all sub-problems unique=true should make merged unique=true"
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
     }
 }

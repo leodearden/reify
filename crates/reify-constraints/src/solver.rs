@@ -53,7 +53,11 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 /// Each param is mapped to a Value::Scalar with the correct SI value
 /// and dimension. Used by early-exit, fallback, and solution construction paths.
 fn build_solved_values(params: &[AutoParam], x: &[f64]) -> HashMap<ValueCellId, Value> {
-    assert_eq!(params.len(), x.len(), "params and x must have the same length");
+    assert_eq!(
+        params.len(),
+        x.len(),
+        "params and x must have the same length"
+    );
     params
         .iter()
         .zip(x.iter())
@@ -497,200 +501,345 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
         .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
+/// Relative tolerance for uniqueness comparison between two solutions.
+const UNIQUENESS_REL_TOL: f64 = 1e-6;
+
+/// Absolute tolerance for uniqueness comparison between two solutions.
+const UNIQUENESS_ABS_TOL: f64 = 1e-10;
+
+/// Core solve logic: runs Nelder-Mead from a given initial point.
+///
+/// Returns `SolveResult` with `unique: true` as placeholder — the caller
+/// (`DimensionalSolver::solve`) is responsible for setting the correct
+/// uniqueness flag based on free/strict auto param classification.
+fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
+    // Check feasibility at the initial point for ALL problems (not just
+    // pure feasibility). This enables early-exit for no-objective problems
+    // and a reduced iteration budget for optimization warm-starts.
+    // NB: `trial_values` is used in two places — (1) the feasibility check
+    // immediately below, and (2) the fallback objective validation when the
+    // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+    // Do not inline into the feasibility check.
+    let trial_values =
+        build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let initially_feasible =
+        max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
+            <= FEASIBILITY_THRESHOLD;
+
+    // Pure feasibility (no objective) + already feasible: return immediately
+    if initially_feasible && problem.objective.is_none() {
+        let n_params = problem.auto_params.len();
+        tracing::debug!(
+            n_params,
+            "initial point already feasible with no objective; returning early"
+        );
+        return SolveResult::Solved {
+            values: build_solved_values(&problem.auto_params, initial),
+            unique: true,
+        };
+    }
+
+    // Choose iteration budget: scaled by simplex size when warm-starting.
+    // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
+    // the budget proportionally to give higher-dimensional problems enough
+    // iterations to converge.
+    // After the early-return above for `initially_feasible && objective.is_none()`,
+    // reaching here with `initially_feasible=true` implies `objective.is_some()`.
+    let max_iters = if initially_feasible {
+        debug_assert!(
+            problem.objective.is_some(),
+            "warm-start budget path reached without objective — early-return invariant violated"
+        );
+        let n_params = problem.auto_params.len() as u64;
+        (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
+    } else {
+        MAX_ITERS
+    };
+
+    let cost_fn = ConstraintCostFunction {
+        auto_params: &problem.auto_params,
+        constraints: &problem.constraints,
+        base_values: &problem.current_values,
+        objective: &problem.objective,
+        functions: &problem.functions,
+    };
+
+    // Build simplex from the provided initial point
+    let simplex = build_simplex(initial, &problem.auto_params);
+
+    // Configure and run Nelder-Mead
+    let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
+        .with_sd_tolerance(1e-15)
+        .expect("sd_tolerance 1e-15 is always valid");
+
+    let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
+
+    let result = match executor.run() {
+        Ok(res) => res,
+        Err(e) => {
+            let n_params = problem.auto_params.len();
+            tracing::warn!(error = %e, n_params, "solver executor failed");
+            return SolveResult::NoProgress {
+                reason: format!("solver error: {}", e),
+            };
+        }
+    };
+
+    // Extract and log convergence information from the solver result.
+    let termination_reason = result.state().get_termination_reason().cloned();
+    let has_objective = problem.objective.is_some();
+    let n_params = problem.auto_params.len();
+    let iter_limited =
+        termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
+    if iter_limited {
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            iter_limited,
+            "solver completed; hit iteration limit — objective may be suboptimal"
+        );
+    } else {
+        tracing::debug!(
+            ?termination_reason,
+            n_params,
+            max_iters,
+            has_objective,
+            initially_feasible,
+            iter_limited,
+            "solver completed"
+        );
+    }
+
+    let best_param: Vec<f64> = match result.state().get_best_param() {
+        Some(p) => p.clone(),
+        None => {
+            let n_params = problem.auto_params.len();
+            tracing::warn!(n_params, "solver returned no best parameter");
+            return SolveResult::NoProgress {
+                reason: "solver returned no solution".to_string(),
+            };
+        }
+    };
+
+    // Clamp final solution to effective bounds
+    let clamped: Vec<f64> = best_param
+        .iter()
+        .zip(problem.auto_params.iter())
+        .map(|(val, ap)| {
+            let (lo, hi) = effective_bounds(ap);
+            val.clamp(lo, hi)
+        })
+        .collect();
+
+    // Check feasibility by re-evaluating constraint violations
+    // (best_cost may include the objective term, so we check violations separately)
+    let final_values =
+        build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_max_residual =
+        max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
+    if final_max_residual > FEASIBILITY_THRESHOLD {
+        // If the initial point was feasible but the optimizer drifted infeasible
+        // while chasing an objective, fall back to the initial feasible values
+        // rather than reporting a false Infeasible.
+        if initially_feasible {
+            // Validate that the objective is numeric at the initial point
+            // before promoting to Solved. The trial_values ValueMap was built
+            // from the same initial point and is still in scope.
+            if let Some(obj) = &problem.objective
+                && eval_objective(obj, &trial_values, &problem.functions).is_none()
+            {
+                return SolveResult::NoProgress {
+                    reason: "objective expression evaluated to undefined at fallback point"
+                        .to_string(),
+                };
+            }
+            // Construct fallback HashMap lazily — only on the error path
+            // where the optimizer drifted infeasible. The `initial` slice
+            // is still in scope from the parameter.
+            let fallback = build_solved_values(&problem.auto_params, initial);
+            tracing::debug!(
+                n_params,
+                final_max_residual,
+                "optimizer drifted infeasible while chasing objective; \
+                 falling back to initial feasible point"
+            );
+            return SolveResult::Solved {
+                values: fallback,
+                unique: true,
+            };
+        }
+        return SolveResult::Infeasible {
+            diagnostics: vec![reify_types::Diagnostic {
+                severity: reify_types::Severity::Error,
+                message: format!(
+                    "constraints could not be satisfied (max absolute residual: {:.2e})",
+                    final_max_residual
+                ),
+                labels: vec![],
+            }],
+        };
+    }
+
+    // Post-solve objective validation: if the objective is still non-numeric
+    // at the solution point, report NoProgress rather than Solved.
+    if let Some(obj) = &problem.objective
+        && eval_objective(obj, &final_values, &problem.functions).is_none()
+    {
+        return SolveResult::NoProgress {
+            reason: "objective expression evaluated to undefined at solution point".to_string(),
+        };
+    }
+
+    // Build solution values
+    let values = build_solved_values(&problem.auto_params, &clamped);
+
+    // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
+    // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
+    // full convergence. Convergence quality is logged via tracing::debug! (see above)
+    // including TerminationReason, iteration budget, and whether fallback was used.
+    // This information is NOT propagated through SolveResult to avoid a breaking API
+    // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
+    // inspect convergence details at runtime.
+    SolveResult::Solved {
+        values,
+        unique: true,
+    }
+}
+
+/// Verify solution uniqueness by re-solving from a perturbed starting point.
+///
+/// Creates a perturbed initial point by reflecting each parameter to the
+/// opposite end of its effective bounds range. If the solution found from
+/// the perturbed starting point matches the original within tolerance,
+/// the solution is considered unique.
+///
+/// Returns `true` if the solution is unique, `false` if a different
+/// solution was found (indicating the problem is underdetermined).
+fn verify_uniqueness(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    // Build perturbed initial point: reflect each param to the opposite
+    // end of its bounds range from the solution.
+    let perturbed: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|param| {
+            let (lo, hi) = effective_bounds(param);
+            let mid = (lo + hi) / 2.0;
+            let solution_val = solved_values
+                .get(&param.id)
+                .and_then(|v| v.as_f64())
+                .unwrap_or(mid);
+            if solution_val < mid {
+                // Solution is in the lower half — start near the high end
+                lo + 0.9 * (hi - lo)
+            } else {
+                // Solution is in the upper half — start near the low end
+                lo + 0.1 * (hi - lo)
+            }
+        })
+        .collect();
+
+    tracing::debug!(
+        n_params = problem.auto_params.len(),
+        "verifying uniqueness via perturbation"
+    );
+
+    // Re-solve from the perturbed starting point
+    match solve_core(problem, &perturbed) {
+        SolveResult::Solved {
+            values: perturbed_values,
+            ..
+        } => {
+            // Compare solutions: all params must match within tolerance
+            for param in &problem.auto_params {
+                let s1 = solved_values
+                    .get(&param.id)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let s2 = perturbed_values
+                    .get(&param.id)
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let diff = (s1 - s2).abs();
+                let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
+                if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
+                    tracing::debug!(
+                        param = %param.id,
+                        s1,
+                        s2,
+                        diff,
+                        "uniqueness check failed: solutions differ"
+                    );
+                    return false;
+                }
+            }
+            tracing::debug!("uniqueness check passed: perturbed solution matches");
+            true
+        }
+        _ => {
+            // If the perturbed solve fails (Infeasible/NoProgress), we can't
+            // prove non-uniqueness — conservatively assume unique.
+            tracing::debug!("uniqueness check: perturbed solve did not converge; assuming unique");
+            true
+        }
+    }
+}
+
 impl ConstraintSolver for DimensionalSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         // Trivial case: no auto parameters to solve for
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
-        // Check feasibility at the initial point for ALL problems (not just
-        // pure feasibility). This enables early-exit for no-objective problems
-        // and a reduced iteration budget for optimization warm-starts.
         let initial = extract_initial_point(problem);
-        // NB: `trial_values` is used in two places — (1) the feasibility check
-        // immediately below, and (2) the fallback objective validation when the
-        // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
-        // Do not inline into the feasibility check.
-        let trial_values =
-            build_trial_values(&problem.current_values, &problem.auto_params, &initial);
-        let initially_feasible =
-            max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
-                <= FEASIBILITY_THRESHOLD;
+        let result = solve_core(problem, &initial);
 
-        // Pure feasibility (no objective) + already feasible: return immediately
-        if initially_feasible && problem.objective.is_none() {
-            let n_params = problem.auto_params.len();
-            tracing::debug!(
-                n_params,
-                "initial point already feasible with no objective; returning early"
-            );
-            return SolveResult::Solved {
-                values: build_solved_values(&problem.auto_params, &initial),
-            };
-        }
-
-        // Choose iteration budget: scaled by simplex size when warm-starting.
-        // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
-        // the budget proportionally to give higher-dimensional problems enough
-        // iterations to converge.
-        // After the early-return above for `initially_feasible && objective.is_none()`,
-        // reaching here with `initially_feasible=true` implies `objective.is_some()`.
-        let max_iters = if initially_feasible {
-            debug_assert!(problem.objective.is_some(), "warm-start budget path reached without objective — early-return invariant violated");
-            let n_params = problem.auto_params.len() as u64;
-            (FEASIBLE_OPT_ITERS_PER_DIM * (n_params + 1)).min(MAX_ITERS)
-        } else {
-            MAX_ITERS
-        };
-
-        let cost_fn = ConstraintCostFunction {
-            auto_params: &problem.auto_params,
-            constraints: &problem.constraints,
-            base_values: &problem.current_values,
-            objective: &problem.objective,
-            functions: &problem.functions,
-        };
-
-        // Build simplex from the already-extracted initial point
-        let simplex = build_simplex(&initial, &problem.auto_params);
-
-        // Configure and run Nelder-Mead
-        let solver: NelderMead<Vec<f64>, f64> = NelderMead::new(simplex)
-            .with_sd_tolerance(1e-15)
-            .expect("sd_tolerance 1e-15 is always valid");
-
-        let executor = Executor::new(cost_fn, solver).configure(|state| state.max_iters(max_iters));
-
-        let result = match executor.run() {
-            Ok(res) => res,
-            Err(e) => {
-                let n_params = problem.auto_params.len();
-                tracing::warn!(error = %e, n_params, "solver executor failed");
-                return SolveResult::NoProgress {
-                    reason: format!("solver error: {}", e),
-                };
-            }
-        };
-
-        // Extract and log convergence information from the solver result.
-        let termination_reason = result.state().get_termination_reason().cloned();
-        let has_objective = problem.objective.is_some();
-        let n_params = problem.auto_params.len();
-        let iter_limited =
-            termination_reason == Some(TerminationReason::MaxItersReached) && has_objective;
-        if iter_limited {
-            tracing::debug!(
-                ?termination_reason,
-                n_params,
-                max_iters,
-                has_objective,
-                initially_feasible,
-                iter_limited,
-                "solver completed; hit iteration limit — objective may be suboptimal"
-            );
-        } else {
-            tracing::debug!(
-                ?termination_reason,
-                n_params,
-                max_iters,
-                has_objective,
-                initially_feasible,
-                iter_limited,
-                "solver completed"
-            );
-        }
-
-        let best_param: Vec<f64> = match result.state().get_best_param() {
-            Some(p) => p.clone(),
-            None => {
-                let n_params = problem.auto_params.len();
-                tracing::warn!(n_params, "solver returned no best parameter");
-                return SolveResult::NoProgress {
-                    reason: "solver returned no solution".to_string(),
-                };
-            }
-        };
-
-        // Clamp final solution to effective bounds
-        let clamped: Vec<f64> = best_param
-            .iter()
-            .zip(problem.auto_params.iter())
-            .map(|(val, ap)| {
-                let (lo, hi) = effective_bounds(ap);
-                val.clamp(lo, hi)
-            })
-            .collect();
-
-        // Check feasibility by re-evaluating constraint violations
-        // (best_cost may include the objective term, so we check violations separately)
-        let final_values =
-            build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
-        let final_max_residual =
-            max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
-        if final_max_residual > FEASIBILITY_THRESHOLD {
-            // If the initial point was feasible but the optimizer drifted infeasible
-            // while chasing an objective, fall back to the initial feasible values
-            // rather than reporting a false Infeasible.
-            if initially_feasible {
-                // Validate that the objective is numeric at the initial point
-                // before promoting to Solved. The trial_values ValueMap was built
-                // from the same initial point and is still in scope.
-                if let Some(obj) = &problem.objective
-                    && eval_objective(obj, &trial_values, &problem.functions).is_none()
-                {
-                    return SolveResult::NoProgress {
-                        reason: "objective expression evaluated to undefined at fallback point"
-                            .to_string(),
-                    };
+        match result {
+            SolveResult::Solved { values, .. } => {
+                // Check if any param requires uniqueness verification (strict auto)
+                let has_strict = problem.auto_params.iter().any(|p| !p.free);
+                if has_strict {
+                    if verify_uniqueness(problem, &values) {
+                        SolveResult::Solved {
+                            values,
+                            unique: true,
+                        }
+                    } else {
+                        // Strict auto params require a unique solution. The
+                        // perturbation-based check found a different solution,
+                        // indicating the problem is underdetermined.
+                        SolveResult::Infeasible {
+                            diagnostics: vec![reify_types::Diagnostic {
+                                severity: reify_types::Severity::Error,
+                                message: "strict auto parameter resolution is not uniquely \
+                                          determined \u{2014} consider using auto(free) \
+                                          for exploration"
+                                    .to_string(),
+                                labels: vec![],
+                            }],
+                        }
+                    }
+                } else {
+                    // All params are free — skip uniqueness verification entirely.
+                    // Free auto params accept any feasible solution, so we report
+                    // unique=false to let the eval engine emit appropriate warnings.
+                    SolveResult::Solved {
+                        values,
+                        unique: false,
+                    }
                 }
-                // Construct fallback HashMap lazily — only on the error path
-                // where the optimizer drifted infeasible. The `initial` Vec<f64>
-                // is still in scope from the extraction at the top of solve().
-                let fallback = build_solved_values(&problem.auto_params, &initial);
-                tracing::debug!(
-                    n_params,
-                    final_max_residual,
-                    "optimizer drifted infeasible while chasing objective; \
-                     falling back to initial feasible point"
-                );
-                return SolveResult::Solved { values: fallback };
             }
-            return SolveResult::Infeasible {
-                diagnostics: vec![reify_types::Diagnostic {
-                    severity: reify_types::Severity::Error,
-                    message: format!(
-                        "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
-                    ),
-                    labels: vec![],
-                }],
-            };
+            other => other, // Infeasible, NoProgress pass through unchanged
         }
-
-        // Post-solve objective validation: if the objective is still non-numeric
-        // at the solution point, report NoProgress rather than Solved.
-        if let Some(obj) = &problem.objective
-            && eval_objective(obj, &final_values, &problem.functions).is_none()
-        {
-            return SolveResult::NoProgress {
-                reason: "objective expression evaluated to undefined at solution point".to_string(),
-            };
-        }
-
-        // Build solution values
-        let values = build_solved_values(&problem.auto_params, &clamped);
-
-        // NOTE: Solved indicates constraint satisfaction but does NOT guarantee objective
-        // optimality. The Nelder-Mead optimizer may have hit the iteration limit without
-        // full convergence. Convergence quality is logged via tracing::debug! (see above)
-        // including TerminationReason, iteration budget, and whether fallback was used.
-        // This information is NOT propagated through SolveResult to avoid a breaking API
-        // change across 6+ consumer crates. Enable RUST_LOG=reify_constraints=debug to
-        // inspect convergence details at runtime.
-        SolveResult::Solved { values }
     }
 }
 
@@ -729,6 +878,7 @@ mod tests {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }];
 
         let trial = build_trial_values(&base, &params, &[0.005]);
@@ -784,11 +934,13 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: angle_id.clone(),
                 param_type: Type::angle(),
                 bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
             },
         ];
 
@@ -1023,7 +1175,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 assert!(
                     values.is_empty(),
                     "empty problem should return empty values"
@@ -1070,6 +1222,7 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Bracket", 0), gt_expr),
@@ -1082,7 +1235,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let thickness = values
                     .get(&thickness_id)
                     .expect("thickness should be in solution");
@@ -1134,6 +1287,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Part", 0), gt_expr),
@@ -1197,6 +1351,7 @@ mod tests {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Bracket", 0), ge_expr),
@@ -1209,7 +1364,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let thickness = values
                     .get(&thickness_id)
                     .expect("thickness should be in solution");
@@ -1277,11 +1432,13 @@ mod tests {
                     id: width_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
+                    free: true,
                 },
                 AutoParam {
                     id: height_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
+                    free: true,
                 },
             ],
             constraints: vec![
@@ -1296,7 +1453,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let w = values
                     .get(&width_id)
                     .expect("width should be in solution")
@@ -1347,6 +1504,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.050)), // bounds: 1mm to 50mm
+                free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: ValueMap::new(),
@@ -1356,7 +1514,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     (0.001..=0.050).contains(&x),
@@ -1406,6 +1564,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None, // No explicit bounds
+                free: true,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Part", 0), gt_expr),
@@ -1418,7 +1577,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     x > 0.005 && x < 0.050,
@@ -1857,6 +2016,7 @@ mod tests {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
+            free: false,
         }];
         let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
         let base_values = ValueMap::new();
@@ -1913,6 +2073,7 @@ mod tests {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)),
+            free: false,
         }];
         let constraints = vec![(ConstraintNodeId::new("Part", 0), constraint)];
         let base_values = ValueMap::new();
@@ -1971,6 +2132,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
@@ -1980,7 +2142,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let x = values.get(&x_id).unwrap().as_f64().unwrap();
                 // Should return current value since already satisfied
                 assert!(
@@ -2003,6 +2165,7 @@ mod tests {
             id: ValueCellId::new("S", "x"),
             param_type: Type::length(),
             bounds: Some((0.0, 1.0)),
+            free: false,
         }];
         let initial_1d = vec![0.5];
         let simplex = build_simplex(&initial_1d, &params_1d);
@@ -2014,11 +2177,13 @@ mod tests {
                 id: ValueCellId::new("S", "x"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "y"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
         ];
         let initial_2d = vec![0.5, 0.5];
@@ -2031,16 +2196,19 @@ mod tests {
                 id: ValueCellId::new("S", "x"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "y"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: ValueCellId::new("S", "z"),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.0)),
+                free: false,
             },
         ];
         let initial_3d = vec![0.5, 0.5, 0.5];
@@ -2081,6 +2249,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.005, 0.100)), // 5mm–100mm
+                free: false,
             }],
             constraints: vec![(cnid("Part", 0), gt_expr)],
             current_values: current,
@@ -2090,7 +2259,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     si > 0.004 && si < 0.008,
@@ -2133,18 +2302,16 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             }],
-            constraints: vec![
-                (cnid("Part", 0), gt_expr),
-                (cnid("Part", 1), lt_expr),
-            ],
+            constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
             current_values: ValueMap::new(),
             objective: None,
             functions: vec![],
         };
 
         let result = solver.solve(&problem);
-        let SolveResult::Solved { values } = result else {
+        let SolveResult::Solved { values, .. } = result else {
             panic!(
                 "trivially feasible 1-param problem must return Solved, got {:?}",
                 result
@@ -2177,11 +2344,13 @@ mod tests {
                 id: length_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 1.0)),
+                free: false,
             },
             AutoParam {
                 id: angle_id.clone(),
                 param_type: Type::angle(),
                 bounds: Some((0.0, std::f64::consts::TAU)),
+                free: false,
             },
         ];
 
@@ -2250,6 +2419,7 @@ mod tests {
             id: id.clone(),
             param_type: Type::Real,
             bounds: None,
+            free: false,
         }];
         let x = [3.125];
 
@@ -2286,6 +2456,7 @@ mod tests {
             id: ValueCellId::new("Part", "length"),
             param_type: Type::length(),
             bounds: Some((0.001, 1.0)),
+            free: false,
         }];
         // x has 2 elements but params has 1 — should panic
         let x = [0.025, 0.050];
@@ -2340,6 +2511,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
@@ -2381,8 +2553,8 @@ mod tests {
     fn undefined_objective_at_fallback_triggers_no_progress() {
         use crate::DimensionalSolver;
         use reify_types::{
-            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
-            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
         };
 
         let solver = DimensionalSolver;
@@ -2397,12 +2569,8 @@ mod tests {
             },
             Type::length(),
         );
-        let le_expr = CompiledExpr::binop(
-            BinOp::Le,
-            x_ref.clone(),
-            constraint_threshold,
-            Type::Bool,
-        );
+        let le_expr =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), constraint_threshold, Type::Bool);
 
         // Objective: minimize(if x <= 0.022 then x/0 else x)
         //
@@ -2426,11 +2594,9 @@ mod tests {
             },
             Type::length(),
         );
-        let condition =
-            CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
+        let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), undef_threshold, Type::Bool);
         let zero_int = CompiledExpr::literal(Value::Int(0), Type::Int);
-        let then_branch =
-            CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
+        let then_branch = CompiledExpr::binop(BinOp::Div, x_ref.clone(), zero_int, Type::Real);
         let else_branch = x_ref;
 
         let cond_hash = ContentHash::of(&[5])
@@ -2465,6 +2631,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
@@ -2500,8 +2667,8 @@ mod tests {
     fn defined_objective_at_fallback_returns_solved() {
         use crate::DimensionalSolver;
         use reify_types::{
-            hash::ContentHash, AutoParam, BinOp, CompiledExpr, CompiledExprKind,
-            ConstraintNodeId, DimensionVector, OptimizationObjective, Type, Value, ValueCellId,
+            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintNodeId, DimensionVector,
+            OptimizationObjective, Type, Value, ValueCellId, hash::ContentHash,
         };
 
         let solver = DimensionalSolver;
@@ -2516,12 +2683,8 @@ mod tests {
             },
             Type::length(),
         );
-        let le_expr = CompiledExpr::binop(
-            BinOp::Le,
-            x_ref.clone(),
-            constraint_threshold,
-            Type::Bool,
-        );
+        let le_expr =
+            CompiledExpr::binop(BinOp::Le, x_ref.clone(), constraint_threshold, Type::Bool);
 
         // Objective: minimize(if x <= 0.022 then 1e8 else x)
         //
@@ -2546,8 +2709,7 @@ mod tests {
             },
             Type::length(),
         );
-        let condition =
-            CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
+        let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), cond_threshold, Type::Bool);
         let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::Real);
         let else_branch = x_ref;
 
@@ -2583,6 +2745,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
@@ -2592,7 +2755,7 @@ mod tests {
 
         let result = solver.solve(&problem);
         match result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 let si = values.get(&x_id).unwrap().as_f64().unwrap();
                 assert!(
                     (si - 0.015).abs() < 1e-10,

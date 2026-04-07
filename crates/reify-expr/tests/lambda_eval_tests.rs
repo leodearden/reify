@@ -741,7 +741,11 @@ fn sample_non_field_returns_undef() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(result, Value::Undef, "sample of non-Field must return Undef");
+    assert_eq!(
+        result,
+        Value::Undef,
+        "sample of non-Field must return Undef"
+    );
 }
 
 /// sample(Field { lambda: Undef }, point) returns Undef when the lambda is not callable.

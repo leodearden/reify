@@ -708,7 +708,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in setup.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -716,14 +716,14 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
             }
 
             // Compute dirty cone from changed cells
-            let dirty_cone =
-                crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
+            let dirty_cone = crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
 
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
@@ -770,16 +770,16 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             result.values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
 
-                            result.snapshot_values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            result
+                                .snapshot_values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             let node_id = NodeId::Value(id.clone());
                             let trace = DependencyTrace::default();
@@ -791,6 +791,17 @@ impl Engine {
                                 setup.version,
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
@@ -827,14 +838,12 @@ impl Engine {
                                 .with_meta(&setup.meta_map),
                         );
                         result.values.insert(vcid.clone(), val.clone());
-                        result.snapshot_values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        result
+                            .snapshot_values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
@@ -972,7 +981,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults and Auto cells to populate the value map
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     // Auto cells: Undef with DeterminacyState::Auto
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
@@ -1118,7 +1127,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1127,14 +1136,12 @@ impl Engine {
                     } else {
                         // Guard is false or Undef — member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
 
@@ -1160,7 +1167,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1169,14 +1176,12 @@ impl Engine {
                     } else {
                         // Guard is true or Undef — else member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
             }
@@ -1334,7 +1339,7 @@ impl Engine {
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| cell.id.clone())
                     .collect();
 
@@ -1357,17 +1362,18 @@ impl Engine {
                 let auto_param_list: Vec<AutoParam> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| AutoParam {
                         id: cell.id.clone(),
                         param_type: cell.cell_type.clone(),
                         bounds: None,
+                        free: cell.kind.is_auto_free(),
                     })
                     .collect();
 
                 // Build ResolutionProblem
                 let problem = ResolutionProblem {
-                    auto_params: auto_param_list,
+                    auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
@@ -1383,6 +1389,7 @@ impl Engine {
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
@@ -1433,6 +1440,19 @@ impl Engine {
                                 version: VersionId(res_version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
+                        }
+
+                        // Emit warning for free auto params when solution is non-unique
+                        if !unique {
+                            for ap in &auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
 
                         // Set child snapshot with Resolution provenance
@@ -1718,7 +1738,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1749,7 +1769,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1787,7 +1807,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in new_snapshot.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -1795,6 +1815,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
@@ -1846,6 +1867,7 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             values.insert(id.clone(), val.clone());
@@ -1853,10 +1875,9 @@ impl Engine {
                             all_resolved_ids.insert(id.clone());
 
                             // Update snapshot values
-                            new_snapshot.values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            new_snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
@@ -1873,6 +1894,17 @@ impl Engine {
                                 VersionId(version_id),
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
@@ -1915,15 +1947,13 @@ impl Engine {
                                 .with_meta(&self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
-                        new_snapshot.values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        new_snapshot
+                            .values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         // Update cache for re-evaluated node
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
@@ -1985,7 +2015,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2020,7 +2050,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2312,7 +2342,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path

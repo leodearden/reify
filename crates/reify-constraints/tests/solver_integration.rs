@@ -26,6 +26,7 @@ fn single_param_feasibility_via_trait_object() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -35,7 +36,7 @@ fn single_param_feasibility_via_trait_object() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.002 && si < 0.020,
@@ -68,6 +69,7 @@ fn maximize_objective() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -77,7 +79,7 @@ fn maximize_objective() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Maximizing thickness subject to < 20mm should push close to 20mm
             assert!(
@@ -138,6 +140,7 @@ fn false_negative_small_violation() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 1.9999999)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
@@ -177,11 +180,13 @@ fn false_negative_multiple_small_violations() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 1.9999999)),
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.9999999)),
+                free: false,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -237,11 +242,13 @@ fn false_negative_mixed_scale() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.001999999)),
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::dimensionless_scalar(),
                 bounds: Some((0.0, 99.9999999)),
+                free: false,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -274,6 +281,7 @@ fn bounds_dont_hide_infeasibility() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
@@ -317,6 +325,7 @@ fn compound_and_constraint() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: true, // not testing uniqueness — range constraint is inherently underdetermined
         }],
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
@@ -326,7 +335,7 @@ fn compound_and_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 x > 0.005 && x < 0.050,
@@ -361,6 +370,7 @@ fn minimize_undef_objective_returns_no_progress() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -398,6 +408,7 @@ fn maximize_undef_objective_returns_no_progress() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -431,6 +442,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: true, // not testing uniqueness — range constraint is inherently underdetermined
         }],
         constraints: vec![(cnid("Box", 0), gt_expr), (cnid("Box", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -441,7 +453,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
     // This should not panic — the solver should configure NelderMead correctly
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 si > 0.005 && si < 0.050,
@@ -482,6 +494,7 @@ fn optimize_with_feasible_initial_point() {
             id: thickness_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, floor above constraint
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: current,
@@ -491,7 +504,7 @@ fn optimize_with_feasible_initial_point() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&thickness_id).unwrap().as_f64().unwrap();
             // Minimize should push thickness toward 5mm (auto param lower bound),
             // which is safely above the 2mm constraint.
@@ -532,6 +545,7 @@ fn maximize_with_feasible_initial_point() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.050)), // upper bound 50mm < constraint 80mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -541,7 +555,7 @@ fn maximize_with_feasible_initial_point() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Maximize should push x toward 50mm (auto param upper bound),
             // well above the 10mm initial point
@@ -598,6 +612,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
             param_type: Type::length(),
             // Wide bounds [0, 100mm] — optimizer CAN explore below 5mm
             bounds: Some((0.0, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -607,7 +622,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Fallback must return the EXACT initial value (5.5mm = 0.0055m),
             // not a partially-optimized point. The initial is preserved through
@@ -648,6 +663,7 @@ fn infeasible_with_objective_still_detected() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: ValueMap::new(),
@@ -704,6 +720,7 @@ fn warm_start_optimizes_when_possible() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.1)), // 5mm–100mm, lower bound above constraint floor
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
         current_values: current,
@@ -713,7 +730,7 @@ fn warm_start_optimizes_when_possible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Optimizer should push x toward ~5mm (param lower bound).
             // With wide constraints (2-50mm) and bounds [5mm, 100mm],
@@ -776,6 +793,7 @@ fn warm_start_scales_iterations_with_dimension() {
             id: pid.clone(),
             param_type: Type::length(),
             bounds: Some((0.005, 0.025)), // 5mm–25mm, extends beyond constraints
+            free: false,
         })
         .collect();
 
@@ -789,7 +807,7 @@ fn warm_start_scales_iterations_with_dimension() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // All params must satisfy their constraints
             for pid in &param_ids {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -876,6 +894,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
                 id: id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+                free: false,
             })
             .collect(),
         constraints,
@@ -886,7 +905,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // All params must satisfy constraints: 10mm < p < 12mm (feasibility preserved)
             for id in &ids {
                 let si = values.get(id).unwrap().as_f64().unwrap();
@@ -961,16 +980,19 @@ fn warm_start_feasible_no_objective_early_exit() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             },
             AutoParam {
                 id: z_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: true,
             },
         ],
         constraints,
@@ -981,7 +1003,7 @@ fn warm_start_feasible_no_objective_early_exit() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Each param should be returned at exactly the initial value (15mm)
             for (pid, label) in [(&x_id, "x"), (&y_id, "y"), (&z_id, "z")] {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -1027,6 +1049,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.0, 0.010)), // max 10mm, can't reach 15mm
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), constraint)],
         current_values: current,
@@ -1099,16 +1122,19 @@ fn multi_param_warm_start_with_objective() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)),
+                free: false,
             },
             AutoParam {
                 id: p2_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)),
+                free: false,
             },
         ],
         constraints,
@@ -1119,7 +1145,7 @@ fn multi_param_warm_start_with_objective() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let mut sum_si = 0.0;
             for pid in [&p0_id, &p1_id, &p2_id] {
                 let si = values.get(pid).unwrap().as_f64().unwrap();
@@ -1193,11 +1219,13 @@ fn partial_feasibility_infeasible_when_unreachable() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.015)), // 1mm–15mm: CANNOT reach p1 > 20mm
+                free: false,
             },
         ],
         constraints,
@@ -1272,11 +1300,13 @@ fn partial_feasibility_solved_when_close_to_boundary() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.100)), // 1mm–100mm: easily reaches p1 > 20mm
+                free: true,
             },
         ],
         constraints,
@@ -1287,7 +1317,7 @@ fn partial_feasibility_solved_when_close_to_boundary() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // The solver found feasibility for both params. Verify the solved
             // values actually satisfy all constraints.
             let p0_si = values.get(&p0_id).unwrap().as_f64().unwrap();
@@ -1339,6 +1369,7 @@ fn warm_start_budget_requires_objective_invariant() {
         id: x_id.clone(),
         param_type: Type::length(),
         bounds: Some((0.005, 0.1)), // 5mm–100mm
+        free: true, // not testing uniqueness — case (b) is underdetermined
     }];
 
     // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
@@ -1351,7 +1382,7 @@ fn warm_start_budget_requires_objective_invariant() {
     };
 
     match solver.solve(&problem_with_obj) {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             // Optimizer should push x below 25mm initial toward the lower bound
             assert!(
@@ -1376,7 +1407,7 @@ fn warm_start_budget_requires_objective_invariant() {
     };
 
     match solver.solve(&problem_no_obj) {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let si = values.get(&x_id).unwrap().as_f64().unwrap();
             assert!(
                 (si - 0.025).abs() < 1e-12,
@@ -1437,16 +1468,19 @@ fn warm_start_fallback_returns_exact_initial_values() {
                 id: p0_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)), // Wide bounds [0, 100mm]
+                free: false,
             },
             AutoParam {
                 id: p1_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)),
+                free: false,
             },
             AutoParam {
                 id: p2_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.0, 0.1)),
+                free: false,
             },
         ],
         constraints,
@@ -1457,7 +1491,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             // Each param must be returned at EXACTLY the initial value (10.5mm = 0.0105m).
             // The fallback path reconstructs values via build_solved_values(&problem.auto_params, &initial),
             // which should preserve exact f64 values through the round-trip.
@@ -1474,6 +1508,213 @@ fn warm_start_fallback_returns_exact_initial_values() {
         }
         other => panic!(
             "expected Solved (fallback to feasible initial values), got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Uniqueness verification tests ───────────────────────────────────────
+
+#[test]
+fn strict_auto_unique_solution_returns_unique_true() {
+    // Well-determined 1-param problem: tight inequality constraints that pin x
+    // to a narrow feasible range around 50mm (0.05 m in SI).
+    // With free: false (strict auto), the solver should verify uniqueness
+    // via perturbation and confirm the solution is unique.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let x_ref = value_ref("Part", "width");
+
+    // Tight constraints: x > 49mm AND x < 51mm
+    // With bounds midpoint at 0.0505 m, the initial point is already feasible.
+    let gt_expr = gt(x_ref.clone(), literal(mm(49.0)));
+    let lt_expr = lt(x_ref, literal(mm(51.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)), // 1mm to 100mm in SI
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(unique, "well-determined system should be unique");
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                si > 0.049 && si < 0.051,
+                "x should be in feasible range ~50mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+#[test]
+fn free_auto_skips_uniqueness_returns_unique_false() {
+    // Same well-determined 1-param problem as above, but with free: true.
+    // Free auto params skip the uniqueness verification, so the solver
+    // should return Solved { unique: false }.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let x_ref = value_ref("Part", "width");
+
+    // Tight constraints: x > 49mm AND x < 51mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(49.0)));
+    let lt_expr = lt(x_ref, literal(mm(51.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: true,
+        }],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(
+                !unique,
+                "free auto should skip uniqueness check and return unique=false"
+            );
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                si > 0.049 && si < 0.051,
+                "x should be in feasible range, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
+
+#[test]
+fn strict_auto_non_unique_returns_infeasible() {
+    // Underdetermined problem: 2 params, 2 simple inequality constraints.
+    // x > 10mm AND y > 10mm — many valid solutions exist.
+    // With strict auto (free: false), the solver should detect non-uniqueness
+    // via perturbation and return Infeasible with an appropriate diagnostic.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let y_id = vcid("Part", "height");
+    let x_ref = value_ref("Part", "width");
+    let y_ref = value_ref("Part", "height");
+
+    let gt_x = gt(x_ref, literal(mm(10.0)));
+    let gt_y = gt(y_ref, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)), // 1mm to 100mm
+                free: false,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostic message");
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("not uniquely determined"),
+                "diagnostic should mention non-uniqueness, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible for non-unique strict auto, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Same underdetermined problem as `strict_auto_non_unique_returns_infeasible` but with
+/// all params having `free: true`. Free auto params skip uniqueness verification, so the
+/// solver should return `Solved { unique: false }` instead of Infeasible.
+#[test]
+fn free_auto_resolves_underdetermined_system() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let y_id = vcid("Part", "height");
+    let x_ref = value_ref("Part", "width");
+    let y_ref = value_ref("Part", "height");
+
+    let gt_x = gt(x_ref, literal(mm(10.0)));
+    let gt_y = gt(y_ref, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)), // 1mm to 100mm
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(!unique, "free auto should report unique=false");
+            // Both values should satisfy the constraints (> 10mm = 0.01 m)
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            assert!(
+                x > 0.010,
+                "x should satisfy x > 10mm, got {} m",
+                x
+            );
+            assert!(
+                y > 0.010,
+                "y should satisfy y > 10mm, got {} m",
+                y
+            );
+        }
+        other => panic!(
+            "expected Solved for underdetermined free auto, got {:?}",
             other
         ),
     }

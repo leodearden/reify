@@ -66,14 +66,8 @@ fn empty_rank2_tensor_add_mismatched_returns_undef() {
 /// should return Undef because the inner rows are empty (0-column matrix).
 #[test]
 fn empty_inner_rank2_tensor_add_returns_undef() {
-    let a = lit(
-        Value::Tensor(vec![Value::Tensor(vec![])]),
-        tensor_ty(),
-    );
-    let b = lit(
-        Value::Tensor(vec![Value::Tensor(vec![])]),
-        tensor_ty(),
-    );
+    let a = lit(Value::Tensor(vec![Value::Tensor(vec![])]), tensor_ty());
+    let b = lit(Value::Tensor(vec![Value::Tensor(vec![])]), tensor_ty());
     let expr = add(a, b);
     assert_eq!(eval(&expr), Value::Undef);
 }

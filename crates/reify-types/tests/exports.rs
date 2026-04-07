@@ -16,6 +16,7 @@ fn all_resolution_types_exported() {
         id: reify_types::ValueCellId::new("Bracket", "width"),
         param_type: reify_types::Type::length(),
         bounds: None,
+        free: false,
     };
 
     // OptimizationObjective

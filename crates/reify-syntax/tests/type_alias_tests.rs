@@ -43,8 +43,8 @@ fn assert_no_valid_binop_recovery(decls: &[Declaration]) {
         _ => None,
     }) {
         assert_eq!(ta.name, "Foo");
-        let looks_like_valid_binop =
-            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        let looks_like_valid_binop = (ta.type_expr.name == "/" || ta.type_expr.name == "*")
+            && ta.type_expr.type_args.len() == 2;
         assert!(
             !looks_like_valid_binop,
             "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",

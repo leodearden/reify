@@ -284,7 +284,20 @@ pub enum ValueCellKind {
     Param,
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
-    Auto,
+    /// `free`: when true this is an `auto(free)` parameter that skips uniqueness verification.
+    Auto { free: bool },
+}
+
+impl ValueCellKind {
+    /// Returns `true` for any `Auto` variant (strict or free).
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ValueCellKind::Auto { .. })
+    }
+
+    /// Returns `true` only for `Auto { free: true }`.
+    pub fn is_auto_free(&self) -> bool {
+        matches!(self, ValueCellKind::Auto { free: true })
+    }
 }
 
 /// Visibility of a declaration: `Public` if accessible from outside, `Private` if internal.
@@ -649,7 +662,10 @@ impl TypeAliasRegistry {
 
     /// Consume the registry, returning all compiled entries.
     pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
-        self.entries.into_values().map(|e| e.into_compiled()).collect()
+        self.entries
+            .into_values()
+            .map(|e| e.into_compiled())
+            .collect()
     }
 }
 
@@ -877,13 +893,18 @@ fn compile_unit(
     // A non-finite factor poisons all downstream computations.
     if !factor.is_finite() || factor == 0.0 {
         let msg = if factor == 0.0 {
-            format!("unit '{}' has zero conversion factor; factor must be finite and non-zero", decl.name)
+            format!(
+                "unit '{}' has zero conversion factor; factor must be finite and non-zero",
+                decl.name
+            )
         } else {
-            format!("unit '{}' has non-finite conversion factor ({}); factor must be finite and non-zero", decl.name, factor)
+            format!(
+                "unit '{}' has non-finite conversion factor ({}); factor must be finite and non-zero",
+                decl.name, factor
+            )
         };
         diagnostics.push(
-            Diagnostic::error(msg)
-                .with_label(DiagnosticLabel::new(decl.span, "invalid factor")),
+            Diagnostic::error(msg).with_label(DiagnosticLabel::new(decl.span, "invalid factor")),
         );
         return None;
     }
@@ -1138,10 +1159,7 @@ fn resolve_type_alias_expr_to_dimension(
                     "cannot resolve '{}' to a dimension type in alias expression",
                     type_expr.name
                 ))
-                .with_label(DiagnosticLabel::new(
-                    type_expr.span,
-                    "not a dimension type",
-                )),
+                .with_label(DiagnosticLabel::new(type_expr.span, "not a dimension type")),
             );
             None
         }
@@ -1214,7 +1232,10 @@ fn resolve_parameterized_alias(
                 "type alias '{}' exceeds maximum instantiation depth (recursive type alias)",
                 alias_entry.name
             ))
-            .with_label(DiagnosticLabel::new(alias_entry.span, "recursive expansion")),
+            .with_label(DiagnosticLabel::new(
+                alias_entry.span,
+                "recursive expansion",
+            )),
         );
         return None;
     }
@@ -1360,8 +1381,10 @@ fn resolve_type_alias_expr_with_subst(
                     return None;
                 }
                 let mut inner_subst: HashMap<String, Type> = HashMap::new();
-                for (param, arg_expr) in
-                    alias_entry.type_params.iter().zip(type_expr.type_args.iter())
+                for (param, arg_expr) in alias_entry
+                    .type_params
+                    .iter()
+                    .zip(type_expr.type_args.iter())
                 {
                     let resolved = resolve_type_alias_expr_with_subst(
                         arg_expr,
@@ -1437,25 +1460,50 @@ fn resolve_parameterized_builtin_type_with_subst(
 ) -> Option<Type> {
     match name {
         "List" if type_args.len() == 1 => {
-            let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
             Some(Type::List(Box::new(inner)))
         }
         "Set" if type_args.len() == 1 => {
-            let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
             Some(Type::Set(Box::new(inner)))
         }
         "Map" if type_args.len() == 2 => {
-            let key =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
-            let val =
-                resolve_type_alias_expr_with_subst(&type_args[1], alias_registry, subst, diagnostics, depth)?;
+            let key = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            let val = resolve_type_alias_expr_with_subst(
+                &type_args[1],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
         "Option" if type_args.len() == 1 => {
-            let inner =
-                resolve_type_alias_expr_with_subst(&type_args[0], alias_registry, subst, diagnostics, depth)?;
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
             Some(Type::Option(Box::new(inner)))
         }
         _ => None,
@@ -2048,10 +2096,17 @@ fn compile_expr_guarded(
                         && !si_value.is_finite()
                     {
                         diagnostics.push(
-                            Diagnostic::error("overflow in quantity literal: result is not finite".to_string())
-                                .with_label(DiagnosticLabel::new(expr.span, "non-finite result")),
+                            Diagnostic::error(
+                                "overflow in quantity literal: result is not finite".to_string(),
+                            )
+                            .with_label(DiagnosticLabel::new(expr.span, "non-finite result")),
                         );
-                        return CompiledExpr::literal(Value::Undef, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS });
+                        return CompiledExpr::literal(
+                            Value::Undef,
+                            Type::Scalar {
+                                dimension: DimensionVector::DIMENSIONLESS,
+                            },
+                        );
                     }
                     let ty = Type::Scalar { dimension };
                     CompiledExpr::literal(scalar_val, ty)
@@ -2063,7 +2118,12 @@ fn compile_expr_guarded(
                     );
                     // Return an undef literal with dimensionless scalar type as a fallback.
                     // Using Scalar (not Real) keeps the type system consistent for quantity expressions.
-                    CompiledExpr::literal(Value::Undef, Type::Scalar { dimension: DimensionVector::DIMENSIONLESS })
+                    CompiledExpr::literal(
+                        Value::Undef,
+                        Type::Scalar {
+                            dimension: DimensionVector::DIMENSIONLESS,
+                        },
+                    )
                 }
             }
         }
@@ -2308,9 +2368,7 @@ fn compile_expr_guarded(
                                 "dimension mismatch in range: {} vs {}",
                                 lo.result_type, hi.result_type,
                             ))
-                            .with_label(
-                                DiagnosticLabel::new(expr.span, "incompatible dimensions"),
-                            ),
+                            .with_label(DiagnosticLabel::new(expr.span, "incompatible dimensions")),
                         );
                     }
                     (Type::Scalar { .. }, Type::Int | Type::Real)
@@ -2320,12 +2378,10 @@ fn compile_expr_guarded(
                                 "incompatible types in range: {} vs {}",
                                 lo.result_type, hi.result_type,
                             ))
-                            .with_label(
-                                DiagnosticLabel::new(
-                                    expr.span,
-                                    "dimensioned + dimensionless",
-                                ),
-                            ),
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "dimensioned + dimensionless",
+                            )),
                         );
                     }
                     _ => {}
@@ -3129,7 +3185,9 @@ fn compile_trait(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    if let Some(t) = resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
+                    if let Some(t) =
+                        resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
+                    {
                         t
                     } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
                         // Enum type defined in the same module
@@ -3170,7 +3228,8 @@ fn compile_trait(
             reify_syntax::MemberDecl::Let(let_decl) => {
                 // Let bindings always have a value expression → default
                 let ty = if let Some(type_expr) = &let_decl.type_expr {
-                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry) {
+                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
+                    {
                         Some(t) => t,
                         None => {
                             diagnostics.push(
@@ -3433,7 +3492,7 @@ fn compile_purpose(
             let param_ids: Vec<ValueCellId> = template
                 .value_cells
                 .iter()
-                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto))
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
                 .map(|vc| vc.id.clone())
                 .collect();
             if !param_ids.is_empty() {
@@ -3688,10 +3747,7 @@ pub fn compile_with_prelude(
                                 dup_entry.span,
                                 "duplicate declared here",
                             ))
-                            .with_label(DiagnosticLabel::new(
-                                original.span,
-                                "first declared here",
-                            )),
+                            .with_label(DiagnosticLabel::new(original.span, "first declared here")),
                         );
                     }
                 }
@@ -3713,10 +3769,7 @@ pub fn compile_with_prelude(
                     alias_decl.span,
                     "duplicate declared here",
                 ))
-                .with_label(DiagnosticLabel::new(
-                    first.span,
-                    "first declared here",
-                )),
+                .with_label(DiagnosticLabel::new(first.span, "first declared here")),
             );
         } else {
             alias_decl_map.insert(alias_decl.name.clone(), alias_decl);
@@ -3748,9 +3801,13 @@ pub fn compile_with_prelude(
     // Compile in dependency order after collecting all references:
     // 1. Functions (need all resolution_enums, plus prior compiled functions for self-reference)
     for fn_def in &fn_refs {
-        if let Some(compiled_fn) =
-            compile_function(fn_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics)
-        {
+        if let Some(compiled_fn) = compile_function(
+            fn_def,
+            &resolution_enums,
+            &functions,
+            &alias_registry,
+            &mut diagnostics,
+        ) {
             functions.push(compiled_fn);
         }
     }
@@ -3758,7 +3815,12 @@ pub fn compile_with_prelude(
     // 2. Traits (depend on resolution_enums for enum type resolution in params)
     let mut trait_defs = Vec::new();
     for trait_decl in &trait_refs {
-        let compiled_trait = compile_trait(trait_decl, &resolution_enums, &alias_registry, &mut diagnostics);
+        let compiled_trait = compile_trait(
+            trait_decl,
+            &resolution_enums,
+            &alias_registry,
+            &mut diagnostics,
+        );
         trait_defs.push(compiled_trait);
     }
 
@@ -3779,7 +3841,13 @@ pub fn compile_with_prelude(
 
     // 3. Fields (need all resolution_enums + all compiled functions)
     for field_def in &field_refs {
-        let compiled = compile_field(field_def, &resolution_enums, &functions, &alias_registry, &mut diagnostics);
+        let compiled = compile_field(
+            field_def,
+            &resolution_enums,
+            &functions,
+            &alias_registry,
+            &mut diagnostics,
+        );
         fields.push(compiled);
     }
 
@@ -4338,9 +4406,10 @@ fn substitute_expr(
     let new_kind = match &expr.kind {
         // Leaf variants — no sub-expressions to recurse into.
         ExprKind::NumberLiteral(n) => ExprKind::NumberLiteral(*n),
-        ExprKind::QuantityLiteral { value, unit } => {
-            ExprKind::QuantityLiteral { value: *value, unit: unit.clone() }
-        }
+        ExprKind::QuantityLiteral { value, unit } => ExprKind::QuantityLiteral {
+            value: *value,
+            unit: unit.clone(),
+        },
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
         ExprKind::Auto => ExprKind::Auto,
@@ -4375,7 +4444,11 @@ fn substitute_expr(
             object: Box::new(substitute_expr(object, bindings)),
             member: member.clone(),
         },
-        ExprKind::Conditional { condition, then_branch, else_branch } => ExprKind::Conditional {
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => ExprKind::Conditional {
             condition: Box::new(substitute_expr(condition, bindings)),
             then_branch: Box::new(substitute_expr(then_branch, bindings)),
             else_branch: Box::new(substitute_expr(else_branch, bindings)),
@@ -4422,7 +4495,12 @@ fn substitute_expr(
             }
         }
         // Quantifier — the bound variable shadows constraint params in the predicate.
-        ExprKind::Quantifier { kind, variable, collection, predicate } => {
+        ExprKind::Quantifier {
+            kind,
+            variable,
+            collection,
+            predicate,
+        } => {
             // The collection expression is evaluated in the outer scope.
             let sub_collection = substitute_expr(collection, bindings);
             // The predicate is evaluated with the variable shadowing any same-named binding.
@@ -4438,14 +4516,27 @@ fn substitute_expr(
                 predicate: Box::new(substitute_expr(predicate, &inner_bindings)),
             }
         }
-        ExprKind::AdHocSelector { base, selector, args } => ExprKind::AdHocSelector {
+        ExprKind::AdHocSelector {
+            base,
+            selector,
+            args,
+        } => ExprKind::AdHocSelector {
             base: Box::new(substitute_expr(base, bindings)),
             selector: selector.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
         },
-        ExprKind::Range { lower, upper, lower_inclusive, upper_inclusive } => ExprKind::Range {
-            lower: lower.as_ref().map(|e| Box::new(substitute_expr(e, bindings))),
-            upper: upper.as_ref().map(|e| Box::new(substitute_expr(e, bindings))),
+        ExprKind::Range {
+            lower,
+            upper,
+            lower_inclusive,
+            upper_inclusive,
+        } => ExprKind::Range {
+            lower: lower
+                .as_ref()
+                .map(|e| Box::new(substitute_expr(e, bindings))),
+            upper: upper
+                .as_ref()
+                .map(|e| Box::new(substitute_expr(e, bindings))),
             lower_inclusive: *lower_inclusive,
             upper_inclusive: *upper_inclusive,
         },
@@ -4453,12 +4544,17 @@ fn substitute_expr(
             qualifier: Box::new(substitute_expr(qualifier, bindings)),
             member: member.clone(),
         },
-        ExprKind::InstanceQualifiedAccess { object, qualified } => ExprKind::InstanceQualifiedAccess {
-            object: Box::new(substitute_expr(object, bindings)),
-            qualified: Box::new(substitute_expr(qualified, bindings)),
-        },
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            ExprKind::InstanceQualifiedAccess {
+                object: Box::new(substitute_expr(object, bindings)),
+                qualified: Box::new(substitute_expr(qualified, bindings)),
+            }
+        }
     };
-    Expr { kind: new_kind, span }
+    Expr {
+        kind: new_kind,
+        span,
+    }
 }
 
 /// Compile a single entity definition (structure or occurrence) into a topology template.
@@ -4523,7 +4619,12 @@ fn compile_entity(
         match member {
             reify_syntax::MemberDecl::Param(param) => {
                 let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_expr_with_aliases(type_expr, &type_param_names, alias_registry, diagnostics) {
+                    match resolve_type_expr_with_aliases(
+                        type_expr,
+                        &type_param_names,
+                        alias_registry,
+                        diagnostics,
+                    ) {
                         Some(t) => t,
                         None => {
                             // Check if it's an enum type defined in the same module or prelude
@@ -4531,11 +4632,13 @@ fn compile_entity(
                                 Type::Enum(type_expr.name.clone())
                             } else {
                                 diagnostics.push(
-                                    Diagnostic::error(format!("unresolved type: {}", type_expr.name))
-                                        .with_label(DiagnosticLabel::new(
-                                            type_expr.span,
-                                            "unknown type name",
-                                        )),
+                                    Diagnostic::error(format!(
+                                        "unresolved type: {}",
+                                        type_expr.name
+                                    ))
+                                    .with_label(
+                                        DiagnosticLabel::new(type_expr.span, "unknown type name"),
+                                    ),
                                 );
                                 Type::Real // fallback
                             }
@@ -4708,7 +4811,7 @@ fn compile_entity(
                 let decl = if is_auto {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto,
+                        kind: ValueCellKind::Auto { free: false },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -5000,7 +5103,7 @@ fn compile_entity(
                             let decl = if is_auto {
                                 ValueCellDecl {
                                     id,
-                                    kind: ValueCellKind::Auto,
+                                    kind: ValueCellKind::Auto { free: false },
                                     visibility: Visibility::Public,
                                     cell_type,
                                     default_expr: None,
@@ -5829,7 +5932,7 @@ fn auto_match_port_members(
         let prefix = format!("{}.", port.name);
         port.members
             .iter()
-            .filter(|m| matches!(m.kind, ValueCellKind::Param | ValueCellKind::Auto))
+            .filter(|m| matches!(m.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
             .filter_map(|m| m.id.member.strip_prefix(&prefix).map(|s| s.to_string()))
             .collect()
     };
@@ -6205,9 +6308,7 @@ fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueCellId>) {
         CompiledExprKind::DeterminacyPredicate { cell, .. } => {
             refs.push(cell.clone());
         }
-        CompiledExprKind::RangeConstructor {
-            lower, upper, ..
-        } => {
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             if let Some(lo) = lower {
                 collect_body_refs_inner(lo, refs);
             }
@@ -6393,7 +6494,7 @@ fn compile_guarded_members(
                 let decl = if is_auto {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto,
+                        kind: ValueCellKind::Auto { free: false },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,
@@ -6625,10 +6726,7 @@ fn check_trait_conformance(
                                         "unresolved type in conformance check: {}",
                                         te.name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        te.span,
-                                        "unknown type name",
-                                    )),
+                                    .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                                 );
                                 Type::Real
                             })
@@ -6655,10 +6753,7 @@ fn check_trait_conformance(
                                         "unresolved type in conformance check: {}",
                                         te.name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        te.span,
-                                        "unknown type name",
-                                    )),
+                                    .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
                                 );
                                 Type::Real
                             })
@@ -6971,7 +7066,12 @@ fn compile_function(
     // Resolve parameter types
     let mut params = Vec::new();
     for p in &fn_def.params {
-        let ty = match resolve_type_expr_with_aliases(&p.type_expr, &empty_params, alias_registry, diagnostics) {
+        let ty = match resolve_type_expr_with_aliases(
+            &p.type_expr,
+            &empty_params,
+            alias_registry,
+            diagnostics,
+        ) {
             Some(t) => t,
             None => {
                 diagnostics.push(
@@ -6986,16 +7086,18 @@ fn compile_function(
 
     // Resolve return type
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_expr_with_aliases(te, &empty_params, alias_registry, diagnostics) {
-            Some(t) => t,
-            None => {
-                diagnostics.push(
-                    Diagnostic::error(format!("unresolved return type: {}", te.name))
-                        .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
-                );
-                Type::Real
+        Some(te) => {
+            match resolve_type_expr_with_aliases(te, &empty_params, alias_registry, diagnostics) {
+                Some(t) => t,
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unresolved return type: {}", te.name))
+                            .with_label(DiagnosticLabel::new(te.span, "unknown type name")),
+                    );
+                    Type::Real
+                }
             }
-        },
+        }
         None => Type::Real, // default return type
     };
 

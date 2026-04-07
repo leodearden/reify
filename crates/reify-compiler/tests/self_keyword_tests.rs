@@ -68,7 +68,10 @@ fn self_dot_param_resolves_to_value_ref() {
         .iter()
         .find(|vc| vc.id.member == "y")
         .expect("y value cell");
-    let default_expr = y_cell.default_expr.as_ref().expect("y should have default_expr");
+    let default_expr = y_cell
+        .default_expr
+        .as_ref()
+        .expect("y should have default_expr");
 
     // The default expression should be a ValueRef pointing to ("S", "x")
     let expected_id = ValueCellId::new("S", "x");

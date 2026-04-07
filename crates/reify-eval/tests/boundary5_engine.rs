@@ -193,7 +193,7 @@ fn e2e_parse_compile_eval_auto_param() {
         .iter()
         .find(|c| c.id == ValueCellId::new("S", "x"))
         .expect("x cell not found");
-    assert_eq!(x_cell.kind, ValueCellKind::Auto);
+    assert!(x_cell.kind.is_auto());
 
     // Evaluate and check
     let checker = reify_constraints::SimpleConstraintChecker;
@@ -604,8 +604,8 @@ fn sub_component_missing_structure_skipped_gracefully() {
 /// to reflect the new x value (y = 0.02 * 2 = 0.04).
 #[test]
 fn edit_param_second_wave_no_panic_after_solver_resolution() {
-    use std::collections::HashMap;
     use reify_types::{BinOp, ModulePath, SolveResult, Type, Value, ValueCellId};
+    use std::collections::HashMap;
 
     let a_id = ValueCellId::new("S", "a");
     let x_id = ValueCellId::new("S", "x");
@@ -619,8 +619,14 @@ fn edit_param_second_wave_no_panic_after_solver_resolution() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")

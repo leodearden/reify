@@ -4,8 +4,8 @@
 //! levels. Uses a custom tracing::Subscriber that counts events by level,
 //! following the pattern established in concurrent_eval.rs.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_constraints::DimensionalSolver;
 use reify_test_support::*;
@@ -16,11 +16,7 @@ use reify_types::{
 
 /// Build a tracing subscriber that counts DEBUG and WARN level events.
 /// Returns the subscriber and clones of both counters for assertions.
-fn event_counting_subscriber() -> (
-    impl tracing::Subscriber,
-    Arc<AtomicUsize>,
-    Arc<AtomicUsize>,
-) {
+fn event_counting_subscriber() -> (impl tracing::Subscriber, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let debug_count = Arc::new(AtomicUsize::new(0));
     let warn_count = Arc::new(AtomicUsize::new(0));
     let dc = Arc::clone(&debug_count);
@@ -42,11 +38,7 @@ fn event_counting_subscriber() -> (
 
         fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
 
-        fn record_follows_from(
-            &self,
-            _span: &tracing::span::Id,
-            _follows: &tracing::span::Id,
-        ) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
         fn event(&self, event: &tracing::Event<'_>) {
             // Only count events from reify_constraints (and submodules).
@@ -139,6 +131,7 @@ fn consolidated_debug_event_on_max_iters_reached() {
                 id: id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
+                free: false,
             })
             .collect(),
         constraints,
@@ -181,6 +174,7 @@ fn normal_solve_emits_zero_warns() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
+            free: false,
         }],
         constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
         current_values: ValueMap::new(),
@@ -233,6 +227,7 @@ fn no_best_param_returns_no_progress_with_reason() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.05, 0.05)),
+            free: false,
         }],
         constraints: vec![(cnid("Plate", 0), gt_expr)],
         current_values: current,
@@ -318,6 +313,7 @@ fn executor_error_returns_no_progress_with_reason() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((f64::NAN, f64::NAN)),
+            free: false,
         }],
         constraints: vec![(cnid("Part", 0), gt_expr)],
         current_values: current,

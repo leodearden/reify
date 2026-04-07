@@ -142,9 +142,7 @@ impl ConcurrentEvalAdapter {
     /// Get a snapshot of the current snapshot_values (for testing/inspection).
     ///
     /// Recovers gracefully from poisoned locks via `read_snapshot_values()` helper.
-    pub fn snapshot_values(
-        &self,
-    ) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
+    pub fn snapshot_values(&self) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
         self.read_snapshot_values().clone()
     }
 
@@ -334,7 +332,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
             && let Some(cell_node) = self.graph.value_cells.get(vcid)
-            && (cell_node.kind == ValueCellKind::Let || cell_node.kind == ValueCellKind::Auto)
+            && (cell_node.kind == ValueCellKind::Let || cell_node.kind.is_auto())
             && cell_node.default_expr.is_some()
         {
             let expr = cell_node.default_expr.as_ref().unwrap();
@@ -382,12 +380,12 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
             self.lock_results().push(ConcurrentNodeResult {
-                    node: node.clone(),
-                    value: val,
-                    determinacy: DeterminacyState::Determined,
-                    trace,
-                    outcome,
-                });
+                node: node.clone(),
+                value: val,
+                determinacy: DeterminacyState::Determined,
+                trace,
+                outcome,
+            });
 
             return outcome;
         }

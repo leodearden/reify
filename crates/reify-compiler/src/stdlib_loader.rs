@@ -16,8 +16,7 @@ const UNITS_SRC: &str = include_str!("../stdlib/units.ri");
 const MATERIALS_MECHANICAL_SRC: &str = include_str!("../stdlib/materials_mechanical.ri");
 
 /// Embedded source for stdlib/structural_physical.ri.
-const STRUCTURAL_PHYSICAL_SRC: &str =
-    include_str!("../stdlib/structural_physical.ri");
+const STRUCTURAL_PHYSICAL_SRC: &str = include_str!("../stdlib/structural_physical.ri");
 
 /// Embedded source for stdlib/tolerancing.ri.
 const TOLERANCING_SRC: &str = include_str!("../stdlib/tolerancing.ri");
@@ -52,7 +51,8 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             assert!(
                 parsed.errors.is_empty(),
                 "stdlib module '{}' has parse errors: {:?}",
-                module_name, parsed.errors
+                module_name,
+                parsed.errors
             );
 
             // Compile with the growing prelude so each stdlib module sees all
@@ -72,7 +72,8 @@ pub fn load_stdlib() -> &'static [CompiledModule] {
             assert!(
                 error_diagnostics.is_empty(),
                 "stdlib module '{}' has Error-severity diagnostics: {:?}",
-                module_name, error_diagnostics
+                module_name,
+                error_diagnostics
             );
 
             modules.push(compiled);

@@ -2,7 +2,7 @@ use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_syntax::{Declaration, ParsedModule};
-pub use reify_syntax::{find_named_member_span, MemberSpanInfo};
+pub use reify_syntax::{MemberSpanInfo, find_named_member_span};
 use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
@@ -80,7 +80,11 @@ impl AnalysisContext {
     /// When `None`, returns the first match across all declarations.
     ///
     /// Returns `None` if no value cell with that name exists.
-    pub fn find_member_decl(&self, name: &str, enclosing_decl: Option<&str>) -> Option<MemberInfo<'_>> {
+    pub fn find_member_decl(
+        &self,
+        name: &str,
+        enclosing_decl: Option<&str>,
+    ) -> Option<MemberInfo<'_>> {
         // Get the span, doc, and owning declaration name from the parsed module
         let (span, doc, decl_name) = self.find_parsed_member_span_and_doc(name, enclosing_decl)?;
 
@@ -394,7 +398,9 @@ mod tests {
     fn find_member_decl_width_is_param() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("width", None).expect("width should exist");
+        let info = ctx
+            .find_member_decl("width", None)
+            .expect("width should exist");
         assert_eq!(info.name, "width");
         assert_eq!(info.kind, ValueCellKind::Param);
         assert_eq!(*info.cell_type, Type::length());
@@ -412,7 +418,9 @@ mod tests {
     fn find_member_decl_volume_is_let() {
         let source = reify_test_support::bracket_source();
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("volume", None).expect("volume should exist");
+        let info = ctx
+            .find_member_decl("volume", None)
+            .expect("volume should exist");
         assert_eq!(info.name, "volume");
         assert_eq!(info.kind, ValueCellKind::Let);
         // Volume is width*height*thickness → Scalar with VOLUME dimension
@@ -491,8 +499,16 @@ mod tests {
             .iter()
             .find(|(n, _, _)| *n == "guarded_x")
             .expect("should include guarded-group param 'guarded_x'");
-        assert_eq!(guarded.1, ValueCellKind::Param, "guarded_x should be a Param");
-        assert_eq!(*guarded.2, Type::length(), "guarded_x should have length type");
+        assert_eq!(
+            guarded.1,
+            ValueCellKind::Param,
+            "guarded_x should be a Param"
+        );
+        assert_eq!(
+            *guarded.2,
+            Type::length(),
+            "guarded_x should have length type"
+        );
     }
 
     #[test]
@@ -519,15 +535,31 @@ mod tests {
             .iter()
             .find(|(n, _, _)| *n == "when_true")
             .expect("should include where-branch param 'when_true'");
-        assert_eq!(when_true.1, ValueCellKind::Param, "when_true should be a Param");
-        assert_eq!(*when_true.2, Type::length(), "when_true should have length type");
+        assert_eq!(
+            when_true.1,
+            ValueCellKind::Param,
+            "when_true should be a Param"
+        );
+        assert_eq!(
+            *when_true.2,
+            Type::length(),
+            "when_true should have length type"
+        );
 
         let when_false = members
             .iter()
             .find(|(n, _, _)| *n == "when_false")
             .expect("should include else-branch param 'when_false'");
-        assert_eq!(when_false.1, ValueCellKind::Param, "when_false should be a Param");
-        assert_eq!(*when_false.2, Type::length(), "when_false should have length type");
+        assert_eq!(
+            when_false.1,
+            ValueCellKind::Param,
+            "when_false should be a Param"
+        );
+        assert_eq!(
+            *when_false.2,
+            Type::length(),
+            "when_false should have length type"
+        );
     }
 
     // --- EntityKind / EntitySummary tests ---
@@ -666,11 +698,7 @@ mod tests {
             e.params
         );
         // Should count: guarded_y = 1 let
-        assert_eq!(
-            e.lets, 1,
-            "expected 1 let (guarded_y), got {}",
-            e.lets
-        );
+        assert_eq!(e.lets, 1, "expected 1 let (guarded_y), got {}", e.lets);
         // Should count: b > 0mm = 1 constraint
         assert_eq!(
             e.constraints, 1,
@@ -707,14 +735,11 @@ mod tests {
     fn get_value_multi_declaration_scoped_correctly() {
         // Two structures with same-named param 'x' but different default values.
         // get_value must return the correct value scoped to each declaration.
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
 
         // A's x should be 0.005 m (5mm in SI)
-        let val_a = ctx
-            .get_value("A", "x")
-            .expect("A.x should have a value");
+        let val_a = ctx.get_value("A", "x").expect("A.x should have a value");
         match val_a {
             Value::Scalar {
                 si_value,
@@ -730,9 +755,7 @@ mod tests {
         }
 
         // B's x should be 0.02 m (20mm in SI)
-        let val_b = ctx
-            .get_value("B", "x")
-            .expect("B.x should have a value");
+        let val_b = ctx.get_value("B", "x").expect("B.x should have a value");
         match val_b {
             Value::Scalar {
                 si_value,
@@ -783,7 +806,9 @@ mod tests {
     fn member_info_includes_doc_for_documented_param() {
         let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
-        let info = ctx.find_member_decl("width", None).expect("width should exist");
+        let info = ctx
+            .find_member_decl("width", None)
+            .expect("width should exist");
         assert_eq!(info.doc, Some("The width."));
     }
 
@@ -803,7 +828,11 @@ mod tests {
             .expect("guarded_x inside where block should be found");
         assert_eq!(info.name, "guarded_x");
         assert_eq!(info.kind, ValueCellKind::Param);
-        assert_eq!(*info.cell_type, Type::length(), "guarded_x should have length type");
+        assert_eq!(
+            *info.cell_type,
+            Type::length(),
+            "guarded_x should have length type"
+        );
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
             decl_text.contains("guarded_x") && decl_text.contains("5mm"),
@@ -828,7 +857,11 @@ mod tests {
             .expect("deep_x inside nested where blocks should be found");
         assert_eq!(info.name, "deep_x");
         assert_eq!(info.kind, ValueCellKind::Param);
-        assert_eq!(*info.cell_type, Type::length(), "deep_x should have length type");
+        assert_eq!(
+            *info.cell_type,
+            Type::length(),
+            "deep_x should have length type"
+        );
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
             decl_text.contains("deep_x") && decl_text.contains("1mm"),
@@ -852,7 +885,11 @@ mod tests {
             .expect("fallback inside else block should be found");
         assert_eq!(info.name, "fallback");
         assert_eq!(info.kind, ValueCellKind::Let);
-        assert_eq!(*info.cell_type, Type::Int, "fallback (literal 2) should have Int type");
+        assert_eq!(
+            *info.cell_type,
+            Type::Int,
+            "fallback (literal 2) should have Int type"
+        );
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
             decl_text.contains("fallback"),
@@ -874,8 +911,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_inside_second() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B: 'y' in "param y: Bool = true"
         let b_y_offset = source.find("param y").unwrap() + 6;
@@ -953,8 +989,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_delegates_to_free_function() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B
         let b_y_offset = source.find("param y").unwrap() + 6;
@@ -965,22 +1000,15 @@ mod tests {
         );
         // Offset inside A
         let a_x_offset = source.find("param x").unwrap() + 6;
-        assert_eq!(
-            ctx.enclosing_decl_name_at(a_x_offset),
-            Some("A"),
-        );
+        assert_eq!(ctx.enclosing_decl_name_at(a_x_offset), Some("A"),);
         // Offset outside
         let between_offset = source.find("\nstructure B").unwrap();
-        assert_eq!(
-            ctx.enclosing_decl_name_at(between_offset),
-            None,
-        );
+        assert_eq!(ctx.enclosing_decl_name_at(between_offset), None,);
     }
 
     #[test]
     fn find_member_decl_scoped_to_second_structure() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("x", Some("B"))
@@ -1006,8 +1034,7 @@ mod tests {
     fn find_member_decl_ambiguous_name_returns_first_decl_consistently() {
         // Two structures with identically-named params but different types.
         // find_member_decl must return span AND type from the same declaration.
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("x", None).expect("x should exist");
         // Should return type from A (first match) — Scalar with LENGTH dimension
@@ -1029,8 +1056,7 @@ mod tests {
     #[test]
     fn find_member_decl_ambiguous_name_second_decl_type_not_leaked() {
         // Verify the returned cell_type is NOT Bool (proving type didn't leak from B).
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("x", None).expect("x should exist");
         assert_ne!(
@@ -1045,18 +1071,14 @@ mod tests {
         // "y" exists only in B (the second declaration).
         // find_member_decl("y", None) must iterate past A and find y in B,
         // returning decl_name="B" (not "A") and a span within B's byte range.
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Scalar = 10mm\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Scalar = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("y", None)
             .expect("y should exist in B");
         assert_eq!(info.name, "y");
         assert_eq!(info.kind, ValueCellKind::Param);
-        assert_eq!(
-            info.decl_name, "B",
-            "decl_name should be B, not A"
-        );
+        assert_eq!(info.decl_name, "B", "decl_name should be B, not A");
         // Span should be within B's byte range
         let b_start = source.find("structure B").unwrap() as u32;
         assert!(
@@ -1071,8 +1093,7 @@ mod tests {
 
     #[test]
     fn member_names_for_structure_returns_scoped_members() {
-        let source =
-            "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let a_members = ctx.member_names_for_structure("A");
         let a_names: Vec<&str> = a_members.iter().map(|(n, _, _)| *n).collect();
@@ -1084,7 +1105,10 @@ mod tests {
 
         // Non-existent structure returns empty
         let empty = ctx.member_names_for_structure("C");
-        assert!(empty.is_empty(), "non-existent structure should return empty");
+        assert!(
+            empty.is_empty(),
+            "non-existent structure should return empty"
+        );
     }
 
     // --- format_value tests ---
@@ -1217,7 +1241,10 @@ mod tests {
             other => panic!("expected Structure, got {:?}", other),
         };
         let result = find_named_member_span(&structure.members, "d");
-        assert!(result.is_some(), "d inside port body should be found via find_named_member_span");
+        assert!(
+            result.is_some(),
+            "d inside port body should be found via find_named_member_span"
+        );
         let info = result.unwrap();
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
@@ -1271,7 +1298,10 @@ mod tests {
             other => panic!("expected Structure, got {:?}", other),
         };
         let result = find_named_member_span(&structure.members, "ratio");
-        assert!(result.is_some(), "ratio inside port body should be found via find_named_member_span");
+        assert!(
+            result.is_some(),
+            "ratio inside port body should be found via find_named_member_span"
+        );
         let info = result.unwrap();
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
         assert!(
@@ -1348,7 +1378,10 @@ mod tests {
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let offset = source.find("diameter").unwrap();
         let decl = enclosing_decl_at(&parsed.declarations, offset);
-        assert!(decl.is_some(), "offset inside occurrence should return Some");
+        assert!(
+            decl.is_some(),
+            "offset inside occurrence should return Some"
+        );
         match decl.unwrap() {
             reify_syntax::Declaration::Occurrence(o) => assert_eq!(o.name, "Joint"),
             other => panic!("expected Occurrence Joint, got {:?}", other),
@@ -1362,7 +1395,10 @@ mod tests {
         // Offset between A and B (the newline between them)
         let between_offset = source.find("\nstructure B").unwrap();
         let decl = enclosing_decl_at(&parsed.declarations, between_offset);
-        assert!(decl.is_none(), "offset between declarations should return None");
+        assert!(
+            decl.is_none(),
+            "offset between declarations should return None"
+        );
     }
 
     #[test]

@@ -16,16 +16,19 @@ fn three_independent_constraints_three_components() {
             id: a.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: b.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: c.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
     ];
 
@@ -63,6 +66,7 @@ fn shared_param_merges_into_one_component() {
         id: a.clone(),
         param_type: Type::length(),
         bounds: None,
+        free: false,
     }];
 
     // Both constraints reference param 'a'
@@ -93,16 +97,19 @@ fn chain_constraints_single_component() {
             id: a.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: b.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: c.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
     ];
 
@@ -134,6 +141,7 @@ fn empty_constraints_zero_components() {
         id: vcid("Part", "a"),
         param_type: Type::length(),
         bounds: None,
+        free: false,
     }];
 
     let constraints: Vec<(_, _)> = vec![];
@@ -154,6 +162,7 @@ fn constraint_without_auto_params_excluded() {
         id: a.clone(),
         param_type: Type::length(),
         bounds: None,
+        free: false,
     }];
 
     // C1 references 'a' (an auto param)
@@ -194,21 +203,25 @@ fn collect_value_refs_handles_nested_conditional() {
             id: a.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: b.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: c.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: d.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
     ];
 
@@ -267,11 +280,13 @@ fn objective_merges_independent_params_into_one_component() {
             id: a.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
         AutoParam {
             id: b.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         },
     ];
 

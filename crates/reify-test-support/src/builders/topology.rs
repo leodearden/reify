@@ -5,7 +5,7 @@ use reify_compiler::{
     SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
 use reify_types::{
-    CompiledExpr, ContentHash, ConstraintNodeId, RealizationNodeId, SourceSpan, Type, TypeParam,
+    CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, SourceSpan, Type, TypeParam,
     ValueCellId,
 };
 
@@ -91,7 +91,19 @@ impl TopologyTemplateBuilder {
     pub fn auto_param(mut self, entity: &str, member: &str, cell_type: Type) -> Self {
         self.value_cells.push(ValueCellDecl {
             id: ValueCellId::new(entity, member),
-            kind: ValueCellKind::Auto,
+            kind: ValueCellKind::Auto { free: false },
+            visibility: reify_compiler::Visibility::Public,
+            cell_type,
+            default_expr: None,
+            span: SourceSpan::new(0, 0),
+        });
+        self
+    }
+
+    pub fn auto_param_free(mut self, entity: &str, member: &str, cell_type: Type) -> Self {
+        self.value_cells.push(ValueCellDecl {
+            id: ValueCellId::new(entity, member),
+            kind: ValueCellKind::Auto { free: true },
             visibility: reify_compiler::Visibility::Public,
             cell_type,
             default_expr: None,
@@ -342,7 +354,7 @@ mod tests {
         assert_eq!(template.value_cells.len(), 1);
         let cell = &template.value_cells[0];
         assert_eq!(cell.id, ValueCellId::new("T", "x"));
-        assert_eq!(cell.kind, ValueCellKind::Auto);
+        assert!(cell.kind.is_auto());
         assert!(cell.default_expr.is_none());
         assert_eq!(cell.cell_type, Type::length());
     }
