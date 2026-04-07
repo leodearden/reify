@@ -55,6 +55,12 @@ describe('errorMessage', () => {
     expect(errorMessage({ message: 42 })).toBe('Unknown error');
   });
 
+  it('returns "Unknown error" for plain object with undefined .message', () => {
+    // JavaScript's 'in' operator returns true for properties set to undefined,
+    // so 'message' in { message: undefined } is true and the non-string guard returns 'Unknown error'.
+    expect(errorMessage({ message: undefined })).toBe('Unknown error');
+  });
+
   it('returns "Unknown error" for plain object with whitespace-only .message', () => {
     expect(errorMessage({ message: '   ' })).toBe('Unknown error');
   });
