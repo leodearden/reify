@@ -18099,9 +18099,12 @@
             "tests/sync_comments_test.sh"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "sanitize_value"
+            ],
             "queries": [
-              "resolution for: Add body-parity diff check to sync_comments_test.sh"
+              "sanitize_value duplication convention SYNC contract",
+              "task 864 discarded branch body-parity implementation"
             ]
           }
         }
