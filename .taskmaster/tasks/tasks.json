@@ -20414,6 +20414,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1002,
+        "title": "Gradient: typed-doc + Arc lambda for hot-path field clones",
+        "description": "compute_gradient stores the original field via Box::new(field_val.clone()), deep-cloning the entire captured environment per gradient(). With repeated gradient() calls on the same field this is O(env_size). The lambda field's contract is also documented as 'lambda or Undef' but FieldSourceKind::Gradient now stores a Field there — making the variant a hidden encoding protocol.\n\n## What\n1. Update the doc comment on Value::Field.lambda in crates/reify-types/src/value.rs:51 to describe all three valid contents: Value::Lambda (Analytical/Composed), Value::Undef (Sampled/Imported), or Value::Field (Gradient — the original field).\n2. Update the FieldSourceKind::Gradient doc comment to describe provenance only — drop references to 'lambda slot' and 'sample handler' that leak reify-expr internals into reify-types.\n3. Consider switching Value::Field's lambda from Box<Value> to Arc<Value> so gradient wrapping becomes a refcount bump rather than a deep clone of captured environment. This is cross-crate and may need its own subtask.\n4. Document the single_point_param calling-convention contract on Value::Field so it isn't an undocumented heuristic.\n\nSource: review escalation esc-281-66, suggestions about Field.lambda.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20426,7 +20437,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:24:30.858Z"
+      "updated": "2026-04-07T13:24:42.528Z"
     }
   }
 }
