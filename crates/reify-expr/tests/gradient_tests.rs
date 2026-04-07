@@ -2615,7 +2615,13 @@ fn gradient_composed_field_returns_field() {
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert!(
-        matches!(&result, Value::Field { source: FieldSourceKind::Gradient, .. }),
+        matches!(
+            &result,
+            Value::Field {
+                source: FieldSourceKind::Gradient,
+                ..
+            }
+        ),
         "gradient of Composed field must return a gradient Field, got {:?}",
         result
     );
@@ -2740,7 +2746,11 @@ fn gradient_3d_field_single_point_param() {
 
     match &sample_result {
         Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            assert_eq!(
+                components.len(),
+                3,
+                "gradient vector should have 3 components"
+            );
             let expected = [1.0_f64, 2.0, 3.0];
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp
@@ -2749,7 +2759,9 @@ fn gradient_3d_field_single_point_param() {
                 assert!(
                     (val - exp).abs() < 1e-3,
                     "gradient component {} of dot(p,[1,2,3]) should be ~{}, got {}",
-                    i, exp, val
+                    i,
+                    exp,
+                    val
                 );
             }
         }
@@ -3036,7 +3048,11 @@ fn gradient_decomposed_n3_dimensionless() {
 
     match &sample_result {
         Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            assert_eq!(
+                components.len(),
+                3,
+                "gradient vector should have 3 components"
+            );
             let expected = [1.0_f64, 2.0, 3.0];
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp
@@ -3045,7 +3061,9 @@ fn gradient_decomposed_n3_dimensionless() {
                 assert!(
                     (val - exp).abs() < 1e-4,
                     "gradient component {} of x+2y+3z should be ~{}, got {}",
-                    i, exp, val
+                    i,
+                    exp,
+                    val
                 );
             }
         }
@@ -3117,18 +3135,16 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
 
     // Assert 1: gradient field's codomain_type is Scalar { dimension: MASS }
     match &grad_result {
-        Value::Field { codomain_type: ct, .. } => {
+        Value::Field {
+            codomain_type: ct, ..
+        } => {
             assert_eq!(
-                ct,
-                &codomain_type,
+                ct, &codomain_type,
                 "gradient field codomain_type should be Scalar[MASS] (trusts declaration), got {:?}",
                 ct
             );
         }
-        _ => panic!(
-            "gradient should return a Field, got {:?}",
-            grad_result
-        ),
+        _ => panic!("gradient should return a Field, got {:?}", grad_result),
     }
 
     // Assert 2: sampling at x=1.0 produces Value::Scalar { si_value: ~2.0, dimension: MASS }
@@ -3147,7 +3163,10 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     match &sample_result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension, dim_kg,
                 "gradient sample should have dimension MASS (trusts declaration), got {:?}",

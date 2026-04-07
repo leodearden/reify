@@ -1735,10 +1735,8 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto = graph
-                                .value_cells
-                                .get(mid)
-                                .is_some_and(|n| n.kind.is_auto());
+                            let is_auto =
+                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1766,10 +1764,8 @@ impl Engine {
                         } else {
                             // Skip Auto params — their lifecycle is managed by the
                             // solver, not guard activation/deactivation.
-                            let is_auto = graph
-                                .value_cells
-                                .get(mid)
-                                .is_some_and(|n| n.kind.is_auto());
+                            let is_auto =
+                                graph.value_cells.get(mid).is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(

@@ -2020,10 +2020,7 @@ fn auto_free_emits_warning_diagnostic() {
     let warning = result
         .diagnostics
         .iter()
-        .find(|d| {
-            d.message.contains("resolved via auto(free)")
-                && d.message.contains("thickness")
-        });
+        .find(|d| d.message.contains("resolved via auto(free)") && d.message.contains("thickness"));
     assert!(
         warning.is_some(),
         "expected warning diagnostic about 'thickness' resolved via auto(free), got {:?}",

@@ -520,8 +520,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let trial_values =
-        build_trial_values(&problem.current_values, &problem.auto_params, initial);
+    let trial_values = build_trial_values(&problem.current_values, &problem.auto_params, initial);
     let initially_feasible =
         max_constraint_residual(&problem.constraints, &trial_values, &problem.functions)
             <= FEASIBILITY_THRESHOLD;
@@ -636,8 +635,7 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values =
-        build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
+    let final_values = build_trial_values(&problem.current_values, &problem.auto_params, &clamped);
     let final_max_residual =
         max_constraint_residual(&problem.constraints, &final_values, &problem.functions);
     if final_max_residual > FEASIBILITY_THRESHOLD {

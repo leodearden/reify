@@ -285,7 +285,9 @@ pub enum ValueCellKind {
     Let,
     /// Solver-determined parameter: starts as Undef, value provided by constraint solver.
     /// `free`: when true this is an `auto(free)` parameter that skips uniqueness verification.
-    Auto { free: bool },
+    Auto {
+        free: bool,
+    },
 }
 
 impl ValueCellKind {

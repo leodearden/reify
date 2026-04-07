@@ -1369,7 +1369,7 @@ fn warm_start_budget_requires_objective_invariant() {
         id: x_id.clone(),
         param_type: Type::length(),
         bounds: Some((0.005, 0.1)), // 5mm–100mm
-        free: true, // not testing uniqueness — case (b) is underdetermined
+        free: true,                 // not testing uniqueness — case (b) is underdetermined
     }];
 
     // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
@@ -1702,16 +1702,8 @@ fn free_auto_resolves_underdetermined_system() {
             // Both values should satisfy the constraints (> 10mm = 0.01 m)
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             let y = values.get(&y_id).unwrap().as_f64().unwrap();
-            assert!(
-                x > 0.010,
-                "x should satisfy x > 10mm, got {} m",
-                x
-            );
-            assert!(
-                y > 0.010,
-                "y should satisfy y > 10mm, got {} m",
-                y
-            );
+            assert!(x > 0.010, "x should satisfy x > 10mm, got {} m", x);
+            assert!(y > 0.010, "y should satisfy y > 10mm, got {} m", y);
         }
         other => panic!(
             "expected Solved for underdetermined free auto, got {:?}",

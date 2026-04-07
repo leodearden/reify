@@ -741,7 +741,8 @@ fn compute_numerical_gradient_at_point(
     // the warning surfaces the root cause during development.
     #[cfg(debug_assertions)]
     if let Value::Lambda { params, .. } = lambda
-        && !single_point_param && params.len() != n
+        && !single_point_param
+        && params.len() != n
     {
         eprintln!(
             "[reify-expr] gradient: lambda has {} params but point has {} coords",
@@ -791,7 +792,9 @@ fn compute_numerical_gradient_at_point(
         work_coords[i] += h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+            work_args.push(Value::Point(
+                work_coords.iter().map(|&v| make_arg(v)).collect(),
+            ));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
@@ -801,7 +804,9 @@ fn compute_numerical_gradient_at_point(
         work_coords[i] -= 2.0 * h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
+            work_args.push(Value::Point(
+                work_coords.iter().map(|&v| make_arg(v)).collect(),
+            ));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
@@ -841,7 +846,10 @@ fn compute_numerical_gradient_at_point(
     }
 
     if n == 1 {
-        gradient_components.into_iter().next().unwrap_or(Value::Undef)
+        gradient_components
+            .into_iter()
+            .next()
+            .unwrap_or(Value::Undef)
     } else {
         Value::Vector(gradient_components)
     }
