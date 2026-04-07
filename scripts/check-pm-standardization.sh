@@ -18,11 +18,11 @@ echo "=== check-pm-standardization ==="
 # ── Preflight: required tools ────────────────────────────────────────
 assert "git is available" command -v git
 
-# ── Check 1: packageManager field in all package.json files ──────────
+# ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
-echo "Check 1: packageManager field in package.json files"
+echo "Check 1: packageManager field set to npm in package.json files"
 for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
-    assert "$pkg has packageManager field" grep -q '"packageManager"' "$ROOT/$pkg"
+    assert "$pkg has packageManager set to npm" grep -qE '"packageManager"\s*:\s*"npm@' "$ROOT/$pkg"
 done
 
 # ── Check 2: npm lockfiles NOT in .gitignore ────────────────────────
