@@ -11249,7 +11249,7 @@
         "description": "Track when poison recovery occurs during concurrent evaluation so callers can detect potentially corrupt results, rather than silently propagating values computed from partially-updated state.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs:\n\nProblem: When evaluate() recovers a poisoned values lock, the current_values map may contain partial state from the panicked task. The expression is evaluated against this corrupt input, and the result is written to both values and snapshot_values as normal. Additionally, values and snapshot_values locks are acquired in separate scopes — if one is poisoned and the other isn't, they can become inconsistent. All of this happens silently.\n\nSolution:\n1. Add `tainted: Arc<AtomicBool>` field to ConcurrentEvalAdapter (initialized to false)\n2. Set tainted to true whenever any poison recovery occurs (in the lock helper methods from the companion task)\n3. Add `tainted: bool` field to ConcurrentEditResult\n4. In build_result_shared() and into_result(), set result.tainted = self.tainted.load(Ordering::Relaxed)\n5. Callers (edit_param_concurrent) can log a warning or take corrective action when tainted=true\n\nThis addresses review suggestions about silent corruption propagation and invariant violations between lock acquisitions (reviewer_robustness).\n\nmemory_hints:\n  search: \"ConcurrentEvalAdapter tainted poison corruption\"\n  entities: [\"ConcurrentEvalAdapter\", \"ConcurrentEditResult\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -11271,7 +11271,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:09:01.976Z"
+        "updatedAt": "2026-04-07T16:09:19.794Z"
       },
       {
         "id": "544",
@@ -21000,7 +21000,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:09:01.976Z",
+      "lastModified": "2026-04-07T16:09:19.813Z",
       "taskCount": 1014,
       "completedCount": 720,
       "tags": [
