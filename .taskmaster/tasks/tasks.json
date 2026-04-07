@@ -20303,11 +20303,11 @@
         "description": "Some JSON-RPC implementations send `params: null` instead of `params: {}` for notifications with no meaningful payload (like `initialized`). The LSP spec defines `InitializedParams` as an empty interface `{}`, but `serde_json::from_value::<InitializedParams>(Value::Null)` returns `Err`, causing the bridge to reject a technically-valid notification.\n\nFix: Normalize `Value::Null` to `Value::Object(Default::default())` for the `initialized` arm (and any other notification arms with empty-param types) before deserialization. Add a test asserting that `json!(null)` is handled gracefully for `initialized`.\n\nExample guard:\n```rust\n\"initialized\" => {\n    let params = if params.is_null() { json!({}) } else { params };\n    let p: InitializedParams = serde_json::from_value(params)\n        .map_err(|e| format!(\"initialized params error: {e}\"))?;\n    server.initialized(p).await;\n    Ok(Value::Null)\n}\n```\n\nMemory hints: search \"initialized params strict deserialization\", search \"LSP malformed-params handling\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:07:07.132Z",
+        "updatedAt": "2026-04-07T16:31:52.367Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -20692,7 +20692,7 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs has an off-by-one in fn-body extraction that silently truncates by 1 byte (latent trap if guard pattern moves to function end). Two source-inspection tests redundantly read the same 800-line file from disk in parallel. Both use a hardcoded relative path `tests/build_logic_tests.rs` which breaks if cargo test is invoked from a non-default directory.\n\n## Off-by-one fix (lines ~721-724)\nThe `fn_section[1..].find(...)` returns an offset relative to the sub-slice but is then used as an index into fn_section, making fn_body 1 byte short. Change to:\n```rust\nlet fn_end = fn_section[1..].find(\"\\n#[test]\").map(|i| i + 1).unwrap_or(fn_section.len());\n```\n\n## Path robustness\nReplace the hardcoded \"tests/build_logic_tests.rs\" in both test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` to make the tests directory-independent.\n\n## Merge duplicate file reads\nMerge both source-inspection assertions into a single test function that reads the file once. They run concurrently today and read the growing 800+ line file twice.\n\n## Strengthen drop test\nIn test_readonly_guard_drop_logs_error, tighten the assertion from a bare contains(\"eprintln!\") to also require contains(\"if let Err\") (or the specific 'failed to restore permissions' message), so an unrelated debug eprintln does not satisfy the check.\n\nSource: review escalation esc-783-53 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20710,7 +20710,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:32:01.874Z"
+        "updatedAt": "2026-04-07T16:18:33.590Z"
       },
       {
         "id": "1000",
@@ -21087,11 +21087,10 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Add a doc-comment to `initialized_lsp()` noting: (a) `initialized` is technically a one-way LSP notification and `Ok(Value::Null)` is the expected sentinel, so the `.expect()` documents protocol contract rather than guarding against a server-level error; (b) tests exercising pre-init error paths (param deserialization) should use `InProcessLsp::new()` directly to avoid the two-round-trip overhead. (2) Add inline comments to `err.contains(\"didOpen params error\")` and `err.contains(\"unsupported LSP method:\")` assertions noting these strings are load-bearing and must be updated if bridge.rs changes the error format — or alternatively export them as constants from crates/reify-lsp/src/bridge.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-07T16:32:02.095Z"
+        "subtasks": []
       },
       {
         "id": "1021",
@@ -21099,19 +21098,10 @@
         "description": "The diff for task 999 merged test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error into test_source_self_inspection but left test_is_root_uses_libc_not_raw_ffi as a standalone — a half-applied merge with no principled justification.\n\nChoose ONE of two directions and apply consistently in tree-sitter-reify/tests/build_logic_tests.rs:\n\n**Option A (split — preferred if CI failure attribution and test isolation are priorities):**\n- Restore the original two separate tests with their original names (test_unix_permission_tests_have_root_guard, test_readonly_guard_drop_logs_error).\n- Apply the env!(\"CARGO_MANIFEST_DIR\") path fix to both.\n- Leave test_is_root_uses_libc_not_raw_ffi unchanged.\n\n**Option B (complete merge):**\n- Absorb test_is_root_uses_libc_not_raw_ffi into test_source_self_inspection as a third guarded section (with a `// --- libc invariant ---` comment), reusing the source binding already in scope.\n- Remove the standalone test.\n- Update the comment to accurately reflect that all three invariant checks share one file read.\n- Rename the merged function to enumerate invariants, e.g. test_source_invariants_root_guard_drop_logging_libc_ffi.\n\nAfter choosing, also update the function name (if option B) to enumerate the invariants it covers.\n\nmemory_hints: search \"test naming convention source-inspection\" in reify project; get_entity for \"build_logic_tests.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": [],
-        "updatedAt": "2026-04-07T16:31:52.393Z",
-        "metadata": {
-          "memory_hints": {
-            "entities": [],
-            "queries": [
-              "resolution for: Resolve test-merge structural inconsistency in build_logic_tests.rs"
-            ]
-          }
-        }
+        "subtasks": []
       },
       {
         "id": "1022",
@@ -21119,11 +21109,10 @@
         "description": "Whether option A or B is chosen for the test-merge restructuring, the path expression `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` appears at least twice in tree-sitter-reify/tests/build_logic_tests.rs. Extract to a module-level constant:\n\n```rust\nconst THIS_FILE: &str = concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\");\n```\n\nReplace all occurrences. If the complete merge (option B) is taken in the restructuring task, this literal will exist only once after the merge and the const is optional but still cleaner.\n\nThis task depends on the test-merge restructuring task being completed first so the final structure is known.\n\nmemory_hints: search \"build_logic_tests path literal\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-07T16:32:02.474Z"
+        "subtasks": []
       },
       {
         "id": "1023",
@@ -21139,7 +21128,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:32:02.474Z",
+      "lastModified": "2026-04-07T16:31:52.367Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
