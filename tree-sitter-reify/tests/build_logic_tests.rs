@@ -51,6 +51,10 @@ fn test_content_hash_changes_on_modification() {
 /// The expected output files that tree-sitter generate produces.
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
+/// Absolute path to this test file, resolved at compile time via CARGO_MANIFEST_DIR.
+/// Used by source-level regression tests that read this file's own contents.
+const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs");
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
@@ -1043,41 +1047,36 @@ fn test_find_cfg_unix_test_fns_discovers_dynamically() {
 #[test]
 fn test_self_read_paths_use_manifest_dir() {
     // Meta-test / regression guard: the two source-self-inspection tests that read
-    // this file must use `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs")`
-    // rather than the bare relative path `"tests/build_logic_tests.rs"`.
+    // this file must use the `THIS_FILE` constant rather than the bare relative path
+    // `"tests/build_logic_tests.rs"`.
     // A bare relative path is fragile — it depends on the working directory from which
     // `cargo test` is invoked, causing failures when tests are run from outside the
     // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
     //
-    // This meta-test itself demonstrates the correct idiom by using CARGO_MANIFEST_DIR
-    // to read the source file.
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/build_logic_tests.rs"
-    ))
-    .expect("should be able to read this test file via CARGO_MANIFEST_DIR");
+    // THIS_FILE resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
+    // so it is safe regardless of invocation directory.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
 
-    // Check test_unix_permission_tests_have_root_guard uses CARGO_MANIFEST_DIR.
+    // Check test_unix_permission_tests_have_root_guard uses THIS_FILE.
     let root_guard_body =
         extract_test_fn_body(&source, "fn test_unix_permission_tests_have_root_guard()")
             .expect("source should contain test_unix_permission_tests_have_root_guard");
     assert!(
-        root_guard_body.contains("CARGO_MANIFEST_DIR"),
+        root_guard_body.contains("THIS_FILE"),
         "test_unix_permission_tests_have_root_guard must read the test file via \
-         concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\") \
-         rather than a bare relative path. Function body:\n{}",
+         THIS_FILE rather than a bare relative path. Function body:\n{}",
         root_guard_body
     );
 
-    // Check test_readonly_guard_drop_logs_error uses CARGO_MANIFEST_DIR.
+    // Check test_readonly_guard_drop_logs_error uses THIS_FILE.
     let drop_logs_body =
         extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
             .expect("source should contain test_readonly_guard_drop_logs_error");
     assert!(
-        drop_logs_body.contains("CARGO_MANIFEST_DIR"),
+        drop_logs_body.contains("THIS_FILE"),
         "test_readonly_guard_drop_logs_error must read the test file via \
-         concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\") \
-         rather than a bare relative path. Function body:\n{}",
+         THIS_FILE rather than a bare relative path. Function body:\n{}",
         drop_logs_body
     );
 }
