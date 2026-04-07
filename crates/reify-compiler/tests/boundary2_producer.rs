@@ -1998,7 +1998,10 @@ fn compile_auto_free_param() {
         ValueCellKind::Auto { free: true },
         "auto(free) param should compile to Auto {{ free: true }}"
     );
-    assert!(x.kind.is_auto_free(), "auto(free) param should be is_auto_free()");
+    assert!(
+        x.kind.is_auto_free(),
+        "auto(free) param should be is_auto_free()"
+    );
     assert!(
         x.default_expr.is_none(),
         "auto(free) param should have no default_expr"
@@ -2041,5 +2044,8 @@ fn compile_bare_auto_remains_strict() {
         ValueCellKind::Auto { free: false },
         "bare auto should produce Auto {{ free: false }}"
     );
-    assert!(!x.kind.is_auto_free(), "bare auto should not be is_auto_free()");
+    assert!(
+        !x.kind.is_auto_free(),
+        "bare auto should not be is_auto_free()"
+    );
 }
