@@ -25,9 +25,13 @@ done
 # ── Check 2: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 2: npm lockfiles not gitignored"
-for lockfile in gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json; do
-    assert "$lockfile is not gitignored" bash -c "! (cd '$ROOT' && git check-ignore -q '$lockfile' 2>/dev/null)"
-done
+if ! command -v git >/dev/null 2>&1 || ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo 'WARNING: git not available or not in a git repo, skipping gitignore checks' >&2
+else
+    for lockfile in gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json; do
+        assert "$lockfile is not gitignored" bash -c "! (cd '$ROOT' && git check-ignore -q '$lockfile' 2>/dev/null)"
+    done
+fi
 
 # ── Check 3: pnpm-lock.yaml IS in .gitignore ────────────────────────
 echo ""
