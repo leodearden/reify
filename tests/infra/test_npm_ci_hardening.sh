@@ -66,4 +66,11 @@ echo "--- Test 4: script has 'command -v git' preflight ---"
 assert "script contains 'command -v git' preflight check" \
     grep -q 'command -v git' "$SCRIPT"
 
+# -- Test 5: Check 1 matches npm@ prefix, not just field presence -------------
+echo ""
+echo "--- Test 5: Check 1 grep matches npm@ prefix ---"
+
+assert "Check 1 grep pattern includes 'npm@' prefix match" \
+    bash -c "grep -qE 'grep.*npm@' '$SCRIPT'"
+
 test_summary
