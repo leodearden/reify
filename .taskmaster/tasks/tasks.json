@@ -20951,15 +20951,16 @@
         "description": "Address the silent-failure path where a field with a misconfigured codomain_type declaration silently produces dimensioned gradient values from a dimensionless lambda:\n1. At minimum: update the doc comment in gradient_codomain_type_vs_runtime_mismatch (crates/reify-expr/tests/gradient_tests.rs) to explicitly state this is an intentional design choice ('trust the declaration'), not an oversight, so future reviewers don't silently 'fix' it.\n2. Consider: add a validation step or debug warning in compute_numerical_gradient_at_point (crates/reify-expr/src/lib.rs near the result_dim extraction) that checks whether the runtime type of f_plus/f_minus is consistent with the declared codomain_type, returning Value::Undef or emitting a warning on mismatch.\n\nMemory hints: search for \"codomain_type trust the declaration\" and \"compute_numerical_gradient_at_point result_dim\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T15:37:58.052Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:37:57.785Z",
+      "lastModified": "2026-04-07T15:37:58.052Z",
       "taskCount": 1014,
       "completedCount": 718,
       "tags": [
