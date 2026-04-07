@@ -14,59 +14,32 @@ use reify_types::{
     SolveResult, Type, Value, ValueMap,
 };
 
-/// Build a tracing subscriber that counts DEBUG and WARN level events.
-/// Returns the subscriber and clones of both counters for assertions.
-fn event_counting_subscriber() -> (impl tracing::Subscriber, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-    let debug_count = Arc::new(AtomicUsize::new(0));
-    let warn_count = Arc::new(AtomicUsize::new(0));
-    let dc = Arc::clone(&debug_count);
-    let wc = Arc::clone(&warn_count);
+/// Build a tracing subscriber that counts DEBUG and WARN level events from
+/// `reify_constraints` targets.
+///
+/// Returns `(subscriber, debug_counter, warn_counter)`.  The counters are
+/// shared via [`Arc`] so callers can read them after the subscriber has been
+/// removed.
+///
+/// This is a thin wrapper around [`CountingSubscriberBuilder`] from
+/// `reify_test_support`.  It replaces the former hand-rolled `EventCounter`
+/// subscriber that always returned `Id::from_u64(1)` from `new_span` (a
+/// correctness bug when multiple spans are created concurrently).
+fn event_counting_subscriber() -> (
+    impl tracing::Subscriber,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let (subscriber, counters) = CountingSubscriberBuilder::new()
+        .target_prefix("reify_constraints")
+        .count_level(tracing::Level::DEBUG)
+        .count_level(tracing::Level::WARN)
+        .build();
 
-    struct EventCounter {
-        debug_count: Arc<AtomicUsize>,
-        warn_count: Arc<AtomicUsize>,
-    }
+    let debug_count = Arc::clone(&counters[&tracing::Level::DEBUG]);
+    let warn_count = Arc::clone(&counters[&tracing::Level::WARN]);
 
-    impl tracing::Subscriber for EventCounter {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::DEBUG
-        }
-
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-        fn event(&self, event: &tracing::Event<'_>) {
-            // Only count events from reify_constraints (and submodules).
-            // This filters out noise from argmin, nalgebra, and other deps.
-            if !event.metadata().target().starts_with("reify_constraints") {
-                return;
-            }
-            let level = event.metadata().level();
-            if level == &tracing::Level::DEBUG {
-                self.debug_count.fetch_add(1, Ordering::Relaxed);
-            } else if level == &tracing::Level::WARN {
-                self.warn_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        fn enter(&self, _span: &tracing::span::Id) {}
-
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
-    (
-        EventCounter {
-            debug_count: dc,
-            warn_count: wc,
-        },
-        debug_count,
-        warn_count,
-    )
+    (subscriber, debug_count, warn_count)
 }
 
 /// Trigger MaxItersReached + has_objective via a 20-param problem starting
@@ -252,13 +225,11 @@ fn no_best_param_returns_no_progress_with_reason() {
     }
 }
 
-/// Verify that the EventCounter subscriber does NOT count debug/warn events
-/// from foreign (non-reify_constraints) targets. This guards against flaky
-/// count assertions when argmin or other transitive dependencies emit their
-/// own tracing events during a solve.
-///
-/// This test FAILS with the current unfiltered EventCounter because it
-/// increments counters for all events regardless of target.
+/// Regression check: verify that `event_counting_subscriber()` (backed by
+/// `CountingSubscriberBuilder`) does NOT count debug/warn events from foreign
+/// (non-reify_constraints) targets.  This guards against flaky count
+/// assertions when argmin or other transitive dependencies emit their own
+/// tracing events during a solve.
 #[test]
 fn event_counter_ignores_foreign_targets() {
     let (subscriber, debug_count, warn_count) = event_counting_subscriber();
