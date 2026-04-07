@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks } from './test-utils';
+import { flushMacrotasks, withSuppressedRejections } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -299,5 +299,57 @@ describe('line-bounds guard', () => {
     // Stale LSP line (11 > 5) should be rejected before reaching doc.line()
     expect(mockView.dispatch).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('.catch() error handler', () => {
+  it('logs a warning when doc.line() throws RangeError (no unhandled rejection)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Same-file response so the code reaches doc.line()
+    const sameFileLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: 0 }, end: { line: 5, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const rangeError = new RangeError('line out of range');
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // Simulate doc.line() throwing a RangeError
+          line: () => { throw rangeError; },
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withSuppressedRejections(async () => {
+        mousedownHandler(mockEvent, mockView);
+        await flushMacrotasks();
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    // .catch() should log a warning with the expected prefix and the error
+    expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
+    // dispatch should not have been called (line() threw before it could be called)
+    expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 });
