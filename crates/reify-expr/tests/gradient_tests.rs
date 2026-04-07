@@ -2597,13 +2597,18 @@ fn gradient_composed_field_returns_field() {
 
 // ── Steps 3-5: 1-param lambda helper and non-trivial gradient tests ───
 
-/// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
+/// Build a gradient field for `|p: Point3<Real>| dot(p, [1,2,3])`.
 ///
-/// dot(p, [1,2,3]) = x + 2y + 3z, so its gradient is the constant vector
-/// (1.0, 2.0, 3.0). Exercises single_point_param=true with a non-trivial
-/// (and verifiably-correct) gradient.
-#[test]
-fn gradient_3d_field_single_point_param() {
+/// Returns `(grad_field, domain_type, grad_codomain_type)` where:
+/// - `grad_field` is the evaluated `Value::Field { source: Gradient, .. }`
+/// - `domain_type` is `Type::point3(Type::Real)`
+/// - `grad_codomain_type` is `Type::vec3(Type::Real)`
+///
+/// Used by three tests that share this setup:
+/// `gradient_3d_field_single_point_param`,
+/// `gradient_sample_with_nan_point_returns_undef`,
+/// `gradient_sample_with_inf_point_returns_undef`.
+fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
     let p_id = ValueCellId::new("$lambda0.S", "p");
 
     // Lambda: |p| dot(p, Point3(1.0, 2.0, 3.0))
@@ -2630,10 +2635,9 @@ fn gradient_3d_field_single_point_param() {
 
     let field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
+        codomain: Box::new(codomain_type),
     };
 
-    // Call gradient(field)
     let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
@@ -2648,16 +2652,29 @@ fn gradient_3d_field_single_point_param() {
 
     assert!(
         matches!(&grad_result, Value::Field { .. }),
-        "gradient should return a Field, got {:?}",
+        "make_3d_dot_product_gradient_field: gradient should return a Field, got {:?}",
         grad_result
     );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
+/// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
+///
+/// dot(p, [1,2,3]) = x + 2y + 3z, so its gradient is the constant vector
+/// (1.0, 2.0, 3.0). Exercises single_point_param=true with a non-trivial
+/// (and verifiably-correct) gradient.
+#[test]
+fn gradient_3d_field_single_point_param() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_dot_product_gradient_field();
+    let values = ValueMap::new();
 
     // Sample at Point3(5.0, 7.0, 11.0) — linear field so gradient is constant
     let point = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(grad_codomain_type),
     };
 
     let sample_expr = make_function_call(
@@ -2701,51 +2718,8 @@ fn gradient_3d_field_single_point_param() {
 /// compute_numerical_gradient_at_point must catch NaN before perturbing.
 #[test]
 fn gradient_sample_with_nan_point_returns_undef() {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type.clone())],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
-    );
-
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_dot_product_gradient_field();
     let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "gradient should return a Field, got {:?}",
-        grad_result
-    );
 
     // Sample at Point3(1.0, NaN, 3.0)
     let nan_point = Value::Point(vec![
@@ -2756,7 +2730,7 @@ fn gradient_sample_with_nan_point_returns_undef() {
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(grad_codomain_type),
     };
 
     let sample_expr = make_function_call(
@@ -2785,51 +2759,8 @@ fn gradient_sample_with_nan_point_returns_undef() {
 /// must catch Inf before perturbing (existing test only covers 1D Real).
 #[test]
 fn gradient_sample_with_inf_point_returns_undef() {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type.clone())],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
-        },
-    );
-
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_dot_product_gradient_field();
     let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "gradient should return a Field, got {:?}",
-        grad_result
-    );
 
     // Sample at Point3(1.0, Inf, 3.0)
     let inf_point = Value::Point(vec![
@@ -2840,7 +2771,7 @@ fn gradient_sample_with_inf_point_returns_undef() {
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(grad_codomain_type),
     };
 
     let sample_expr = make_function_call(
