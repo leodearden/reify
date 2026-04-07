@@ -34,6 +34,19 @@ portable_sha256() {
 #
 # Returns the command's exit code, or 124 if the command was killed
 # due to exceeding the time limit (matches GNU timeout convention).
+#
+# Sets the global _PORTABLE_TIMEOUT_TIMED_OUT variable:
+#   true  — the command was killed by the timeout mechanism
+#   false — the command exited on its own (any exit code, including 124)
+#
+# Ambiguity note (GNU timeout / gtimeout paths):
+#   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
+#   to true whenever the exit code is 124.  However, exit 124 can also be
+#   returned by the wrapped command itself (e.g. `bash -c 'exit 124'`).
+#   There is no way to distinguish these two cases on the GNU path.
+#   _PORTABLE_TIMEOUT_TIMED_OUT is only fully reliable on the POSIX
+#   flag-file fallback path, where the flag is created by the timer process
+#   and the command's exit code is additionally required to be 143 (SIGTERM).
 portable_timeout() {
     local seconds="$1"
     shift
@@ -42,11 +55,14 @@ portable_timeout() {
     local cmd_exit=0
     if command -v timeout >/dev/null 2>&1; then
         timeout "$seconds" "$@" || cmd_exit=$?
+        # Ambiguity: exit 124 may mean the timeout fired OR the command
+        # naturally exited 124.  See doc comment above for details.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@" || cmd_exit=$?
+        # Same exit-124 ambiguity as the GNU timeout branch above.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
