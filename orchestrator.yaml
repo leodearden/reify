@@ -17,7 +17,7 @@ type_check_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && carg
 
 # Fused memory HTTP server (systemd service on port 8002)
 fused_memory:
-  url: "http://localhost:8002"
+  url: "http://127.0.0.1:8002"
   project_id: "reify"
   server_command: []
 
