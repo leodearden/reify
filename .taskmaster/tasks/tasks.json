@@ -2601,7 +2601,7 @@
         "testStrategy": "Parser test: auto vs auto(free). Compiler test: flag propagated to ValueCellDecl.",
         "priority": "high",
         "dependencies": [],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -2611,7 +2611,7 @@
           "milestone": "M8"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:51:25.311Z"
+        "updatedAt": "2026-04-07T16:04:41.158Z"
       },
       {
         "id": "160",
@@ -2660,7 +2660,7 @@
         "dependencies": [
           "160"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -2669,7 +2669,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:51:25.145Z"
+        "updatedAt": "2026-04-07T16:04:41.224Z"
       },
       {
         "id": "162",
@@ -20999,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:03:57.659Z",
+      "lastModified": "2026-04-07T16:04:41.224Z",
       "taskCount": 1014,
       "completedCount": 721,
       "tags": [
