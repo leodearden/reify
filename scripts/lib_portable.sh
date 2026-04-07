@@ -75,10 +75,18 @@ portable_timeout() {
         kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
 
-        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ]; then
-            # Timer fired and killed the process — genuine timeout.
+        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+            # Timer fired and killed the process — genuine timeout (timer touched
+            # the flag, then killed the process with SIGTERM → exit 143).
+            # Requiring exit 143 here closes the false-positive race: if the
+            # command exits naturally while the timer is between touch and kill,
+            # the flag exists but cmd_exit ≠ 143 so we do not misreport a timeout.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
+            rm -f "$timeout_flag"
+        elif [ -n "$timeout_flag" ]; then
+            # Flag path: timer may have touched the flag but the command exited
+            # naturally (not SIGTERM).  Clean up the stale flag file.
             rm -f "$timeout_flag"
         elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
             # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
