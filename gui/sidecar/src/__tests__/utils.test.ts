@@ -43,9 +43,9 @@ describe('errorMessage', () => {
     expect(errorMessage({ message: '' })).toBe('Unknown error');
   });
 
-  it('falls through to String() for plain object with non-string .message', () => {
-    expect(errorMessage({ message: null })).toBe('[object Object]');
-    expect(errorMessage({ message: 42 })).toBe('[object Object]');
+  it('returns Unknown error for plain object with non-string .message', () => {
+    expect(errorMessage({ message: null })).toBe('Unknown error');
+    expect(errorMessage({ message: 42 })).toBe('Unknown error');
   });
 
   it('returns "Unknown error" for plain object with whitespace-only .message', () => {
