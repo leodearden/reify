@@ -21538,15 +21538,16 @@
         "description": "Add two negative tests to crates/reify-eval/tests/e2e_meta.rs:\n- `e2e_meta_access_missing_key`: source references a key not present in the meta block (e.g. `let x : String = meta.nonexistent`); assert at least one Severity::Error diagnostic is produced by compile or eval (suggestion 8).\n- `e2e_meta_access_no_meta_block`: source has no `meta { }` block at all but the body contains `let x : String = meta.description`; assert a compile-time or eval-time error diagnostic is produced rather than a panic or silent default (suggestion 9). Task 212 description states this is a compile error caught at task 68, so a regression test is warranted.\n\nmemory_hints: search for \"meta access compile error task 68\" and \"negative test patterns\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:28:00.202Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:27:59.380Z",
+      "lastModified": "2026-04-07T19:28:00.206Z",
       "taskCount": 1045,
       "completedCount": 731,
       "tags": [
