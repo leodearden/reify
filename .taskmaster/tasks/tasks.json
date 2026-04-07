@@ -21517,11 +21517,16 @@
         "description": "Refactor crates/reify-eval/tests/e2e_meta.rs to match project conventions:\n- Extract a module-local `parse_and_compile(source: &str) -> reify_compiler::CompiledModule` helper (mirroring m5_integration.rs:14-33) and a `make_engine()` helper, replacing the verbatim boilerplate in all three test functions (suggestions 0, 4, 5).\n- Inside the helper, replace the `collect::<Vec<_>>()` + `assert!(is_empty)` pattern with a form that only allocates on failure (suggestion 3).\n- Replace the `// step-13:`, `// step-15:`, `// step-17:` section headers with plain descriptive banners like `// --- let binding uses meta.key ---` (suggestion 1).\n\nmemory_hints: search for \"e2e test helper pattern parse_and_compile\" and \"test boilerplate conventions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:28:00.646Z"
+        "updatedAt": "2026-04-07T19:30:46.292Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": "1044",
@@ -21597,7 +21602,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:30:41.503Z",
+      "lastModified": "2026-04-07T19:30:46.292Z",
       "taskCount": 1048,
       "completedCount": 734,
       "tags": [
