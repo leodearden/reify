@@ -21221,7 +21221,13 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:08:05.073Z"
+        "updatedAt": "2026-04-07T19:08:05.073Z",
+        "metadata": {
+          "modules": [
+            "tests/infra",
+            "tests/sync_comments_test.sh"
+          ]
+        }
       },
       {
         "id": 1026,
