@@ -20873,11 +20873,11 @@
         "description": "Four related cleanup passes on crates/reify-expr/src/lib.rs gradient computation:\n\n1. Call site (lines ~135-148): capture the outer gradient field's `codomain_type` (rename `..` to `codomain_type: grad_codomain_type`) and pass it to `compute_numerical_gradient_at_point` instead of `inner_codomain_type`. Simplify the function body: remove the domain_dim division since it was already performed by `compute_gradient`.\n2. Line ~842: before `gradient_components.into_iter().next().unwrap_or(Value::Undef)`, add `debug_assert!(!gradient_components.is_empty(), \"gradient loop must push exactly one component for n==1\")` to document the loop invariant.\n3. Lines ~791-806: extract a `populate()` closure that clears work_args and fills it (branching on single_point_param), then call it in place of both duplicated blocks.\n4. After the first iteration, add `#[cfg(debug_assertions)] { let runtime_dim = f_plus.dimension(); assert_eq!(runtime_dim, result_dim, \"codomain_type does not match runtime return dimension\"); }` to catch callers passing a wrong codomain_type.\n\nMemory hints: search for \"gradient codomain_type\" and \"unwrap_or Undef gradient\". Source: task 992 review suggestions [0], [1], [5], [10].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:13:42.134Z",
+        "updatedAt": "2026-04-07T16:18:06.680Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:06.379Z",
+      "lastModified": "2026-04-07T16:18:06.680Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
