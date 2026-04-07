@@ -810,9 +810,10 @@ impl ConstraintSolver for DimensionalSolver {
                 let unique = if has_strict {
                     verify_uniqueness(problem, &values)
                 } else {
-                    // All params are free — uniqueness not checked (default true,
-                    // will be changed to false in step-8 when free fast-path is added)
-                    true
+                    // All params are free — skip uniqueness verification entirely.
+                    // Free auto params accept any feasible solution, so we report
+                    // unique=false to let the eval engine emit appropriate warnings.
+                    false
                 };
                 SolveResult::Solved { values, unique }
             }
