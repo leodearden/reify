@@ -19246,11 +19246,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:07:07.401Z",
+        "updatedAt": "2026-04-07T16:18:05.228Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -19353,11 +19353,11 @@
         "description": "In tests/sync_comments_test.sh, add checks that fn sanitize_value (or the referenced function name) actually exists in both the EXPR and STDLIB files, so stale SYNC comments are caught when functions are renamed.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:08:15.378Z",
+        "updatedAt": "2026-04-07T16:18:05.284Z",
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:05.177Z",
+      "lastModified": "2026-04-07T16:18:05.284Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
