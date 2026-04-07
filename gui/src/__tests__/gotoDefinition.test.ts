@@ -390,6 +390,59 @@ describe('line-bounds guard', () => {
     expect(mockView.dispatch).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
   });
+
+  it('does not dispatch when LSP line is negative (malformed response)', async () => {
+    const currentUri = 'file:///current.ri';
+    // LSP reports line -1 (malformed), doc has 100 lines
+    // Without a negative check: -1 + 1 = 0, which is never > 100, so the guard passes
+    // doc.line(0) would then throw a RangeError (CodeMirror is 1-indexed)
+    const malformedLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: -1, character: 0 }, end: { line: -1, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(malformedLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    // doc.line() throws to prove the guard fires BEFORE it is reached.
+    // If the guard fires, doc.line() is never called and no console.warn is emitted.
+    // If the guard is absent, doc.line() throws, .catch() logs a warning — a false pass.
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: () => { throw new RangeError('line out of range'); },
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // Negative line should be rejected by the guard; dispatch must never be called
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+      // The guard fires before doc.line(), so no warning should be logged
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe('.catch() error handler', () => {
