@@ -3730,16 +3730,9 @@
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "UnitRegistry",
-              "unit declarations",
-              "DimensionVector",
-              "CompiledUnit"
-            ],
+            "entities": [],
             "queries": [
-              "unit declarations registry compiler pre-pass conversion factor",
-              "task 208 unit registry branch status",
-              "custom unit declaration user-defined cross-module import"
+              "resolution for: Unit declarations: user-defined units"
             ]
           }
         },
@@ -18831,7 +18824,13 @@
           "modules": [
             "crates/reify-constraints",
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix Id::from_u64(1) bug in solver_tracing.rs and consider shared utility extension"
+            ]
+          }
         }
       },
       {
@@ -18915,11 +18914,11 @@
         "description": "In `crates/reify-types/src/value.rs`:\n1. (lines ~972-975) Qualify the NaN-payload claim in the `impl PartialEq for Value` doc: note that `content_hash()` normalises all NaN payloads to a canonical bit pattern, so NaN-payload differences affect only `PartialEq`, not content-addressing. Change 'must hash and compare differently' to something like 'NaN values with the same bit pattern compare equal; note that `content_hash()` normalises all NaN payloads so NaN-payload differences affect only `PartialEq`, not content-addressing.'\n2. (lines ~970-975) Add a caveat that `Point`, `Vector`, `Frame`, `Transform`, `Plane`, `Axis`, `BoundingBox`, `Matrix`, `Tensor` delegate equality to their inner type, so the bit-identity and Eq/Ord contract claims apply only to `Real`, `Scalar`, `Complex`, and `Orientation`.\n3. (lines ~972-980 and ~1174-1176) De-duplicate the Eq/Ord contract text: state the full contract once in the `PartialEq` doc and replace the `Ord` doc's restatement with a cross-reference like `/// See `impl PartialEq for Value` for the shared Eq/Ord contract.`\n\nMemory hints: search \"Value PartialEq Ord to_bits content_hash NaN canonicalization\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:36.648Z",
+        "updatedAt": "2026-04-07T14:01:43.355Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19312,7 +19311,13 @@
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen sync_comments_test.sh to verify referenced functions exist"
+            ]
+          }
         }
       },
       {
@@ -20610,7 +20615,13 @@
           ],
           "modules": [
             "tree-sitter-reify/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: build_logic_tests.rs meta-test cleanup: off-by-one + duplication + path"
+            ]
+          }
         },
         "updatedAt": "2026-04-07T14:01:40.257Z"
       },
@@ -20727,7 +20738,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:01:41.281Z",
+      "lastModified": "2026-04-07T14:01:43.355Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
