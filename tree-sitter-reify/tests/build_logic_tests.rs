@@ -1065,4 +1065,16 @@ fn test_self_read_paths_use_manifest_dir() {
          rather than a bare relative path. Function body:\n{}",
         root_guard_body
     );
+
+    // Check test_readonly_guard_drop_logs_error uses CARGO_MANIFEST_DIR.
+    let drop_logs_body =
+        extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
+            .expect("source should contain test_readonly_guard_drop_logs_error");
+    assert!(
+        drop_logs_body.contains("CARGO_MANIFEST_DIR"),
+        "test_readonly_guard_drop_logs_error must read the test file via \
+         concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\") \
+         rather than a bare relative path. Function body:\n{}",
+        drop_logs_body
+    );
 }
