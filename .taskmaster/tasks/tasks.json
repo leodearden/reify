@@ -19975,11 +19975,11 @@
         "description": "Reviewer feedback (robustness): Two pre-existing robustness gaps in gui/src/editor/gotoDefinition.ts:\n1. The .then() callback has no .catch() — if view.state.doc.line() receives an out-of-bounds line number from a stale LSP response, it throws a RangeError that becomes an unhandled promise rejection. Add .catch(err => console.warn(\"gotoDefinition: failed to apply result\", err)).\n2. After the isConnected guard (line 105), add a bounds check: if (location.range.start.line + 1 > view.state.doc.lines) return; to handle stale document state where lines were deleted between mousedown and async response.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:12.727Z",
+        "updatedAt": "2026-04-07T14:01:21.279Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20235,7 +20235,13 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Normalize Value::Null params for empty-param LSP notifications in bridge.rs"
+            ]
+          }
         }
       },
       {
@@ -20714,7 +20720,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:01:20.289Z",
+      "lastModified": "2026-04-07T14:01:21.279Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
