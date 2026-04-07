@@ -18485,11 +18485,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs:\n1. Remove add_auto_coord_returns_missing_non_auto_variant (lines ~1162-1179) entirely — it is a strict subset of add_auto_coord_errors_on_missing_non_auto_value.\n2. Strip the Display sub-assertions from add_auto_coord_errors_on_missing_non_auto_value (lines ~1144-1152) — builder_error_display_contains_cell_id already covers the Display contract.\n3. Refactor the surviving match arm in add_auto_coord_errors_on_missing_non_auto_value to avoid the ref id + unwrap_err() NLL dependency: destructure to take ownership of the inner id, then assert equality directly, removing the need to call unwrap_err() on an already-matched result.\n\nmemory_hints: search(\"BuilderError test consolidation solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:06.604Z",
+        "updatedAt": "2026-04-07T16:25:54.397Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -18519,11 +18519,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs, update the doc comment on the builder_error_display_contains_cell_id test (lines ~1100-1103) and/or the BuilderError enum (lines ~413-416) to remove references to anyhow and thiserror, which are not dependencies of reify-constraints. Replace with language that references the std::error::Error propagation contract (e.g. 'implements std::error::Error so it can be propagated with ? or wrapped by any conforming error-aggregation library').\n\nmemory_hints: search(\"BuilderError doc comment solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:55.034Z",
+        "updatedAt": "2026-04-07T16:25:54.468Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -18853,11 +18853,11 @@
         "description": "In crates/reify-constraints/tests/solver_tracing.rs, the EventCounter::new_span at line 39-41 still uses Id::from_u64(1) for every span — the exact bug task 851 fixed elsewhere. At minimum, replace the static ID with an AtomicU64 counter (same pattern as WarnCountingSubscriber). Optionally extend crates/reify-test-support/src/tracing_support.rs with a builder API (e.g. CountingSubscriberBuilder) accepting a level predicate and optional target prefix, so solver_tracing.rs can replace its EventCounter entirely with the shared utility.\n\nmemory_hints: search(\"task 851 Id::from_u64 span ID fix\", project_id=\"reify\"), search(\"warn_counting_subscriber shared test utility\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:11:15.879Z",
+        "updatedAt": "2026-04-07T16:25:54.523Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints",
@@ -19252,11 +19252,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:24:59.193Z",
+        "updatedAt": "2026-04-07T16:25:54.570Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -19275,11 +19275,11 @@
         "description": "In gui/src-tauri/src/tests/lsp_bridge_tests.rs: (1) Rewrite lsp_request_impl_accepts_valid_json_null_literal to use an unconditional assertion (currently vacuously passes on Ok path). (2) Add test cases for empty string and partial JSON to confirm invalid JSON params error.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:51.890Z",
+        "updatedAt": "2026-04-07T16:25:54.614Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -19558,11 +19558,11 @@
         "description": "In gui/src-tauri/src/tests/mcp_context_tests.rs, update stale doc-comment on get_diagnostics test (references removed mapping closure). In gui/src-tauri/src/tests/mod.rs, add assert_clone_debug::<DiagnosticInfo>() to public_api_types_are_accessible.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:07:04.647Z",
+        "updatedAt": "2026-04-07T16:25:54.673Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -20856,11 +20856,11 @@
         "description": "Three related implementation fixes in crates/reify-expr/src/lib.rs around the gradient hot loop:\n\n1. Eliminate the redundant `coords` Vec (line ~778): read `coord_i = work_coords[i]` before perturbation instead of maintaining a separate clone. Saves one O(n) allocation.\n2. Add `point_scratch: Vec<Value>` buffer (lines ~793, 803): reuse it across axis iterations instead of allocating a fresh inner Vec inside each `Value::Point(...)` call, reducing the single_point_param path from O(n²) to O(1) inner-Vec allocations.\n3. Replace arithmetic restore `work_coords[i] += h` (line ~810) with `work_coords[i] = coord_i` — eliminates ~4 ULP round-trip accumulation that contaminates subsequent axis iterations in the single_point_param path.\n\nMemory hints: search for \"compute_numerical_gradient_at_point\" and \"gradient hot loop allocation\" for prior context. Source: task 992 review suggestions [3], [2], [11].",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:13:41.586Z",
+        "updatedAt": "2026-04-07T16:25:54.729Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -21050,7 +21050,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:25:54.343Z",
+      "lastModified": "2026-04-07T16:25:54.729Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
