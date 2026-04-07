@@ -135,6 +135,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
+                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
@@ -142,6 +143,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                inner_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -685,6 +687,7 @@ fn compute_numerical_gradient_at_point(
     lambda: &Value,
     point: &Value,
     domain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     // Decompose point into f64 coordinates.
@@ -745,6 +748,17 @@ fn compute_numerical_gradient_at_point(
             );
         }
     }
+
+    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
+    // The gradient is df/dx, so its dimension is [codomain] / [domain].
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    };
+    let grad_dim = match domain_dim {
+        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
+        _ => result_dim,
+    };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
     // so constructing it once per axis would be redundant.
@@ -815,13 +829,6 @@ fn compute_numerical_gradient_at_point(
             return Value::Undef;
         }
 
-        // Compute gradient component dimension: result_dim / domain_dim.
-        // The gradient is df/dx, so its dimension is [codomain] / [domain].
-        let result_dim = f_plus.dimension();
-        let grad_dim = match domain_dim {
-            Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-            _ => result_dim,
-        };
         if grad_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
