@@ -20909,6 +20909,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1011,
+        "title": "Extract assert_vec3_approx test helper",
+        "description": "In crates/reify-expr/tests/gradient_tests.rs, extract a helper fn assert_vec3_approx(result: &Value, expected: [f64; 3], tol: f64, context: &str) that encapsulates the ~15-line match-on-Value::Vector block. Replace the verbatim duplicates in gradient_3d_field_single_point_param (tol=1e-3) and gradient_decomposed_n3_dimensionless (tol=1e-4) with single calls to the helper.\n\nMemory hints: search for \"gradient test helpers\" and \"assert_vec3_approx\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20921,7 +20932,7 @@
       ],
       "created": "2026-04-07T15:34:57.871Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T15:37:19.236Z"
+      "updated": "2026-04-07T15:37:23.383Z"
     }
   }
 }
