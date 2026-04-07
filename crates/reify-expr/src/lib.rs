@@ -3677,6 +3677,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn neg_complex_finite_dimensionless_correct() {
+        // Complex{re: 2.0, im: -3.0, DIMENSIONLESS} via UnOp::Neg → Complex{re: -2.0, im: 3.0, DIMENSIONLESS}
+        let complex_val = Value::Complex {
+            re: 2.0,
+            im: -3.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let operand = lit(complex_val, Type::complex(Type::Real));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
+                assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS, "dimension should be DIMENSIONLESS");
+            }
+            other => panic!("expected Complex, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn neg_complex_finite_dimensioned_correct() {
+        // Complex{re: 2.0, im: -3.0, LENGTH} via UnOp::Neg → Complex{re: -2.0, im: 3.0, LENGTH}
+        let complex_val = Value::Complex {
+            re: 2.0,
+            im: -3.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let operand = lit(complex_val, Type::complex(Type::length()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::length()));
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
+                assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::LENGTH, "dimension should be LENGTH");
+            }
+            other => panic!("expected Complex, got {:?}", other),
+        }
+    }
+
     // ── method: re ────────────────────────────────────────────────────────────
 
     #[test]
