@@ -811,8 +811,11 @@ fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
     // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/build_logic_tests.rs"
+    ))
+    .expect("should be able to read this test file");
 
     // Extract the Drop impl for ReadonlyGuard
     let drop_start = source
