@@ -21059,11 +21059,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Rename `valid_notification_returns_ok_null` to `did_open_returns_ok_null` to match the naming convention of surrounding tests (every other test names the specific LSP method). (2) Restore coverage for the `initialized` notification's `Ok(Value::Null)` contract — either add a dedicated `initialized_returns_ok_null` test, or change the `initialized_lsp()` helper's `.expect()` to `assert_eq!(result.unwrap(), Value::Null)`. Currently the helper only checks for no-error, losing the explicit return-value assertion that existed before task 927 moved the test to cover `didOpen`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:48:05.933Z",
+        "updatedAt": "2026-04-07T19:09:20.648Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs"
@@ -21230,7 +21230,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:08:05.728Z",
+      "lastModified": "2026-04-07T19:09:20.648Z",
       "taskCount": 1026,
       "completedCount": 726,
       "tags": [
