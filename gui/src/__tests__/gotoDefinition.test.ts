@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks, withSuppressedRejections } from './test-utils';
+import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -337,18 +337,13 @@ describe('.catch() error handler', () => {
       dom: { isConnected: true },
     };
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      await withSuppressedRejections(async () => {
-        mousedownHandler(mockEvent, mockView);
-        await flushMacrotasks();
-      });
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
       // .catch() should log a warning with the expected prefix and the error
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
       // dispatch should not have been called (line() threw before it could be called)
       expect(mockView.dispatch).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 });
