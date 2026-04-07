@@ -21491,15 +21491,16 @@
         "description": "In `gui/src/__tests__/test-utils.ts`, `withSuppressedRejectionsAndErrorSpy` (lines 44-53) and `withSuppressedRejectionsAndWarnSpy` (lines 63-72) are structurally identical — only the console channel name differs. Extract a private factory or generic helper that both delegate to, eliminating the duplication while keeping the public API unchanged.\n\nSuggested approach (either works):\n1. Factory: `function makeConsoleSpy<K extends 'error' | 'warn'>(channel: K)` returning an async function.\n2. Shared helper: `async function withSuppressedRejectionsAndConsoleSpy(method: 'warn' | 'error', fn: ...) { ... }` with thin wrappers.\n\nThe existing test suites for both variants in `test-utils.test.ts` should remain valid without changes.\n\nmemory_hints: search \"withSuppressedRejectionsAndErrorSpy withSuppressedRejectionsAndWarnSpy test-utils\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:26:43.991Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:26:42.170Z",
+      "lastModified": "2026-04-07T19:26:43.991Z",
       "taskCount": 1042,
       "completedCount": 731,
       "tags": [
