@@ -2760,6 +2760,104 @@ fn gradient_3d_field_single_point_param() {
     }
 }
 
+/// Gradient of a 3D field with a quadratic 1-param lambda: |p| dot(p, p) = x²+y²+z².
+///
+/// The gradient of dot(p,p) is (2x, 2y, 2z). Sampled at Point3(2.0, 3.0, 5.0),
+/// expected gradient: (4.0, 6.0, 10.0). Exercises the single_point_param path
+/// with a nonlinear function — existing tests only cover linear dot(p,[1,2,3]).
+/// Strengthens regression coverage before FP-restore and allocation refactoring.
+#[test]
+fn gradient_single_point_param_quadratic() {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| dot(p, p) = x² + y² + z²
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(2.0, 3.0, 5.0) — gradient of x²+y²+z² is (2x, 2y, 2z)
+    let point = Value::Point(vec![Value::Real(2.0), Value::Real(3.0), Value::Real(5.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            let expected = [4.0_f64, 6.0, 10.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-3,
+                    "gradient component {} of dot(p,p) at (2,3,5) should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector; got {:?}",
+            sample_result
+        ),
+    }
+}
+
 /// NaN in a Point coordinate causes gradient sampling to return Undef
 /// via the single-point-param path.
 ///
