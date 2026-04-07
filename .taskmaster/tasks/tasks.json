@@ -12673,7 +12673,7 @@
         "description": "Review suggestions from task 437. Test gaps: (1) analysis.rs guarded-group tests assert only info.name/info.kind but not info.span or info.cell_type — span is the thing that was broken. (2) goto_def tests check only line number, not character offset. (3) No direct unit tests for find_named_member_span on hand-constructed MemberDecl slices (edge cases: empty slice, name in else_members only, depth-2 match). (4) No regression test for refactored find_parsed_member_span_and_doc (top-level members still resolve). (5) Revolve missing-arg test only exercises missing 'ox', not other required fields.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12695,7 +12695,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:02:19.735Z"
+        "updatedAt": "2026-04-07T14:02:32.196Z"
       },
       {
         "id": "604",
@@ -20778,7 +20778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:29.784Z",
+      "lastModified": "2026-04-07T14:02:32.196Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
