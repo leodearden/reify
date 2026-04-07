@@ -184,10 +184,66 @@ mod tests {
         );
     }
 
-    /// Non-WARN events (DEBUG, INFO, ERROR) are rejected at the `enabled()` gate.
+    /// Non-WARN events (DEBUG, INFO, ERROR) are rejected at the `enabled()` gate
+    /// and never dispatched to `event()`.
+    ///
+    /// Uses an `EventDispatchCounter` wrapper to verify that `event()` is never
+    /// called for DEBUG/INFO/ERROR events, confirming gate-rejection rather than
+    /// silent discard inside `event()`.
     #[test]
     fn non_warn_events_are_not_counted() {
-        let (subscriber, warn_count) = warn_counting_subscriber();
+        // ── thin wrapper ────────────────────────────────────────────────────
+        struct EventDispatchCounter<S> {
+            inner: S,
+            dispatch_count: Arc<AtomicUsize>,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
+            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+                // Delegate to the inner subscriber so its filter is exercised.
+                self.inner.enabled(metadata)
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Reached only when enabled() returned true.
+                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        // ── test body ───────────────────────────────────────────────────────
+        let warn_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+
+        let inner = super::WarnCountingSubscriber::new(Arc::clone(&warn_count));
+        let subscriber = EventDispatchCounter {
+            inner,
+            dispatch_count: Arc::clone(&dispatch_count),
+        };
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!("debug message");
@@ -198,7 +254,13 @@ mod tests {
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
-            "DEBUG/INFO/ERROR events are rejected at the enabled() gate and never reach event()"
+            "DEBUG/INFO/ERROR events must not increment the WARN counter"
+        );
+
+        assert_eq!(
+            dispatch_count.load(Ordering::Relaxed),
+            0,
+            "DEBUG/INFO/ERROR events must be rejected at enabled(), not reach event()"
         );
     }
 
