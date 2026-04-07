@@ -137,18 +137,16 @@ mod tests {
             tracing::error!("error message");
         });
 
-        // warn_count is 0 even under the current code because event() checks
-        // level == WARN before incrementing.  This assertion passes both before
-        // and after the fix.
+        // warn_count == 0: ERROR is not a WARN event, so the counter must not
+        // increment.
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
             "ERROR must not be counted as a WARN event"
         );
 
-        // dispatch_count is 0 only when enabled() rejected the ERROR event.
-        // Under the current `<=` filter dispatch_count == 1 → this FAILS.
-        // After the fix (`==` filter) dispatch_count == 0 → this PASSES.
+        // dispatch_count == 0: enabled() rejects ERROR, so event() is never
+        // called.
         assert_eq!(
             dispatch_count.load(Ordering::Relaxed),
             0,
