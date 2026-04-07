@@ -21528,10 +21528,11 @@
         "description": "In crates/reify-eval/tests/e2e_meta.rs, add diagnostic guards and tighten assertions:\n- After each `engine.eval()` call (tests: e2e_meta_access_let_binding, e2e_meta_access_multiple_keys), assert `result.diagnostics` contains no Severity::Error entries before checking values (suggestion 10).\n- After `engine.check()` in e2e_meta_access_in_constraint, assert `result.diagnostics` contains no errors before checking satisfaction (suggestion 11).\n- In e2e_meta_access_in_constraint, add `assert_eq!(result.constraint_results.len(), 1)` after the non-empty guard (suggestion 7).\n- Add an assertion or companion test confirming `meta.tag` actually resolved to `Value::String(\"valid\")` before being handed to the checker, e.g. by inspecting `result.values` via `engine.eval()` first (suggestion 6).\n\nmemory_hints: search for \"eval diagnostic guard pattern\" and \"constraint test assertion conventions\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:28:01.474Z"
       },
       {
         "id": "1045",
@@ -21548,7 +21549,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:28:00.646Z",
+      "lastModified": "2026-04-07T19:28:01.474Z",
       "taskCount": 1045,
       "completedCount": 731,
       "tags": [
