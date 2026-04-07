@@ -21503,7 +21503,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:26:43.991Z"
+        "updatedAt": "2026-04-07T19:26:43.991Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": 1043,
