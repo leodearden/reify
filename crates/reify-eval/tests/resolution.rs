@@ -11,8 +11,8 @@ use reify_test_support::{
     lt, mm, value_ref,
 };
 use reify_types::{
-    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId,
-    SnapshotProvenance, Type, Value, ValueCellId,
+    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
+    Value, ValueCellId,
 };
 
 #[test]
@@ -2020,10 +2020,7 @@ fn auto_free_emits_warning_diagnostic() {
     let warning = result
         .diagnostics
         .iter()
-        .find(|d| {
-            d.message.contains("resolved via auto(free)")
-                && d.message.contains("thickness")
-        });
+        .find(|d| d.message.contains("resolved via auto(free)") && d.message.contains("thickness"));
     assert!(
         warning.is_some(),
         "expected warning diagnostic about 'thickness' resolved via auto(free), got {:?}",
