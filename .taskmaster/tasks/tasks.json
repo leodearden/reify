@@ -18453,11 +18453,11 @@
         "description": "Add two robustness improvements to tests/sync_comments_test.sh:\n\n1. **Source error handling (line 15):** Change `source \"$REPO_ROOT/tests/infra/test_helpers.sh\"` to include an error handler: `source \"$REPO_ROOT/tests/infra/test_helpers.sh\" || { echo \"ERROR: failed to source test_helpers.sh\"; exit 1; }`. Currently if test_helpers.sh exists but fails to parse/execute (syntax error, permission denied), `source` silently returns non-zero and the script continues with `assert` and `test_summary` undefined, producing unhelpful \"command not found\" errors.\n\n2. **File-existence guards (before line 18):** Add guards for the target files before the assert calls:\n   ```bash\n   [ -f \"$EXPR_FILE\" ] || { echo \"ERROR: $EXPR_FILE not found\"; exit 1; }\n   [ -f \"$STDLIB_FILE\" ] || { echo \"ERROR: $STDLIB_FILE not found\"; exit 1; }\n   ```\n   The shared `assert` helper redirects stderr to /dev/null (`\"$@\" >/dev/null 2>&1`), so if either file is missing, grep's \"No such file or directory\" is swallowed and the test reports a generic FAIL with no indication the file itself is missing.\n\nThis follows the existing guard pattern already used on line 14 for test_helpers.sh itself.\n\nMemory hints: search \"test_helpers.sh shared test infrastructure\", search \"sync_comments_test.sh\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:29.579Z",
+        "updatedAt": "2026-04-07T14:02:56.098Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -20784,7 +20784,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:40.084Z",
+      "lastModified": "2026-04-07T14:02:56.099Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
