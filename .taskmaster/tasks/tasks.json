@@ -20687,7 +20687,7 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs has an off-by-one in fn-body extraction that silently truncates by 1 byte (latent trap if guard pattern moves to function end). Two source-inspection tests redundantly read the same 800-line file from disk in parallel. Both use a hardcoded relative path `tests/build_logic_tests.rs` which breaks if cargo test is invoked from a non-default directory.\n\n## Off-by-one fix (lines ~721-724)\nThe `fn_section[1..].find(...)` returns an offset relative to the sub-slice but is then used as an index into fn_section, making fn_body 1 byte short. Change to:\n```rust\nlet fn_end = fn_section[1..].find(\"\\n#[test]\").map(|i| i + 1).unwrap_or(fn_section.len());\n```\n\n## Path robustness\nReplace the hardcoded \"tests/build_logic_tests.rs\" in both test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` to make the tests directory-independent.\n\n## Merge duplicate file reads\nMerge both source-inspection assertions into a single test function that reads the file once. They run concurrently today and read the growing 800+ line file twice.\n\n## Strengthen drop test\nIn test_readonly_guard_drop_logs_error, tighten the assertion from a bare contains(\"eprintln!\") to also require contains(\"if let Err\") (or the specific 'failed to restore permissions' message), so an unrelated debug eprintln does not satisfy the check.\n\nSource: review escalation esc-783-53 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20705,7 +20705,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:18:05.508Z"
+        "updatedAt": "2026-04-07T16:18:33.590Z"
       },
       {
         "id": "1000",
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:31.016Z",
+      "lastModified": "2026-04-07T16:18:33.590Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
