@@ -258,3 +258,46 @@ describe('isConnected guard', () => {
     expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 });
+
+describe('line-bounds guard', () => {
+  it('does not dispatch when LSP line exceeds document line count (stale response)', async () => {
+    const currentUri = 'file:///current.ri';
+    // LSP reports line 10 (0-based), so line+1=11, but doc only has 5 lines
+    const staleLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 10, character: 0 }, end: { line: 10, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(staleLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 5,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Stale LSP line (11 > 5) should be rejected before reaching doc.line()
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+});
