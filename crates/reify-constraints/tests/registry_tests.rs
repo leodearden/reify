@@ -4,8 +4,8 @@ use reify_constraints::{DimensionalSolver, SolveSpaceSolver, SolverRegistry};
 use reify_test_support::*;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
-    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult, Type,
-    Value, ValueMap,
+    DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult,
+    Severity, Type, Value, ValueMap,
 };
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback
@@ -684,5 +684,102 @@ fn registry_mixed_dimensional_and_geometric() {
             "expected Solved for mixed dimensional+geometric, got {:?}",
             other
         ),
+    }
+}
+
+/// Registry merges uniqueness across sub-problems via conjunction:
+/// - all_unique=true  → unique=true
+/// - any_non_unique   → unique=false
+///
+/// Uses SequencedMockConstraintSolver to return different `unique` values
+/// for each decomposed sub-problem.
+#[test]
+fn registry_merges_unique_flag() {
+    let a_id = vcid("Part", "a");
+    let b_id = vcid("Part", "b");
+
+    // Two independent constraints → decomposed into 2 sub-problems
+    let c1 = gt(value_ref("Part", "a"), literal(mm(5.0)));
+    let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: a_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: b_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    // Case 1: first sub-problem unique, second NOT unique → merged = NOT unique
+    {
+        let mut vals_a = std::collections::HashMap::new();
+        vals_a.insert(a_id.clone(), mm(6.0));
+        let mut vals_b = std::collections::HashMap::new();
+        vals_b.insert(b_id.clone(), mm(11.0));
+
+        let mock = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: vals_a,
+                unique: true,
+            },
+            SolveResult::Solved {
+                values: vals_b,
+                unique: false,
+            },
+        ]);
+        let registry = SolverRegistry::new(Box::new(mock));
+        let result = registry.solve(&problem);
+        match result {
+            SolveResult::Solved { unique, .. } => {
+                assert!(
+                    !unique,
+                    "any sub-problem with unique=false should make merged unique=false"
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
+    }
+
+    // Case 2: both sub-problems unique → merged = unique
+    {
+        let mut vals_a = std::collections::HashMap::new();
+        vals_a.insert(a_id.clone(), mm(6.0));
+        let mut vals_b = std::collections::HashMap::new();
+        vals_b.insert(b_id.clone(), mm(11.0));
+
+        let mock = SequencedMockConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: vals_a,
+                unique: true,
+            },
+            SolveResult::Solved {
+                values: vals_b,
+                unique: true,
+            },
+        ]);
+        let registry = SolverRegistry::new(Box::new(mock));
+        let result = registry.solve(&problem);
+        match result {
+            SolveResult::Solved { unique, .. } => {
+                assert!(
+                    unique,
+                    "all sub-problems unique=true should make merged unique=true"
+                );
+            }
+            other => panic!("expected Solved, got {:?}", other),
+        }
     }
 }
