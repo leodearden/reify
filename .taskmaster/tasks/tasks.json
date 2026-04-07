@@ -19353,11 +19353,11 @@
         "description": "In tests/sync_comments_test.sh, add checks that fn sanitize_value (or the referenced function name) actually exists in both the EXPR and STDLIB files, so stale SYNC comments are caught when functions are renamed.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.222Z",
+        "updatedAt": "2026-04-07T16:08:15.378Z",
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
@@ -21000,7 +21000,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:08:14.481Z",
+      "lastModified": "2026-04-07T16:08:15.379Z",
       "taskCount": 1014,
       "completedCount": 720,
       "tags": [
