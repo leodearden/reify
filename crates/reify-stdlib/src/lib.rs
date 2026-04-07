@@ -5879,6 +5879,20 @@ mod tests {
         assert_orientation_approx!(sanitize_value(v), 1.0, 0.0, 0.0, 0.0);
     }
 
+    #[test]
+    fn sanitize_orientation_neg_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NEG_INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 1.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NegInf component should become Undef"
+        );
+    }
+
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
 
     #[test]
