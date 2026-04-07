@@ -73,6 +73,6 @@ assert "sync_comments_test.sh uses 'if test -f' guard in test_command" \
     bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test -f tests/sync_comments_test.sh'"
 
 assert "check-pm-standardization.sh uses 'if test -f' guard in lint_command" \
-    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f tests/check-pm-standardization.sh'"
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/check-pm-standardization.sh'"
 
 test_summary
