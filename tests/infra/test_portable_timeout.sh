@@ -236,5 +236,31 @@ assert "POSIX fallback: flag resets to false after timeout then fast success" \
         [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
     '
 
+# -- Test 14: tree-sitter-generate guard: natural exit 124 not misdiagnosed ---
+echo ""
+echo "--- Test 14: tree-sitter-generate guard distinguishes natural exit 124 ---"
+
+# Replicate the guard logic from scripts/tree-sitter-generate.sh:
+#   if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
+#       echo "ERROR: tree-sitter generate timed out" >&2
+#   fi
+# Under POSIX fallback, a command that naturally exits 124 must NOT trigger the
+# timeout error path.  The stub sets tree-sitter() to exit 124 without sleeping.
+assert "guard: natural exit 124 does not emit timeout error (POSIX fallback)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        # Stub tree-sitter to exit 124 immediately (not a real timeout).
+        tree-sitter() { return 124; }
+        # Replicate guard logic from tree-sitter-generate.sh lines 141-148.
+        GEN_EXIT=0
+        portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
+        timeout_error=""
+        if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
+            timeout_error="ERROR: tree-sitter generate timed out after 60s"
+        fi
+        # The timeout error must NOT have been set.
+        [ -z "$timeout_error" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
