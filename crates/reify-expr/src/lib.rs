@@ -840,7 +840,7 @@ fn compute_numerical_gradient_at_point(
     }
 
     if n == 1 {
-        gradient_components.into_iter().next().unwrap()
+        gradient_components.into_iter().next().unwrap_or(Value::Undef)
     } else {
         Value::Vector(gradient_components)
     }
