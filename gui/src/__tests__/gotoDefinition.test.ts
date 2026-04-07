@@ -177,6 +177,96 @@ describe('cross-file goto-definition (onNavigate)', () => {
       scrollIntoView: true,
     });
   });
+
+  it('bare-path currentUri with file:// location.uri for same file dispatches cursor movement', async () => {
+    // currentUri is a bare path; LSP returns a file:// URI for the same physical file.
+    // isSameFile() should normalize both to the same bare path and recognize them as equal,
+    // so the handler dispatches cursor movement instead of calling onNavigate.
+    const currentUri = '/project/src/foo.ri';
+    const sameFileLocation = {
+      uri: 'file:///project/src/foo.ri',
+      range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // onNavigate should NOT be called — it is the same file after URI normalization
+    expect(onNavigate).not.toHaveBeenCalled();
+    // view.dispatch SHOULD be called for same-file cursor movement
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: expect.any(Number) },
+      scrollIntoView: true,
+    });
+  });
+
+  it('partial suffix overlap (/a/foo.ri vs /b/a/foo.ri) triggers cross-file navigation', async () => {
+    // currentUri is '/a/foo.ri'; LSP returns 'file:///b/a/foo.ri'.
+    // The bare path '/a/foo.ri' is a suffix of '/b/a/foo.ri', but they are different files.
+    // isSameFile() must not be fooled by the suffix match — it does exact comparison after
+    // normalization, so the handler should call onNavigate instead of dispatching.
+    const currentUri = '/a/foo.ri';
+    const crossFileLocation = {
+      uri: 'file:///b/a/foo.ri',
+      range: { start: { line: 3, character: 0 }, end: { line: 3, character: 6 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // onNavigate SHOULD be called — different files despite the suffix overlap
+    expect(onNavigate).toHaveBeenCalledWith('file:///b/a/foo.ri', 3, 0);
+    // view.dispatch should NOT be called (different file)
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('isConnected guard', () => {
