@@ -21059,11 +21059,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Rename `valid_notification_returns_ok_null` to `did_open_returns_ok_null` to match the naming convention of surrounding tests (every other test names the specific LSP method). (2) Restore coverage for the `initialized` notification's `Ok(Value::Null)` contract — either add a dedicated `initialized_returns_ok_null` test, or change the `initialized_lsp()` helper's `.expect()` to `assert_eq!(result.unwrap(), Value::Null)`. Currently the helper only checks for no-error, losing the explicit return-value assertion that existed before task 927 moved the test to cover `didOpen`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:31:42.936Z",
+        "updatedAt": "2026-04-07T16:48:04.767Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs"
@@ -21079,11 +21079,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: Replace `InProcessLsp::new()` with `initialized_lsp().await` in both `did_change_with_malformed_params_returns_error` and `did_close_with_malformed_params_returns_error`. These notifications only arrive post-initialization in real LSP usage. Without initialization, a future is-initialized guard added before param deserialization would cause these tests to still pass but for the wrong reason — the error would come from the guard, not the malformed params — silently hiding the real behavior.\n\nMemory hints: search for \"LSP bridge test initialization pattern\" and \"initialized_lsp helper\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:31:43.828Z",
+        "updatedAt": "2026-04-07T16:48:04.825Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs"
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.709Z",
+      "lastModified": "2026-04-07T16:48:04.825Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
