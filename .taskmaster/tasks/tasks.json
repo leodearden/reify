@@ -19741,11 +19741,11 @@
         "description": "In crates/reify-types/src/value.rs, update 4 stale comments referencing 'to_bits' ordering to say 'total_cmp()' / 'IEEE 754 total order' in: value_ord_within_real_and_nan, value_orientation_ord_within_type, value_frame_ord_same_origin_compare_basis. Add ordering comment to Orientation Ord arm matching Scalar/Complex style.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.251Z",
+        "updatedAt": "2026-04-07T16:04:56.377Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19758,11 +19758,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Replace `let _ = pos.cmp(&neg)` in value_ord_neg_zero with `assert!(neg < pos)`. (2) Test NaN ordering with two independently constructed NaN values. (3) Add BTreeSet edge-case test with NEG_INFINITY, -1.0, -0.0, 0.0, 1.0, INFINITY.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.276Z",
+        "updatedAt": "2026-04-07T16:04:56.430Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19781,11 +19781,11 @@
         "description": "In crates/reify-eval/src/lib.rs: (1) Collect preserved_counts removals in a Vec during collection sub loop and apply after loop (fixes shared-count_cell bug where first removal causes second sub to fall back to 0). (2) Move removal to after snapshot commit for transaction safety. (3) Add retain() to prune orphaned preserved_counts after computing active subs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.300Z",
+        "updatedAt": "2026-04-07T16:04:56.512Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -20999,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:04:46.669Z",
+      "lastModified": "2026-04-07T16:04:56.513Z",
       "taskCount": 1014,
       "completedCount": 721,
       "tags": [
