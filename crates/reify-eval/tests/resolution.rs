@@ -2096,3 +2096,682 @@ fn strict_auto_non_unique_emits_error_diagnostic() {
         error_diag.severity
     );
 }
+
+// ── auto(free) test suite (task 161) ─────────────────────────────────────────
+
+#[test]
+fn auto_free_underdetermined_returns_resolved_values() {
+    // Two auto(free) params with loose inequality constraints (> 10mm each).
+    // Mock solver returns Solved{unique:false} with specific values.
+    // Both params should appear in result.values with correct SI values
+    // and in result.resolved_params.
+    use reify_test_support::SequencedMockConstraintSolver;
+    use reify_types::SolveResult;
+
+    let width_id = ValueCellId::new("S", "width");
+    let height_id = ValueCellId::new("S", "height");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(width_id.clone(), mm(12.0));
+    solved_values.insert(height_id.clone(), mm(15.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved_values,
+        unique: false,
+    }]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "width", Type::length())
+        .auto_param_free("S", "height", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(10.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "height"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // Both params should be resolved to the mock values
+    let width_val = result.values.get(&width_id).expect("width in values");
+    assert!(
+        matches!(width_val, Value::Scalar { si_value, .. } if (*si_value - 0.012).abs() < 1e-10),
+        "expected width = mm(12.0) = 0.012 SI, got {:?}",
+        width_val
+    );
+
+    let height_val = result.values.get(&height_id).expect("height in values");
+    assert!(
+        matches!(height_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-10),
+        "expected height = mm(15.0) = 0.015 SI, got {:?}",
+        height_val
+    );
+
+    // Both params should appear in resolved_params
+    assert_eq!(
+        result.resolved_params.len(),
+        2,
+        "expected 2 resolved params, got {}",
+        result.resolved_params.len()
+    );
+    assert!(result.resolved_params.contains_key(&width_id));
+    assert!(result.resolved_params.contains_key(&height_id));
+}
+
+#[test]
+fn auto_free_underdetermined_real_solver() {
+    // Two auto(free) params with only lower-bound constraints (> 10mm each).
+    // Real DimensionalSolver. Both params should be resolved to values > 10mm,
+    // no error diagnostics, and auto(free) warning diagnostics present.
+
+    let width_id = ValueCellId::new("S", "width");
+    let height_id = ValueCellId::new("S", "height");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "width", Type::length())
+        .auto_param_free("S", "height", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "width"), literal(mm(10.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "height"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // No error diagnostics
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_types::Severity::Error),
+        "expected no error diagnostics, got {:?}",
+        result.diagnostics
+    );
+
+    // Both params resolved to > 10mm (0.01 SI)
+    let width_si = match result.values.get(&width_id).expect("width in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for width, got {:?}", other),
+    };
+    let height_si = match result.values.get(&height_id).expect("height in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for height, got {:?}", other),
+    };
+    assert!(
+        width_si >= 0.01,
+        "expected width >= 10mm (0.01 SI), got {:.6}m",
+        width_si
+    );
+    assert!(
+        height_si >= 0.01,
+        "expected height >= 10mm (0.01 SI), got {:.6}m",
+        height_si
+    );
+
+    // auto(free) warning diagnostics present
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("resolved via auto(free)")),
+        "expected auto(free) warning diagnostics, got {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn strict_auto_infeasible_params_remain_undef() {
+    // Strict auto (free:false) with underdetermined constraints.
+    // MockConstraintSolver returns Infeasible with an error diagnostic.
+    // Assert params remain Value::Undef and result.resolved_params is empty.
+
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let solver = MockConstraintSolver::new_infeasible(vec![Diagnostic::error(
+        "underdetermined: constraints do not uniquely pin values",
+    )]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "x", Type::length())
+        .auto_param("S", "y", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(5.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "y"), literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // Both params should remain Undef
+    let x_val = result.values.get(&x_id).expect("x in values");
+    assert!(
+        x_val.is_undef(),
+        "expected x = Undef after infeasible solver, got {:?}",
+        x_val
+    );
+    let y_val = result.values.get(&y_id).expect("y in values");
+    assert!(
+        y_val.is_undef(),
+        "expected y = Undef after infeasible solver, got {:?}",
+        y_val
+    );
+
+    // resolved_params should be empty
+    assert!(
+        result.resolved_params.is_empty(),
+        "expected empty resolved_params after Infeasible, got {:?}",
+        result.resolved_params
+    );
+
+    // Error diagnostic should be present
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("underdetermined")),
+        "expected error diagnostic about underdetermined, got {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn auto_free_warning_per_param_name() {
+    // Three auto(free) params (x, y, z). Mock solver returns Solved{unique:false}.
+    // Assert exactly 3 warning diagnostics about auto(free), each containing
+    // the respective param name. Verifies per-param diagnostic granularity.
+
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+    let z_id = ValueCellId::new("S", "z");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(11.0));
+    solved_values.insert(y_id.clone(), mm(12.0));
+    solved_values.insert(z_id.clone(), mm(13.0));
+
+    let solver = SpyConstraintSolver::new_solved_non_unique(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .auto_param_free("S", "y", Type::length())
+        .auto_param_free("S", "z", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "y"), literal(mm(10.0))))
+        .constraint("S", 2, None, gt(value_ref("S", "z"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // Exactly 3 warning diagnostics about auto(free)
+    let free_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("resolved via auto(free)"))
+        .collect();
+    assert_eq!(
+        free_warnings.len(),
+        3,
+        "expected exactly 3 auto(free) warnings (one per param), got {:?}",
+        result.diagnostics
+    );
+
+    // Each param name must appear in at least one warning
+    for name in &["x", "y", "z"] {
+        assert!(
+            free_warnings.iter().any(|d| d.message.contains(name)),
+            "expected warning mentioning param '{}', got {:?}",
+            name,
+            free_warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn auto_free_no_warning_when_solver_returns_unique() {
+    // Single auto(free) param. Mock solver returns Solved{unique:true}.
+    // Assert no warning diagnostics about 'auto(free)' are emitted.
+    // The unique flag suppresses warnings even for free params.
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(20.0));
+
+    // SpyConstraintSolver::new_solved returns unique:true
+    let solver = SpyConstraintSolver::new_solved(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // No auto(free) warnings when unique=true
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| !d.message.contains("auto(free)")),
+        "expected no auto(free) warnings when solver returns unique=true, got {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn mixed_free_and_strict_only_free_warned() {
+    // Template with one auto(free) param (x) and one strict auto param (y).
+    // Mock solver returns Solved{unique:false}.
+    // Assert warning diagnostic mentions only 'x' (the free param), not 'y' (strict).
+    use reify_test_support::SequencedMockConstraintSolver;
+    use reify_types::SolveResult;
+
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(15.0));
+    solved_values.insert(y_id.clone(), mm(20.0));
+
+    let solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved_values,
+        unique: false,
+    }]);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .auto_param("S", "y", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .constraint("S", 1, None, gt(value_ref("S", "y"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // Filter warnings about auto(free)
+    let free_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("resolved via auto(free)"))
+        .collect();
+
+    // Exactly 1 warning (for x only)
+    assert_eq!(
+        free_warnings.len(),
+        1,
+        "expected exactly 1 auto(free) warning (for x only), got {:?}",
+        result.diagnostics
+    );
+
+    // Warning mentions 'x'
+    assert!(
+        free_warnings[0].message.contains("x"),
+        "expected warning to mention 'x', got '{}'",
+        free_warnings[0].message
+    );
+
+    // Warning must NOT mention 'y' (strict auto params are not warned)
+    assert!(
+        !free_warnings[0].message.contains("`y`"),
+        "warning should not mention strict auto param 'y', got '{}'",
+        free_warnings[0].message
+    );
+}
+
+#[test]
+fn auto_free_with_tight_range_narrows_solution() {
+    // auto(free) param with tight range constraints (> 49mm AND < 51mm).
+    // Real DimensionalSolver. Assert resolved value is in [49mm, 51mm] SI.
+    // Demonstrates explicit constraints narrowing the solution space.
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(49.0))))
+        .constraint("S", 1, None, lt(value_ref("S", "x"), literal(mm(51.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // No error diagnostics
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_types::Severity::Error),
+        "expected no error diagnostics, got {:?}",
+        result.diagnostics
+    );
+
+    let x_si = match result.values.get(&x_id).expect("x in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for x, got {:?}", other),
+    };
+
+    // x must be in [49mm, 51mm] = [0.049, 0.051] SI
+    assert!(
+        x_si >= 0.049 && x_si <= 0.051,
+        "expected x in [49mm, 51mm] SI, got {:.6}m ({:.3}mm)",
+        x_si,
+        x_si * 1000.0
+    );
+}
+
+#[test]
+fn auto_free_equality_constraints_pin_value() {
+    // auto(free) param with constraints (> 24.9mm AND < 25.1mm), effectively
+    // pinning to ~25mm. Real DimensionalSolver.
+    // Assert resolved value within 0.2mm of 25mm.
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(24.9))))
+        .constraint("S", 1, None, lt(value_ref("S", "x"), literal(mm(25.1))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // No error diagnostics
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_types::Severity::Error),
+        "expected no error diagnostics, got {:?}",
+        result.diagnostics
+    );
+
+    let x_si = match result.values.get(&x_id).expect("x in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for x, got {:?}", other),
+    };
+
+    // x should be within 0.2mm (0.0002 SI) of 25mm (0.025 SI)
+    let target_si = 0.025;
+    assert!(
+        (x_si - target_si).abs() < 0.0002,
+        "expected x within 0.2mm of 25mm, got {:.6}m ({:.3}mm)",
+        x_si,
+        x_si * 1000.0
+    );
+}
+
+#[test]
+fn auto_free_minimize_selects_smallest_feasible() {
+    // auto(free) param with constraint (> 10mm) and Minimize objective.
+    // Real DimensionalSolver. Assert resolved value < 15mm.
+    // The minimizer drives it toward the lower bound rather than returning
+    // the default large initial guess (~5000mm).
+    // Warning diagnostic for non-unique also present.
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "x")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // No error diagnostics
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_types::Severity::Error),
+        "expected no error diagnostics, got {:?}",
+        result.diagnostics
+    );
+
+    let x_si = match result.values.get(&x_id).expect("x in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for x, got {:?}", other),
+    };
+
+    // The minimizer should drive x toward the lower bound (10mm), well below 15mm
+    let fifteen_mm_si = 0.015;
+    assert!(
+        x_si < fifteen_mm_si,
+        "expected x < 15mm when minimizing, got {:.6}m ({:.3}mm)",
+        x_si,
+        x_si * 1000.0
+    );
+
+    // Warning diagnostic should still be present (free auto, non-unique result)
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("resolved via auto(free)")),
+        "expected auto(free) warning diagnostic, got {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn auto_free_minimize_with_upper_bound() {
+    // auto(free) param with constraints (> 10mm AND < 100mm) and Minimize objective.
+    // Real DimensionalSolver. Assert resolved value < 15mm (driven to lower bound)
+    // and > 10mm (satisfies lower-bound constraint).
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .constraint("S", 1, None, lt(value_ref("S", "x"), literal(mm(100.0))))
+        .objective(OptimizationObjective::Minimize(value_ref("S", "x")))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // No error diagnostics
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != reify_types::Severity::Error),
+        "expected no error diagnostics, got {:?}",
+        result.diagnostics
+    );
+
+    let x_si = match result.values.get(&x_id).expect("x in values") {
+        Value::Scalar { si_value, .. } => *si_value,
+        other => panic!("expected Scalar for x, got {:?}", other),
+    };
+
+    // x must satisfy the lower-bound constraint (>= 10mm, boundary is acceptable for
+    // penalty-based solvers)
+    assert!(
+        x_si >= 0.01,
+        "expected x >= 10mm, got {:.6}m ({:.3}mm)",
+        x_si,
+        x_si * 1000.0
+    );
+
+    // Minimizer should drive x to near the lower bound (< 15mm)
+    assert!(
+        x_si < 0.015,
+        "expected x < 15mm when minimizing with bounds, got {:.6}m ({:.3}mm)",
+        x_si,
+        x_si * 1000.0
+    );
+}
+
+#[test]
+fn auto_free_snapshot_determinacy_after_resolution() {
+    // auto(free) param resolved via mock solver. After eval, inspect engine.snapshot().
+    // Assert the resolved param has (resolved_value, DeterminacyState::Determined)
+    // in the snapshot values. Provenance should be Resolution variant.
+
+    let x_id = ValueCellId::new("S", "x");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(x_id.clone(), mm(30.0));
+
+    let solver = SpyConstraintSolver::new_solved_non_unique(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "x", Type::length())
+        .constraint("S", 0, None, gt(value_ref("S", "x"), literal(mm(10.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let _result = engine.eval(&module);
+    let snap = engine.snapshot().expect("snapshot should exist");
+
+    // x should be (mm(30.0), Determined) in the snapshot
+    let (val, det) = snap.values.get(&x_id).expect("x in snapshot");
+    assert!(
+        matches!(val, Value::Scalar { si_value, .. } if (*si_value - 0.030).abs() < 1e-10),
+        "expected mm(30.0) = 0.030 SI in snapshot, got {:?}",
+        val
+    );
+    assert_eq!(
+        *det,
+        DeterminacyState::Determined,
+        "expected DeterminacyState::Determined for auto(free) resolved param"
+    );
+
+    // Provenance should be a Resolution variant
+    assert!(
+        matches!(snap.provenance, SnapshotProvenance::Resolution { .. }),
+        "expected SnapshotProvenance::Resolution, got {:?}",
+        snap.provenance
+    );
+}
+
+#[test]
+fn auto_free_dependent_let_binding_updated() {
+    // auto(free) param (thickness) with a let binding (volume = thickness * Real(1000.0))
+    // that depends on it. Mock solver resolves thickness to 5mm.
+    // Assert the let binding is re-evaluated with the resolved value, not Undef.
+
+    let thickness_id = ValueCellId::new("S", "thickness");
+    let volume_id = ValueCellId::new("S", "volume");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    // SpyConstraintSolver::new_solved_non_unique → Solved{unique:false}
+    let solver = SpyConstraintSolver::new_solved_non_unique(solved_values);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "thickness", Type::length())
+        // volume = thickness * 1000.0 (dimensionless multiplier)
+        .let_binding(
+            "S",
+            "volume",
+            Type::length(),
+            binop(
+                reify_types::BinOp::Mul,
+                value_ref("S", "thickness"),
+                literal(Value::Real(1000.0)),
+            ),
+        )
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+
+    let result = engine.eval(&module);
+
+    // volume = thickness * 1000.0 = 0.005 * 1000.0 = 5.0 SI
+    let volume_val = result
+        .values
+        .get(&volume_id)
+        .expect("volume should be in values");
+    assert!(
+        !volume_val.is_undef(),
+        "expected volume to be re-evaluated (non-Undef), got {:?}",
+        volume_val
+    );
+    assert!(
+        matches!(volume_val, Value::Scalar { si_value, .. } if (*si_value - 5.0).abs() < 1e-6),
+        "expected volume = thickness(5mm) * 1000 = 5.0 SI, got {:?}",
+        volume_val
+    );
+}
