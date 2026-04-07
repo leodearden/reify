@@ -773,10 +773,10 @@ fn compute_numerical_gradient_at_point(
         }
     };
 
-    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
-    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
-    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
-    let mut work_coords = coords.clone();
+    // Take ownership of coords — no clone needed.
+    // work_coords[i] is guaranteed to equal the original coords[i] at each
+    // axis-loop start because Fix 3 uses exact restore (work_coords[i] = coord_i).
+    let mut work_coords = coords;
     // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
@@ -794,7 +794,9 @@ fn compute_numerical_gradient_at_point(
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
-        let coord_i = coords[i];
+        // Read from work_coords (not the dropped coords) — safe because
+        // Fix 3 guarantees work_coords[i] equals the original at loop start.
+        let coord_i = work_coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
         // Perturb forward (+h), evaluate
