@@ -2546,11 +2546,13 @@ fn gradient_imported_field_returns_undef() {
 
 // ── Step-2: Composed field ────────────────────────────────────────────
 
-/// Gradient of a Composed field returns a gradient Field.
+/// Gradient of a Composed field returns a gradient Field and produces correct values.
 ///
-/// Composed is whitelisted at compute_gradient line 586. This test verifies
-/// that gradient(ComposedField) produces Value::Field { source: Gradient, .. }
-/// rather than Undef, so that the Composed path doesn't silently regress.
+/// Composed is whitelisted at compute_gradient line 586. This test verifies:
+/// 1. gradient(ComposedField) produces Value::Field { source: Gradient, .. }
+///    rather than Undef, so that the Composed path doesn't silently regress.
+/// 2. Sampling the gradient field at x=1.0 yields ≈ 2.0 for lambda |x| 2*x,
+///    turning the structural check into a real numerical regression guard.
 #[test]
 fn gradient_composed_field_returns_field() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -2564,12 +2566,9 @@ fn gradient_composed_field_returns_field() {
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
-
     let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
+        domain_type: Type::Real,
+        codomain_type: Type::Real,
         source: FieldSourceKind::Composed,
         lambda: Box::new(lambda),
     };
@@ -2579,11 +2578,14 @@ fn gradient_composed_field_returns_field() {
         vec![CompiledExpr::literal(
             field,
             Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type),
+                domain: Box::new(Type::Real),
+                codomain: Box::new(Type::Real),
             },
         )],
-        Type::Real,
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(Type::Real),
+        },
     );
 
     let values = ValueMap::new();
@@ -2592,6 +2594,30 @@ fn gradient_composed_field_returns_field() {
         matches!(&result, Value::Field { source: FieldSourceKind::Gradient, .. }),
         "gradient of Composed field must return a gradient Field, got {:?}",
         result
+    );
+
+    // Sample the gradient field at x=1.0.
+    // The derivative of 2*x is 2.0 everywhere — this is a real regression guard.
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(Type::Real),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(result, grad_field_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Real,
+    );
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    let val = sample_result
+        .as_f64()
+        .expect("gradient sample of composed field should return a numeric value");
+    assert!(
+        (val - 2.0).abs() < 1e-4,
+        "gradient of 2*x at x=1.0 should be ~2.0, got {}",
+        val
     );
 }
 
