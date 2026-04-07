@@ -20534,7 +20534,7 @@
         "description": "The bridge.rs doc comment promises 'Notifications do not silently succeed on bad params; the error is propagated to the caller', but the `initialized` arm in crates/reify-lsp/src/bridge.rs:117-119 hardcodes `InitializedParams {}` and discards `params`. `handle_request(\"initialized\", json!(42))` returns Ok(Value::Null) instead of Err(...) — directly contradicting the contract. The malformed-params notification test only covers didOpen, so this divergence is invisible.\n\n## Fix the contract divergence\nIn crates/reify-lsp/src/bridge.rs:117-119, deserialize params for `initialized` to match all other notification arms:\n```rust\nlet _: InitializedParams = serde_json::from_value(params)\n    .map_err(|e| format!(\"initialized params error: {e}\"))?;\nserver.initialized(InitializedParams {}).await\n```\nAlternatively, if treating `initialized` as exempt is intentional, explicitly carve it out in the doc comment.\n\n## Tests (crates/reify-lsp/tests/in_process_bridge.rs)\n1. Add `notification_initialized_with_malformed_params_returns_error` mirroring the existing didOpen test (or, if exempt path is chosen, document and assert the actual Ok(Value::Null) behaviour).\n2. Add malformed-params tests for `textDocument/didChange` and `textDocument/didClose` (asymmetric coverage today — only didOpen is exercised).\n3. Add a `shutdown_returns_ok_null` test (currently shutdown arm has zero coverage).\n4. Tighten `notification_with_malformed_params_returns_error` to assert the error string contains \"didOpen params error\".\n5. Tighten `unsupported_method_returns_error` to assert the error message contains \"unsupported LSP method:\".\n\nSource: review escalation esc-868-50 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20548,7 +20548,7 @@
             "crates/reify-lsp/tests"
           ]
         },
-        "updatedAt": "2026-04-07T14:01:41.050Z"
+        "updatedAt": "2026-04-07T14:01:52.365Z"
       },
       {
         "id": "997",
@@ -20738,7 +20738,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:01:44.056Z",
+      "lastModified": "2026-04-07T14:01:52.365Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
