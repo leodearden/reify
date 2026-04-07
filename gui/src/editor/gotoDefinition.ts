@@ -104,6 +104,7 @@ export function reifyGotoDefinition(
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
         if (!view.dom.isConnected) return;
+        if (location.range.start.line + 1 > view.state.doc.lines) return;
 
         const resolvedNow = resolveUri(uri);
         const sameFile = isSameFile(location.uri, resolvedNow);
