@@ -263,6 +263,8 @@ impl EngineSession {
         })?;
 
         // Resolve the source file key and text via the shared helper.
+        // NOTE: Assumes all diagnostic spans refer to the single loaded source
+        // file — file_path from multi-file diagnostics would need threading here.
         let (file, source) = self.resolve_source()?;
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
@@ -293,6 +295,8 @@ impl EngineSession {
         };
 
         // Resolve file_path and source text via the shared helper.
+        // NOTE: Assumes all diagnostic spans refer to the single loaded source
+        // file — file_path from multi-file diagnostics would need threading here.
         let (file_path, source) = match self.resolve_source() {
             Some(pair) => pair,
             None => return Vec::new(),
