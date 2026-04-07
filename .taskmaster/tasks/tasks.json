@@ -21277,10 +21277,11 @@
         "description": "In `gui/src/__tests__/test-utils.ts`: Add a `withSuppressedRejectionsAndWarnSpy` function parallel to the existing `withSuppressedRejectionsAndErrorSpy` (lines 44-53), but spying on `console.warn` instead of `console.error`. Then in `gotoDefinition.test.ts` lines 340-352, replace the manual `vi.spyOn(console, 'warn')` + try/finally with a call to the new helper.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:10:05.875Z"
       },
       {
         "id": "1031",
@@ -21333,7 +21334,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:10:05.284Z",
+      "lastModified": "2026-04-07T19:10:05.875Z",
       "taskCount": 1034,
       "completedCount": 727,
       "tags": [
