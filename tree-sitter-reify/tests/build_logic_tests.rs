@@ -838,6 +838,78 @@ fn test_readonly_guard_drop_logs_error() {
 }
 
 #[test]
+fn test_source_self_inspection() {
+    // Merged source-level regression guard: reads this file ONCE and runs multiple
+    // structural invariant checks in a single pass, avoiding duplicate I/O.
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/build_logic_tests.rs"
+    ))
+    .expect("should be able to read this test file");
+
+    // --- Root-guard invariant (formerly test_unix_permission_tests_have_root_guard) ---
+    // Every #[cfg(unix)] test function that relies on DAC permission enforcement must
+    // contain an is_root() skip guard. Without it, tests produce misleading failures
+    // under root/CAP_DAC_OVERRIDE.
+    let unix_test_fns = find_cfg_unix_test_fns(&source);
+
+    // Sanity-check: the scanner must find at least 2 unix tests (the ones we know about).
+    // This catches a broken scanner that silently returns empty.
+    assert!(
+        unix_test_fns.len() >= 2,
+        "find_cfg_unix_test_fns should discover at least 2 #[cfg(unix)] test functions, \
+         but found {:?}",
+        unix_test_fns
+    );
+
+    for fn_sig in &unix_test_fns {
+        let fn_body = extract_test_fn_body(&source, fn_sig)
+            .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
+
+        assert!(
+            fn_body.contains("is_root()"),
+            "{} must contain an is_root() skip guard to prevent misleading failures \
+             when running as root. Function body:\n{}",
+            fn_sig,
+            fn_body
+        );
+    }
+
+    // --- Drop-logging invariant (formerly test_readonly_guard_drop_logs_error) ---
+    // ReadonlyGuard::drop must log errors from set_permissions via eprintln! and use
+    // `if let Err` for error handling, rather than silently discarding with `let _ =`.
+    let drop_start = source
+        .find("impl Drop for ReadonlyGuard")
+        .expect("source should contain Drop impl for ReadonlyGuard");
+    let drop_section = &source[drop_start..];
+    // Find the closing brace of the impl block (next unindented '}')
+    let drop_end = drop_section
+        .find("\n}\n")
+        .expect("Drop impl should have a closing brace");
+    let drop_impl = &drop_section[..drop_end];
+
+    assert!(
+        !drop_impl.contains("let _ = std::fs::set_permissions"),
+        "ReadonlyGuard::drop must NOT silently discard set_permissions errors with `let _ =`. \
+         Use `if let Err(e) = ... {{ eprintln!(...) }}` instead. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+    assert!(
+        drop_impl.contains("eprintln!"),
+        "ReadonlyGuard::drop must log set_permissions errors via eprintln!. \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+    assert!(
+        drop_impl.contains("if let Err"),
+        "ReadonlyGuard::drop must use `if let Err` for error handling (not silent discard). \
+         Found in Drop impl:\n{}",
+        drop_impl
+    );
+}
+
+#[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
 // on Windows the readonly attribute does NOT block creating files within the directory.
 fn test_readonly_guard_restores_on_drop() {
