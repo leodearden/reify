@@ -696,7 +696,7 @@ fn compute_numerical_gradient_at_point(
         Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
         Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
         Value::Scalar { .. } => return Value::Undef, // NaN or Inf
-        Value::Point(items) | Value::Tensor(items) | Value::Vector(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
