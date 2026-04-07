@@ -19709,11 +19709,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Replace `let _ = pos.cmp(&neg)` in value_ord_neg_zero with `assert!(neg < pos)`. (2) Test NaN ordering with two independently constructed NaN values. (3) Add BTreeSet edge-case test with NEG_INFINITY, -1.0, -0.0, 0.0, 1.0, INFINITY.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:02:13.334Z",
+        "updatedAt": "2026-04-07T14:01:44.056Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -20738,7 +20738,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:01:43.355Z",
+      "lastModified": "2026-04-07T14:01:44.056Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
