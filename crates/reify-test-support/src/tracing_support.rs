@@ -74,19 +74,14 @@ mod tests {
 
     use crate::warn_counting_subscriber;
 
-    /// ERROR events should be rejected at the `enabled()` gate, not silently
-    /// accepted and then discarded inside `event()`.
+    /// Verifies ERROR events are rejected at `enabled()` and never dispatched
+    /// to `event()`.
     ///
-    /// We verify this by wrapping the real `WarnCountingSubscriber` in a thin
-    /// `EventDispatchCounter` that increments `dispatch_count` each time the
-    /// tracing framework calls `event()` on us.  Because the wrapper delegates
-    /// `enabled()` to the inner subscriber, `event()` is only reached when the
-    /// inner subscriber's `enabled()` returns `true`.
-    ///
-    /// Under the current `<=` filter ERROR passes `enabled()`, so
-    /// `dispatch_count` ends up as 1 and this test **fails**.
-    /// After the fix (`==`), ERROR is rejected at `enabled()` and
-    /// `dispatch_count` stays 0.
+    /// Uses an `EventDispatchCounter` wrapper to confirm `dispatch_count` stays
+    /// 0: because the wrapper delegates `enabled()` to the inner subscriber,
+    /// `event()` is only called when the inner subscriber's `enabled()` returns
+    /// `true`.  Since `enabled()` uses `== WARN`, ERROR is always rejected at
+    /// the gate and `dispatch_count` remains 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
         // ── thin wrapper ────────────────────────────────────────────────────
