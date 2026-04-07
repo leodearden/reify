@@ -21571,11 +21571,11 @@
         "description": "In .gitignore line 15, the glob was widened from `gui/pnpm-lock.yaml` to `**/pnpm-lock.yaml` while all package.json files declare `\"packageManager\": \"npm@10.9.7\"`. Either narrow it back to `gui/pnpm-lock.yaml` (or remove it entirely if no pnpm lockfile exists), or add a comment explaining the broad pattern is a defensive measure. This removes the false implication that pnpm is in active use anywhere in the tree (suggestion 2).\n\nmemory_hints: search for \"package manager toolchain decisions\" and \"gitignore conventions\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:28:29.527Z"
+        "updatedAt": "2026-04-07T19:54:45.663Z"
       },
       {
         "id": "1047",
@@ -21647,9 +21647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:54:45.504Z",
+      "lastModified": "2026-04-07T19:54:45.663Z",
       "taskCount": 1050,
-      "completedCount": 739,
+      "completedCount": 740,
       "tags": [
         "master"
       ]
