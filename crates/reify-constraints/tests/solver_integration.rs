@@ -1512,3 +1512,49 @@ fn warm_start_fallback_returns_exact_initial_values() {
         ),
     }
 }
+
+// ── Uniqueness verification tests ───────────────────────────────────────
+
+#[test]
+fn strict_auto_unique_solution_returns_unique_true() {
+    // Well-determined 1-param problem: tight inequality constraints that pin x
+    // to a narrow feasible range around 50mm (0.05 m in SI).
+    // With free: false (strict auto), the solver should verify uniqueness
+    // via perturbation and confirm the solution is unique.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let x_ref = value_ref("Part", "width");
+
+    // Tight constraints: x > 49mm AND x < 51mm
+    // With bounds midpoint at 0.0505 m, the initial point is already feasible.
+    let gt_expr = gt(x_ref.clone(), literal(mm(49.0)));
+    let lt_expr = lt(x_ref, literal(mm(51.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)), // 1mm to 100mm in SI
+            free: false,
+        }],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(unique, "well-determined system should be unique");
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                si > 0.049 && si < 0.051,
+                "x should be in feasible range ~50mm, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
