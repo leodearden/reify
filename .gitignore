@@ -21,6 +21,10 @@ test_bracket.reify
 *.kate-swp
 .jcodemunch.jsonc
 data/review-checkpoints/
+data/orchestrator/
+gui/src-tauri/gen/
+orchestrator.log*
+review/reports/
 
 # Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
 tree-sitter-reify/src/parser.c
