@@ -2601,7 +2601,7 @@
         "testStrategy": "Parser test: auto vs auto(free). Compiler test: flag propagated to ValueCellDecl.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -2617,7 +2617,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.063Z"
+        "updatedAt": "2026-04-07T16:48:05.285Z"
       },
       {
         "id": "160",
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.880Z",
+      "lastModified": "2026-04-07T16:48:05.285Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
