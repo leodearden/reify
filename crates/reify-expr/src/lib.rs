@@ -845,6 +845,13 @@ fn compute_numerical_gradient_at_point(
         }
     }
 
+    // For n==1 the loop above always pushes exactly one component (or returns
+    // early via Undef). The unwrap_or(Undef) fallback is unreachable in practice;
+    // this assert documents and enforces that invariant in debug builds.
+    debug_assert!(
+        n != 1 || !gradient_components.is_empty(),
+        "gradient loop must push exactly one component for n==1"
+    );
     if n == 1 {
         gradient_components.into_iter().next().unwrap_or(Value::Undef)
     } else {
