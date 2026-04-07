@@ -21526,6 +21526,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1045,
+        "title": "Add failure-mode tests for meta access error paths",
+        "description": "Add two negative tests to crates/reify-eval/tests/e2e_meta.rs:\n- `e2e_meta_access_missing_key`: source references a key not present in the meta block (e.g. `let x : String = meta.nonexistent`); assert at least one Severity::Error diagnostic is produced by compile or eval (suggestion 8).\n- `e2e_meta_access_no_meta_block`: source has no `meta { }` block at all but the body contains `let x : String = meta.description`; assert a compile-time or eval-time error diagnostic is produced rather than a panic or silent default (suggestion 9). Task 212 description states this is a compile error caught at task 68, so a regression test is warranted.\n\nmemory_hints: search for \"meta access compile error task 68\" and \"negative test patterns\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21538,7 +21549,7 @@
       ],
       "created": "2026-04-07T19:27:34.959Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:27:50.495Z"
+      "updated": "2026-04-07T19:27:57.513Z"
     }
   }
 }
