@@ -119,6 +119,7 @@ impl ConstraintSolver for SolverRegistry {
         });
 
         let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut all_unique = true;
 
         for (ci, component) in components.iter().enumerate() {
             // Build sub-ResolutionProblem for this component
@@ -154,8 +155,9 @@ impl ConstraintSolver for SolverRegistry {
             let result = solver.solve(&sub_problem);
 
             match result {
-                SolveResult::Solved { values, .. } => {
+                SolveResult::Solved { values, unique } => {
                     merged_values.extend(values);
+                    all_unique &= unique;
                 }
                 SolveResult::Infeasible { diagnostics } => {
                     return SolveResult::Infeasible { diagnostics };
@@ -168,7 +170,7 @@ impl ConstraintSolver for SolverRegistry {
 
         SolveResult::Solved {
             values: merged_values,
-            unique: true,
+            unique: all_unique,
         }
     }
 }

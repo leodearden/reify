@@ -74,13 +74,13 @@ fn registry_solves_independent_subproblems() {
                 id: a_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true, // not testing uniqueness — range constraint is underdetermined
             },
             AutoParam {
                 id: b_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             },
         ],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
@@ -121,7 +121,7 @@ fn registry_uses_fallback_for_all_domains() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
-            free: false,
+            free: true, // not testing uniqueness — range constraint is underdetermined
         }],
         constraints: vec![(cnid("Part", 0), c1), (cnid("Part", 1), c2)],
         current_values: ValueMap::new(),
@@ -160,13 +160,13 @@ fn cross_domain_shared_param_solved_via_fallback() {
                 id: a_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true, // not testing uniqueness — range constraints are underdetermined
             },
             AutoParam {
                 id: b_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             },
         ],
         constraints: vec![
@@ -212,7 +212,7 @@ fn registry_backward_compat_compound_constraint() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: Some((0.001, 0.1)),
-            free: false,
+            free: true, // not testing uniqueness — compound range constraint is underdetermined
         }],
         constraints: vec![(cnid("Part", 0), compound)],
         current_values: ValueMap::new(),
