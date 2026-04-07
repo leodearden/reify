@@ -21098,10 +21098,11 @@
         "description": "The diff for task 999 merged test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error into test_source_self_inspection but left test_is_root_uses_libc_not_raw_ffi as a standalone — a half-applied merge with no principled justification.\n\nChoose ONE of two directions and apply consistently in tree-sitter-reify/tests/build_logic_tests.rs:\n\n**Option A (split — preferred if CI failure attribution and test isolation are priorities):**\n- Restore the original two separate tests with their original names (test_unix_permission_tests_have_root_guard, test_readonly_guard_drop_logs_error).\n- Apply the env!(\"CARGO_MANIFEST_DIR\") path fix to both.\n- Leave test_is_root_uses_libc_not_raw_ffi unchanged.\n\n**Option B (complete merge):**\n- Absorb test_is_root_uses_libc_not_raw_ffi into test_source_self_inspection as a third guarded section (with a `// --- libc invariant ---` comment), reusing the source binding already in scope.\n- Remove the standalone test.\n- Update the comment to accurately reflect that all three invariant checks share one file read.\n- Rename the merged function to enumerate invariants, e.g. test_source_invariants_root_guard_drop_logging_libc_ffi.\n\nAfter choosing, also update the function name (if option B) to enumerate the invariants it covers.\n\nmemory_hints: search \"test naming convention source-inspection\" in reify project; get_entity for \"build_logic_tests.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T16:32:03.115Z"
       },
       {
         "id": "1022",
@@ -21128,7 +21129,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:32:02.976Z",
+      "lastModified": "2026-04-07T16:32:03.115Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
