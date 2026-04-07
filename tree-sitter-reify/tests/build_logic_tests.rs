@@ -876,8 +876,11 @@ fn test_is_root_uses_libc_not_raw_ffi() {
     // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
     // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
     // a well-audited, platform-tested binding.
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/build_logic_tests.rs"
+    ))
+    .expect("should be able to read this test file");
 
     let fn_start = source
         .find("fn is_root()")
