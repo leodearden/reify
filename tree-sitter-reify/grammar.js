@@ -414,7 +414,13 @@ module.exports = grammar({
     ),
 
     // ── Auto keyword (for solver-determined params) ───────
-    auto_keyword: $ => 'auto',
+    // Accepts bare `auto` or `auto(free)` for underdetermined params.
+    // Uses token() to make both forms single lexer tokens, avoiding
+    // parser ambiguity with a possible `(` expression following `auto`.
+    auto_keyword: $ => token(choice(
+      seq('auto', '(', 'free', ')'),
+      'auto',
+    )),
 
     // ── Let ─────────────────────────────────────────────────
     let_declaration: $ => seq(

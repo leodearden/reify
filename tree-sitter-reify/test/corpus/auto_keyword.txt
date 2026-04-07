@@ -1,0 +1,62 @@
+================================================================================
+Bare auto keyword as param default
+================================================================================
+
+structure S {
+  param x: Scalar = auto
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
+
+================================================================================
+auto(free) keyword as param default
+================================================================================
+
+structure S {
+  param x: Scalar = auto(free)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
+
+================================================================================
+Mixed auto and auto(free) params
+================================================================================
+
+structure S {
+  param x: Scalar = auto
+  param y: Scalar = auto(free)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
