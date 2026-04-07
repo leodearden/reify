@@ -2037,3 +2037,62 @@ fn auto_free_emits_warning_diagnostic() {
         warning.severity
     );
 }
+
+#[test]
+fn strict_auto_non_unique_emits_error_diagnostic() {
+    // Integration test: real DimensionalSolver with an underdetermined strict auto
+    // problem. Two params with only inequality constraints (x > 10mm, y > 10mm) —
+    // many valid solutions exist. With strict auto (free: false), the solver detects
+    // non-uniqueness and returns Infeasible, which the eval engine surfaces as
+    // an Error diagnostic.
+
+    let template = TopologyTemplateBuilder::new("Part")
+        .auto_param("Part", "width", Type::length())
+        .auto_param("Part", "height", Type::length())
+        .constraint(
+            "Part",
+            0,
+            None,
+            gt(value_ref("Part", "width"), literal(mm(10.0))),
+        )
+        .constraint(
+            "Part",
+            1,
+            None,
+            gt(value_ref("Part", "height"), literal(mm(10.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&module);
+
+    // The solver should return Infeasible due to non-uniqueness, which the eval
+    // engine forwards as diagnostics. Both params should remain Undef.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("not uniquely determined")),
+        "expected error diagnostic about non-unique strict auto, got {:?}",
+        result.diagnostics
+    );
+
+    // The error diagnostic should have Error severity
+    let error_diag = result
+        .diagnostics
+        .iter()
+        .find(|d| d.message.contains("not uniquely determined"))
+        .unwrap();
+    assert_eq!(
+        error_diag.severity,
+        reify_types::Severity::Error,
+        "expected Error severity, got {:?}",
+        error_diag.severity
+    );
+}
