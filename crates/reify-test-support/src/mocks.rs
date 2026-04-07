@@ -442,6 +442,18 @@ impl SpyConstraintSolver {
         }
     }
 
+    /// Create a spy that will return `Solved` with `unique: false` and capture
+    /// the `ResolutionProblem` it receives.
+    pub fn new_solved_non_unique(values: HashMap<ValueCellId, Value>) -> Self {
+        Self {
+            captured: Arc::new(Mutex::new(None)),
+            result: SolveResult::Solved {
+                values,
+                unique: false,
+            },
+        }
+    }
+
     /// Return a shared reference to the captured problem so callers can
     /// inspect it after `solve()` has been called.
     pub fn captured_problem(&self) -> Arc<Mutex<Option<ResolutionProblem>>> {

@@ -11,8 +11,8 @@ use reify_test_support::{
     lt, mm, value_ref,
 };
 use reify_types::{
-    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId, SnapshotProvenance, Type,
-    Value, ValueCellId,
+    DeterminacyState, Diagnostic, ModulePath, OptimizationObjective, SnapshotId,
+    SnapshotProvenance, Type, Value, ValueCellId,
 };
 
 #[test]
@@ -1923,5 +1923,55 @@ fn resolve_concurrent_edit_no_cross_group_contamination() {
             .iter()
             .map(|p| &p.id)
             .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn auto_free_threads_to_solver_and_warns() {
+    let thickness_id = ValueCellId::new("S", "thickness");
+
+    let mut solved_values = HashMap::new();
+    solved_values.insert(thickness_id.clone(), mm(5.0));
+
+    // Spy returns Solved { unique: false } to simulate a free-auto resolution
+    let spy = SpyConstraintSolver::new_solved_non_unique(solved_values);
+    let captured = spy.captured_problem();
+
+    let template = TopologyTemplateBuilder::new("S")
+        .auto_param_free("S", "thickness", Type::length())
+        .constraint(
+            "S",
+            0,
+            None,
+            gt(value_ref("S", "thickness"), literal(mm(2.0))),
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    let result = engine.eval(&module);
+
+    // (a) The AutoParam sent to the solver should have free=true
+    let problem = captured.lock().unwrap();
+    let problem = problem.as_ref().expect("solver should have been called");
+    assert_eq!(problem.auto_params.len(), 1);
+    assert!(
+        problem.auto_params[0].free,
+        "expected AutoParam.free=true for auto(free) cell"
+    );
+
+    // (b) A warning diagnostic should be emitted for auto(free) with non-unique result
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("resolved via auto(free)")),
+        "expected warning diagnostic about auto(free) resolution, got {:?}",
+        result.diagnostics
     );
 }
