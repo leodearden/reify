@@ -3721,7 +3721,7 @@
         "dependencies": [
           "208"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3737,7 +3737,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:57.066Z"
+        "updatedAt": "2026-04-07T14:02:36.469Z"
       },
       {
         "id": "210",
@@ -17584,11 +17584,11 @@
         "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:46:39.633Z",
+        "updatedAt": "2026-04-07T14:02:35.520Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -20778,7 +20778,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:34.565Z",
+      "lastModified": "2026-04-07T14:02:36.470Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
