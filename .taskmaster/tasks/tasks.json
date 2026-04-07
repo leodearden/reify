@@ -19091,7 +19091,18 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:35:22.265Z"
+        "updatedAt": "2026-04-04T04:35:22.265Z",
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/fixtures.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs",
+            "gui/src-tauri/src/tests/mcp_context_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 923,
@@ -20237,7 +20248,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/tests/types_tests.rs",
+            "gui/src-tauri/src/commands.rs",
+            "gui/src-tauri/src/types.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 986,
