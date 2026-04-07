@@ -21284,7 +21284,9 @@
         "details": "",
         "testStrategy": "",
         "status": "pending",
-        "dependencies": [],
+        "dependencies": [
+          "1028"
+        ],
         "priority": "low",
         "subtasks": []
       },
