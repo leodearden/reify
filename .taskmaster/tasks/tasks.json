@@ -17585,11 +17585,11 @@
         "description": "In gui/src-tauri/src/engine.rs, before the .map() in get_diagnostics (around line 285): (1) build a Vec<usize> of newline byte positions in one O(M) pass, then do binary-search lookups in byte_offset_to_line_col instead of linear scans — fixes the O(N×M) pattern at lines 292-293; (2) hoist file_path.clone() outside the closure or use Arc<str> to avoid N identical heap allocations at line 300; (3) replace format!(\"{}\", diag.severity) at line 305 with diag.severity.to_string() or map to &'static str.\n\nmemory_hints: search(\"byte_offset_to_line_col performance get_diagnostics\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:03:47.827Z",
+        "updatedAt": "2026-04-07T16:04:58.849Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -18777,11 +18777,11 @@
         "description": "The `conjugate` method in reify-expr (line ~1217) constructs `Value::Complex { re: *re, im: -im, dimension }` without any NaN/Inf guard. If the input has NaN/Inf components, the output is a poisoned Complex. The reify-stdlib counterpart (task 667) was already fixed to wrap conjugate output in sanitize_value, but reify-expr's copy was missed.\n\nWith the Complex arm now removed from reify-expr's sanitize_value (task 860), wrapping in sanitize_value won't help. Instead, add a direct non-finite guard before the Complex construction — similar to the phase method's pattern at line ~1190: check for NaN/Inf in re/im and return Undef early.\n\nThis is a pre-existing gap widened by the Complex arm removal.\n\nMemory hints: search \"conjugate sanitize_value NaN\", search \"task 667 conjugate\", entities: conjugate, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:31.523Z",
+        "updatedAt": "2026-04-07T16:04:58.929Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -18846,11 +18846,11 @@
         "description": "In crates/reify-constraints/tests/solver_tracing.rs, the EventCounter::new_span at line 39-41 still uses Id::from_u64(1) for every span — the exact bug task 851 fixed elsewhere. At minimum, replace the static ID with an AtomicU64 counter (same pattern as WarnCountingSubscriber). Optionally extend crates/reify-test-support/src/tracing_support.rs with a builder API (e.g. CountingSubscriberBuilder) accepting a level predicate and optional target prefix, so solver_tracing.rs can replace its EventCounter entirely with the shared utility.\n\nmemory_hints: search(\"task 851 Id::from_u64 span ID fix\", project_id=\"reify\"), search(\"warn_counting_subscriber shared test utility\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:04:42.880Z",
+        "updatedAt": "2026-04-07T16:04:58.999Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints",
@@ -19008,11 +19008,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs around line 5744, add tests that: (1) place f64::NEG_INFINITY in any single component and assert is_undef() — matching the pattern of sanitize_real_neg_inf_returns_undef; (2) place an invalid value (NaN or Inf) in the y component; (3) place an invalid value in the z component. Each should be a separate #[test] function following the existing naming convention (sanitize_orientation_neg_inf_returns_undef, sanitize_orientation_y_nan_returns_undef, sanitize_orientation_z_inf_returns_undef, etc.).\n\nThis ensures all four quaternion components (w, x, y, z) are exercised individually and both infinity polarities are covered, matching the coverage pattern established for Scalar and Complex arms.\n\nMemory hints: search \"sanitize_value Orientation test coverage\", search \"sanitize_real_neg_inf_returns_undef\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:08.305Z",
+        "updatedAt": "2026-04-07T16:04:59.073Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -19062,11 +19062,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs, the three into_result warn-emission tests (tracing_warn_emitted_on_poison_into_result, _snapshot_values, _results at lines 2086-2159) are structurally identical — they differ only in which poison method is called. Extract a private helper like `assert_into_result_emits_one_warn(poison_fn: impl Fn(&ConcurrentEvalAdapter))` and reduce each #[test] to a one-liner.\n\nAdditionally, all three tests discard `_result` from `catch_unwind` without asserting `_result.is_ok()`. A panic after the warn! would be masked. Add `assert!(_result.is_ok(), \"into_result() should not panic on poison recovery\")` after the warn_count assertion.\n\nmemory_hints: search(\"warn_counting_subscriber helper\", project_id=\"reify\"), search(\"test deduplication helper poison\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:38.613Z",
+        "updatedAt": "2026-04-07T16:04:59.159Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -19245,11 +19245,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:40.289Z",
+        "updatedAt": "2026-04-07T16:04:59.207Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -19291,11 +19291,11 @@
         "description": "In orchestrator.yaml: (1) Move bash tests/check-pm-standardization.sh from test_command to lint_command (pure static check). (2) Add if test -f existence guards for both check-pm-standardization.sh and sync_comments_test.sh.",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:02:52.957Z",
+        "updatedAt": "2026-04-07T16:04:59.249Z",
         "metadata": {
           "modules": [
             "orchestrator.yaml",
@@ -19496,11 +19496,11 @@
         "description": "In crates/reify-constraints/tests/solvespace_tests.rs: (1) Rename solve_returns_no_progress_for_missing_non_auto_value to reflect it tests unrecognized-pattern path. (2) Add integration test for non-auto parameter missing from current_values NoProgress branch. (3) Use auto_params_for helper in add_auto_coord_errors test.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:05:00.353Z",
+        "updatedAt": "2026-04-07T16:04:59.341Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19655,11 +19655,11 @@
         "description": "Add two tests to gui/src/__tests__/gotoDefinition.test.ts: (1) bare path uri with file:// location.uri verifying same-file dispatch, (2) partial suffix match (/a/foo.ri vs /b/a/foo.ri) verifying cross-file navigation.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:02:14.093Z",
+        "updatedAt": "2026-04-07T16:04:59.425Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -19964,7 +19964,7 @@
         "id": "966",
         "title": "Extract mock factories and add mockInvoke assertions in gotoDefinition tests",
         "description": "In gui/src/editor/gotoDefinition.ts: (3) Add .catch() to the requestDefinition promise chain to handle stale document RangeError. (4) Add bounds check `if (line+1 > view.state.doc.lines) return;` after isConnected guard.",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "Focus on handling errors and ensuring bounds checks in the gotoDefinition functionality.",
@@ -20002,7 +20002,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:03:00.571Z"
+        "updatedAt": "2026-04-07T16:04:59.558Z"
       },
       {
         "id": "967",
@@ -20045,11 +20045,11 @@
         "description": "Reviewer feedback (robustness): Two pre-existing robustness gaps in gui/src/editor/gotoDefinition.ts:\n1. The .then() callback has no .catch() — if view.state.doc.line() receives an out-of-bounds line number from a stale LSP response, it throws a RangeError that becomes an unhandled promise rejection. Add .catch(err => console.warn(\"gotoDefinition: failed to apply result\", err)).\n2. After the isConnected guard (line 105), add a bounds check: if (location.range.start.line + 1 > view.state.doc.lines) return; to handle stale document state where lines were deleted between mousedown and async response.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:01:21.279Z",
+        "updatedAt": "2026-04-07T16:04:59.652Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20581,7 +20581,7 @@
         "description": "Race in scripts/lib_portable.sh:66 POSIX-fallback timer subshell: `touch flag; kill cmd_pid` runs as separate non-atomic operations, so a command that exits naturally just before kill can be misreported as a timeout. Separately, the new flag-file mechanism's happy path is entirely untested — the existing test suite only covers GNU timeout/gtimeout (which never reach the POSIX flag-file branch on Linux CI) and the mktemp-fail degraded path. False-positive _PORTABLE_TIMEOUT_TIMED_OUT under GNU timeout is also undocumented.\n\n## Race fix (lib_portable.sh:66-82)\nReorder the POSIX-fallback timer subshell so kill runs first and touch only fires if the kill succeeded against a still-live process:\n```\n( sleep \"$seconds\" && kill \"$cmd_pid\" 2>/dev/null && touch \"$timeout_flag\" 2>/dev/null )\n```\nThis closes the false-positive window where a successful command exits just after touch but just before kill.\n\n## Cleanup trap\nRegister a local cleanup trap for $timeout_flag covering EXIT/INT/TERM so signals during the multi-second sleep window don't leak temp files in $TMPDIR.\n\n## Documentation\nAdd an inline comment in the GNU timeout/gtimeout branches (lines 45-46 and 50-52) noting that _PORTABLE_TIMEOUT_TIMED_OUT may be a false positive when a wrapped command naturally exits 124 — the flag is only fully reliable on the POSIX flag-file path. Reflect this in the function-level doc comment so callers know.\n\n## Tests (tests/infra/test_portable_timeout.sh)\n1. POSIX-flag-file happy-path test: strip timeout/gtimeout from PATH (mirror Test 8) AND run a slow command so the timer genuinely fires; assert _PORTABLE_TIMEOUT_TIMED_OUT=true and exit code 124. This is the only missing branch for the new mechanism.\n2. Reset-semantics test: call portable_timeout with a slow command (timeout → true), then immediately with `true` (success), and assert _PORTABLE_TIMEOUT_TIMED_OUT=false afterward.\n3. Stub-tree-sitter test for tree-sitter-generate.sh: stub it to exit 124 with _PORTABLE_TIMEOUT_TIMED_OUT=false and verify the script does NOT emit the 'timed out' error message — exercises the guarded condition added by the fix.\n\nSource: review escalation esc-794-83 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20601,7 +20601,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:03:40.849Z"
+        "updatedAt": "2026-04-07T16:04:59.736Z"
       },
       {
         "id": "996",
@@ -20686,7 +20686,7 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs has an off-by-one in fn-body extraction that silently truncates by 1 byte (latent trap if guard pattern moves to function end). Two source-inspection tests redundantly read the same 800-line file from disk in parallel. Both use a hardcoded relative path `tests/build_logic_tests.rs` which breaks if cargo test is invoked from a non-default directory.\n\n## Off-by-one fix (lines ~721-724)\nThe `fn_section[1..].find(...)` returns an offset relative to the sub-slice but is then used as an index into fn_section, making fn_body 1 byte short. Change to:\n```rust\nlet fn_end = fn_section[1..].find(\"\\n#[test]\").map(|i| i + 1).unwrap_or(fn_section.len());\n```\n\n## Path robustness\nReplace the hardcoded \"tests/build_logic_tests.rs\" in both test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` to make the tests directory-independent.\n\n## Merge duplicate file reads\nMerge both source-inspection assertions into a single test function that reads the file once. They run concurrently today and read the growing 800+ line file twice.\n\n## Strengthen drop test\nIn test_readonly_guard_drop_logs_error, tighten the assertion from a bare contains(\"eprintln!\") to also require contains(\"if let Err\") (or the specific 'failed to restore permissions' message), so an unrelated debug eprintln does not satisfy the check.\n\nSource: review escalation esc-783-53 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20704,7 +20704,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:02:40.052Z"
+        "updatedAt": "2026-04-07T16:04:59.896Z"
       },
       {
         "id": "1000",
@@ -20712,7 +20712,7 @@
         "description": "Two GUI/sidecar follow-ups from review backlog:\n\n## (1) Sidecar errorMessage missing plain-object branch\ngui/sidecar/src/utils.ts:errorMessage uses the legacy single-line implementation with no plain-object .message handling. gui/src/utils/errorClassifier.ts has the richer 3-branch implementation. Structured error objects (e.g. from IPC) reaching the sidecar will become '[object Object]'.\n\nApply the same plain-object handling to gui/sidecar/src/utils.ts:errorMessage that exists in gui/src/utils/errorClassifier.ts. Either copy the 3-branch implementation, or extract a shared helper into a common module both packages import (preferred).\n\nAdd vitest cases for: `{ message: null }` falls through to String() → '[object Object]', `{ message: '   ' }` returns '   ' (whitespace passthrough), and the bare object case.\n\nSource: esc-671-34 / esc-671-36.\n\n## (2) Editor.test scrollToLocation: weak assertions + misleading comments\nIn gui/src/__tests__/Editor.test.tsx, the mismatch test asserts `head > 0` instead of the deterministic `head == 9`, so a regression that jumps to the wrong position would still pass. Comment misattributes head to column.\n\n- Replace `expect(view.state.selection.main.head).toBeGreaterThan(0)` with `expect(view.state.selection.main.head).toBe(9)` (deterministic from end_column=10, 0-indexed). Also assert anchor === 4.\n- Fix the misleading comment: head is computed from end_column, not column.\n- Split the dual-purpose 'mismatch is a no-op' test into two named tests: one positive same-file case, one mismatch.\n\nSource: esc-898-51.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20734,7 +20734,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T14:01:24.435Z"
+        "updatedAt": "2026-04-07T16:04:59.968Z"
       },
       {
         "id": "1001",
@@ -20999,9 +20999,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:04:56.513Z",
+      "lastModified": "2026-04-07T16:04:59.970Z",
       "taskCount": 1014,
-      "completedCount": 721,
+      "completedCount": 720,
       "tags": [
         "master"
       ]
