@@ -710,6 +710,19 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs
 }
 
+/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
+///
+/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
+/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
+/// in O(log M) instead of the O(M) scan done by [`byte_offset_to_line_col`].
+pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
+    source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+        .collect()
+}
+
 /// Convert a byte offset in source text to (line, column), both 1-based.
 fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;

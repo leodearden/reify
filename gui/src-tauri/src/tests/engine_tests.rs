@@ -1085,6 +1085,58 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+// --- Task 837: build_line_offsets unit tests ---
+
+/// build_line_offsets returns empty vec for empty string.
+#[test]
+fn build_line_offsets_empty_string() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns empty vec for a single-line string (no '\n').
+#[test]
+fn build_line_offsets_single_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("hello world");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns correct byte positions of '\n' for a multi-line string.
+///
+/// "abc\ndef\nghi"
+///  0123 4567 8910
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_multi_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\nghi");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a trailing newline (last char is '\n').
+///
+/// "abc\ndef\n"
+///  0123 4567 8
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_trailing_newline() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\n");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a string that is only newlines.
+///
+/// "\n\n\n" → '\n' at bytes 0, 1, 2.
+#[test]
+fn build_line_offsets_only_newlines() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("\n\n\n");
+    assert_eq!(offsets, vec![0, 1, 2]);
+}
+
 /// Step-4: After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
