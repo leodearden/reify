@@ -19950,11 +19950,11 @@
         "description": "Reviewer feedback (robustness): Two pre-existing robustness gaps in gui/src/editor/gotoDefinition.ts:\n1. The .then() callback has no .catch() — if view.state.doc.line() receives an out-of-bounds line number from a stale LSP response, it throws a RangeError that becomes an unhandled promise rejection. Add .catch(err => console.warn(\"gotoDefinition: failed to apply result\", err)).\n2. After the isConnected guard (line 105), add a bounds check: if (location.range.start.line + 1 > view.state.doc.lines) return; to handle stale document state where lines were deleted between mousedown and async response.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:12:42.180Z",
+        "updatedAt": "2026-04-07T13:34:15.825Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -20647,7 +20647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:34:15.622Z",
+      "lastModified": "2026-04-07T13:34:15.825Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
