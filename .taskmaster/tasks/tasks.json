@@ -20590,7 +20590,7 @@
         "description": "Race in scripts/lib_portable.sh:66 POSIX-fallback timer subshell: `touch flag; kill cmd_pid` runs as separate non-atomic operations, so a command that exits naturally just before kill can be misreported as a timeout. Separately, the new flag-file mechanism's happy path is entirely untested — the existing test suite only covers GNU timeout/gtimeout (which never reach the POSIX flag-file branch on Linux CI) and the mktemp-fail degraded path. False-positive _PORTABLE_TIMEOUT_TIMED_OUT under GNU timeout is also undocumented.\n\n## Race fix (lib_portable.sh:66-82)\nReorder the POSIX-fallback timer subshell so kill runs first and touch only fires if the kill succeeded against a still-live process:\n```\n( sleep \"$seconds\" && kill \"$cmd_pid\" 2>/dev/null && touch \"$timeout_flag\" 2>/dev/null )\n```\nThis closes the false-positive window where a successful command exits just after touch but just before kill.\n\n## Cleanup trap\nRegister a local cleanup trap for $timeout_flag covering EXIT/INT/TERM so signals during the multi-second sleep window don't leak temp files in $TMPDIR.\n\n## Documentation\nAdd an inline comment in the GNU timeout/gtimeout branches (lines 45-46 and 50-52) noting that _PORTABLE_TIMEOUT_TIMED_OUT may be a false positive when a wrapped command naturally exits 124 — the flag is only fully reliable on the POSIX flag-file path. Reflect this in the function-level doc comment so callers know.\n\n## Tests (tests/infra/test_portable_timeout.sh)\n1. POSIX-flag-file happy-path test: strip timeout/gtimeout from PATH (mirror Test 8) AND run a slow command so the timer genuinely fires; assert _PORTABLE_TIMEOUT_TIMED_OUT=true and exit code 124. This is the only missing branch for the new mechanism.\n2. Reset-semantics test: call portable_timeout with a slow command (timeout → true), then immediately with `true` (success), and assert _PORTABLE_TIMEOUT_TIMED_OUT=false afterward.\n3. Stub-tree-sitter test for tree-sitter-generate.sh: stub it to exit 124 with _PORTABLE_TIMEOUT_TIMED_OUT=false and verify the script does NOT emit the 'timed out' error message — exercises the guarded condition added by the fix.\n\nSource: review escalation esc-794-83 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20610,7 +20610,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:18:10.503Z"
+        "updatedAt": "2026-04-07T16:48:04.557Z"
       },
       {
         "id": "996",
@@ -20695,7 +20695,7 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs has an off-by-one in fn-body extraction that silently truncates by 1 byte (latent trap if guard pattern moves to function end). Two source-inspection tests redundantly read the same 800-line file from disk in parallel. Both use a hardcoded relative path `tests/build_logic_tests.rs` which breaks if cargo test is invoked from a non-default directory.\n\n## Off-by-one fix (lines ~721-724)\nThe `fn_section[1..].find(...)` returns an offset relative to the sub-slice but is then used as an index into fn_section, making fn_body 1 byte short. Change to:\n```rust\nlet fn_end = fn_section[1..].find(\"\\n#[test]\").map(|i| i + 1).unwrap_or(fn_section.len());\n```\n\n## Path robustness\nReplace the hardcoded \"tests/build_logic_tests.rs\" in both test_unix_permission_tests_have_root_guard and test_readonly_guard_drop_logs_error with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")` to make the tests directory-independent.\n\n## Merge duplicate file reads\nMerge both source-inspection assertions into a single test function that reads the file once. They run concurrently today and read the growing 800+ line file twice.\n\n## Strengthen drop test\nIn test_readonly_guard_drop_logs_error, tighten the assertion from a bare contains(\"eprintln!\") to also require contains(\"if let Err\") (or the specific 'failed to restore permissions' message), so an unrelated debug eprintln does not satisfy the check.\n\nSource: review escalation esc-783-53 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20713,7 +20713,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:18:33.590Z"
+        "updatedAt": "2026-04-07T16:48:04.605Z"
       },
       {
         "id": "1000",
@@ -21194,7 +21194,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:48:04.489Z",
+      "lastModified": "2026-04-07T16:48:04.605Z",
       "taskCount": 1023,
       "completedCount": 723,
       "tags": [
