@@ -21063,7 +21063,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:31:42.936Z"
+        "updatedAt": "2026-04-07T16:31:42.936Z",
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": 1018,
@@ -21075,7 +21083,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:31:43.828Z"
+        "updatedAt": "2026-04-07T16:31:43.828Z",
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": 1019,
