@@ -770,7 +770,7 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
-                        ..
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             result.values.insert(id.clone(), val.clone());
@@ -791,6 +791,17 @@ impl Engine {
                                 setup.version,
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
@@ -1362,7 +1373,7 @@ impl Engine {
 
                 // Build ResolutionProblem
                 let problem = ResolutionProblem {
-                    auto_params: auto_param_list,
+                    auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
@@ -1378,7 +1389,7 @@ impl Engine {
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
-                        ..
+                        unique,
                     } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
@@ -1429,6 +1440,19 @@ impl Engine {
                                 version: VersionId(res_version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
+                        }
+
+                        // Emit warning for free auto params when solution is non-unique
+                        if !unique {
+                            for ap in &auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
 
                         // Set child snapshot with Resolution provenance
@@ -1843,7 +1867,7 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
-                        ..
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             values.insert(id.clone(), val.clone());
@@ -1870,6 +1894,17 @@ impl Engine {
                                 VersionId(version_id),
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
