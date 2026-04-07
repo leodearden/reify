@@ -74,15 +74,7 @@ async fn initialize_returns_server_capabilities() {
 
 #[tokio::test]
 async fn did_open_and_completion_returns_items() {
-    let lsp = InProcessLsp::new();
-
-    // Initialize first
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed");
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .expect("initialized should succeed");
+    let lsp = initialized_lsp().await;
 
     // Open a document with bracket source
     let source = reify_test_support::bracket_source();
@@ -124,12 +116,7 @@ async fn did_open_and_completion_returns_items() {
 
 #[tokio::test]
 async fn hover_returns_info_for_known_symbol() {
-    let lsp = InProcessLsp::new();
-
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({})).await.unwrap();
+    let lsp = initialized_lsp().await;
 
     let source = reify_test_support::bracket_source();
     lsp.handle_request(
@@ -172,12 +159,7 @@ async fn hover_returns_info_for_known_symbol() {
 
 #[tokio::test]
 async fn hover_on_documented_structure_shows_doc_via_bridge() {
-    let lsp = InProcessLsp::new();
-
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({})).await.unwrap();
+    let lsp = initialized_lsp().await;
 
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
     lsp.handle_request(
@@ -222,12 +204,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 
 #[tokio::test]
 async fn goto_definition_returns_location() {
-    let lsp = InProcessLsp::new();
-
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({})).await.unwrap();
+    let lsp = initialized_lsp().await;
 
     let source = reify_test_support::bracket_source();
     lsp.handle_request(
@@ -269,12 +246,7 @@ async fn goto_definition_returns_location() {
 
 #[tokio::test]
 async fn diagnostics_captured_after_did_open_with_syntax_error() {
-    let lsp = InProcessLsp::new();
-
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .unwrap();
-    lsp.handle_request("initialized", json!({})).await.unwrap();
+    let lsp = initialized_lsp().await;
 
     // Open a document with a syntax error
     let broken_source = "structure {";
@@ -395,13 +367,10 @@ async fn initialize_with_invalid_field_type_returns_error() {
 /// one-way LSP messages (initialized, didOpen, didChange, didClose).
 #[tokio::test]
 async fn valid_notification_returns_ok_null() {
-    let lsp = InProcessLsp::new();
+    let lsp = initialized_lsp().await;
 
-    // initialize first so the server state is ready
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed");
-
+    // Sending `initialized` again is valid — the server accepts multiple
+    // notifications and returns Ok(Value::Null) each time.
     let result = lsp.handle_request("initialized", json!({})).await;
 
     assert!(
