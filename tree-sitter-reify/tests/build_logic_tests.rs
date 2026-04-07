@@ -1033,3 +1033,33 @@ fn test_find_cfg_unix_test_fns_discovers_dynamically() {
         fns
     );
 }
+
+#[test]
+fn test_self_read_paths_use_manifest_dir() {
+    // Meta-test / regression guard: the two source-self-inspection tests that read
+    // this file must use `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs")`
+    // rather than the bare relative path `"tests/build_logic_tests.rs"`.
+    // A bare relative path is fragile — it depends on the working directory from which
+    // `cargo test` is invoked, causing failures when tests are run from outside the
+    // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
+    //
+    // This meta-test itself demonstrates the correct idiom by using CARGO_MANIFEST_DIR
+    // to read the source file.
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/build_logic_tests.rs"
+    ))
+    .expect("should be able to read this test file via CARGO_MANIFEST_DIR");
+
+    // Check test_unix_permission_tests_have_root_guard uses CARGO_MANIFEST_DIR.
+    let root_guard_body =
+        extract_test_fn_body(&source, "fn test_unix_permission_tests_have_root_guard()")
+            .expect("source should contain test_unix_permission_tests_have_root_guard");
+    assert!(
+        root_guard_body.contains("CARGO_MANIFEST_DIR"),
+        "test_unix_permission_tests_have_root_guard must read the test file via \
+         concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\") \
+         rather than a bare relative path. Function body:\n{}",
+        root_guard_body
+    );
+}
