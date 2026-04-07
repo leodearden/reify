@@ -21362,15 +21362,16 @@
         "description": "Extract an `async fn init_lsp(lsp: &InProcessLsp)` helper in `crates/reify-lsp/tests/in_process_bridge.rs` that performs the initialize+initialized handshake. The exact 4-line pattern (`handle_request(\"initialize\", ...).await.expect(...)` followed by `handle_request(\"initialized\", ...).await.expect(...)`) is duplicated in at least 6 tests: `did_open_and_completion_returns_items`, `hover_returns_info_for_known_symbol`, `hover_on_documented_structure_shows_doc_via_bridge`, `goto_definition_returns_location`, `diagnostics_captured_after_did_open_with_syntax_error`, and `did_open_returns_ok_null`. A shared helper makes future changes to the handshake (e.g. adding capabilities) a one-line edit instead of a multi-site grep-and-replace. While refactoring, also replace any `assert!(result.is_ok(), ...); assert_eq!(result.unwrap(), ...)` patterns with the cleaner `let val = result.expect(\"...\"); assert_eq!(val, ...)` idiom.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:11:08.688Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:11:08.453Z",
+      "lastModified": "2026-04-07T19:11:08.688Z",
       "taskCount": 1036,
       "completedCount": 727,
       "tags": [
