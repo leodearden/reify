@@ -274,4 +274,34 @@ mod tests {
             "one WARN event should produce count=1"
         );
     }
+
+    /// `CountingSubscriberBuilder` with `target_prefix` should only count events
+    /// whose target starts with the given prefix.
+    ///
+    /// Emits one matching-target WARN event and one non-matching WARN event;
+    /// asserts the counter reads exactly 1.
+    #[test]
+    fn counting_subscriber_filters_by_target_prefix() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: "reify_constraints::solver", "matching target");
+            tracing::warn!(target: "argmin::core", "non-matching target");
+        });
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            1,
+            "only the matching-target event should be counted"
+        );
+    }
 }
