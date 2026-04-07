@@ -21491,11 +21491,11 @@
         "description": "Two precision improvements to tests/sync_comments_test.sh extraction pipelines:\n\n1. **SYNC: colon delimiter** (lines 29, 41): Change `grep 'SYNC'` to `grep 'SYNC:'` in both extraction pipelines. The file header (line 5) documents the convention as `// SYNC:`, and the assertion greps on lines 18-25 already use `SYNC:.*reify-stdlib::`. The bare `SYNC` pattern could theoretically match \"ASYNC\" or other words containing the substring.\n\n2. **Function definition boundary** (lines 36, 48): Change `grep -q \"fn ${_expr_ref_fn}\"` to `grep -qE '^(pub )?(fn|async fn) '${_expr_ref_fn}'\\\\b'` (or similar definition-anchored pattern). The current bare `fn` grep could match call sites, doc references, or other non-definition occurrences, giving false confidence that the referenced function actually exists as a definition in the sibling crate.\n\nmemory_hints: search(\"sync_comments_test SYNC extraction\", project_id=\"reify\"); search(\"SYNC comment convention colon delimiter\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:24:30.244Z"
+        "updatedAt": "2026-04-07T19:54:45.968Z"
       },
       {
         "id": "1042",
@@ -21647,9 +21647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:54:45.663Z",
+      "lastModified": "2026-04-07T19:54:45.968Z",
       "taskCount": 1050,
-      "completedCount": 740,
+      "completedCount": 741,
       "tags": [
         "master"
       ]
