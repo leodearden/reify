@@ -20315,6 +20315,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 993,
+        "title": "point/vector binop: missing length-mismatch, Undef, zero-divisor tests",
+        "description": "componentwise_binop in crates/reify-expr has guarded paths for empty vectors, length mismatch, Sub right-side Undef, Scalar-zero divisors, Point dispatch length mismatch, and -0.0. None are exercised. The Int(0) division tests pass but related guarded code paths are silently uncovered.\n\nAdd targeted tests in crates/reify-expr/tests/point_vector_eval_tests.rs:\n\n1. value_empty_vector_add_returns_undef — exercises the `if a.is_empty() { return Value::Undef }` guard in componentwise_binop.\n2. value_vector_with_undef_component_sub_right_propagates — Undef on the RIGHT operand of Sub (existing test only covers LEFT).\n3. value_vector_div_scalar_zero_returns_undef — uses `Value::Scalar { si_value: 0.0, .. }` as divisor to verify the as_f64() == 0.0 guard catches Scalar zero (currently only Int(0) and Real(0.0) tested).\n4. value_point3_add_point2_mismatched_length_returns_undef and/or value_point3_sub_vector2_mismatched_length_returns_undef — Point dispatch arm length mismatch (existing test only covers Vector).\n5. value_vector_div_negative_zero_returns_undef — pin -0.0 divisor behaviour.\n\n## Cleanup\nDeduplicate the existing near-duplicate test pairs (value_vector_div_int_zero_returns_undef vs value_vector_div_zero_returns_undef, and the Point variant) by extracting `fn assert_vector_div_zero_returns_undef(zero: Value, zero_ty: Type)` and driving Real(0.0) and Int(0) variants through it.\n\nSource: review escalations esc-458-33, esc-458-35.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20327,7 +20338,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:22:09.465Z"
+      "updated": "2026-04-07T13:22:22.037Z"
     }
   }
 }
