@@ -773,6 +773,21 @@ fn compute_numerical_gradient_at_point(
         }
     };
 
+    // Populate work_args from a coordinate slice.
+    // Takes args and coords as explicit parameters to avoid borrow conflicts:
+    // work_coords is mutated between the two calls (perturb +h then −h), so
+    // capturing it by reference would conflict with the mutation. Taking both
+    // as parameters sidesteps the borrow checker while eliminating duplication.
+    // Captures only single_point_param (Copy) and make_arg (shared ref).
+    let populate = |args: &mut Vec<Value>, c: &[f64]| {
+        args.clear();
+        if single_point_param {
+            args.push(Value::Point(c.iter().map(|&v| make_arg(v)).collect()));
+        } else {
+            args.extend(c.iter().map(|&v| make_arg(v)));
+        }
+    };
+
     // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
     // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
     // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
@@ -789,22 +804,12 @@ fn compute_numerical_gradient_at_point(
 
         // Perturb forward (+h), evaluate
         work_coords[i] += h;
-        work_args.clear();
-        if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
+        populate(&mut work_args, &work_coords);
         let f_plus = apply_lambda(lambda, &work_args, ctx);
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
-        work_args.clear();
-        if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
+        populate(&mut work_args, &work_coords);
         let f_minus = apply_lambda(lambda, &work_args, ctx);
 
         // Restore coord[i] to original value
