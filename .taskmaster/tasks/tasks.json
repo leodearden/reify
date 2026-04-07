@@ -18057,11 +18057,11 @@
         "description": "The sync_comments_test.sh only verifies that `// SYNC:` comment markers exist — it does not verify that the two sanitize_value function bodies are actually identical. A developer could modify one implementation (e.g., add a Value::Integer arm to one crate but not the other), leave the SYNC comment in place, and the test would still pass.\n\nAdd a second check that extracts both function bodies and diffs them. Example approach using awk:\n```bash\nextract_fn() { awk '/^fn sanitize_value/,/^}/' \"$1\"; }\ndiff <(extract_fn \"$EXPR_FILE\") <(extract_fn \"$STDLIB_FILE\") \\\n  || { echo 'FAIL: sanitize_value bodies differ'; FAIL=$((FAIL+1)); }\n```\n\nThis turns the test into an actual parity guard, not just a comment-presence check.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:59:04.854Z",
+        "updatedAt": "2026-04-07T14:01:58.324Z",
         "metadata": {
           "modules": [
             "tests/sync_comments_test.sh"
@@ -20748,7 +20748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:01:58.000Z",
+      "lastModified": "2026-04-07T14:01:58.324Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
