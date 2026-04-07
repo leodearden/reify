@@ -1433,11 +1433,12 @@ fn neg_scalar(v: Value) -> Value {
             si_value: -si_value,
             dimension,
         },
-        Value::Complex { re, im, dimension } => Value::Complex {
-            re: -re,
-            im: -im,
-            dimension,
-        },
+        Value::Complex { re, im, dimension } => {
+            if !re.is_finite() || !im.is_finite() {
+                return Value::Undef;
+            }
+            Value::Complex { re: -re, im: -im, dimension }
+        }
         _ => Value::Undef,
     }
 }
