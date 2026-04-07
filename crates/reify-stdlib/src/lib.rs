@@ -5907,6 +5907,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sanitize_orientation_z_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::INFINITY,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with Inf z component should become Undef"
+        );
+    }
+
     // ── re/real sanitize_value tests (task-358 step-1) ─────────────────────────
 
     #[test]
