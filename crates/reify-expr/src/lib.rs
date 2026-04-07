@@ -123,7 +123,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        ..
+                        codomain_type: grad_codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
@@ -132,10 +132,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             }
                             // Gradient-produced field: lambda slot contains the
                             // original field (with its own lambda inside).
+                            // Pass grad_codomain_type (the gradient field's codomain,
+                            // already R/Q-divided by compute_gradient) instead of the
+                            // inner field's codomain — eliminates the redundant division
+                            // inside compute_numerical_gradient_at_point.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
-                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
@@ -143,7 +146,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                inner_codomain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -750,15 +753,18 @@ fn compute_numerical_gradient_at_point(
         );
     }
 
-    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
-    // The gradient is df/dx, so its dimension is [codomain] / [domain].
+    // Extract per-component gradient dimension from codomain_type.
+    // codomain_type is now the gradient field's codomain (already R/Q-divided by
+    // compute_gradient), so no further division is needed here:
+    //   - 1D field  → Scalar { dimension } or Real
+    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
+        Type::Vector { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            _ => DimensionVector::DIMENSIONLESS,
+        },
         Type::Scalar { dimension } => *dimension,
         _ => DimensionVector::DIMENSIONLESS,
-    };
-    let grad_dim = match domain_dim {
-        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-        _ => result_dim,
     };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
@@ -835,10 +841,10 @@ fn compute_numerical_gradient_at_point(
             return Value::Undef;
         }
 
-        if grad_dim != DimensionVector::DIMENSIONLESS {
+        if result_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
-                dimension: grad_dim,
+                dimension: result_dim,
             });
         } else {
             gradient_components.push(Value::Real(deriv));
