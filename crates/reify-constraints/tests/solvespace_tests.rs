@@ -924,3 +924,87 @@ fn solve_non_auto_ref_in_coord_yields_unrecognized_pattern() {
         ),
     }
 }
+
+/// solve() must return SolveResult::NoProgress when a non-auto parameter
+/// needed by a coincident constraint is absent from current_values.
+///
+/// This exercises the integration-level behavior documented in the analysis:
+/// extract_coord (solvespace.rs line ~300) rejects non-auto ValueRefs, so
+/// recognize_pattern returns None, and solve() returns
+/// NoProgress("unrecognized geometric constraint pattern").
+///
+/// The non-auto ValueRef ("External"/"val") is absent from both auto_params
+/// and current_values. The solver must never silently produce wrong results
+/// for incomplete input — it must return NoProgress instead.
+///
+/// This test uses a coincident constraint (structurally distinct from the
+/// pt_pt_distance test above) with a simpler single-auto-param setup to
+/// confirm the behavior across different constraint types.
+#[test]
+fn solve_returns_no_progress_when_non_auto_param_absent_from_values() {
+    let solver = SolveSpaceSolver;
+
+    // One auto param: the x-coordinate of point_a.
+    let auto_x_id = vcid("PointA", "x");
+
+    let zero = literal(Value::Scalar {
+        si_value: 0.0,
+        dimension: DimensionVector::LENGTH,
+    });
+
+    // point_a = (auto_x, 0, 0)
+    let pt_a = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("PointA", "x", Type::length()),
+            zero.clone(),
+            zero.clone(),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    // point_b's x-coordinate is a non-auto ValueRef ("External"/"val"),
+    // intentionally absent from both auto_params and current_values.
+    let pt_b = geo_fn(
+        "point3d",
+        vec![
+            value_ref_typed("External", "val", Type::length()),
+            zero.clone(),
+            zero,
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let constraint_expr = geo_fn("coincident", vec![pt_a, pt_b], Type::Bool);
+
+    // "External"/"val" is absent from current_values — the Err(BuilderError)
+    // path in add_auto_coord is unreachable here because extract_coord returns
+    // None for any non-auto ValueRef before the builder is ever consulted.
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: auto_x_id.clone(),
+            param_type: Type::length(),
+            bounds: None,
+            free: false,
+        }],
+        constraints: vec![(cnid("C", 0), constraint_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains("unrecognized"),
+                "expected unrecognized-pattern reason, got: {}",
+                reason
+            );
+        }
+        other => panic!(
+            "expected NoProgress when non-auto param absent from values, got {:?}",
+            other
+        ),
+    }
+}
