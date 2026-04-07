@@ -807,8 +807,11 @@ fn compute_numerical_gradient_at_point(
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
 
-        // Restore coord[i] to original value
-        work_coords[i] += h;
+        // Restore coord[i] to original value.
+        // Use exact restore (direct assignment) instead of arithmetic
+        // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
+        // drift from x + h - 2h + h ≠ x in floating-point).
+        work_coords[i] = coord_i;
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
