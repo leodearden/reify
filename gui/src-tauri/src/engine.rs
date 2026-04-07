@@ -711,7 +711,7 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
 }
 
 /// Convert a byte offset in source text to (line, column), both 1-based.
-fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {
