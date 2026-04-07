@@ -21143,7 +21143,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:32:03.115Z"
+        "updatedAt": "2026-04-07T16:32:03.115Z",
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify/tests"
+          ]
+        }
       },
       {
         "id": 1022,
@@ -21154,7 +21162,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify/tests"
+          ]
+        }
       },
       {
         "id": 1023,
@@ -21165,7 +21181,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify/tests"
+          ]
+        }
       }
     ],
     "metadata": {
