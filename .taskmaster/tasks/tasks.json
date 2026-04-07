@@ -20825,10 +20825,11 @@
         "description": "Three related implementation fixes in crates/reify-expr/src/lib.rs around the gradient hot loop:\n\n1. Eliminate the redundant `coords` Vec (line ~778): read `coord_i = work_coords[i]` before perturbation instead of maintaining a separate clone. Saves one O(n) allocation.\n2. Add `point_scratch: Vec<Value>` buffer (lines ~793, 803): reuse it across axis iterations instead of allocating a fresh inner Vec inside each `Value::Point(...)` call, reducing the single_point_param path from O(n²) to O(1) inner-Vec allocations.\n3. Replace arithmetic restore `work_coords[i] += h` (line ~810) with `work_coords[i] = coord_i` — eliminates ~4 ULP round-trip accumulation that contaminates subsequent axis iterations in the single_point_param path.\n\nMemory hints: search for \"compute_numerical_gradient_at_point\" and \"gradient hot loop allocation\" for prior context. Source: task 992 review suggestions [3], [2], [11].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T15:07:21.759Z"
       },
       {
         "id": "1007",
@@ -20855,7 +20856,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:07:19.602Z",
+      "lastModified": "2026-04-07T15:07:21.759Z",
       "taskCount": 1008,
       "completedCount": 718,
       "tags": [
