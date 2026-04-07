@@ -20861,11 +20861,11 @@
         "description": "Four improvements to crates/reify-expr/tests/gradient_tests.rs:\n\n1. Extract `fn make_3d_dot_product_gradient_field() -> (Value, Type, Type)` helper and replace the verbatim 20-line setup in gradient_3d_field_single_point_param, gradient_sample_with_nan_point_returns_undef, and gradient_sample_with_inf_point_returns_undef with a single call each.\n2. In gradient_composed_field_returns_field (line ~2554): after asserting `source: Gradient`, sample the gradient field at x=1.0 for the lambda `|x| 2*x` and assert the result is approximately 2.0, making it a real regression guard.\n3. Add test `gradient_decomposed_n3_dimensionless`: 3-param lambda `|x,y,z| x + 2y + 3z`, domain Point3<Real> (dimensionless), sample at Point3(5,7,11), assert gradient components ≈ [1.0, 2.0, 3.0]. Exercises the decomposed non-single_point_param path with work_coords reuse.\n4. Add test pinning the codomain_type-vs-runtime contract: lambda declared as `Scalar[MASS]` that returns `Value::Real` due to a mismatch, assert that the gradient uses the declared dimension (or explicitly document the out-of-contract behavior).\n\nMemory hints: search for \"gradient test helpers\" and \"make_value_lambda make_function_call\". Source: task 992 review suggestions [4], [6], [7], [8].",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:11:11.487Z",
+        "updatedAt": "2026-04-07T15:13:27.617Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -20875,7 +20875,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:13:27.330Z",
+      "lastModified": "2026-04-07T15:13:27.617Z",
       "taskCount": 1008,
       "completedCount": 718,
       "tags": [
