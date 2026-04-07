@@ -5,6 +5,7 @@
   "packageManager": "npm@10.9.4",
   "type": "module",
   "main": "dist/index.js",
+  "packageManager": "npm@10.9.7",
   "scripts": {
     "build": "tsup src/index.ts src/cli.ts --format esm --dts",
     "test": "vitest run",
