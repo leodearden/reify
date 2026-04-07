@@ -20270,7 +20270,18 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/scc.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-test-support/src/builders/topology.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-test-support/src/builders"
+          ]
+        }
       },
       {
         "id": 987,
@@ -20281,7 +20292,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/scc.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": 988,
