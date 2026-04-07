@@ -1603,3 +1603,58 @@ fn free_auto_skips_uniqueness_returns_unique_false() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+#[test]
+fn strict_auto_non_unique_returns_infeasible() {
+    // Underdetermined problem: 2 params, 2 simple inequality constraints.
+    // x > 10mm AND y > 10mm — many valid solutions exist.
+    // With strict auto (free: false), the solver should detect non-uniqueness
+    // via perturbation and return Infeasible with an appropriate diagnostic.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let y_id = vcid("Part", "height");
+    let x_ref = value_ref("Part", "width");
+    let y_ref = value_ref("Part", "height");
+
+    let gt_x = gt(x_ref, literal(mm(10.0)));
+    let gt_y = gt(y_ref, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)), // 1mm to 100mm
+                free: false,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostic message");
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("not uniquely determined"),
+                "diagnostic should mention non-uniqueness, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible for non-unique strict auto, got {:?}",
+            other
+        ),
+    }
+}
