@@ -1432,13 +1432,13 @@ mod tests {
                     id: width_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
-                    free: false,
+                    free: true,
                 },
                 AutoParam {
                     id: height_id.clone(),
                     param_type: Type::length(),
                     bounds: Some((0.01, 1.0)),
-                    free: false,
+                    free: true,
                 },
             ],
             constraints: vec![
@@ -1504,7 +1504,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.050)), // bounds: 1mm to 50mm
-                free: false,
+                free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: ValueMap::new(),
@@ -1564,7 +1564,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None, // No explicit bounds
-                free: false,
+                free: true,
             }],
             constraints: vec![
                 (ConstraintNodeId::new("Part", 0), gt_expr),
@@ -2132,7 +2132,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), gt_expr)],
             current_values: current,
@@ -2302,7 +2302,7 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                free: true,
             }],
             constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
             current_values: ValueMap::new(),
