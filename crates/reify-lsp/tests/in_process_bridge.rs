@@ -417,7 +417,7 @@ async fn initialized_with_malformed_params_returns_error() {
 /// params are surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn did_change_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
+    let lsp = initialized_lsp().await;
 
     // json!(42) is clearly malformed for DidChangeTextDocumentParams (expects an object)
     let result = lsp.handle_request("textDocument/didChange", json!(42)).await;
@@ -441,7 +441,7 @@ async fn did_change_with_malformed_params_returns_error() {
 /// params are surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn did_close_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
+    let lsp = initialized_lsp().await;
 
     // json!(42) is clearly malformed for DidCloseTextDocumentParams (expects an object)
     let result = lsp.handle_request("textDocument/didClose", json!(42)).await;
