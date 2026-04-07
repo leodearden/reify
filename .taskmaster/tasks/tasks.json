@@ -2660,7 +2660,7 @@
         "dependencies": [
           "160"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -2669,7 +2669,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:04:41.749Z"
+        "updatedAt": "2026-04-07T16:18:05.013Z"
       },
       {
         "id": "162",
@@ -17644,11 +17644,11 @@
         "description": "In tree-sitter-reify/src/.grammar_hash.stamp: confirm whether the stamp update was intentional; if not, revert it and land it in a separate commit tied to the actual grammar change. In gui/src-tauri/src/engine.rs: (1) add a comment near line 285 noting 'Assumes all diagnostic spans refer to the single loaded source file — file_path from multi-file diagnostics would need threading here'; (2) add documentation or a Result return to byte_offset_to_line_col (line 682) clarifying that empty spans produce identical start/end coordinates and that offsets beyond source.len() are silently clamped.\n\nmemory_hints: search(\"grammar_hash.stamp tree-sitter-reify byte_offset_to_line_col edge cases\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:04:46.051Z",
+        "updatedAt": "2026-04-07T16:18:05.066Z",
         "metadata": {
           "modules": [
             "gui/src-tauri",
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:04.910Z",
+      "lastModified": "2026-04-07T16:18:05.066Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
