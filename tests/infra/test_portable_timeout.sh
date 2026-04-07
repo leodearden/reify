@@ -218,5 +218,23 @@ assert "POSIX fallback: _PORTABLE_TIMEOUT_TIMED_OUT true on genuine timeout" \
         [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ]
     '
 
+# -- Test 13: reset-semantics -------------------------------------------------
+echo ""
+echo "--- Test 13: _PORTABLE_TIMEOUT_TIMED_OUT resets between consecutive calls ---"
+
+# In a single shell session: first call genuinely times out (flag → true),
+# second call completes successfully (flag → false).  Verifies the reset at
+# the top of portable_timeout() works across back-to-back invocations.
+assert "POSIX fallback: flag resets to false after timeout then fast success" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        # First call: genuine timeout → true
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ] || { echo "expected true after timeout"; exit 1; }
+        # Second call: fast success → reset to false
+        portable_timeout 5 true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
