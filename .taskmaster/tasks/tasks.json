@@ -21197,10 +21197,11 @@
         "description": "In tests/sync_comments_test.sh line 29, the extraction `grep -oE 'reify-stdlib::[a-z_]+' \"$EXPR_FILE\"` is not scoped to SYNC comment lines. In crates/reify-expr/src/lib.rs, the pattern appears at lines 857, 862, 863 in doc comments before the actual SYNC marker at line 870 — so `head -1` picks the wrong line. Fix: `grep 'SYNC' \"$EXPR_FILE\" | grep -oE 'reify-stdlib::[a-z_]+' | head -1 | sed 's/.*:://'`. Apply the same scoping fix to the `_stdlib_ref_fn` extraction on line 41.\n\nmemory_hints: search(\"sync_comments_test SYNC extraction scoping\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:08:04.613Z"
       },
       {
         "id": "1025",
@@ -21227,7 +21228,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:08:02.083Z",
+      "lastModified": "2026-04-07T19:08:04.613Z",
       "taskCount": 1026,
       "completedCount": 726,
       "tags": [
