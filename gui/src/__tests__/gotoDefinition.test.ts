@@ -177,6 +177,52 @@ describe('cross-file goto-definition (onNavigate)', () => {
       scrollIntoView: true,
     });
   });
+
+  it('bare-path currentUri with file:// location.uri for same file dispatches cursor movement', async () => {
+    // currentUri is a bare path; LSP returns a file:// URI for the same physical file.
+    // isSameFile() should normalize both to the same bare path and recognize them as equal,
+    // so the handler dispatches cursor movement instead of calling onNavigate.
+    const currentUri = '/project/src/foo.ri';
+    const sameFileLocation = {
+      uri: 'file:///project/src/foo.ri',
+      range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // onNavigate should NOT be called — it is the same file after URI normalization
+    expect(onNavigate).not.toHaveBeenCalled();
+    // view.dispatch SHOULD be called for same-file cursor movement
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: expect.any(Number) },
+      scrollIntoView: true,
+    });
+  });
 });
 
 describe('isConnected guard', () => {
