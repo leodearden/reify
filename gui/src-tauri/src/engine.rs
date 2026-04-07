@@ -752,11 +752,20 @@ pub(crate) fn offset_to_line_col_fast(
     } else {
         line_offsets[line_idx - 1] + 1
     };
-    // Count codepoints from line_start to offset (exclusive) for 1-based column.
-    let col = source[line_start..offset.min(source.len())]
-        .chars()
-        .count()
-        + 1;
+    // Clamp offset to source length, then snap to the nearest char boundary
+    // (walking backward at most 3 bytes). This guards against non-boundary
+    // byte offsets from buggy span generation without panicking.
+    let clamped = offset.min(source.len());
+    let effective = if source.is_char_boundary(clamped) {
+        clamped
+    } else {
+        (0..clamped)
+            .rev()
+            .find(|&i| source.is_char_boundary(i))
+            .unwrap_or(0)
+    };
+    // Count codepoints from line_start to effective offset for 1-based column.
+    let col = source[line_start..effective].chars().count() + 1;
     (line, col)
 }
 

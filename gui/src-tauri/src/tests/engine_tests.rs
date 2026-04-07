@@ -1473,3 +1473,25 @@ fn offset_to_line_col_fast_matches_original_cjk_utf8() {
         "byte 9 ('w' after two 3-byte CJK chars) should have codepoint column 3"
     );
 }
+
+/// offset_to_line_col_fast does not panic on non-char-boundary byte offsets;
+/// it snaps backward to the nearest valid boundary instead.
+#[test]
+fn offset_to_line_col_fast_non_char_boundary_no_panic() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+
+    // "é" is 2 bytes (0xC3 0xA9), so byte 1 is mid-char.
+    let source = "é";
+    let line_offsets = build_line_offsets(source);
+    // Byte 1 is not a char boundary — should not panic, should snap back to 0.
+    let (line, col) = offset_to_line_col_fast(source, &line_offsets, 1);
+    assert_eq!(line, 1);
+    assert_eq!(col, 1, "non-boundary offset should snap back to start");
+
+    // Multi-line with CJK: "日\nA" — '日' is 3 bytes; byte 2 is mid-char.
+    let source2 = "日\nA";
+    let offsets2 = build_line_offsets(source2);
+    let (l, c) = offset_to_line_col_fast(source2, &offsets2, 2);
+    assert_eq!(l, 1);
+    assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
+}
