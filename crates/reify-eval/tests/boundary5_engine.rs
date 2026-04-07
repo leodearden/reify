@@ -169,7 +169,6 @@ fn constraint_on_auto_param_indeterminate() {
 /// End-to-end: parse → compile → eval → check with auto param.
 #[test]
 fn e2e_parse_compile_eval_auto_param() {
-    use reify_compiler::ValueCellKind;
     use reify_types::{DeterminacyState, ModulePath, Satisfaction, ValueCellId};
 
     let source = r#"structure S {
