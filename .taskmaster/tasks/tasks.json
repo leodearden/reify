@@ -20906,10 +20906,11 @@
         "description": "Four mechanical consistency fixes in crates/reify-expr/tests/gradient_tests.rs:\n1. Replace reify_types::BinOp::Add with BinOp::Add (already in scope via use) in gradient_tensor_point_returns_undef\n2. Add '// ── Step-7: Decomposed calling convention ───' header before gradient_decomposed_n3_dimensionless\n3. Add '// ── Step-8: Declaration-vs-runtime type contract ───' header before gradient_codomain_type_vs_runtime_mismatch\n4. Move codomain_type rather than clone (last use); move field_type rather than clone into CompiledExpr::literal\n5. Bind grad_field_type once and reuse in gradient_codomain_type_vs_runtime_mismatch\n\nMemory hints: search for \"step header pattern gradient tests\" and \"move vs clone convention\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T15:37:58.401Z"
       },
       {
         "id": "1011",
@@ -20961,7 +20962,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T15:37:58.162Z",
+      "lastModified": "2026-04-07T15:37:58.401Z",
       "taskCount": 1014,
       "completedCount": 718,
       "tags": [
