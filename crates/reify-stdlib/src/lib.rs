@@ -5880,26 +5880,26 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_orientation_neg_inf_returns_undef() {
+    fn sanitize_orientation_neg_inf_z_returns_undef() {
         let v = Value::Orientation {
-            w: f64::NEG_INFINITY,
+            w: 0.0,
             x: 0.0,
             y: 0.0,
-            z: 1.0,
+            z: f64::NEG_INFINITY,
         };
         assert!(
             sanitize_value(v).is_undef(),
-            "Orientation with NegInf component should become Undef"
+            "Orientation with NEG_INFINITY z component should become Undef"
         );
     }
 
     #[test]
-    fn sanitize_orientation_y_nan_returns_undef() {
+    fn sanitize_orientation_nan_y_returns_undef() {
         let v = Value::Orientation {
-            w: 0.0,
+            w: 1.0,
             x: 0.0,
             y: f64::NAN,
-            z: 1.0,
+            z: 0.0,
         };
         assert!(
             sanitize_value(v).is_undef(),
@@ -5908,16 +5908,16 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_orientation_z_inf_returns_undef() {
+    fn sanitize_orientation_nan_x_returns_undef() {
         let v = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
+            w: 1.0,
+            x: f64::NAN,
             y: 0.0,
-            z: f64::INFINITY,
+            z: 0.0,
         };
         assert!(
             sanitize_value(v).is_undef(),
-            "Orientation with Inf z component should become Undef"
+            "Orientation with NaN x component should become Undef"
         );
     }
 
