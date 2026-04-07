@@ -19612,11 +19612,11 @@
         "description": "Add two tests to gui/src/__tests__/gotoDefinition.test.ts: (1) bare path uri with file:// location.uri verifying same-file dispatch, (2) partial suffix match (/a/foo.ri vs /b/a/foo.ri) verifying cross-file navigation.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T13:34:17.039Z",
+        "updatedAt": "2026-04-07T14:02:14.093Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -20760,7 +20760,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:02:13.512Z",
+      "lastModified": "2026-04-07T14:02:14.093Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
