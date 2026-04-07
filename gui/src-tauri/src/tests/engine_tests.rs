@@ -1185,7 +1185,7 @@ fn offset_to_line_col_fast_offset_zero() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
     let source = "abc\ndef\nghi";
     let offsets = build_line_offsets(source);
-    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
 }
 
 /// offset_to_line_col_fast cross-validates with byte_offset_to_line_col
@@ -1197,7 +1197,7 @@ fn offset_to_line_col_fast_matches_original_every_offset() {
     let line_offsets = build_line_offsets(source);
     for offset in 0..source.len() {
         let expected = byte_offset_to_line_col(source, offset);
-        let actual = offset_to_line_col_fast(&line_offsets, offset);
+        let actual = offset_to_line_col_fast(source, &line_offsets, offset);
         assert_eq!(
             actual, expected,
             "mismatch at offset {}: fast={:?} original={:?}",
@@ -1219,19 +1219,20 @@ fn offset_to_line_col_fast_key_positions() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
     let source = "abc\ndef\nghi";
     let offsets = build_line_offsets(source);
-    assert_eq!(offset_to_line_col_fast(&offsets, 3), (1, 4)); // '\n'
-    assert_eq!(offset_to_line_col_fast(&offsets, 4), (2, 1)); // 'd'
-    assert_eq!(offset_to_line_col_fast(&offsets, 7), (2, 4)); // '\n'
-    assert_eq!(offset_to_line_col_fast(&offsets, 8), (3, 1)); // 'g'
-    assert_eq!(offset_to_line_col_fast(&offsets, 10), (3, 3)); // 'i'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 3), (1, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (2, 1)); // 'd'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 7), (2, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 8), (3, 1)); // 'g'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 10), (3, 3)); // 'i'
 }
 
 /// offset_to_line_col_fast works on empty source (no newlines).
 #[test]
 fn offset_to_line_col_fast_empty_source() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
-    let offsets = build_line_offsets("");
-    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
+    let source = "";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
 }
 
 /// offset_to_line_col_fast works on single-line source (no newlines).
@@ -1240,8 +1241,8 @@ fn offset_to_line_col_fast_single_line() {
     use crate::engine::{build_line_offsets, offset_to_line_col_fast};
     let source = "hello";
     let offsets = build_line_offsets(source);
-    assert_eq!(offset_to_line_col_fast(&offsets, 0), (1, 1));
-    assert_eq!(offset_to_line_col_fast(&offsets, 4), (1, 5));
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (1, 5));
 }
 
 /// offset_to_line_col_fast agrees with byte_offset_to_line_col at source.len()
@@ -1259,7 +1260,7 @@ fn offset_to_line_col_fast_at_eof_offset() {
     // source.len() is the EOF position — both implementations must agree here.
     let eof = source.len();
     let expected = byte_offset_to_line_col(source, eof);
-    let actual = offset_to_line_col_fast(&line_offsets, eof);
+    let actual = offset_to_line_col_fast(source, &line_offsets, eof);
     assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
 }
 

@@ -311,9 +311,9 @@ impl EngineSession {
                 let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
                 {
                     let (l, c) =
-                        offset_to_line_col_fast(&line_offsets, label.span.start as usize);
+                        offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
                     let (el, ec) =
-                        offset_to_line_col_fast(&line_offsets, label.span.end as usize);
+                        offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
                     (l as u32, c as u32, el as u32, ec as u32)
                 } else {
                     (1, 1, 1, 1)
@@ -732,17 +732,31 @@ pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
 
 /// Binary-search for the (line, column) of `offset` using a pre-built newline table.
 ///
-/// `line_offsets` must be the result of [`build_line_offsets`] for the same source.
-/// Both line and column are 1-based. Runs in O(log M) vs O(M) for the naive scan.
-pub(crate) fn offset_to_line_col_fast(line_offsets: &[usize], offset: usize) -> (usize, usize) {
+/// `source` is the original source string; `line_offsets` must be the result of
+/// [`build_line_offsets`] for the same `source`.  Both line and column are 1-based
+/// and count **Unicode codepoints**, matching the semantics of [`byte_offset_to_line_col`].
+///
+/// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
+/// counting — far cheaper than the O(M) full-source scan of the naive implementation.
+pub(crate) fn offset_to_line_col_fast(
+    source: &str,
+    line_offsets: &[usize],
+    offset: usize,
+) -> (usize, usize) {
     // Count newlines that appear *strictly before* `offset`.
     let line_idx = line_offsets.partition_point(|&nl| nl < offset);
     let line = line_idx + 1;
-    let col = if line_idx == 0 {
-        offset + 1
+    // Byte offset of the first character on this line.
+    let line_start = if line_idx == 0 {
+        0
     } else {
-        offset - line_offsets[line_idx - 1]
+        line_offsets[line_idx - 1] + 1
     };
+    // Count codepoints from line_start to offset (exclusive) for 1-based column.
+    let col = source[line_start..offset.min(source.len())]
+        .chars()
+        .count()
+        + 1;
     (line, col)
 }
 
