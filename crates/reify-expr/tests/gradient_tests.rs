@@ -3057,6 +3057,83 @@ fn gradient_decomposed_n3_dimensionless() {
 }
 
 /// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
+/// Sampling a gradient field panics in debug mode when codomain_type does not match
+/// the runtime dimension returned by the lambda.
+///
+/// This test validates the #[cfg(debug_assertions)] assertion added to
+/// compute_numerical_gradient_at_point. The assertion fires after the first f_plus
+/// evaluation when the declared codomain dimension does not match the actual runtime
+/// return dimension.
+///
+/// Setup:
+/// - domain_type = Type::Real (1D, dimensionless)
+/// - codomain_type = Type::Scalar { dimension: MASS } (declared as kg)
+/// - lambda body: |x| 2*x — returns Value::Real at runtime (dimensionless, NOT MASS)
+///
+/// The mismatch: declared says dimension=MASS, but f_plus.dimension() = DIMENSIONLESS.
+/// The assertion should fire with message containing "codomain_type does not match".
+#[test]
+#[should_panic(expected = "codomain_type does not match")]
+fn gradient_runtime_codomain_dim_mismatch_panics() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let dim_kg = DimensionVector::MASS;
+
+    // Lambda: |x| 2*x — body returns Value::Real at runtime (dimensionless)
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
+    let domain_type = Type::Real;
+    let codomain_type = Type::Scalar { dimension: dim_kg };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Sampling triggers the assertion: f_plus returns Real (dimensionless) but
+    // codomain declares MASS — the debug assertion should fire here.
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(codomain_type),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Scalar { dimension: dim_kg },
+    );
+    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    // Expected to panic before reaching here
+}
+
 ///
 /// This test pins the 'trust the declaration' contract: the gradient code at lib.rs
 /// line 754 extracts result_dim from the declared codomain_type, ignoring whatever
