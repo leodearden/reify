@@ -21287,6 +21287,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1032,
+        "title": "Editor.test.tsx scrollToLocation test cleanup",
+        "description": "Two related cleanup items in gui/src/__tests__/Editor.test.tsx (around lines 309-339):\n\n1. Extract the repeated 6-line setup (setupStore, setActiveFile, createSignal, render, getEditorView) shared by 'scrollToLocation targets active file with deterministic selection' and 'scrollToLocation with mismatched file does not move cursor' into a shared helper or beforeEach (suggestion [5]).\n\n2. Define `const BASELINE_HEAD = 9;` near the top of the describe block and reference it in both tests, replacing the magic number 9 in both the positive assertion and the mismatch baseline re-assertion (suggestion [8]).\n\nMemory hints: search for \"scrollToLocation test\" and \"Editor.test structure\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21299,7 +21310,7 @@
       ],
       "created": "2026-04-07T19:09:20.933Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:09:33.310Z"
+      "updated": "2026-04-07T19:09:35.989Z"
     }
   }
 }
