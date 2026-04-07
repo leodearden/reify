@@ -807,15 +807,36 @@ impl ConstraintSolver for DimensionalSolver {
             SolveResult::Solved { values, .. } => {
                 // Check if any param requires uniqueness verification (strict auto)
                 let has_strict = problem.auto_params.iter().any(|p| !p.free);
-                let unique = if has_strict {
-                    verify_uniqueness(problem, &values)
+                if has_strict {
+                    if verify_uniqueness(problem, &values) {
+                        SolveResult::Solved {
+                            values,
+                            unique: true,
+                        }
+                    } else {
+                        // Strict auto params require a unique solution. The
+                        // perturbation-based check found a different solution,
+                        // indicating the problem is underdetermined.
+                        SolveResult::Infeasible {
+                            diagnostics: vec![reify_types::Diagnostic {
+                                severity: reify_types::Severity::Error,
+                                message: "strict auto parameter resolution is not uniquely \
+                                          determined \u{2014} consider using auto(free) \
+                                          for exploration"
+                                    .to_string(),
+                                labels: vec![],
+                            }],
+                        }
+                    }
                 } else {
                     // All params are free — skip uniqueness verification entirely.
                     // Free auto params accept any feasible solution, so we report
                     // unique=false to let the eval engine emit appropriate warnings.
-                    false
-                };
-                SolveResult::Solved { values, unique }
+                    SolveResult::Solved {
+                        values,
+                        unique: false,
+                    }
+                }
             }
             other => other, // Infeasible, NoProgress pass through unchanged
         }
