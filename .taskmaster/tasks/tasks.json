@@ -11254,13 +11254,9 @@
             "crates/reify-runtime"
           ],
           "memory_hints": {
-            "entities": [
-              "ConcurrentEvalAdapter",
-              "ConcurrentEditResult"
-            ],
+            "entities": [],
             "queries": [
-              "ConcurrentEvalAdapter tainted poison corruption tracking",
-              "poison recovery concurrent evaluation silent corruption"
+              "resolution for: Add tainted flag to ConcurrentEvalAdapter for poison recovery corruption tracking"
             ]
           }
         },
@@ -18898,7 +18894,13 @@
         "metadata": {
           "modules": [
             "crates/reify-types"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Trim redundant and duplicate test assertions in value_ord_real_nan_and_neg_zero_still_consistent"
+            ]
+          }
         }
       },
       {
@@ -20584,7 +20586,7 @@
         "description": "Two GUI/sidecar follow-ups from review backlog:\n\n## (1) Sidecar errorMessage missing plain-object branch\ngui/sidecar/src/utils.ts:errorMessage uses the legacy single-line implementation with no plain-object .message handling. gui/src/utils/errorClassifier.ts has the richer 3-branch implementation. Structured error objects (e.g. from IPC) reaching the sidecar will become '[object Object]'.\n\nApply the same plain-object handling to gui/sidecar/src/utils.ts:errorMessage that exists in gui/src/utils/errorClassifier.ts. Either copy the 3-branch implementation, or extract a shared helper into a common module both packages import (preferred).\n\nAdd vitest cases for: `{ message: null }` falls through to String() → '[object Object]', `{ message: '   ' }` returns '   ' (whitespace passthrough), and the bare object case.\n\nSource: esc-671-34 / esc-671-36.\n\n## (2) Editor.test scrollToLocation: weak assertions + misleading comments\nIn gui/src/__tests__/Editor.test.tsx, the mismatch test asserts `head > 0` instead of the deterministic `head == 9`, so a regression that jumps to the wrong position would still pass. Comment misattributes head to column.\n\n- Replace `expect(view.state.selection.main.head).toBeGreaterThan(0)` with `expect(view.state.selection.main.head).toBe(9)` (deterministic from end_column=10, 0-indexed). Also assert anchor === 4.\n- Fix the misleading comment: head is computed from end_column, not column.\n- Split the dual-purpose 'mismatch is a no-op' test into two named tests: one positive same-file case, one mismatch.\n\nSource: esc-898-51.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20600,7 +20602,7 @@
             "gui/src/__tests__"
           ]
         },
-        "updatedAt": "2026-04-07T13:34:16.700Z"
+        "updatedAt": "2026-04-07T14:00:09.326Z"
       },
       {
         "id": "1001",
@@ -20685,7 +20687,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T14:00:02.143Z",
+      "lastModified": "2026-04-07T14:00:09.326Z",
       "taskCount": 1004,
       "completedCount": 716,
       "tags": [
