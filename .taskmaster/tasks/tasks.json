@@ -20370,6 +20370,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 998,
+        "title": "in_process_bridge: warn-counter helper extraction + assertion robustness",
+        "description": "warn-count delta pattern (`load(Relaxed) - before`) is duplicated 3+ times in crates/reify-lsp/tests/in_process_bridge.rs with bare usize subtraction (panics in debug if a future refactor decrements the counter). The capabilities test now mixes warn assertion with capability shape (two concerns). Memory-ordering uses Relaxed which is unsafe if the test is ever switched to multi_thread tokio executor.\n\n## Helpers\n1. Extract `fn assert_warn_delta(counter: &Arc<AtomicUsize>, before: usize, expected: usize, msg: &str)` — replaces 3 inline copies. Use saturating_sub(before) so a counter regression yields a clean assertion failure rather than a debug panic.\n2. Extract `fn install_warn_counter() -> (Arc<AtomicUsize>, impl Drop)` combining the subscriber + drop guard setup repeated in 3+ tests.\n3. Move warn_counting_subscriber (and the new helpers) to reify-test-support so other LSP test files (lifecycle.rs, interactive_edit_loop.rs) can share them.\n\n## Test concerns\n4. Split initialize_with_malformed_params_still_returns_capabilities into two: one focused purely on capabilities, one on warn count. The current test fails both ways if a future change emits an additional WARN for a legitimate reason.\n5. In malformed_initialize_supports_downstream_operations, change `assert_eq!(delta, 1)` to `assert!(delta >= 1)` for resilience to additional warn events.\n\n## Memory ordering\n6. Use Ordering::Release for WarnCounter::event's fetch_add and Ordering::Acquire for the assertion loads, so the pattern is robust to a future `flavor = \"multi_thread\"` switch.\n\nSource: review escalation esc-852-77 (auto-dismissed, never triaged).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20382,7 +20393,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:23:31.390Z"
+      "updated": "2026-04-07T13:23:49.140Z"
     }
   }
 }
