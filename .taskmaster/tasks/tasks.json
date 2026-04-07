@@ -19411,11 +19411,11 @@
         "description": "In crates/reify-constraints/tests/solvespace_tests.rs: (1) Rename solve_returns_no_progress_for_missing_non_auto_value to reflect it tests unrecognized-pattern path. (2) Add integration test for non-auto parameter missing from current_values NoProgress branch. (3) Use auto_params_for helper in add_auto_coord_errors test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-04T14:41:57.996Z",
+        "updatedAt": "2026-04-07T13:34:14.469Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -19867,7 +19867,7 @@
         "id": "966",
         "title": "Extract mock factories and add mockInvoke assertions in gotoDefinition tests",
         "description": "In gui/src/editor/gotoDefinition.ts: (3) Add .catch() to the requestDefinition promise chain to handle stale document RangeError. (4) Add bounds check `if (line+1 > view.state.doc.lines) return;` after isConnected guard.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "Focus on handling errors and ensuring bounds checks in the gotoDefinition functionality.",
@@ -19906,7 +19906,8 @@
               "task 968 mock factory extraction gotoDefinition done"
             ]
           }
-        }
+        },
+        "updatedAt": "2026-04-07T13:34:14.512Z"
       },
       {
         "id": "967",
@@ -20646,7 +20647,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T13:34:14.410Z",
+      "lastModified": "2026-04-07T13:34:14.512Z",
       "taskCount": 1003,
       "completedCount": 715,
       "tags": [
