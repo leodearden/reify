@@ -18140,11 +18140,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs, the two error tests (lines ~268 and ~285) assert err.contains(\"initialize params error\"), coupling them to the exact format string at bridge.rs line 85. Fix by: (a) defining the error prefix as a const in bridge.rs and referencing it from both test assertions, OR asserting result.is_err() only since the string content is not a public contract. Optionally extract a shared async helper assert_init_error(bad_params: Value) to remove the structural duplication between the two tests. Covers review suggestions 0, 5, 8.\n\nmemory_hints: search(\"bridge error-path test assertions error string coupling\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:51:26.007Z",
+        "updatedAt": "2026-04-07T16:04:41.270Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -20999,7 +20999,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:04:41.224Z",
+      "lastModified": "2026-04-07T16:04:41.270Z",
       "taskCount": 1014,
       "completedCount": 721,
       "tags": [
