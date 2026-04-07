@@ -343,13 +343,12 @@ describe('.catch() error handler', () => {
         mousedownHandler(mockEvent, mockView);
         await flushMacrotasks();
       });
+      // .catch() should log a warning with the expected prefix and the error
+      expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
+      // dispatch should not have been called (line() threw before it could be called)
+      expect(mockView.dispatch).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
-
-    // .catch() should log a warning with the expected prefix and the error
-    expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
-    // dispatch should not have been called (line() threw before it could be called)
-    expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 });

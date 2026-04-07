@@ -125,7 +125,7 @@ export function reifyGotoDefinition(
             location.range.start.character,
           );
         }
-      });
+      }).catch((err) => console.warn('gotoDefinition: failed to apply result', err));
 
       return true; // Consume the event
     },
