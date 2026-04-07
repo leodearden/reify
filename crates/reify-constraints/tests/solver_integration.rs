@@ -1658,3 +1658,64 @@ fn strict_auto_non_unique_returns_infeasible() {
         ),
     }
 }
+
+/// Same underdetermined problem as `strict_auto_non_unique_returns_infeasible` but with
+/// all params having `free: true`. Free auto params skip uniqueness verification, so the
+/// solver should return `Solved { unique: false }` instead of Infeasible.
+#[test]
+fn free_auto_resolves_underdetermined_system() {
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let y_id = vcid("Part", "height");
+    let x_ref = value_ref("Part", "width");
+    let y_ref = value_ref("Part", "height");
+
+    let gt_x = gt(x_ref, literal(mm(10.0)));
+    let gt_y = gt(y_ref, literal(mm(10.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)), // 1mm to 100mm
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(!unique, "free auto should report unique=false");
+            // Both values should satisfy the constraints (> 10mm = 0.01 m)
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            assert!(
+                x > 0.010,
+                "x should satisfy x > 10mm, got {} m",
+                x
+            );
+            assert!(
+                y > 0.010,
+                "y should satisfy y > 10mm, got {} m",
+                y
+            );
+        }
+        other => panic!(
+            "expected Solved for underdetermined free auto, got {:?}",
+            other
+        ),
+    }
+}
