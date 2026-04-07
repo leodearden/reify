@@ -393,10 +393,14 @@ fn compile_auto_param() {
     let template = &compiled.templates[0];
     assert_eq!(template.value_cells.len(), 2);
 
-    // x should be Auto with no default_expr
+    // x should be Auto { free: false } with no default_expr
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
-    assert!(x.kind.is_auto());
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto param should compile to Auto {{ free: false }}"
+    );
     assert!(
         x.default_expr.is_none(),
         "auto param should have no default_expr"
@@ -436,7 +440,11 @@ fn compiled_auto_param_span_not_zero() {
 
     let template = &compiled.templates[0];
     let x = &template.value_cells[0];
-    assert!(x.kind.is_auto());
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto param span test: kind should be Auto {{ free: false }}"
+    );
 
     // Auto param span must not be (0,0)
     assert_ne!(
