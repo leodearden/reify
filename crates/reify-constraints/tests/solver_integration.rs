@@ -1558,3 +1558,48 @@ fn strict_auto_unique_solution_returns_unique_true() {
         other => panic!("expected Solved, got {:?}", other),
     }
 }
+
+#[test]
+fn free_auto_skips_uniqueness_returns_unique_false() {
+    // Same well-determined 1-param problem as above, but with free: true.
+    // Free auto params skip the uniqueness verification, so the solver
+    // should return Solved { unique: false }.
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let x_ref = value_ref("Part", "width");
+
+    // Tight constraints: x > 49mm AND x < 51mm
+    let gt_expr = gt(x_ref.clone(), literal(mm(49.0)));
+    let lt_expr = lt(x_ref, literal(mm(51.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: x_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: true,
+        }],
+        constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![],
+    };
+
+    let result = solver.solve(&problem);
+    match result {
+        SolveResult::Solved { values, unique } => {
+            assert!(
+                !unique,
+                "free auto should skip uniqueness check and return unique=false"
+            );
+            let si = values.get(&x_id).unwrap().as_f64().unwrap();
+            assert!(
+                si > 0.049 && si < 0.051,
+                "x should be in feasible range, got {} m",
+                si
+            );
+        }
+        other => panic!("expected Solved, got {:?}", other),
+    }
+}
