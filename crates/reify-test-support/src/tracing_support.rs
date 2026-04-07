@@ -242,4 +242,35 @@ mod tests {
 
         assert_eq!(counter_clone.load(Ordering::Relaxed), 2);
     }
+
+    /// `CountingSubscriberBuilder` with a single registered level (WARN) should
+    /// count exactly one WARN event and leave the counter at 1.
+    /// No target_prefix is set, exercising the no-filter path.
+    #[test]
+    fn counting_subscriber_counts_warn_events() {
+        use std::collections::HashMap;
+        use tracing::Level;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .build();
+
+        let warn_arc = Arc::clone(&counters[&Level::WARN]);
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            0,
+            "counter should start at 0"
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("test warning");
+        });
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            1,
+            "one WARN event should produce count=1"
+        );
+    }
 }
