@@ -19015,11 +19015,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs around line 5744, add tests that: (1) place f64::NEG_INFINITY in any single component and assert is_undef() — matching the pattern of sanitize_real_neg_inf_returns_undef; (2) place an invalid value (NaN or Inf) in the y component; (3) place an invalid value in the z component. Each should be a separate #[test] function following the existing naming convention (sanitize_orientation_neg_inf_returns_undef, sanitize_orientation_y_nan_returns_undef, sanitize_orientation_z_inf_returns_undef, etc.).\n\nThis ensures all four quaternion components (w, x, y, z) are exercised individually and both infinity polarities are covered, matching the coverage pattern established for Scalar and Complex arms.\n\nMemory hints: search \"sanitize_value Orientation test coverage\", search \"sanitize_real_neg_inf_returns_undef\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:22:28.648Z",
+        "updatedAt": "2026-04-07T16:26:11.180Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -21050,7 +21050,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:25:54.729Z",
+      "lastModified": "2026-04-07T16:26:11.180Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
