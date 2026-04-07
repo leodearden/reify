@@ -20359,6 +20359,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 997,
+        "title": "find_named_member_span: depth-limit observability + cleanup duplicated tests",
+        "description": "Depth-limit returns silent None — LSP go-to-def fails with no log signal. analysis.rs still has duplicated depth-limit tests after the function moved to reify-syntax, and the duplicated tests hardcode `33` instead of MAX_MEMBER_NESTING_DEPTH+1. Test coverage gaps for combined Port+GuardedGroup recursion and first-match-wins ordering.\n\n## Observability (crates/reify-syntax/src/lib.rs:210)\nAdd `tracing::warn!(name, depth, \"find_named_member_span: depth limit exceeded\")` at the depth-limit return site so silent LSP go-to-def failures are diagnosable in server logs.\n\n## Cleanup duplication (crates/reify-lsp/src/analysis.rs:1333-1393)\n1. Delete the depth-limit tests (find_named_member_span_succeeds_within_depth_limit, find_named_member_span_returns_none_beyond_depth_limit, helper build_nested_guarded_members) from analysis.rs. The authoritative copy now lives in crates/reify-syntax/tests/member_span_tests.rs and the analysis.rs copy hardcodes 33 instead of MAX_MEMBER_NESTING_DEPTH + 1.\n2. Move the `pub use reify_syntax::{find_named_member_span, MemberSpanInfo}` re-export from analysis.rs:5 to crates/reify-lsp/src/lib.rs (the layering owner), or import directly from reify_syntax in goto_def.rs.\n\n## Tests (crates/reify-syntax/tests/member_span_tests.rs)\n3. Add let_without_doc_returns_none_doc (mirror of the existing param_without_doc_returns_none_doc).\n4. Add a combined Port-inside-GuardedGroup test exercising shared-depth-counter behaviour across both recursion arms.\n5. Add a first-match test where the same name appears at top level and inside a nested GuardedGroup; assert the top-level (earlier byte offset) is returned.\n\nSource: review escalation esc-601-98 (auto-dismissed, never triaged).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -20371,7 +20382,7 @@
       ],
       "created": "2026-04-07T13:21:34.023Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T13:23:17.375Z"
+      "updated": "2026-04-07T13:23:31.390Z"
     }
   }
 }
