@@ -21309,6 +21309,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1034,
+        "title": "Add negative-line and character-offset guards to gotoDefinition.ts",
+        "description": "In `gui/src/editor/gotoDefinition.ts` same-file branch (around line 115): (1) Before the existing line-bounds check, add `if (location.range.start.line < 0) return;` to explicitly reject malformed LSP responses with negative line numbers (currently they pass the guard and fall through to `doc.line(0)` throwing, producing a confusing warning). The two guards can be combined: `if (location.range.start.line < 0 || location.range.start.line + 1 > view.state.doc.lines) return;`. (2) After `doc.line()` succeeds (line 116), add a character bounds check before computing `targetPos`: `if (location.range.start.character > targetLine.length) return;` (where `targetLine.length = targetLine.to - targetLine.from`) to prevent a stale character offset from silently placing the cursor in the wrong position.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21321,7 +21332,7 @@
       ],
       "created": "2026-04-07T19:09:20.933Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:09:39.252Z"
+      "updated": "2026-04-07T19:09:45.262Z"
     }
   }
 }
