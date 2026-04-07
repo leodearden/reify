@@ -1073,4 +1073,15 @@ fn test_self_read_paths_use_manifest_dir() {
          THIS_FILE rather than a bare relative path. Function body:\n{}",
         drop_logs_body
     );
+
+    // Check test_is_root_uses_libc_not_raw_ffi uses THIS_FILE.
+    let is_root_body =
+        extract_test_fn_body(&source, "fn test_is_root_uses_libc_not_raw_ffi()")
+            .expect("source should contain test_is_root_uses_libc_not_raw_ffi");
+    assert!(
+        is_root_body.contains("THIS_FILE"),
+        "test_is_root_uses_libc_not_raw_ffi must read the test file via \
+         THIS_FILE rather than a bare relative path. Function body:\n{}",
+        is_root_body
+    );
 }
