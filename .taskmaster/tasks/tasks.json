@@ -19300,11 +19300,11 @@
         "description": "In orchestrator.yaml: (1) Move bash tests/check-pm-standardization.sh from test_command to lint_command (pure static check). (2) Add if test -f existence guards for both check-pm-standardization.sh and sync_comments_test.sh.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:53:30.793Z",
+        "updatedAt": "2026-04-07T19:53:30.909Z",
         "metadata": {
           "modules": [
             "orchestrator.yaml",
@@ -21647,9 +21647,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:53:30.793Z",
+      "lastModified": "2026-04-07T19:53:30.910Z",
       "taskCount": 1050,
-      "completedCount": 737,
+      "completedCount": 738,
       "tags": [
         "master"
       ]
