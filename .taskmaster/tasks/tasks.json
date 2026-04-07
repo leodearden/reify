@@ -21209,10 +21209,11 @@
         "description": "In tests/sync_comments_test.sh lines 36 and 48, `grep -q \"fn ${name}\"` will false-positive on prefix-named functions (e.g., `fn sanitize_value_raw`) and on commented-out mentions. Replace with an anchored pattern such as `grep -qE \"^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+${name}[[:space:](]\"` to require a proper function declaration with the exact name followed by whitespace or `(`.\n\nNote: Do NOT use grep -P (PCRE) as it is non-portable — macOS grep does not support -P.\n\nmemory_hints: search(\"sync_comments_test fn grep anchoring\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-07T19:08:05.073Z"
       },
       {
         "id": "1026",
@@ -21228,7 +21229,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:08:04.613Z",
+      "lastModified": "2026-04-07T19:08:05.073Z",
       "taskCount": 1026,
       "completedCount": 726,
       "tags": [
