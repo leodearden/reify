@@ -104,13 +104,15 @@ export function reifyGotoDefinition(
       requestDefinition(currentUri, lspLine, lspChar).then((location) => {
         if (!location) return;
         if (!view.dom.isConnected) return;
-        if (location.range.start.line + 1 > view.state.doc.lines) return;
 
         const resolvedNow = resolveUri(uri);
         const sameFile = isSameFile(location.uri, resolvedNow);
 
         if (sameFile) {
-          // Same document: navigate to definition in current view
+          // Same document: navigate to definition in current view.
+          // Guard against stale LSP responses where the line number exceeds the
+          // current document length (lines may have been deleted since mousedown).
+          if (location.range.start.line + 1 > view.state.doc.lines) return;
           const targetLine = view.state.doc.line(location.range.start.line + 1);
           const targetPos = targetLine.from + location.range.start.character;
           view.dispatch({
