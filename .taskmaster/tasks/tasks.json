@@ -21254,11 +21254,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts` lines 305-354: (1) Remove the `withSuppressedRejections` wrapper around `mousedownHandler` + `flushMacrotasks` — the production `.catch()` at gotoDefinition.ts:130 fully handles the rejection so there is nothing to suppress; the wrapper misleads readers and masks breakage. (2) Rename the describe block at line 305 from `'.catch() error handler'` to a behavior-focused label such as `'error recovery'` to match the file's naming conventions. If `withSuppressedRejections` is no longer used elsewhere in the file, remove the import.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:27:34.737Z",
+        "updatedAt": "2026-04-07T19:30:54.244Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -21602,7 +21602,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:30:46.292Z",
+      "lastModified": "2026-04-07T19:30:54.244Z",
       "taskCount": 1048,
       "completedCount": 734,
       "tags": [
