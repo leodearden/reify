@@ -15,6 +15,9 @@ source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
 echo "=== check-pm-standardization ==="
 
+# ── Preflight: required tools ────────────────────────────────────────
+assert "git is available" command -v git
+
 # ── Check 1: packageManager field in all package.json files ──────────
 echo ""
 echo "Check 1: packageManager field in package.json files"
