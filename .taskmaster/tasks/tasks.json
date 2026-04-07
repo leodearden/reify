@@ -19009,11 +19009,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs around line 5744, add tests that: (1) place f64::NEG_INFINITY in any single component and assert is_undef() — matching the pattern of sanitize_real_neg_inf_returns_undef; (2) place an invalid value (NaN or Inf) in the y component; (3) place an invalid value in the z component. Each should be a separate #[test] function following the existing naming convention (sanitize_orientation_neg_inf_returns_undef, sanitize_orientation_y_nan_returns_undef, sanitize_orientation_z_inf_returns_undef, etc.).\n\nThis ensures all four quaternion components (w, x, y, z) are exercised individually and both infinity polarities are covered, matching the coverage pattern established for Scalar and Complex arms.\n\nMemory hints: search \"sanitize_value Orientation test coverage\", search \"sanitize_real_neg_inf_returns_undef\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:08:02.641Z",
+        "updatedAt": "2026-04-07T16:18:05.113Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -19063,11 +19063,11 @@
         "description": "In crates/reify-runtime/tests/concurrent_eval.rs, the three into_result warn-emission tests (tracing_warn_emitted_on_poison_into_result, _snapshot_values, _results at lines 2086-2159) are structurally identical — they differ only in which poison method is called. Extract a private helper like `assert_into_result_emits_one_warn(poison_fn: impl Fn(&ConcurrentEvalAdapter))` and reduce each #[test] to a one-liner.\n\nAdditionally, all three tests discard `_result` from `catch_unwind` without asserting `_result.is_ok()`. A panic after the warn! would be masked. Add `assert!(_result.is_ok(), \"into_result() should not panic on poison recovery\")` after the warn_count assertion.\n\nmemory_hints: search(\"warn_counting_subscriber helper\", project_id=\"reify\"), search(\"test deduplication helper poison\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:14:58.813Z",
+        "updatedAt": "2026-04-07T16:18:05.177Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -21044,7 +21044,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T16:18:05.066Z",
+      "lastModified": "2026-04-07T16:18:05.177Z",
       "taskCount": 1016,
       "completedCount": 720,
       "tags": [
