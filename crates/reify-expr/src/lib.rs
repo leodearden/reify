@@ -746,6 +746,18 @@ fn compute_numerical_gradient_at_point(
         }
     }
 
+    // Hoist make_arg before the loop — it only captures domain_dim (Copy),
+    // so constructing it once per axis would be redundant.
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
@@ -757,18 +769,6 @@ fn compute_numerical_gradient_at_point(
         plus_coords[i] += h;
         let mut minus_coords = coords.clone();
         minus_coords[i] -= h;
-
-        // Construct args for apply_lambda: use Scalar with domain dimension
-        // when the domain is dimensioned, otherwise use Real.
-        let make_arg = |val: f64| -> Value {
-            match domain_dim {
-                Some(dim) => Value::Scalar {
-                    si_value: val,
-                    dimension: dim,
-                },
-                None => Value::Real(val),
-            }
-        };
 
         // Build the argument list based on calling convention
         let plus_args: Vec<Value>;
