@@ -32,12 +32,19 @@ const rules: ErrorRule[] = [
   },
 ];
 
+// NOTE: errorMessage kept in sync with gui/sidecar/src/utils.ts – sidecar is a separate bundle
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
     return err.message.trim() || 'Unknown error';
   }
-  if (err !== null && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {
-    return ((err as Record<string, unknown>).message as string).trim() || 'Unknown error';
+  if (err !== null && typeof err === 'object') {
+    const msg = (err as Record<string, unknown>).message;
+    if (typeof msg === 'string') {
+      return msg.trim() || 'Unknown error';
+    }
+    if ('message' in err) {
+      return 'Unknown error';
+    }
   }
   return String(err).trim() || 'Unknown error';
 }
