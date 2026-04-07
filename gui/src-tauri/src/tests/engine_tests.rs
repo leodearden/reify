@@ -1124,3 +1124,20 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
         diags_after
     );
 }
+
+// --- byte_offset_to_line_col edge-case tests ---
+
+#[test]
+fn byte_offset_to_line_col_basic_conversion() {
+    use crate::engine::byte_offset_to_line_col;
+
+    let source = "abc\ndef";
+    // offset 0 → start of first line → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 3 → just before the '\n' → (1, 4) (col after 'a','b','c')
+    assert_eq!(byte_offset_to_line_col(source, 3), (1, 4));
+    // offset 4 → first char of second line → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 4), (2, 1));
+    // offset 6 → last char 'f' → (2, 3)
+    assert_eq!(byte_offset_to_line_col(source, 6), (2, 3));
+}
