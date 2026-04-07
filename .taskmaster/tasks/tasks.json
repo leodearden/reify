@@ -21229,11 +21229,17 @@
         "description": "In tests/sync_comments_test.sh: (1) The two check blocks (lines 27-37 and 39-49) are structurally identical — extract a local `assert_sync_ref_exists` helper to eliminate ~12 lines of duplication. (2) Remove or annotate the intermediate `assert test -n \"$_ref_fn\"` assertions (lines 30-32 and 42-44) which are redundant given the hardcoded assertions on lines 17-25 already guarantee non-empty extraction. (3) Remove the `if [ -n \"$_ref_fn\" ]` guard or call the inner assert unconditionally, to match the flat-assert style used elsewhere in the file. (4) Add a comment at the `| head -1` pipeline documenting that the test only validates the first SYNC cross-reference in each file, and that multi-reference files would require a loop.\n\nmemory_hints: search(\"sync_comments_test DRY helper refactor\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:08:05.728Z"
+        "updatedAt": "2026-04-07T19:10:07.884Z",
+        "metadata": {
+          "modules": [
+            "tests/infra",
+            "tests/sync_comments_test.sh"
+          ]
+        }
       },
       {
         "id": "1027",
@@ -21335,7 +21341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-07T19:10:06.385Z",
+      "lastModified": "2026-04-07T19:10:07.884Z",
       "taskCount": 1034,
       "completedCount": 727,
       "tags": [
