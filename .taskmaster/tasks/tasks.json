@@ -21243,6 +21243,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1028,
+        "title": "sidecar utils.ts: behavior fix + cross-reference comments",
+        "description": "Two coordinated changes to errorMessage in both packages:\n\n1. In gui/sidecar/src/utils.ts (and the identical copy in gui/src/utils/errorClassifier.ts): when an object has a non-string .message property, return 'Unknown error' instead of falling through to String(err) → '[object Object]' (suggestion [9]). Update the corresponding test expectations in gui/sidecar/src/__tests__/utils.test.ts.\n\n2. Add a sync-marker comment to each file: in gui/sidecar/src/utils.ts add `// NOTE: kept in sync with gui/src/utils/errorClassifier.ts – sidecar is a separate bundle` and a reciprocal comment in errorClassifier.ts (suggestion [0]).\n\nMemory hints: search for \"errorMessage implementation\" and \"sidecar utils duplication\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21255,7 +21266,7 @@
       ],
       "created": "2026-04-07T19:09:20.933Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-07T19:09:21.633Z"
+      "updated": "2026-04-07T19:09:26.588Z"
     }
   }
 }
