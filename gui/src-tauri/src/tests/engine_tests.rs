@@ -1262,3 +1262,116 @@ fn offset_to_line_col_fast_at_eof_offset() {
     let actual = offset_to_line_col_fast(&line_offsets, eof);
     assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
 }
+
+// --- Task 837: step-7 stress / multi-diagnostic tests ---
+
+/// get_diagnostics with multiple injected diagnostics at various byte offsets
+/// produces line/col values matching byte_offset_to_line_col for each span.
+///
+/// This is the primary end-to-end regression for the optimized path: we inject
+/// three warnings with labels at byte positions we compute from bracket_source,
+/// then verify get_diagnostics returns the same line/col as the O(M) reference.
+#[test]
+fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+    use crate::engine::byte_offset_to_line_col;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Pick three byte offsets that land at recognisable tokens across
+    // different lines, using `find` so the test stays robust to whitespace.
+    let offset_a = source.find("width").expect("'width' not in bracket_source") as u32;
+    let offset_b = source.find("height").expect("'height' not in bracket_source") as u32;
+    let offset_c = source.find("thickness").expect("'thickness' not in bracket_source") as u32;
+
+    let diag_a = Diagnostic::warning("stress-a")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_a, offset_a + 5),
+            "label a",
+        ));
+    let diag_b = Diagnostic::warning("stress-b")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_b, offset_b + 6),
+            "label b",
+        ));
+    let diag_c = Diagnostic::warning("stress-c")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_c, offset_c + 9),
+            "label c",
+        ));
+
+    session.inject_diagnostic_for_test(diag_a);
+    session.inject_diagnostic_for_test(diag_b);
+    session.inject_diagnostic_for_test(diag_c);
+
+    let diags = session.get_diagnostics();
+
+    // Find each injected diagnostic and verify its span against the reference.
+    for (msg, start, end) in [
+        ("stress-a", offset_a as usize, (offset_a + 5) as usize),
+        ("stress-b", offset_b as usize, (offset_b + 6) as usize),
+        ("stress-c", offset_c as usize, (offset_c + 9) as usize),
+    ] {
+        let d = diags
+            .iter()
+            .find(|d| d.message == msg)
+            .unwrap_or_else(|| panic!("diagnostic '{}' not found", msg));
+
+        let (exp_line, exp_col) = byte_offset_to_line_col(source, start);
+        let (exp_end_line, exp_end_col) = byte_offset_to_line_col(source, end);
+
+        assert_eq!(
+            d.line, exp_line as u32,
+            "{}: line mismatch (got {}, expected {})",
+            msg, d.line, exp_line
+        );
+        assert_eq!(
+            d.column, exp_col as u32,
+            "{}: column mismatch (got {}, expected {})",
+            msg, d.column, exp_col
+        );
+        assert_eq!(
+            d.end_line, exp_end_line as u32,
+            "{}: end_line mismatch (got {}, expected {})",
+            msg, d.end_line, exp_end_line
+        );
+        assert_eq!(
+            d.end_column, exp_end_col as u32,
+            "{}: end_column mismatch (got {}, expected {})",
+            msg, d.end_column, exp_end_col
+        );
+    }
+}
+
+/// The labelless (1,1,1,1) fallback is unaffected by the optimization.
+/// Delegates to the existing test — this is just a marker asserting step-7
+/// coverage of the labelless path specifically.
+#[test]
+fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    session.inject_diagnostic_for_test(Diagnostic::warning("no-label-stress"));
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "no-label-stress")
+        .expect("injected 'no-label-stress' not found");
+
+    assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+}
