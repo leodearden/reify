@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -198,6 +198,66 @@ describe('withSuppressedRejectionsAndErrorSpy', () => {
     const original = new Error('propagated failure');
     await expect(
       withSuppressedRejectionsAndErrorSpy(async () => { throw original; }),
+    ).rejects.toThrow(original);
+  });
+});
+
+describe('withSuppressedRejectionsAndWarnSpy', () => {
+  it('passes a mock function as warnSpy to the callback', async () => {
+    let receivedSpy: unknown;
+    await withSuppressedRejectionsAndWarnSpy(async (spy) => {
+      receivedSpy = spy;
+    });
+    expect(vi.isMockFunction(receivedSpy)).toBe(true);
+  });
+
+  it('warnSpy is console.warn spied on, with output suppressed during fn', async () => {
+    await withSuppressedRejectionsAndWarnSpy(async (spy) => {
+      // The spy wraps console.warn — console.warn === spy inside fn
+      expect(spy).toBe(console.warn);
+      // Calling console.warn (which === spy) records the call via the spy
+      console.warn('test message');
+      expect(spy).toHaveBeenCalledWith('test message');
+    });
+  });
+
+  it('restores console.warn after fn resolves', async () => {
+    const original = console.warn;
+    await withSuppressedRejectionsAndWarnSpy(async () => {
+      // inside fn, console.warn is mocked (not the original)
+      expect(console.warn).not.toBe(original);
+    });
+    // after fn resolves, console.warn should be restored
+    expect(console.warn).toBe(original);
+  });
+
+  it('restores console.warn after fn rejects', async () => {
+    const original = console.warn;
+    await withSuppressedRejectionsAndWarnSpy(async () => {
+      throw new Error('expected failure');
+    }).catch(() => {});
+    // even after rejection, console.warn should be restored
+    expect(console.warn).toBe(original);
+  });
+
+  it('suppresses unhandled rejections by delegating to withSuppressedRejections', async () => {
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await withSuppressedRejectionsAndWarnSpy(async () => {
+      // no-op fn, just verifying delegation
+    });
+
+    expect(addSpy.mock.calls.some(([event]) => event === 'unhandledrejection')).toBe(true);
+    expect(removeSpy.mock.calls.some(([event]) => event === 'unhandledrejection')).toBe(true);
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
+  it('re-throws the original error from fn', async () => {
+    const original = new Error('propagated failure');
+    await expect(
+      withSuppressedRejectionsAndWarnSpy(async () => { throw original; }),
     ).rejects.toThrow(original);
   });
 });
