@@ -24260,10 +24260,11 @@
         "description": "Three small test-quality cleanups to gui/src-tauri/src/tests/engine_tests.rs from the Task 899 review:\n\n1. **Remove redundant import (line ~1658)** — `use reify_constraints::SimpleConstraintChecker;` inside `resolve_source_panics_without_loaded_module` is already imported at module level (line 3). Drop the inner `use`.\n\n2. **Hoist module_key import (lines ~1668-1686)** — `use crate::engine::module_key;` is repeated in each of `module_key_normal_name`, `module_key_underscored_name`, `module_key_empty_name`. Hoist to a single module-level `use` (or wrap the three tests in `mod module_key_tests { use ... }`).\n\n3. **Improve or delete module_key_empty_name (lines ~1681-1686)** — `assert_eq!(module_key(\"\"), \".ri\")` essentially tests `format!`. `load_file` falls back to `\"unnamed\"` (not `\"\"`), so the case is unreachable in production. Either delete it, or replace with a more meaningful boundary test (e.g. names containing dots/slashes that match realistic file_stem outputs, or a consistency assertion that `module_key(name)` matches what `load_from_source` actually inserts into `source_map`).\n\nmemory_hints: search(\"Task 899 resolve_source module_key engine.rs\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:42:09.461Z"
       },
       {
         "id": "1193",
@@ -24303,7 +24304,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:42:09.056Z",
+      "lastModified": "2026-04-08T23:42:09.461Z",
       "taskCount": 1195,
       "completedCount": 875,
       "tags": [
