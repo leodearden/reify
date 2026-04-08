@@ -518,6 +518,89 @@ fn e2e_meta_string_eq_mismatch() {
 }
 
 // ---------------------------------------------------------------------------
+// task-1045 regression: missing key and no-meta-block error paths
+//
+// These two tests are named regression guards for the same error paths covered
+// by task-213's e2e_meta_nonexistent_key_error and e2e_meta_no_meta_block_error
+// above (which additionally assert exact message substrings).  The task-1045
+// tests use a different source scenario and broader assertions (≥1 Error
+// diagnostic exists) so they remain valid even if error message text is reworded.
+// ---------------------------------------------------------------------------
+
+/// Regression guard (suggestion 8): accessing a meta key that does not exist
+/// in the meta block must produce at least one compile-time Error diagnostic.
+///
+/// Source: `Widget` has `meta { description = "A widget" }` but the let binding
+/// reads `meta.nonexistent`.  The compiler must reject this with an error.
+#[test]
+fn e2e_meta_access_missing_key() {
+    let source = r#"
+        structure def Widget {
+            meta {
+                description = "A widget"
+            }
+            let x : String = meta.nonexistent
+        }
+    "#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile — expect at least one Error diagnostic for the missing key
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error for missing meta key 'nonexistent', got none"
+    );
+}
+
+/// Regression guard (suggestion 9): accessing `meta.description` on a structure
+/// that has no meta block at all must produce at least one compile-time Error.
+///
+/// Source: `Gadget` has no meta block but the body contains `let x : String = meta.description`.
+/// The compiler must reject this with an error rather than panicking or silently
+/// returning a default value at eval time.
+#[test]
+fn e2e_meta_access_no_meta_block() {
+    let source = r#"
+        structure def Gadget {
+            param count : Integer = 1
+            let x : String = meta.description
+        }
+    "#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile — expect at least one Error diagnostic for the missing meta block
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one compile error for meta access on structure with no meta block, got none"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-17: E2E — meta.key in a constraint expression
 // ---------------------------------------------------------------------------
 
