@@ -23731,11 +23731,11 @@
         "description": "Two follow-ups from task 1082 review, both in `crates/reify-test-support/src/tracing_support.rs`:\n\n**1. Deduplicate \"Release-mode asymmetry (intentional)\" comment blocks**\nThe comment at lines ~216-224 (`WarnCountingSubscriber::event()`) and lines ~347-354 (`WarnCapturingSubscriber::event()`) are nearly verbatim. Extract the shared rationale into a single doc comment on `CONTRACT_VIOLATION_MARKER` (or a module-level comment), and replace each subscriber's block with a short one-liner like `// See release-mode asymmetry note on CONTRACT_VIOLATION_MARKER.`\n\n**2. Add `#[should_panic]` test for `WarnCapturingSubscriber::event()` contract violation**\n`event_panics_on_non_warn_when_dispatcher_contract_violated` (line ~771) tests `WarnCountingSubscriber`'s `debug_assert_eq!` via `ForwardingSubscriber`. No analogous test exists for `WarnCapturingSubscriber`. Add a parallel `#[test] #[cfg(debug_assertions)] #[should_panic(expected = \"enabled() contract violated\")]` test that wraps a `WarnCapturingSubscriber` in a `ForwardingSubscriber` with `enabled_fn` always returning true, then dispatches a non-WARN event.\n\nmemory_hints: search(\"CONTRACT_VIOLATION_MARKER release-mode asymmetry WarnCapturingSubscriber\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:13:22.643Z",
+        "updatedAt": "2026-04-08T22:51:22.262Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -23977,7 +23977,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:51:22.129Z",
+      "lastModified": "2026-04-08T22:51:22.263Z",
       "taskCount": 1172,
       "completedCount": 852,
       "tags": [
