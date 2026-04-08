@@ -2660,10 +2660,11 @@ fn gradient_composed_field_returns_field() {
 /// - `domain_type` is `Type::point3(Type::Real)`
 /// - `grad_codomain_type` is `Type::vec3(Type::Real)`
 ///
-/// Used by three tests that share this setup:
+/// Used by four tests that share this setup:
 /// `gradient_3d_field_single_point_param`,
 /// `gradient_sample_with_nan_point_returns_undef`,
-/// `gradient_sample_with_inf_point_returns_undef`.
+/// `gradient_sample_with_inf_point_returns_undef`,
+/// `gradient_tensor_single_point_param_returns_undef`.
 fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
     let p_id = ValueCellId::new("$lambda0.S", "p");
 
@@ -3166,6 +3167,46 @@ fn gradient_tensor_point_returns_undef() {
         sample_result,
         Value::Undef,
         "gradient sampled at a Tensor point must return Undef (Tensor is not a coordinate list)"
+    );
+}
+
+/// Sampling a gradient field with a Value::Tensor point returns Undef — single_point_param path.
+///
+/// Complements `gradient_tensor_point_returns_undef` (which exercises the decomposed
+/// 3-param lambda, i.e. single_point_param=false). This test uses the 1-param lambda
+/// `|p| dot(p, [1,2,3])` built by `make_3d_dot_product_gradient_field()`, which exercises
+/// the single_point_param=true code path. The sample point is a Value::Tensor, so the
+/// value-kind dispatch must return Undef before any coordinate extraction occurs.
+#[test]
+fn gradient_tensor_single_point_param_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_dot_product_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample with a Tensor instead of a Point — must return Undef.
+    // The type annotation is point3(Real) (matching the domain) so the Value variant is
+    // the sole distinguishing factor; Undef comes from value-kind dispatch, not a type error.
+    let tensor_point = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at a Tensor point must return Undef (single_point_param=true path)"
     );
 }
 
