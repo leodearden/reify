@@ -24084,6 +24084,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1181,
+        "title": "Add negative extrude distance and revolve angle test coverage",
+        "description": "The sweep degenerate tests cover zero-distance extrude and zero-angle revolve, but miss negative-distance extrude and negative-angle revolve. Negative values may be valid (reverse direction/clockwise rotation) or should be rejected — either way, explicit tests should document the intended behavior. Add test cases like negative_extrude_distance_is_valid (or _is_rejected) and negative_revolve_angle to crates/reify-eval/tests/stress_sweep_degenerate.rs.\n\nmemory_hints: search \"sweep degenerate stress test extrude revolve\" for related test context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24096,7 +24107,7 @@
       ],
       "created": "2026-04-08T23:19:26.392Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T23:19:32.544Z"
+      "updated": "2026-04-08T23:19:37.229Z"
     }
   }
 }
