@@ -40,7 +40,6 @@ function makeMockView(overrides?: {
   state?: {
     doc?: {
       lines?: number;
-      lineAt?: () => { number: number; from: number; to: number };
       line?: (n: number) => { from: number; to?: number };
     };
   };
@@ -52,7 +51,7 @@ function makeMockView(overrides?: {
     state: {
       doc: {
         lines: overrides?.state?.doc?.lines ?? 100,
-        lineAt: overrides?.state?.doc?.lineAt ?? (() => ({ number: 1, from: 0, to: 10 })),
+        lineAt: () => ({ number: 1, from: 0, to: 10 }),
         line: overrides?.state?.doc?.line ?? (() => ({ from: 0, to: 10 })),
       },
     },
