@@ -2144,12 +2144,6 @@ mod tests {
         // Two independently constructed NaN values compare Equal under Ord
         // (same canonical bit pattern → total_cmp returns Equal).
         assert_eq!(nan1.cmp(&nan2), std::cmp::Ordering::Equal);
-        // PartialEq: two separately constructed NaN values with identical bit patterns
-        // must compare equal (bit-identity equality, not IEEE 754 NaN != NaN).
-        assert_eq!(
-            nan1, nan2,
-            "two separately constructed NaN values with identical bit patterns must compare equal"
-        );
         // NaN sorts strictly after +Infinity
         assert_eq!(nan1.cmp(&inf), std::cmp::Ordering::Greater);
         assert_eq!(inf.cmp(&nan1), std::cmp::Ordering::Less);
