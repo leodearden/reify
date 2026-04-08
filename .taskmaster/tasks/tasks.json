@@ -23094,7 +23094,7 @@
         "description": "Follow-up from Task 1095 review triage (esc-1095-803, suggestions S1, S2, S4).\n\nThree related cleanups in `gui/src/__tests__/gotoDefinition.test.ts`:\n\n1. **Replace inline warnSpy try/finally with `withSuppressedRejectionsAndWarnSpy`** — The inline `vi.spyOn(console, 'warn')…try/finally` pattern appears ~6 times in the new/modified tests (lines 320-333, 358-369, 392-403, 546-557, 583-594, and the negative-character test). The utility `withSuppressedRejectionsAndWarnSpy` is already imported (line 2) from `./test-utils` and provides exactly this plus unhandled rejection suppression. Replace inline blocks with the utility.\n\n2. **Parameterize NaN tests with `it.each`** — The cross-file NaN tests (lines 336-404) and same-file NaN tests (lines 560-595, 728-756) have nearly identical bodies differing only in which position field is NaN. Use `it.each` to collapse ~120 lines to ~40.\n\n3. **Fix comment tense** — Line 339 says \"null < 0 → false, so the current guard passes null through to onNavigate\" describing pre-fix behavior in present tense. Reword to past tense: \"Pre-fix: null < 0 → false, so the old guard would pass null through to onNavigate.\" Similar comments at line 375.\n\nmemory_hints:\n- search: \"withSuppressedRejectionsAndWarnSpy test-utils\"\n- search: \"gotoDefinition NaN tests cross-file same-file\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23106,7 +23106,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:12:05.299Z"
       },
       {
         "id": "1125",
@@ -23318,7 +23319,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:05.077Z",
+      "lastModified": "2026-04-08T21:12:05.299Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
