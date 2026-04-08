@@ -21902,11 +21902,11 @@
         "description": "Follow-up to task 1039 addressing four reviewer_comprehensive suggestions on `tree-sitter-reify/tests/build_logic_tests.rs` (in and around `test_self_read_paths_use_manifest_dir`, lines ~1041-1085):\n\n**S1 — stale_comment (line ~1043)**: Update the doc comment that still says \"the two source-self-inspection tests\" to \"each source-self-inspection test\" (or \"the three\") so it stays truthful as the target list grows.\n\n**S2 — hidden_coupling (line ~1045)**: The comment was intentionally single-quoted (`'tests/build_logic_tests.rs'`) so the blanket guard at line ~1080 does not match its own describing comment. This reason is load-bearing but undocumented — a future normalization back to double quotes will make the test fail with a confusing error. Add a brief aside, e.g. `// (single-quoted on purpose so the blanket-guard assertion below does not match this comment)`.\n\n**S3 — brittle_assertion (line ~1068)**: The per-function needle `read_to_string(THIS_FILE)` unnecessarily couples the guard to one read method. A future self-reading test that uses `std::fs::read(THIS_FILE)`, `File::open(THIS_FILE)`, or `fs::read_to_string(Path::new(THIS_FILE))` would fail even though correct. Loosen to `body.contains(\"(THIS_FILE)\")` (still rules out bare-identifier mentions in comments).\n\n**S4 — hardcoded_list (lines ~1059-1063)**: The per-function loop hardcodes three target function signatures. A new self-reading test added later will only be caught by the blanket guard — no per-function safety net. This file already has precedent for dynamic discovery in `find_cfg_unix_test_fns` (~line 785). Consider discovering self-reading tests dynamically: scan for test fns whose body contains `read_to_string(` (or more broadly `(THIS_FILE)` after S3) and assert each uses THIS_FILE. If dynamic discovery is overkill, at minimum add a comment instructing maintainers to append to `target_fns` when adding a self-reading test.\n\n**Scope**: single file, `tree-sitter-reify/tests/build_logic_tests.rs`. Verify with `cargo test -p tree-sitter-reify --test build_logic_tests`.\n\nSource: review triage of task 1039 (esc-1039-15).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:28:39.815Z",
+        "updatedAt": "2026-04-08T20:44:43.256Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests"
@@ -22819,9 +22819,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:44:24.348Z",
+      "lastModified": "2026-04-08T20:44:43.257Z",
       "taskCount": 1111,
-      "completedCount": 782,
+      "completedCount": 783,
       "tags": [
         "master"
       ]
