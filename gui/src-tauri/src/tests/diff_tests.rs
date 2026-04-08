@@ -410,3 +410,76 @@ fn delta_to_events_warns_and_skips_on_serialization_failure() {
         "expected no mesh-update event for the NaN mesh"
     );
 }
+
+/// Two NaN meshes in the same delta both get their own warn and their own
+/// "serialization-error" event. A valid value in the same delta is unaffected.
+#[test]
+fn delta_to_events_multiple_failures_warn_for_each() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+
+    let delta = StateDelta {
+        changed_meshes: vec![
+            sample_mesh("Bad1.body", vec![f32::NAN, 0.0, 0.0]),
+            sample_mesh("Bad2.body", vec![0.0, f32::INFINITY, 0.0]),
+        ],
+        changed_values: vec![sample_value("Good.width", "42")],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
+
+    // Two warnings, one per failing mesh
+    assert_eq!(
+        warn_count.load(Ordering::Relaxed),
+        2,
+        "expected exactly two tracing::warn calls; got {}",
+        warn_count.load(Ordering::Relaxed)
+    );
+
+    // Two serialization-error events
+    let error_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "serialization-error")
+        .collect();
+    assert_eq!(
+        error_events.len(),
+        2,
+        "expected two serialization-error events; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    // The error events reference the correct item ids
+    let error_ids: Vec<&str> = error_events
+        .iter()
+        .map(|(_, v)| v["item_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        error_ids.contains(&"Bad1.body"),
+        "Bad1.body must appear in error events"
+    );
+    assert!(
+        error_ids.contains(&"Bad2.body"),
+        "Bad2.body must appear in error events"
+    );
+
+    // The valid value still produces its event
+    let value_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "value-update")
+        .collect();
+    assert_eq!(
+        value_events.len(),
+        1,
+        "the valid value must still produce a value-update event"
+    );
+    assert_eq!(value_events[0].1["cell_id"], "Good.width");
+
+    // No mesh-update events at all (both meshes failed)
+    assert!(
+        events.iter().all(|(n, _)| n != "mesh-update"),
+        "no mesh-update events should be emitted when all meshes failed serialization"
+    );
+}
