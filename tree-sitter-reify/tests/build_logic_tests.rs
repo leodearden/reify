@@ -1147,9 +1147,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
 
 #[test]
 fn test_self_read_paths_use_manifest_dir() {
-    // Meta-test / regression guard: the two source-self-inspection tests that read
+    // Meta-test / regression guard: each source-self-inspection test that reads
     // this file must use the `THIS_FILE` constant rather than the bare relative path
     // `"tests/build_logic_tests.rs"`.
+    // (The bare path above is backtick-quoted so that a future blanket-guard
+    // assertion scanning for the literal path string does not false-match
+    // this describing comment.)
     // A bare relative path is fragile — it depends on the working directory from which
     // `cargo test` is invoked, causing failures when tests are run from outside the
     // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
