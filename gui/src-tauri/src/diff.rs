@@ -146,7 +146,7 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
     let mut events = Vec::new();
 
     for mesh in &delta.changed_meshes {
-        try_serialize_event(
+        push_serialized_event(
             &mut events,
             "mesh-update",
             "mesh",
@@ -155,7 +155,7 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
         );
     }
     for value in &delta.changed_values {
-        try_serialize_event(
+        push_serialized_event(
             &mut events,
             "value-update",
             "value",
@@ -164,7 +164,7 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
         );
     }
     for constraint in &delta.changed_constraints {
-        try_serialize_event(
+        push_serialized_event(
             &mut events,
             "constraint-update",
             "constraint",
@@ -201,7 +201,7 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
 /// with `item_type`, `item_id`, and `error` fields.
 ///
 /// `pub(crate)` so the test module in `src/tests/` can unit-test it directly.
-pub(crate) fn try_serialize_event(
+pub(crate) fn push_serialized_event(
     events: &mut Vec<(String, serde_json::Value)>,
     event_name: &str,
     item_type: &str,
