@@ -400,12 +400,17 @@ async fn initialize_with_invalid_field_type_returns_error() {
 ///
 /// This documents the `Ok(Value::Null)` contract for successfully processed
 /// one-way LSP messages (initialized, didOpen, didChange, didClose).
+///
+/// Uses initialize-only setup (no prior `initialized`) so the `initialized`
+/// notification in the body is the first and only one, directly testing the
+/// first-time Ok(Value::Null) contract.
 #[tokio::test]
 async fn valid_notification_returns_ok_null() {
-    let lsp = initialized_lsp().await;
+    let lsp = InProcessLsp::new();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("initialize should succeed before testing notification");
 
-    // Sending `initialized` again is valid — the server accepts multiple
-    // notifications and returns Ok(Value::Null) each time.
     let result = lsp.handle_request("initialized", json!({})).await;
 
     let val = result.expect("valid notification should return Ok");
