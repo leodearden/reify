@@ -23767,7 +23767,7 @@
         "description": "Two minor documentation improvements from the Task 1146 review:\n\n1. **Doc comment on partial serialization** (types.rs:15-30): The merged single-pass loop in `serialize_finite_f32_vec` begins the JSON sequence before validating all elements. If a non-finite value appears at position > 0, earlier elements have already been serialized. With the current sole caller (`serde_json::to_value` in diff.rs), this is safe because the in-memory Value is discarded on Err. Add a `# Note` doc comment warning that callers using streaming serializers should discard partial output on error.\n\n2. **Stale test comment** (types_tests.rs:498-500): The comment says \"before the loop merge\" which is ambiguous — reads as if the tests were written before the merge, but they ship in the same commit. Reword to \"characterizing the merged single-pass loop behavior\" or similar.\n\nmemory_hints: search \"serialize_finite_f32_vec\", get_entity \"MeshData\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23780,7 +23780,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T22:55:20.776Z"
       },
       {
         "id": "1162",
@@ -23978,7 +23979,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:55:19.804Z",
+      "lastModified": "2026-04-08T22:55:20.776Z",
       "taskCount": 1172,
       "completedCount": 854,
       "tags": [
