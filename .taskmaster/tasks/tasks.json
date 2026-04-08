@@ -21758,15 +21758,16 @@
         "description": "Follow-up to Task 1048. The current hardening only guards `String(err)` in the fallback, but the function can still throw earlier:\n\n1. **Robustness (wrap full body)** — `(err as Record<string, unknown>).message` and `'message' in err` can throw if `err` is a Proxy with throwing traps, and `err.message.trim()` in the `instanceof Error` branch can throw if a subclass defines a throwing getter. Wrap the whole body in a single try/catch that returns `'Unknown error'` on any throw:\n\n```ts\nexport function errorMessage(err: unknown): string {\n  try {\n    if (err instanceof Error) return err.message.trim() || 'Unknown error';\n    if (err !== null && typeof err === 'object') {\n      const msg = (err as Record<string, unknown>).message;\n      if (typeof msg === 'string') return msg.trim() || 'Unknown error';\n      if ('message' in err) return 'Unknown error';\n    }\n    return String(err).trim() || 'Unknown error';\n  } catch {\n    return 'Unknown error';\n  }\n}\n```\n\n2. **Style** — While rewriting, ensure the fallback is formatted multi-line (current single-line `try { ... } catch { ... }` is inconsistent with the rest of the file).\n\n3. **Test coverage** — Add test cases in both `gui/src/__tests__/errorClassifier.test.ts` and `gui/sidecar/src/__tests__/utils.test.ts`:\n   - `{ get message() { throw new Error('boom'); } }` → `'Unknown error'` (plain object with throwing getter)\n   - An `Error` subclass that overrides `message` with a throwing getter → `'Unknown error'`\n   - `{ valueOf() { throw new Error('boom'); }, toString() { throw new Error('boom'); } }` → `'Unknown error'`\n\nBoth copies of `errorMessage` must be updated identically until Task 1047 eliminates the manual sync.\n\nOriginated from review suggestions [1], [3], [4] on Task 1048 (esc-1048-8).\n\nMemory hints: search for \"errorMessage implementation\", \"errorMessage test coverage\", \"Task 1048 hardening\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T10:56:47.406Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:56:46.744Z",
+      "lastModified": "2026-04-08T10:56:47.406Z",
       "taskCount": 1055,
       "completedCount": 743,
       "tags": [
