@@ -22753,10 +22753,11 @@
         "description": "Two comment-cleanup items from the task 1083 review:\n\n1. **Stale doc comment** in `crates/reify-compiler/tests/qualified_access_compile_tests.rs` lines 278-280: The comment reads \"Currently fails because the let-binding second pass uses compiled_expr.result_type (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the OptionNone fixup present in the param-default path.\" This is now inaccurate — the fixup has been implemented and the test passes. Update to describe the test's purpose without \"Currently fails\" phrasing.\n\n2. **Fragile line-number reference** in `crates/reify-compiler/src/lib.rs` lines 5226-5227: Comment says \"mirroring the param-default fixup at lines 5179-5185\". Reference by description instead (e.g., \"mirroring the param-default OptionNone fixup in the `else` branch above\") so it doesn't go stale as the file is edited.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:42:02.255Z"
       },
       {
         "id": "1109",
@@ -22772,7 +22773,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:42:02.110Z",
+      "lastModified": "2026-04-08T20:42:02.256Z",
       "taskCount": 1109,
       "completedCount": 780,
       "tags": [
