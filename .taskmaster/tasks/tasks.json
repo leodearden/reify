@@ -21984,10 +21984,11 @@
         "description": "Follow-up from task 1025 review (esc-1025-24, suggestion S4). Broader project gap.\n\nProblem: tests/infra/ meta-tests (test_sync_comments_grep.sh, test_portable_sha256.sh, test_portable_timeout.sh, etc.) are not wired into orchestrator.yaml's test_command. The test_command runs `tests/sync_comments_test.sh` explicitly but discovers no infra meta-tests, so they only run during authoring sessions and silently rot afterwards.\n\nOptions:\n  (a) Add each `bash tests/infra/test_*.sh` invocation individually to orchestrator.yaml's test_command next to the existing sync_comments_test.sh line. Simple but doesn't scale.\n  (b) Introduce `tests/infra/run_all.sh` — a discovery runner that enumerates `test_*.sh` files in tests/infra/ and runs each with its exit code aggregated. Then replace the explicit sync_comments_test.sh line in orchestrator.yaml with `bash tests/infra/run_all.sh` (or add a new line for it). Document in tests/infra/README.md that all test_*.sh files are auto-discovered.\n\nPrefer option (b). Verify by deliberately breaking a meta-test and confirming the orchestrator verify step catches it.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:32:31.423Z"
       },
       {
         "id": "1069",
@@ -22003,7 +22004,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:32:30.321Z",
+      "lastModified": "2026-04-08T11:32:31.424Z",
       "taskCount": 1069,
       "completedCount": 749,
       "tags": [
