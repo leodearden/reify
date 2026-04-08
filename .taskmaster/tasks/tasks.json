@@ -22386,14 +22386,19 @@
         "description": "Remove unused `lineAt` override and add a comment explaining the optional `to` in `line` override in `gotoDefinition.test.ts`.",
         "details": "1. **Remove Unused `lineAt` Override**: In `gui/src/__tests__/gotoDefinition.test.ts`, remove the `lineAt` field from the `makeMockView` overrides type and the factory return. This field is not used in any test, so removing it will simplify the factory.\n\n2. **Add Comment for Optional `to` in `line` Override**: Add a comment near the `line?: (n: number) => { from: number; to?: number }` type to explain why `to` is optional. The test at approximately line 196 intentionally omits `to` to test a specific code path where `character > (line.to - line.from)` becomes `character > NaN`, effectively bypassing the character guard. Document this behavior to clarify the test's intent.",
         "testStrategy": "1. Run `cd gui && pnpm vitest run src/__tests__/gotoDefinition.test.ts` to ensure all tests pass without the `lineAt` override.\n2. Run `cd gui && pnpm tsc --noEmit` to verify TypeScript type correctness and ensure no type errors are introduced by the changes.",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "1037",
           "1052"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:27:55.967Z"
+        "updatedAt": "2026-04-08T17:35:34.980Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1087",
@@ -22540,7 +22545,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:35:05.948Z",
+      "lastModified": "2026-04-08T17:35:34.980Z",
       "taskCount": 1095,
       "completedCount": 762,
       "tags": [
