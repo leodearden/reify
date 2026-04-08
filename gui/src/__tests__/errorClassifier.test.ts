@@ -101,6 +101,15 @@ describe('errorClassifier', () => {
     it('is the exact same function reference as @reify/shared-utils', () => {
       expect(errorMessage).toBe(canonical);
     });
+
+    it('returns "Unknown error" when Error instance .message getter throws (re-export hostile-input guard)', () => {
+      const err = new Error('original');
+      Object.defineProperty(err, 'message', {
+        get() { throw new Error('boom'); },
+        configurable: true,
+      });
+      expect(errorMessage(err)).toBe('Unknown error');
+    });
   });
 
   describe('unknown errors', () => {
