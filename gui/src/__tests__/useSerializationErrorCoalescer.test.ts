@@ -46,4 +46,23 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledOnce();
     expect(showToast).toHaveBeenCalledWith('3 items failed to serialize', 'error');
   });
+
+  it('deduplicates errors for the same (item_type, item_id) — single detailed toast', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    // Send 5 errors for the same mesh
+    for (let i = 0; i < 5; i++) {
+      coalescer.add({ item_type: 'mesh', item_id: 'Bracket.body', error: `error variant ${i}` });
+    }
+
+    vi.advanceTimersByTime(500);
+
+    // Only one unique item → detailed toast, not a summary
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to serialize mesh 'Bracket.body'"),
+      'error',
+    );
+  });
 });
