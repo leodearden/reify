@@ -1303,6 +1303,11 @@ mod tests {
     ///
     /// Once the guard is dropped the subscriber is removed, so events emitted
     /// outside the guard's lifetime are not reflected in the counter.
+    ///
+    /// The post-drop `tracing::warn!` below falls through to the global no-op
+    /// fallback and leaves the counter at 1.  If the guard ever leaked its
+    /// subscriber, that warn would be captured and bump the counter to 2,
+    /// causing this assertion to fail.
     #[test]
     fn warn_counting_guard_stops_counting_after_drop() {
         use crate::assert_warn_count;
@@ -1311,8 +1316,15 @@ mod tests {
         let (guard, counter) = warn_counting_guard();
         tracing::warn!("inside guard");
         drop(guard);
-        // Any warn emitted here is not captured by the guard's subscriber.
-        // We just verify the count was exactly 1 (not more from external state).
-        assert_warn_count(&counter, 1, "only the warn inside the guard is counted");
+        // Emit a warn AFTER the guard drops.  The subscriber is now detached
+        // so this event must NOT increment the counter.  If the subscriber had
+        // leaked, the counter would reach 2 and the assertion below would catch
+        // the regression.
+        tracing::warn!("after drop");
+        assert_warn_count(
+            &counter,
+            1,
+            "post-drop warn must not be counted (subscriber should be detached)",
+        );
     }
 }
