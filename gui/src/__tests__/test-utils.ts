@@ -1,7 +1,7 @@
 /**
  * Shared test helpers for async patterns.
  */
-import { vi, type MockInstance } from 'vitest';
+import { vi, expect, type MockInstance } from 'vitest';
 
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
 export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
@@ -30,6 +30,27 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
     await fn();
   } finally {
     window.removeEventListener('unhandledrejection', handler);
+  }
+}
+
+/**
+ * Run `fn` with a temporary `unhandledrejection` listener (a `vi.fn()` spy)
+ * and assert that no unhandled rejections fired during `fn`.  The listener is
+ * removed in a `finally` block so it never leaks across tests.
+ *
+ * Unlike `withSuppressedRejections`, this helper is the *inverse*: it is used
+ * when the production code is expected to handle all rejections internally, and
+ * any unhandled rejection would represent a regression.  The listener has no
+ * `{ once: true }` so every rejection is captured — not just the first.
+ */
+export async function expectNoUnhandledRejections(fn: () => Promise<void>): Promise<void> {
+  const spy = vi.fn();
+  window.addEventListener('unhandledrejection', spy);
+  try {
+    await fn();
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener('unhandledrejection', spy);
   }
 }
 
