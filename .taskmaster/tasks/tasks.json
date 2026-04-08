@@ -23441,6 +23441,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1144,
+        "title": "Clean up solutions_agree tests: extract helpers, add edge cases, fix comment tense",
+        "description": "The `solutions_agree` tests in `crates/reify-constraints/src/solver.rs:1218-1443` have three cleanup items:\n\n1. **Extract test helpers** (S3): All 6 tests re-create `param_id`, `params` vec with identical `AutoParam`, and build hashmaps from scratch. Extract shared helpers: `fn test_param() -> (ValueCellId, Vec<AutoParam>)` and `fn scalar(v: f64) -> Value`.\n\n2. **Add edge case tests** (S4): Missing coverage for (a) NaN values — `as_f64()` could return `Some(NaN)` and NaN comparisons always return false; (b) Infinity values; (c) multi-parameter scenarios where the first param agrees but the second diverges, to verify early-return doesn't skip later params.\n\n3. **Fix comment tense** (S5): Lines 1288-1299 describe the old `unwrap_or(0.0)` bug in present tense (\"These tests exercise the bug\") but the fix is already applied. Reword to past tense.\n\nmemory_hints: search \"solver uniqueness test helpers\", get_entity \"solutions_agree\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23453,7 +23464,7 @@
       ],
       "created": "2026-04-08T21:33:58.684Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:33:59.523Z"
+      "updated": "2026-04-08T21:34:06.843Z"
     }
   }
 }
