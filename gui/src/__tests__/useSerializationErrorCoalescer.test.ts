@@ -61,7 +61,7 @@ describe('createSerializationErrorCoalescer', () => {
     // Only one unique item → detailed toast, not a summary
     expect(showToast).toHaveBeenCalledOnce();
     expect(showToast).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to serialize mesh 'Bracket.body'"),
+      "Failed to serialize mesh 'Bracket.body': error variant 4",
       'error',
     );
   });
@@ -101,6 +101,30 @@ describe('createSerializationErrorCoalescer', () => {
     vi.advanceTimersByTime(1000);
 
     expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('add() after cleanup() starts a fresh coalescing cycle', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    // Add an error and cancel before the window elapses
+    coalescer.add({ item_type: 'mesh', item_id: 'Bracket.body', error: 'first error' });
+    coalescer.cleanup();
+
+    // Verify cleanup suppressed the first toast
+    vi.advanceTimersByTime(500);
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Add a new error after cleanup — should start a fresh timer and buffer
+    coalescer.add({ item_type: 'mesh', item_id: 'Bracket.body', error: 'second error' });
+    vi.advanceTimersByTime(500);
+
+    // Exactly one toast with only the new error (buffer was cleared by cleanup)
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith(
+      "Failed to serialize mesh 'Bracket.body': second error",
+      'error',
+    );
   });
 
   it('forces a flush at maxWaitMs ceiling when errors arrive faster than windowMs', () => {

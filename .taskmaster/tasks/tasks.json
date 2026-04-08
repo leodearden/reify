@@ -6892,7 +6892,7 @@
           "329",
           "332"
         ],
-        "status": "in-progress",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -6908,7 +6908,7 @@
         },
         "subtasks": [],
         "details": "Three tests: (1) trait_hierarchy — 3-deep chains, diamond inheritance, multi-trait impl; (2) sweep_degenerate — zero extrude, 0°/720° revolve, self-intersecting path, 1-profile loft; (3) error_messages — every error class produces helpful diagnostic.",
-        "updatedAt": "2026-04-08T22:18:28.459Z"
+        "updatedAt": "2026-04-08T23:20:13.294Z"
       },
       {
         "id": "349",
@@ -8227,7 +8227,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:56.798Z",
+        "updatedAt": "2026-04-08T23:25:46.867Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -8237,6 +8237,7 @@
             "crates/reify-eval",
             "crates/reify-expr",
             "crates/reify-stdlib",
+            "crates/reify-test-support",
             "crates/reify-types",
             "gui/src-tauri"
           ],
@@ -18107,11 +18108,11 @@
         "description": "The sync_comments_test.sh only verifies that `// SYNC:` comment markers exist — it does not verify that the two sanitize_value function bodies are actually identical. A developer could modify one implementation (e.g., add a Value::Integer arm to one crate but not the other), leave the SYNC comment in place, and the test would still pass.\n\nAdd a second check that extracts both function bodies and diffs them. Example approach using awk:\n```bash\nextract_fn() { awk '/^fn sanitize_value/,/^}/' \"$1\"; }\ndiff <(extract_fn \"$EXPR_FILE\") <(extract_fn \"$STDLIB_FILE\") \\\n  || { echo 'FAIL: sanitize_value bodies differ'; FAIL=$((FAIL+1)); }\n```\n\nThis turns the test into an actual parity guard, not just a comment-presence check.\n\nMemory hints: search \"sanitize_value duplication convention\", entities: sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:08:14.480Z",
+        "updatedAt": "2026-04-08T23:25:47.924Z",
         "metadata": {
           "modules": [
             "crates/reify-expr",
@@ -18736,11 +18737,11 @@
         "description": "Consolidate several review findings from task 836 into a single improvement pass on `gui/src-tauri/src/engine.rs`:\n\n1. **Unify resolve_source failure semantics** — The method returns `Option<(String, &str)>` but the `None` arm of `module_name` panics via `unreachable!()`. This hybrid contract (graceful via `?` for source_map miss, panic for module_name miss) is incoherent. Preferred fix: change signature to return `(&str, &str)` with `debug_assert!(self.compiled.is_some())` at entry, making the precondition explicit in the type. Alternative: convert `unreachable!` to `return None` for fully graceful semantics.\n\n2. **Optimize allocations** — `resolve_source` allocates a new `String` via `format!(\"{}.ri\", name)` on every call. Use `HashMap::get_key_value` to return `(&str, &str)` instead of `(String, &str)`, eliminating per-call allocation. Also eliminate the per-diagnostic `file_path.clone()` in `get_diagnostics` (line 315).\n\n3. **Extract module_key helper** — `format!(\"{}.ri\", module_name)` appears in 3 places (load_from_source:81, update_source:180, resolve_source:236). Extract a private `fn module_key(name: &str) -> String` to DRY this up.\n\nmemory_hints: search(\"resolve_source engine.rs Option unreachable module_key allocation\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.042Z",
+        "updatedAt": "2026-04-08T23:20:10.112Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -19277,7 +19278,7 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:02:10.659Z",
+        "updatedAt": "2026-04-08T23:25:32.083Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -19478,11 +19479,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract warn-count delta assertion helper using saturating_sub. (2) Change Relaxed ordering to Acquire/Release in WarnCounter::event and assertion loads. (3) Extract did_open_params() helper for ~6 duplicated textDocument/didOpen JSON blocks. (4) Extract subscriber setup helper for 3x duplicated preambles.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:02:11.061Z",
+        "updatedAt": "2026-04-08T23:24:56.894Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp",
@@ -22676,11 +22677,11 @@
         "description": "crates/reify-expr/src/lib.rs naming + defensive-assertion + DRY fixes from esc-1006-778 review triage.",
         "details": "In compute_numerical_gradient_at_point (~line 788-836):\n(1) Rename point_scratch to work_point to match the work_ prefix convention used by work_coords and work_args in the same function.\n(2) Extract the push / std::mem::take / apply_lambda / if-let-pop recover sequence (duplicated verbatim for the f_plus and f_minus evaluations) into a local closure or private helper.\n(3) Inside the helper (or after each recovery site), add debug_assert_eq!(work_point.len(), n) to catch silent empty-vec recovery if apply_lambda's signature ever changes away from &[Value]. This fragile load-bearing invariant was independently flagged by 5 of 6 reviewers.\n\nSource: review triage of esc-1006-778 (19 suggestions). Flagged across reviewer_architect_reviewer, reviewer_comprehensive, reviewer_performance, reviewer_reuse_auditor, reviewer_test_analyst, reviewer_robustness.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:56:39.462Z",
+        "updatedAt": "2026-04-08T23:17:03.588Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -23789,7 +23790,7 @@
         "description": "Refactor `open_bracket_doc_params()` in `crates/reify-lsp/tests/in_process_bridge.rs` into a parameterized helper `open_doc_params(uri: &str, text: &str) -> serde_json::Value`, and have `open_bracket_doc_params()` delegate to it with the default bracket-source values.\n\nCurrently the helper (lines 67-82) hard-codes `uri`, `languageId`, `version`, and `text`. The three remaining inline didOpen blocks (for doc-comment source, syntax-error source, and malformed params tests) cannot use it because they need different `text` values. A parameterized version would cover more call sites and further reduce duplication.\n\nSource: review suggestion S2 from reviewer_comprehensive on task 1056 (esc-1056-870).\n\nMemory hints: search for \"open_bracket_doc_params\" and \"in_process_bridge test helpers\" for context on the original extraction in task 1017.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23800,7 +23801,8 @@
           "modules": [
             "crates/reify-lsp/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T23:25:33.065Z"
       },
       {
         "id": "1163",
@@ -23889,7 +23891,7 @@
         "description": "In crates/reify-eval/src/lib.rs, the `eval_arg` closures at lines 3354-3364 and 3410-3420 use `unwrap_or(reify_types::Value::Undef)` when looking up named geometry operation arguments. This violates the project convention: \"errors must be noisy — never silently swallow logic errors with unwrap_or(Value::Undef)\".\n\n**What's wrong:** When `evaluate_geometry_op()` looks up a required argument (like \"width\" for a Box primitive), a missing argument silently returns `Value::Undef`. This masks potential compiler bugs — if the compiler fails to emit a required argument, the geometry operation receives Undef and produces invalid geometry without any diagnostic.\n\n**Context:** The argument names are statically known per geometry op kind (e.g., Box needs width/height/depth). A missing named argument indicates a compiler bug (the compiler should always emit all required args), NOT a user error. Returning Undef here is incorrect.\n\n**Suggested fix:** Replace `unwrap_or(Value::Undef)` with a diagnostic emission or `tracing::warn!` + `Value::Undef` at minimum. Better: emit a diagnostic saying \"missing required geometry argument '{name}' for {kind}\" and return Undef. This follows the pattern established by dd5e10dbe (which replaced guard-site unwrap_or with expect) and a300a6f6c (which replaced solutions_agree unwrap_or(0.0)).\n\n**Two sites to fix:**\n- Line ~3363: eval_arg in Primitive handling\n- Line ~3419: eval_arg in Modify handling\n\nMemory hints: search \"silent defaults convention\" \"eval_arg geometry\" entity \"evaluate_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23900,7 +23902,8 @@
           "modules": [
             "crates/reify-eval/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T23:20:15.107Z"
       },
       {
         "id": "1168",
@@ -23941,11 +23944,11 @@
         "description": "The `try_` prefix in Rust idiomatically denotes functions returning `Result` (e.g. `try_from`, `try_into`). `try_serialize_event` in gui/src-tauri/src/diff.rs:204 mutates `events` in-place and never returns an error — it always succeeds by pushing either a normal or error event. Rename to `push_serialized_event` (or `push_event_or_error`) to accurately convey semantics. Update all call sites in diff.rs and test references in tests/diff_tests.rs.\n\nmemory_hints: search \"Rust try_ prefix naming convention in reify\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:05:07.468Z",
+        "updatedAt": "2026-04-08T23:12:14.198Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24016,11 +24019,11 @@
         "description": "The test `serialize_finite_f32_vec_partial_output_not_observable_on_error` (types_tests.rs:608-630) is functionally near-identical to `serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error` (lines 592-606). Both use `vec![1.0, 2.0, f32::NAN]` and assert error contains \"non-finite\". The newer test adds a redundant `assert!(result.is_err())` before `unwrap_err()`.\n\nOptions:\n1. **Consolidate**: Merge the partial-output safety documentation into the existing test's comment and delete the duplicate.\n2. **Annotate**: Keep both but add an inline note to the newer test explaining it deliberately overlaps with the prior test for documentation clarity.\n\nEither approach resolves the duplication concern. Option 1 is cleaner.\n\nmemory_hints: search \"serialize_finite_f32_vec\", search \"Task 1161\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:06:58.979Z",
+        "updatedAt": "2026-04-08T23:20:06.808Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24045,17 +24048,93 @@
         "description": "Two test quality gaps in `useSerializationErrorCoalescer.test.ts`:\n\n1. **\"Last error wins\" assertion (line 50-67):** The deduplication test asserts `stringContaining(\"Failed to serialize mesh 'Bracket.body'\")` but does not verify the documented \"last error wins\" behavior. All 5 errors have distinct `error` fields (`error variant 0` through `4`), but the assertion doesn't check that the toast contains `error variant 4` (the last one). Tighten to: `expect(showToast).toHaveBeenCalledWith(\"Failed to serialize mesh 'Bracket.body': error variant 4\", 'error');`\n\n2. **add-after-cleanup test:** No test covers calling `add()` after `cleanup()` has been called. The current implementation handles this gracefully (cleanup clears state, a subsequent add starts a fresh timer), but this edge case should be asserted since `App.tsx`'s `onCleanup` could race with a late-arriving event. Add a test that calls `cleanup()`, then `add()`, advances timers, and verifies the expected behavior.\n\nMemory hints: search \"createSerializationErrorCoalescer test\" \"serialization error coalescer cleanup\"",
         "details": "",
         "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:22:54.007Z"
+      },
+      {
+        "id": "1178",
+        "title": "Replace silent if-let fallthrough with unreachable!() and fix doc contract in eval_perturbed_point",
+        "description": "In eval_perturbed_point (crates/reify-expr/src/lib.rs ~line 731), the work_point recovery uses `if let Some(Value::Point(inner)) = work_args.pop()` which silently falls through on mismatch, leaving work_point empty. The debug_assert_eq! on line 735 only fires in debug builds; in release a failed match causes an opaque index-out-of-bounds panic on the next iteration.\n\nTwo changes:\n1. Replace the `if let` (lines 731-734) with a `match` that has an `unreachable!()` arm:\n```rust\nmatch work_args.pop() {\n    Some(Value::Point(inner)) => *work_point = inner,\n    other => unreachable!(\"expected Value::Point after apply_lambda, got {other:?}\"),\n}\n```\nThis makes the infallibility contract explicit at runtime in both debug and release builds.\n\n2. Fix the doc comment for `work_point` (line 694) which says \"Must be empty and unused in the decomposed path\" but this contract is unenforced. Either add `debug_assert!(work_point.is_empty() || single_point_param)` at the function top, or soften the doc to \"ignored in the decomposed path\".\n\nSource: esc-1100-897 review suggestions S1 (reviewer_comprehensive) and S4 (reviewer_comprehensive).\nMemory hints: search for \"eval_perturbed_point work_point recovery\" and \"task 1100 hardening\".",
+        "details": "",
+        "testStrategy": "",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:20:14.456Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "1179",
+        "title": "Extract FailingMockGeometryKernel to reify-test-support crate",
+        "description": "FailingMockGeometryKernel is copy-pasted in 4 test files (~35 lines each): geometry_error_handling.rs, tessellation.rs, stress_error_messages.rs, and stress_sweep_degenerate.rs. Extract it into crates/reify-test-support/src/mocks.rs alongside MockGeometryKernel, and import it in all test files. This reduces maintenance surface and keeps the mock zoo in one place.\n\nmemory_hints: search \"MockGeometryKernel test support mocks\" for related context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:20:09.250Z"
+      },
+      {
+        "id": "1180",
+        "title": "Use epsilon thresholds for degenerate geometry guards (extrude/revolve)",
+        "description": "In crates/reify-eval/src/lib.rs, the extrude zero-distance guard (line ~3636) uses exact float comparison (*v != 0.0) and the revolve zero-angle guard (line ~3666) uses (angle_rad == 0.0). Near-zero values from floating-point arithmetic (e.g. 1e-300, pi - pi) would pass these checks but produce degenerate geometry. The revolve axis magnitude check already uses a threshold (mag < 1e-12). Change both the extrude distance and revolve angle guards to use v.abs() < 1e-12 / angle_rad.abs() < 1e-12 for consistency.\n\nmemory_hints: search \"extrude revolve compile_geometry_op degenerate\" for implementation context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:22:10.503Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1181",
+        "title": "Add negative extrude distance and revolve angle test coverage",
+        "description": "The sweep degenerate tests cover zero-distance extrude and zero-angle revolve, but miss negative-distance extrude and negative-angle revolve. Negative values may be valid (reverse direction/clockwise rotation) or should be rejected — either way, explicit tests should document the intended behavior. Add test cases like negative_extrude_distance_is_valid (or _is_rejected) and negative_revolve_angle to crates/reify-eval/tests/stress_sweep_degenerate.rs.\n\nmemory_hints: search \"sweep degenerate stress test extrude revolve\" for related test context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:23:11.083Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1182",
+        "title": "Warn counter follow-ups: ordering consistency, test gap, and saturating_sub robustness",
+        "description": "Three small follow-ups from Task 937's review:\n\n1. **Ordering consistency in diff_tests.rs** (gui/src-tauri/src/tests/diff_tests.rs:385): Update `warn_count.load(Ordering::Relaxed)` to `Ordering::Acquire` (or use the new `assert_warn_count` helper) for consistency with the convention established in Task 937 across tracing_support.rs and in_process_bridge.rs. Safe in practice (synchronous with_default block) but inconsistent.\n\n2. **Test gap in warn_counting_guard_stops_counting_after_drop** (crates/reify-test-support/src/tracing_support.rs:1275-1285): The test claims to verify post-drop events are not counted but never emits a `tracing::warn!` after `drop(guard)`. Add `tracing::warn!(\"after drop\")` after the drop and re-assert count is still 1. The warn goes to the no-op fallback so it's harmless.\n\n3. **Replace saturating_sub with checked subtraction** (crates/reify-test-support/src/tracing_support.rs:33): `assert_warn_count_delta` uses `saturating_sub` which silently yields 0 when `before > after`, potentially masking bugs where a stale/wrong counter is passed. Replace with: `assert!(after >= before, \"warn counter went backwards (before={before}, after={after}): {context}\"); let actual_delta = after - before;`\n\nmemory_hints:\n- search: \"warn counter ordering Acquire convention Task 937\"\n- entity: \"WarnCountingSubscriber\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:24:57.897Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:10:58.677Z",
-      "taskCount": 1177,
-      "completedCount": 861,
+      "lastModified": "2026-04-08T23:25:47.924Z",
+      "taskCount": 1182,
+      "completedCount": 867,
       "tags": [
         "master"
       ]

@@ -594,6 +594,12 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     // A non-finite value at position > 0 must still cause an error.
     // This verifies fail-fast semantics hold regardless of where the bad value sits
     // in the single-pass merged loop.
+    //
+    // Partial-output safety: although the loop writes earlier elements (1.0, 2.0)
+    // to the serializer's internal state before detecting the NaN, `serde_json::to_value`
+    // builds an in-memory `Value` that is simply dropped on `Err` — no partial output is
+    // observable by the caller.  For streaming-serializer callers see the `# Note` in
+    // `serialize_finite_f32_vec` (types.rs).
     let mesh = MeshData {
         entity_path: "test".to_string(),
         vertices: vec![1.0, 2.0, f32::NAN],
@@ -603,28 +609,4 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
-}
-
-#[test]
-fn serialize_finite_f32_vec_partial_output_not_observable_on_error() {
-    // Documents the safety guarantee for `serde_json::to_value` callers:
-    // The single-pass loop begins the JSON sequence *before* validating all
-    // elements, so earlier elements (1.0, 2.0) are written to the serializer's
-    // internal state before the NAN is detected.  However, `to_value` builds an
-    // in-memory `serde_json::Value` — on `Err`, the partial Value is simply
-    // dropped and never returned to the caller.  No partial output is observable.
-    let mesh = MeshData {
-        entity_path: "test".to_string(),
-        vertices: vec![1.0, 2.0, f32::NAN],
-        indices: vec![],
-        normals: None,
-    };
-    // The error must be returned — the caller sees no partial output.
-    let result = serde_json::to_value(&mesh);
-    assert!(result.is_err(), "expected Err but got Ok");
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
-    // Specifically: no partial vertex array is accessible; the caller receives
-    // only the error.  This is safe because to_value is the sole caller path
-    // (via delta_to_events / diff.rs) — see the `# Note` in types.rs.
 }

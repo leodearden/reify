@@ -1,10 +1,9 @@
 //! Integration tests for the InProcessLsp bridge.
 
-use std::sync::atomic::Ordering;
-
 use reify_lsp::bridge::error_prefix;
 use reify_lsp::bridge::InProcessLsp;
-use reify_test_support::warn_counting_subscriber;
+use reify_test_support::assert_warn_count;
+use reify_test_support::warn_counting_guard;
 use serde_json::json;
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
@@ -64,6 +63,23 @@ async fn initialized_lsp() -> InProcessLsp {
     lsp
 }
 
+/// Build a `textDocument/didOpen` params value for `uri` and `text`.
+///
+/// All four inline `textDocument/didOpen` JSON blocks in this file share the
+/// same `{ "textDocument": { "uri", "languageId": "reify", "version": 1, "text" } }`
+/// structure; this helper eliminates the repetition while keeping the LSP-specific
+/// logic local to this test file (it is not useful outside the bridge interface).
+fn did_open_params(uri: &str, text: &str) -> serde_json::Value {
+    json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "reify",
+            "version": 1,
+            "text": text
+        }
+    })
+}
+
 /// Open the standard bracket document in `lsp` as `file:///test.ri`.
 ///
 /// Sends a `textDocument/didOpen` notification with [`reify_test_support::bracket_source()`]
@@ -77,17 +93,9 @@ async fn initialized_lsp() -> InProcessLsp {
 /// Mirrors the `open_bracket_source` helper in `server.rs` tests, adapted for
 /// the [`InProcessLsp`] bridge interface.
 async fn open_bracket_doc(lsp: &InProcessLsp) {
-    let source = reify_test_support::bracket_source();
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
+        did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
     )
     .await
     .expect("open_bracket_doc: didOpen should succeed");
@@ -100,15 +108,14 @@ async fn open_bracket_doc(lsp: &InProcessLsp) {
 /// to other threads that don't have the guard.  current_thread avoids this.
 #[tokio::test(flavor = "current_thread")]
 async fn set_default_guard_captures_warn_on_current_thread() {
-    let (subscriber, warn_count) = warn_counting_subscriber();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (_guard, warn_count) = warn_counting_guard();
 
     tracing::warn!("test");
 
-    assert_eq!(
-        warn_count.load(Ordering::Relaxed),
+    assert_warn_count(
+        &warn_count,
         1,
-        "set_default guard must capture exactly one WARN event on current_thread runtime"
+        "set_default guard must capture exactly one WARN event on current_thread runtime",
     );
 }
 
@@ -207,14 +214,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
+        did_open_params("file:///test.ri", source),
     )
     .await
     .unwrap();
@@ -283,14 +283,7 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
     let uri = "file:///broken.ri";
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "reify",
-                "version": 1,
-                "text": broken_source
-            }
-        }),
+        did_open_params(uri, broken_source),
     )
     .await
     .unwrap();
@@ -422,14 +415,7 @@ async fn did_open_returns_ok_null() {
     let result = lsp
         .handle_request(
             "textDocument/didOpen",
-            json!({
-                "textDocument": {
-                    "uri": "file:///test.ri",
-                    "languageId": "reify",
-                    "version": 1,
-                    "text": reify_test_support::bracket_source()
-                }
-            }),
+            did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
         )
         .await
         .expect("didOpen should return Ok");

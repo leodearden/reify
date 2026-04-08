@@ -3633,7 +3633,7 @@ fn compile_geometry_op(
                                         .with_meta(meta_map),
                                 )
                             })?;
-                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
+                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && *v != 0.0)?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3662,6 +3662,10 @@ fn compile_geometry_op(
                     if !mag.is_finite() || mag < 1e-12 {
                         return None;
                     }
+                    let angle_rad = eval_arg_f64("angle")?;
+                    if angle_rad == 0.0 {
+                        return None;
+                    }
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
                         axis_origin: [
@@ -3670,7 +3674,7 @@ fn compile_geometry_op(
                             eval_arg_f64("oz")?,
                         ],
                         axis_dir,
-                        angle_rad: eval_arg_f64("angle")?,
+                        angle_rad,
                     })
                 }
                 reify_compiler::SweepKind::Sweep => {

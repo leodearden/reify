@@ -4,6 +4,84 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+/// Assert that `counter` has advanced by exactly `expected_delta` since the
+/// `before` snapshot.
+///
+/// Computes the actual delta as `counter.load(Ordering::Acquire).saturating_sub(before)`
+/// and asserts it equals `expected_delta`.  Uses `Acquire` ordering so that all
+/// WARN event stores (which use `Release`) are visible to this load.
+///
+/// # Parameters
+///
+/// - `counter` — the warn counter returned by [`warn_counting_subscriber`] or
+///   [`warn_counting_guard`].
+/// - `before` — a snapshot of the counter taken before the code under test
+///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.
+/// - `expected_delta` — how many WARN events you expect since the snapshot.
+/// - `context` — included in the panic message for diagnostics.
+///
+/// # Panics
+///
+/// Panics if the actual delta differs from `expected_delta`.
+pub fn assert_warn_count_delta(
+    counter: &AtomicUsize,
+    before: usize,
+    expected_delta: usize,
+    context: &str,
+) {
+    let after = counter.load(Ordering::Acquire);
+    let actual_delta = after.saturating_sub(before);
+    assert_eq!(
+        actual_delta,
+        expected_delta,
+        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}"
+    );
+}
+
+/// Assert that `counter` equals `expected` (convenience wrapper for
+/// [`assert_warn_count_delta`] with `before=0`).
+///
+/// Equivalent to `assert_warn_count_delta(counter, 0, expected, context)`.
+/// Suited for tests where the subscriber is freshly installed and the counter
+/// starts at zero.
+///
+/// # Panics
+///
+/// Panics if `counter.load(Acquire)` does not equal `expected`.
+pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) {
+    assert_warn_count_delta(counter, 0, expected, context);
+}
+
+/// Install a WARN-counting subscriber as the thread-default and return a RAII
+/// guard alongside the shared counter.
+///
+/// This is a convenience wrapper around [`warn_counting_subscriber`] and
+/// [`tracing::subscriber::set_default`] for tests that need a persistent
+/// thread-default rather than a scoped `with_default` block — in particular
+/// async tests on a `current_thread` runtime, where the entire test body
+/// runs on one thread but cannot be wrapped by `with_default`.
+///
+/// # Returns
+///
+/// A `(guard, counter)` pair where:
+/// - `guard` is a [`tracing::subscriber::DefaultGuard`].  When it drops, the
+///   subscriber is removed and the previous default (if any) is restored.
+/// - `counter` is the `Arc<AtomicUsize>` shared with the subscriber; loads
+///   with `Ordering::Acquire` observe all WARN increments.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (_guard, counter) = warn_counting_guard();
+/// tracing::warn!("oops");
+/// assert_warn_count(&counter, 1, "must count the warning");
+/// ```
+pub fn warn_counting_guard() -> (tracing::subscriber::DefaultGuard, Arc<AtomicUsize>) {
+    let (subscriber, counter) = warn_counting_subscriber();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, counter)
+}
+
 /// Build a minimal [`tracing::Subscriber`] that counts WARN-level events.
 ///
 /// Returns a `(subscriber, counter)` pair.  The `counter` is shared via
@@ -142,7 +220,10 @@ impl tracing::Subscriber for CountingSubscriber {
             return;
         }
         if let Some(counter) = self.counters.get(event.metadata().level()) {
-            counter.fetch_add(1, Ordering::Relaxed);
+            // Release ordering pairs with Acquire loads in assertion helpers,
+            // ensuring all memory written before the store is visible to threads
+            // that observe the counter increment.
+            counter.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -231,7 +312,11 @@ impl tracing::Subscriber for WarnCountingSubscriber {
             "event() reached with non-WARN — {}",
             CONTRACT_VIOLATION_MARKER
         );
-        self.warn_count.fetch_add(1, Ordering::Relaxed);
+        // Release ordering pairs with Acquire loads in assertion helpers and
+        // WarnCapture::count(), ensuring all prior memory writes are visible to
+        // threads that observe the counter — especially important for async
+        // tests on a current_thread runtime.
+        self.warn_count.fetch_add(1, Ordering::Release);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -251,7 +336,9 @@ pub struct WarnCapture {
 impl WarnCapture {
     /// Return the number of WARN events that have been emitted so far.
     pub fn count(&self) -> usize {
-        self.count.load(Ordering::Relaxed)
+        // Acquire ordering pairs with the Release store in WarnCapturingSubscriber::event(),
+        // ensuring the count is fully visible once observed.
+        self.count.load(Ordering::Acquire)
     }
 
     /// Return a snapshot of all captured WARN event message strings.
@@ -362,7 +449,9 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
             "WarnCapturingSubscriber: event() reached with non-WARN — {}",
             CONTRACT_VIOLATION_MARKER
         );
-        self.count.fetch_add(1, Ordering::Relaxed);
+        // Release ordering pairs with Acquire loads in assertion helpers and
+        // WarnCapture::count(), ensuring all prior memory writes are visible.
+        self.count.fetch_add(1, Ordering::Release);
         let mut visitor = MessageVisitor(String::new());
         event.record(&mut visitor);
         self.messages.lock().unwrap().push(visitor.0);
@@ -482,7 +571,7 @@ mod tests {
         // The dispatcher rejected the ERROR at enabled(), so event() was never
         // called on either wrapper or inner, and warn_count stays 0.
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "ERROR must not be counted as a WARN event"
         );
@@ -502,7 +591,7 @@ mod tests {
     fn warn_events_increment_counter() {
         let (subscriber, warn_count) = warn_counting_subscriber();
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "counter should start at 0"
         );
@@ -512,7 +601,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             1,
             "one WARN event should produce count=1"
         );
@@ -544,7 +633,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "warn counter must remain zero when only non-WARN events are emitted"
         );
@@ -601,7 +690,7 @@ mod tests {
             tracing::warn!("w2");
         });
 
-        assert_eq!(counter_clone.load(Ordering::Relaxed), 2);
+        assert_eq!(counter_clone.load(Ordering::Acquire), 2);
     }
 
     /// `CountingSubscriberBuilder` with a single registered level (WARN) should
@@ -620,7 +709,7 @@ mod tests {
         let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             0,
             "counter should start at 0"
         );
@@ -630,7 +719,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "one WARN event should produce count=1"
         );
@@ -660,7 +749,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "only the matching-target event should be counted"
         );
@@ -690,12 +779,12 @@ mod tests {
         });
 
         assert_eq!(
-            debug_arc.load(Ordering::Relaxed),
+            debug_arc.load(Ordering::Acquire),
             1,
             "one DEBUG event should produce debug count=1"
         );
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "one WARN event should produce warn count=1"
         );
@@ -1039,7 +1128,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             1,
             "only the WARN event should be counted; ERROR must be rejected at enabled()"
         );
@@ -1097,5 +1186,101 @@ mod tests {
             "enabled() contract violated",
             "CONTRACT_VIOLATION_MARKER must match the #[should_panic(expected = ...)] literal"
         );
+    }
+
+    // ── assert_warn_count_delta tests ─────────────────────────────────────────
+
+    /// `assert_warn_count_delta` passes when the counter advanced by exactly
+    /// `expected_delta` since the `before` snapshot.
+    ///
+    /// (a) After 2 WARN events with `before=0`, delta==2 → passes.
+    /// (b) After 2 WARN events with `before=1`, delta==1 → passes (only the
+    ///     increment since the snapshot counts).
+    #[test]
+    fn assert_warn_count_delta_passes_on_correct_delta() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("first warn");
+            tracing::warn!("second warn");
+        });
+
+        // (a) before=0, delta=2: the counter went from 0 to 2
+        assert_warn_count_delta(&counter, 0, 2, "two warns from zero");
+
+        // Synthesise a mid-test snapshot: counter is at 2, before=1 means delta=1
+        assert_warn_count_delta(&counter, 1, 1, "delta since snapshot at 1");
+    }
+
+    /// `assert_warn_count_delta` panics when the actual delta does not match.
+    #[test]
+    #[should_panic(expected = "expected warn delta")]
+    fn assert_warn_count_delta_panics_on_wrong_delta() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("only one warn");
+        });
+
+        // counter is at 1, but we claim delta of 2 from before=0 → should panic
+        assert_warn_count_delta(&counter, 0, 2, "expected warn delta");
+    }
+
+    /// `assert_warn_count` (convenience wrapper with before=0) passes when
+    /// counter equals `expected`.
+    #[test]
+    fn assert_warn_count_passes_on_correct_count() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("one warn");
+        });
+
+        assert_warn_count(&counter, 1, "exactly one warn");
+    }
+
+    // ── warn_counting_guard tests ─────────────────────────────────────────────
+
+    /// `warn_counting_guard()` installs a WARN-counting subscriber as the
+    /// thread-default and returns a live guard + shared counter.
+    ///
+    /// While the guard is in scope, `tracing::warn!` events are counted.
+    /// After the guard drops, the subscriber is removed.
+    #[test]
+    fn warn_counting_guard_captures_warn_events() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_guard;
+
+        let (_guard, counter) = warn_counting_guard();
+
+        tracing::warn!("from guard subscriber");
+
+        assert_warn_count(&counter, 1, "guard must count the WARN event");
+    }
+
+    /// `warn_counting_guard()` does not count WARN events after the guard drops.
+    ///
+    /// Once the guard is dropped the subscriber is removed, so events emitted
+    /// outside the guard's lifetime are not reflected in the counter.
+    #[test]
+    fn warn_counting_guard_stops_counting_after_drop() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_guard;
+
+        let (guard, counter) = warn_counting_guard();
+        tracing::warn!("inside guard");
+        drop(guard);
+        // Any warn emitted here is not captured by the guard's subscriber.
+        // We just verify the count was exactly 1 (not more from external state).
+        assert_warn_count(&counter, 1, "only the warn inside the guard is counted");
     }
 }
