@@ -196,6 +196,38 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).not.toHaveBeenCalled();
   });
 
+  it('respects default maxWaitMs (3000ms) — flush fires at the ceiling under sustained errors', () => {
+    const showToast = vi.fn();
+    // Use default args: windowMs=500ms, maxWaitMs=3000ms
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    // Send 8 errors, each 400ms apart. Without maxWaitMs the debounce keeps resetting
+    // and the flush would not fire until 400ms after the last add (t=2800+500=t=3300ms).
+    // With maxWaitMs=3000 the flush must fire at or before t=3000ms.
+    //
+    // t=0   : add 0, firstArrival=0, remaining=3000, timer=min(500,3000)=500ms
+    // t=400 : add 1, elapsed=400,  remaining=2600, timer=500ms
+    // t=800 : add 2, elapsed=800,  remaining=2200, timer=500ms
+    // t=1200: add 3, elapsed=1200, remaining=1800, timer=500ms
+    // t=1600: add 4, elapsed=1600, remaining=1400, timer=500ms
+    // t=2000: add 5, elapsed=2000, remaining=1000, timer=500ms
+    // t=2400: add 6, elapsed=2400, remaining=600,  timer=min(500,600)=500ms → fires at t=2900
+    // t=2800: add 7, elapsed=2800, remaining=200,  timer=min(500,200)=200ms → fires at t=3000
+    for (let i = 0; i < 8; i++) {
+      coalescer.add({ item_type: 'mesh', item_id: `item-${i}`, error: 'err' });
+      if (i < 7) {
+        vi.advanceTimersByTime(400);
+        expect(showToast).not.toHaveBeenCalled();
+      }
+    }
+
+    // At t=2800, timer fires in 200ms (not 500ms). Advance 200ms → t=3000.
+    // Without maxWaitMs the flush fires at t=3300; this assertion fails without the cap.
+    vi.advanceTimersByTime(200);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('8 items failed to serialize', 'error');
+  });
+
   it('resets firstArrival after a max-wait force-flush — second batch runs independently', () => {
     const showToast = vi.fn();
     // windowMs=100ms, maxWaitMs=300ms
