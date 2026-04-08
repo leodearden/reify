@@ -121,7 +121,11 @@ export function reifyGotoDefinition(
             scrollIntoView: true,
           });
         } else if (onNavigate) {
-          // Different file: delegate to the onNavigate callback
+          // Different file: delegate to the onNavigate callback.
+          // Minimum guard: reject negative positions before delegating. Full
+          // doc-aware validation (character vs. line length) happens in the
+          // consumer (Editor.tsx) against the target file once it is opened.
+          if (location.range.start.line < 0 || location.range.start.character < 0) return;
           onNavigate(
             location.uri,
             location.range.start.line,
