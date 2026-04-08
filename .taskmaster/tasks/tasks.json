@@ -20100,11 +20100,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs: (1) Unify assert_orientation_approx and assert_orientation_approx_sign_insensitive into a single macro with tolerance parameter, eliminating duplication. (2) Add non-trivial quaternion test for sign_insensitive (not just negated identity). (3) Test per-component diagnostic for all 4 components (not just w). (4) Strengthen sign_insensitive_macro_rejects_wrong_value to check error message content. In crates/reify-cli/tests/cli_gui.rs: (5) Add test for extension validation firing before existence check.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:48:04.413Z",
+        "updatedAt": "2026-04-08T10:25:02.707Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -21682,7 +21682,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:25:02.261Z",
+      "lastModified": "2026-04-08T10:25:02.707Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
