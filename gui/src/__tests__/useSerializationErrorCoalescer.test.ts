@@ -166,6 +166,36 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledWith('5 items failed to serialize', 'error');
   });
 
+  it('cleanup() prevents a pending max-wait flush from firing', () => {
+    const showToast = vi.fn();
+    // windowMs=100ms, maxWaitMs=300ms
+    const coalescer = createSerializationErrorCoalescer(showToast, 100, 300);
+
+    // Add errors every 80ms so the debounce window never fires on its own.
+    // firstArrival is anchored at t=0.
+    //
+    // t=0  : add A, timer=min(100,300)=100ms → fires at t=100
+    // t=80 : add B, elapsed=80, remaining=220, timer=100ms → fires at t=180
+    // t=160: add C, elapsed=160, remaining=140, timer=100ms → fires at t=260
+    coalescer.add({ item_type: 'mesh', item_id: 'A', error: 'err' });
+    vi.advanceTimersByTime(80);
+    coalescer.add({ item_type: 'mesh', item_id: 'B', error: 'err' });
+    vi.advanceTimersByTime(80);
+    coalescer.add({ item_type: 'mesh', item_id: 'C', error: 'err' });
+    // t=160: timer fires at t=260 (100ms from now)
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Call cleanup() before maxWaitMs (300ms) elapses
+    coalescer.cleanup();
+
+    // Advance well past both the pending timer (t=260) and the ceiling (t=300)
+    vi.advanceTimersByTime(500);
+
+    // The cleanup should have cleared the timer AND reset firstArrival,
+    // so no flush should ever fire.
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
   it('resets firstArrival after a max-wait force-flush — second batch runs independently', () => {
     const showToast = vi.fn();
     // windowMs=100ms, maxWaitMs=300ms
