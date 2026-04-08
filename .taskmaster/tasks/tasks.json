@@ -23863,7 +23863,7 @@
         "description": "The backend (gui/src-tauri/src/diff.rs lines 154, 170, 189) emits `serialization-error` Tauri events when mesh/value/constraint serialization fails in `delta_to_events()`. However, the frontend has no listener for this event — the error is silently dropped.\n\n**What's wrong:** When a mesh, value, or constraint delta fails JSON serialization (e.g., NaN in a float32 mesh, or a Value variant the serializer can't handle), the backend correctly detects the error, logs a tracing::warn, and emits a `serialization-error` event. But `gui/src/bridge.ts` does not export an `onSerializationError()` listener, and neither `gui/src/stores/engineStore.ts` nor `gui/src/App.tsx` subscribe to the event. The user sees no indication that data was lost.\n\n**Suggested fix:**\n1. Add `onSerializationError()` listener export to `gui/src/bridge.ts` (matching the pattern of `onMeshUpdate`, `onValueUpdate`, etc.)\n2. Subscribe in `gui/src/App.tsx` initApp() (after the evaluation-status subscription)\n3. Show a toast notification with the error details: \"Failed to serialize {item_type} '{item_id}': {error}\"\n4. Add test coverage in `gui/src/__tests__/` verifying the event handler processes payloads correctly\n\nMemory hints: search \"serialization-error event\" \"diff.rs delta_to_events\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23878,7 +23878,8 @@
             "gui/src",
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T22:36:26.990Z"
       },
       {
         "id": "1167",
@@ -23902,7 +23903,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:36:26.615Z",
+      "lastModified": "2026-04-08T22:36:26.990Z",
       "taskCount": 1167,
       "completedCount": 848,
       "tags": [
