@@ -1994,6 +1994,15 @@ struct CompilationScope<'u> {
     /// Populated from already-compiled child templates to resolve correct types for
     /// indexed member access (e.g., bolts[0].diameter → Type::length()).
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Trait member index for qualified access validation: trait_name → set of member names.
+    /// Populated from trait_registry in compile_entity.
+    trait_members: HashMap<String, HashSet<String>>,
+    /// Sub-component type map: sub_name → structure_name.
+    /// Used to resolve instance qualified access (sub.(Trait::member)).
+    sub_component_types: HashMap<String, String>,
+    /// Trait bounds per structure name: structure_name → [trait_names].
+    /// Used to verify a sub-component implements a given trait.
+    sub_structure_traits: HashMap<String, Vec<String>>,
     /// Meta block entries for the current entity: key → value.
     meta_entries: HashMap<String, String>,
     /// Reference to the active unit registry.
@@ -2009,6 +2018,9 @@ impl<'u> CompilationScope<'u> {
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
+            trait_members: HashMap::new(),
+            sub_component_types: HashMap::new(),
+            sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
             unit_registry: None,
         }
@@ -3169,14 +3181,166 @@ fn compile_expr_guarded(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
-        // QualifiedAccess compiler support is implemented in a separate task.
-        reify_syntax::ExprKind::QualifiedAccess { .. }
-        | reify_syntax::ExprKind::InstanceQualifiedAccess { .. } => {
-            diagnostics.push(
-                Diagnostic::error("qualified access (::) is not yet supported in the compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+            // Resolve `TraitName::member` to the member's ValueCellId in the current scope.
+            // Only simple `Ident::member` form is supported.
+            let trait_name = match &qualifier.kind {
+                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "unsupported qualified access: only 'TraitName::member' form is supported",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "unsupported form")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Validate trait existence.
+            let members = match scope.trait_members.get(&trait_name) {
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("trait '{}' not found", trait_name))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown trait")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+                Some(m) => m,
+            };
+
+            // Validate member existence in trait.
+            if !members.contains(member.as_str()) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "member '{}' not defined in trait '{}'",
+                        member, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Resolve the member in the current scope (the structure should have it
+            // because it conforms to the trait).
+            match scope.resolve(member) {
+                Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
+                None => {
+                    // Fallback: create a ValueCellId directly (trait conformance will catch
+                    // missing members separately).
+                    let id = ValueCellId::new(&scope.entity_name, member);
+                    CompiledExpr::value_ref(id, Type::Real)
+                }
+            }
+        }
+        reify_syntax::ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            // Resolve `sub.(TraitName::member)` to a ValueCellId for the sub's member.
+
+            // Extract the sub-component name.
+            let sub_name = match &object.kind {
+                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "unsupported instance qualified access: object must be an identifier",
+                        )
+                        .with_label(DiagnosticLabel::new(object.span, "unsupported")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Extract trait_name and member from the qualified access part.
+            let (trait_name, member) = match &qualified.kind {
+                reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+                    match &qualifier.kind {
+                        reify_syntax::ExprKind::Ident(name) => (name.clone(), member.clone()),
+                        _ => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "unsupported qualified access in instance access",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    qualified.span,
+                                    "unsupported form",
+                                )),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    }
+                }
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "expected 'Trait::member' form in instance qualified access",
+                        )
+                        .with_label(DiagnosticLabel::new(
+                            qualified.span,
+                            "expected qualified access",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Look up the sub-component's structure type.
+            let structure_name = match scope.sub_component_types.get(&sub_name) {
+                Some(s) => s.clone(),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unknown sub-component '{}'", sub_name))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown sub-component",
+                            )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Check if the sub-component's structure implements the referenced trait.
+            let trait_bounds = scope
+                .sub_structure_traits
+                .get(&structure_name)
+                .cloned()
+                .unwrap_or_default();
+            if !trait_bounds.contains(&trait_name) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sub-component '{}' (type '{}') does not implement trait '{}'",
+                        sub_name, structure_name, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Optionally validate the member exists in the trait.
+            if let Some(members) = scope.trait_members.get(&trait_name)
+                && !members.contains(member.as_str())
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "member '{}' not defined in trait '{}'",
+                        member, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Generate ValueCellId for the sub-component's member.
+            // The eval engine scopes sub-components as "{parent}.{sub_name}".
+            let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+            let id = ValueCellId::new(&scoped_entity, &member);
+            // Infer member type from the sub's structure member types if available.
+            let ty = scope
+                .collection_sub_member_types
+                .get(&sub_name)
+                .and_then(|m| m.get(&member))
+                .cloned()
+                .unwrap_or(Type::Real);
+            CompiledExpr::value_ref(id, ty)
         }
     }
 }
@@ -4705,6 +4869,22 @@ fn compile_entity(
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
+
+    // Populate trait member index for qualified access resolution.
+    for (trait_name, compiled_trait) in trait_registry {
+        let mut members: HashSet<String> = compiled_trait
+            .required_members
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        for default in &compiled_trait.defaults {
+            if let Some(n) = &default.name {
+                members.insert(n.clone());
+            }
+        }
+        scope.trait_members.insert(trait_name.clone(), members);
+    }
+
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components: Vec<SubComponentDecl> = Vec::new();
@@ -4835,6 +5015,18 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
+                // Register sub-component type info for instance qualified access.
+                scope
+                    .sub_component_types
+                    .insert(sub.name.clone(), sub.structure_name.clone());
+                if let Some(child_tmpl) = compiled_templates
+                    .iter()
+                    .find(|t| t.name == sub.structure_name)
+                {
+                    scope
+                        .sub_structure_traits
+                        .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                     // Populate member types from already-compiled child template

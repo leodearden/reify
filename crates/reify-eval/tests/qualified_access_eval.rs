@@ -4,12 +4,9 @@
 //! qualified access expressions (`TypeName::member`, `expr.(TypeName::member)`)
 //! evaluate correctly and that constraints using qualified access are enforced.
 //!
-//! DISABLED 2026-04-08: All 4 tests fail because the compiler currently emits
-//! "qualified access (::) is not yet supported in the compiler" — the parser
-//! supports the syntax (re-added post-871ec2dbd) but the compiler-side
-//! implementation was lost in the c88ca9635 regression and not restored. See
-//! project_regression_c88ca9635.md. Re-enable by removing the cfg attribute below.
-#![cfg(any())]
+//! Compiler-side qualified access support restored 2026-04-08 from commit
+//! 4e8d65153 (lost in the c88ca9635/3a248e07d regression cluster; see
+//! project_regression_c88ca9635.md).
 
 use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 
