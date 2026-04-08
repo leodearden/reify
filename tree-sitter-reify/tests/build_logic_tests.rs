@@ -1254,3 +1254,47 @@ fn test_drop_logs_error_check_is_form_agnostic() {
         drop_logs_body
     );
 }
+
+#[test]
+fn test_build_rs_reads_use_manifest_dir() {
+    // Meta-test / regression guard: each source-inspection test that reads build.rs
+    // must use the `BUILD_RS` constant rather than the bare relative path
+    // `read_to_string("build.rs")`.
+    // A bare relative path is fragile — it depends on the working directory from which
+    // `cargo test` is invoked, causing failures when tests are run from outside the
+    // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
+    //
+    // BUILD_RS resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
+    // so it is safe regardless of invocation directory.
+    //
+    // Note: this meta-test's own source references use escaped quotes
+    // (\"build.rs\") in the literal pattern definition below, so it does not
+    // self-match when scanning for the unescaped bare pattern.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let bare_pattern = "read_to_string(\"build.rs\")";
+
+    let violations: Vec<(usize, &str)> = source
+        .lines()
+        .enumerate()
+        .filter(|(_i, line)| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("//") && line.contains(bare_pattern)
+        })
+        .map(|(i, line)| (i + 1, line))
+        .collect();
+
+    assert!(
+        violations.is_empty(),
+        "Found {} bare read_to_string(\"build.rs\") call(s) on non-comment lines. \
+         Use the BUILD_RS constant instead (defined via CARGO_MANIFEST_DIR). \
+         Violations:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
