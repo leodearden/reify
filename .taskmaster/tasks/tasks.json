@@ -23248,7 +23248,7 @@
         "description": "In `crates/reify-constraints/src/solver.rs:763,767`, the uniqueness verification code uses `.unwrap_or(0.0)` when extracting solved parameter values. If either the original or perturbed solve returns Undef or a non-numeric value for a param, both default to 0.0 — making diff=0.0 and incorrectly reporting the solution as unique.\n\nThis violates the \"errors must be noisy\" convention. A solver that returns Undef/missing values for auto params is a bug that should be detected, not silently absorbed.\n\nFix: if either value is None (missing) or non-numeric, either (a) return false (non-unique / cannot verify), or (b) skip that param with a tracing::warn!. Do NOT default to 0.0.\n\nmemory_hints: search \"solver uniqueness verification silent default\", get_entity \"DimensionalSolver\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -23259,7 +23259,8 @@
           "modules": [
             "crates/reify-constraints/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:12:03.550Z"
       },
       {
         "id": "1133",
@@ -23313,7 +23314,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:03.337Z",
+      "lastModified": "2026-04-08T21:12:03.550Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
