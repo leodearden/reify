@@ -114,6 +114,7 @@ export function reifyGotoDefinition(
           // current document length (lines may have been deleted since mousedown).
           if (location.range.start.line < 0 || location.range.start.line + 1 > view.state.doc.lines) return;
           const targetLine = view.state.doc.line(location.range.start.line + 1);
+          if (location.range.start.character > targetLine.to - targetLine.from) return;
           const targetPos = targetLine.from + location.range.start.character;
           view.dispatch({
             selection: { anchor: targetPos },
