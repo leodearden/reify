@@ -2476,7 +2476,7 @@
         "testStrategy": "Compiler tests: self.param resolution, self.sub.param, bare self as entity ref, error outside entity.",
         "priority": "high",
         "dependencies": [],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -2484,7 +2484,7 @@
           "milestone": "M8"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T21:42:40.555Z"
+        "updatedAt": "2026-04-08T18:52:22.303Z"
       },
       {
         "id": "154",
@@ -22605,9 +22605,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T18:48:10.584Z",
+      "lastModified": "2026-04-08T18:52:22.303Z",
       "taskCount": 1098,
-      "completedCount": 771,
+      "completedCount": 770,
       "tags": [
         "master"
       ]
