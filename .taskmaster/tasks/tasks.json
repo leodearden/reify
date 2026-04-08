@@ -22263,11 +22263,11 @@
         "description": "Convert the `gui_non_ri_file_shows_error` test in `crates/reify-cli/tests/cli_gui.rs` (lines 60-83) to use `tempfile::tempdir()` with automatic cleanup instead of `std::env::temp_dir()` with manual `remove_file` cleanup. This brings it in line with the pattern used by `gui_extension_validation_fires_before_existence_check` (refactored in task 1061).",
         "details": "In `crates/reify-cli/tests/cli_gui.rs`, the `gui_non_ri_file_shows_error` test currently:\n1. Uses `std::env::temp_dir()` to get a global temp path\n2. Manually creates a file with `std::fs::write`\n3. Manually cleans up with `let _ = std::fs::remove_file(&txt_file);`\n\nRefactor to:\n1. Use `tempfile::tempdir()` to create a unique per-invocation temp directory\n2. Create the .txt file inside that temp directory\n3. Drop the manual `remove_file` cleanup — `TempDir` handles cleanup on drop\n\nThis matches the pattern already used by `gui_extension_validation_fires_before_existence_check` in the same file.\n\nmemory_hints:\n- search: \"tempfile tempdir pattern cli_gui tests\"\n- entity: \"task 1061\"",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T18:44:37.983Z",
+        "updatedAt": "2026-04-08T20:40:43.170Z",
         "metadata": {
           "files": [
             "crates/reify-cli/tests/cli_gui.rs"
@@ -22737,9 +22737,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:40:07.893Z",
+      "lastModified": "2026-04-08T20:40:43.171Z",
       "taskCount": 1106,
-      "completedCount": 776,
+      "completedCount": 777,
       "tags": [
         "master"
       ]
