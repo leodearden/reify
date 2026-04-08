@@ -1279,7 +1279,147 @@ mod tests {
         );
     }
 
-    // ---- end solutions_agree baseline tests ----
+    // ---- solutions_agree: None/non-numeric handling tests (TDD red) ----
+    //
+    // These tests exercise the bug: `unwrap_or(0.0)` silently substitutes 0.0
+    // for missing or non-numeric values. When both sides are None, diff=0.0
+    // and the function incorrectly returns true (agrees). After the fix these
+    // tests must return false.
+
+    #[test]
+    fn solutions_agree_both_params_missing_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Both maps are empty — neither contains the param
+        let solved: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+        let perturbed: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "both params missing should be non-agreeing (cannot verify uniqueness)"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_original_param_is_undef_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original solution has Undef for the param.
+        // Perturbed has a value very close to zero — the bug: unwrap_or(0.0) on the Undef
+        // produces s1=0.0, and s2≈0.0, so diff≈0 and the function incorrectly returns true.
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(param_id.clone(), Value::Undef);
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15, // near zero — exposes the unwrap_or(0.0) bug
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "Undef in original solution should be non-agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_perturbed_param_is_bool_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original has a value near zero; perturbed has Bool(true) (non-numeric).
+        // The bug: unwrap_or(0.0) on Bool(true) → 0.0, and original ≈ 0.0,
+        // so diff ≈ 0.0 and the function incorrectly returns true.
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15, // near zero — exposes the unwrap_or(0.0) bug
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Perturbed solution has a Bool (non-numeric) for the param
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(param_id.clone(), Value::Bool(true));
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "Bool in perturbed solution should be non-agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_original_missing_perturbed_near_zero_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original map doesn't contain the param at all
+        let solved: HashMap<ValueCellId, Value> = HashMap::new();
+
+        // Perturbed has a value very close to zero (so the old unwrap_or(0.0) bug
+        // would produce diff ≈ 0 and incorrectly report agreement)
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "missing original param should be non-agreeing even when perturbed is near zero"
+        );
+    }
+
+    // ---- end solutions_agree None/non-numeric tests ----
 
     #[test]
     fn single_param_feasibility() {
