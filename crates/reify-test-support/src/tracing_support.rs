@@ -577,6 +577,61 @@ mod tests {
         );
     }
 
+    // debug_assert_eq! is compiled out in release builds, so this test would
+    // incorrectly fail under #[should_panic] without the cfg gate.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
+        // ForcedEventDispatcher bypasses the inner subscriber's enabled() filter
+        // by always returning true, allowing non-WARN events to reach event().
+        struct ForcedEventDispatcher<S> {
+            inner: S,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for ForcedEventDispatcher<S> {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                // Always return true, bypassing the inner subscriber's filter.
+                true
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        let (inner, _warn_count) = warn_counting_subscriber();
+        let subscriber = ForcedEventDispatcher { inner };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("error message bypassing filter");
+        });
+    }
+
     /// Two consecutive `new_span` calls on a `CountingSubscriber` must produce
     /// distinct span IDs (regression guard for the Id::from_u64(1) bug).
     #[test]
