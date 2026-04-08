@@ -283,6 +283,34 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 
+  it('does not call onNavigate when LSP character is negative (malformed response)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Cross-file response with valid line but negative character — malformed LSP response.
+    // Without a guard, the cross-file branch forwards character: -1 directly to onNavigate.
+    // Editor.tsx's consumer does not reject negative character — it computes
+    // targetLine.from + (-1) which places the cursor before the target line.
+    const malformedLocation = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 5, character: -1 }, end: { line: 5, character: -1 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(malformedLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    const mockView = makeMockView();
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Negative character must be rejected before delegating to onNavigate
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+  });
+
   it('partial suffix overlap (/a/foo.ri vs /b/a/foo.ri) triggers cross-file navigation', async () => {
     // currentUri is '/a/foo.ri'; LSP returns 'file:///b/a/foo.ri'.
     // The bare path '/a/foo.ri' is a suffix of '/b/a/foo.ri', but they are different files.
