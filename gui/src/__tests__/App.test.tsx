@@ -2178,18 +2178,56 @@ describe('App serialization-error subscription', () => {
     });
   });
 
-  it('subscribes to serialization-error events and shows toast', async () => {
+  it('subscribes to serialization-error events and shows toast after debounce window', async () => {
     render(() => <App />);
     await waitFor(() => expect(serializationErrorCallback).toBeDefined());
 
-    serializationErrorCallback!({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32 value' });
+    // Switch to fake timers so we can advance the 500ms debounce window instantly
+    vi.useFakeTimers();
+    try {
+      serializationErrorCallback!({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32 value' });
 
-    await waitFor(() => {
+      // Toast must NOT appear before the window elapses
+      expect(screen.queryAllByTestId('toast').find((t) => t.dataset.type === 'error')).toBeUndefined();
+
+      // Advance past the debounce window
+      vi.advanceTimersByTime(500);
+      // Let SolidJS flush any pending reactivity
+      await Promise.resolve();
+
       const toasts = screen.getAllByTestId('toast');
       const errorToast = toasts.find((t) => t.dataset.type === 'error');
       expect(errorToast).toBeTruthy();
       expect(errorToast!.textContent).toContain("Failed to serialize mesh 'Bracket.body': non-finite f32 value");
-    });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rapid-fire serialization errors produce a single summary toast', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(serializationErrorCallback).toBeDefined());
+
+    vi.useFakeTimers();
+    try {
+      // Fire multiple distinct errors within the debounce window
+      serializationErrorCallback!({ item_type: 'mesh', item_id: 'A', error: 'err1' });
+      serializationErrorCallback!({ item_type: 'mesh', item_id: 'B', error: 'err2' });
+      serializationErrorCallback!({ item_type: 'value', item_id: 'C', error: 'err3' });
+
+      // No toast yet
+      expect(screen.queryAllByTestId('toast').find((t) => t.dataset.type === 'error')).toBeUndefined();
+
+      vi.advanceTimersByTime(500);
+      await Promise.resolve();
+
+      const errorToasts = screen.getAllByTestId('toast').filter((t) => t.dataset.type === 'error');
+      // Exactly one summary toast, not three individual toasts
+      expect(errorToasts).toHaveLength(1);
+      expect(errorToasts[0].textContent).toContain('3 items failed to serialize');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('cleans up serialization-error subscription on unmount', async () => {
@@ -2206,5 +2244,46 @@ describe('App serialization-error subscription', () => {
     unmount();
 
     expect(serializationErrorUnsub).toHaveBeenCalled();
+  });
+
+  it('shows fallback toast when onSerializationError rejects', async () => {
+    vi.mocked(bridge.onSerializationError).mockRejectedValueOnce(new Error('listen failed'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const errorToast = toasts.find((t) =>
+        t.textContent?.includes('Serialization error monitoring unavailable'),
+      );
+      expect(errorToast).toBeTruthy();
+    });
+  });
+
+  it('does not leak serialization-error listener when unmounted before onSerializationError resolves', async () => {
+    const unlistenSerialization = vi.fn();
+    const { promise, resolve } = deferred<() => void>();
+    vi.mocked(bridge.onSerializationError).mockReturnValue(promise);
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for initApp to reach the onSerializationError await
+    await flushMacrotasks();
+
+    // Unmount while onSerializationError is still pending
+    unmount();
+
+    // Resolve the deferred promise — alive guard should fire
+    resolve(unlistenSerialization);
+
+    // Flush so the alive guard's unlistenSerialization() call executes
+    await flushMacrotasks();
+
+    // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
+    expect(unlistenSerialization).toHaveBeenCalledTimes(1);
   });
 });

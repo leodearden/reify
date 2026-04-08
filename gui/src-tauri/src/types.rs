@@ -12,6 +12,16 @@ use reify_types::{DeterminacyState, Value};
 /// error so that `delta_to_events` can log a warning and emit a
 /// `"serialization-error"` event instead of silently producing null vertices
 /// on the frontend.
+///
+/// # Note
+///
+/// The single-pass loop begins the JSON sequence before validating all
+/// elements.  If a non-finite value appears at position > 0, earlier
+/// elements have already been written to the serializer.  With in-memory
+/// serializers like `serde_json::to_value` (the current sole caller via
+/// `delta_to_events`), the partial `Value` is simply dropped on `Err`.
+/// Callers using streaming serializers (e.g. `serde_json::to_writer`)
+/// must discard partial output on error.
 fn serialize_finite_f32_vec<S>(values: &[f32], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,

@@ -678,6 +678,71 @@ fn compute_gradient(field_val: &Value) -> Value {
     }
 }
 
+/// Evaluate the lambda at a single perturbed point and recover `work_point`.
+///
+/// This helper encapsulates the duplicated eval-and-recover sequence for the
+/// `single_point_param` and decomposed paths in `compute_numerical_gradient_at_point`.
+/// It is called twice per axis (f_plus and f_minus), so factoring it out eliminates
+/// the verbatim duplication in the hot loop.
+///
+/// # Arguments
+///
+/// * `lambda` — The original field lambda to evaluate.
+/// * `work_coords` — The already-perturbed coordinate slice (length n).
+/// * `work_args` — Scratch `Vec<Value>` reused across calls; cleared and filled here.
+/// * `work_point` — Scratch inner `Vec<Value>` for the `single_point_param` path;
+///   transferred into `work_args` via `std::mem::take` and recovered after the call.
+///   Must be empty and unused in the decomposed path.
+/// * `single_point_param` — Whether the lambda expects one `Point` arg or n scalar args.
+/// * `i` — The perturbed axis index (used to update `work_point[i]` efficiently).
+/// * `n` — Total domain dimension; used for the post-recovery `debug_assert_eq!`.
+/// * `make_arg` — Converts an `f64` coordinate to the appropriate `Value` variant
+///   (e.g., `Value::Real` for dimensionless, `Value::Scalar { … }` for dimensioned).
+/// * `ctx` — Evaluation context forwarded to `apply_lambda`.
+///
+/// # Invariant
+///
+/// After the call (when `single_point_param` is true), `work_point.len() == n`.
+/// A `debug_assert_eq!` enforces this in debug builds.
+#[allow(clippy::too_many_arguments)]
+fn eval_perturbed_point<F: Fn(f64) -> Value>(
+    lambda: &Value,
+    work_coords: &[f64],
+    work_args: &mut Vec<Value>,
+    work_point: &mut Vec<Value>,
+    single_point_param: bool,
+    i: usize,
+    n: usize,
+    make_arg: &F,
+    ctx: &EvalContext,
+) -> Value {
+    work_args.clear();
+    if single_point_param {
+        // Update only the perturbed element; transfer ownership via take.
+        work_point[i] = make_arg(work_coords[i]);
+        work_args.push(Value::Point(std::mem::take(work_point)));
+    } else {
+        work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+    }
+    let result = apply_lambda(lambda, work_args, ctx);
+    // Recover work_point from work_args (single_point_param only).
+    // Infallible: apply_lambda borrows &[Value] and cannot mutate work_args;
+    // we pushed exactly one Value::Point, so pop() always succeeds.
+    if single_point_param {
+        if let Some(Value::Point(inner)) = work_args.pop() {
+            *work_point = inner;
+        }
+        debug_assert_eq!(
+            work_point.len(),
+            n,
+            "work_point must be recovered to n={n} elements after eval_perturbed_point; \
+             got {} — apply_lambda may have changed the Point's inner Vec length",
+            work_point.len(),
+        );
+    }
+    result
+}
+
 /// Compute the numerical gradient of a field at a given point via central differences.
 ///
 /// For each axis i, perturbs coordinate i by ±h where h = 1e-6 * max(|coord_i|, 1e-3),
@@ -804,14 +869,14 @@ fn compute_numerical_gradient_at_point(
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
 
-    // point_scratch: reusable inner Vec for the single_point_param path.
+    // work_point: reusable inner Vec for the single_point_param path.
     // Pre-allocated once; only the perturbed element is updated each axis,
     // eliminating the per-axis .collect() allocation on the caller side.
     // (apply_lambda still clones the Vec once per eval when populating its
     // eval_map, so the savings are roughly halving inner-Vec allocations,
     // not reducing to O(1) overall.)
-    // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
-    let mut point_scratch: Vec<Value> = if single_point_param {
+    // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
+    let mut work_point: Vec<Value> = if single_point_param {
         work_coords.iter().map(|&v| make_arg(v)).collect()
     } else {
         Vec::new()
@@ -829,24 +894,19 @@ fn compute_numerical_gradient_at_point(
         let coord_i = work_coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
-        // Perturb forward (+h), evaluate
+        // Perturb forward (+h), evaluate, recover work_point.
         work_coords[i] += h;
-        work_args.clear();
-        if single_point_param {
-            // Update only the perturbed element; transfer ownership via take.
-            point_scratch[i] = make_arg(work_coords[i]);
-            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
-        let f_plus = apply_lambda(lambda, &work_args, ctx);
-        // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
-            point_scratch = inner;
-        }
-        // Recovery above is infallible: apply_lambda borrows &[Value] and cannot
-        // mutate work_args; we pushed exactly one Value::Point, so pop() always
-        // succeeds and always yields Value::Point.  The if-let is just destructuring.
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
 
         // On the first axis, validate the lambda's runtime return dimension against the
         // declared codomain (via codomain_type). Two-tier strategy:
@@ -896,32 +956,28 @@ fn compute_numerical_gradient_at_point(
             }
         }
 
-        // Swing to backward (−h from original = −2h from current), evaluate
+        // Swing to backward (−h from original = −2h from current), evaluate, recover work_point.
         work_coords[i] -= 2.0 * h;
-        work_args.clear();
-        if single_point_param {
-            point_scratch[i] = make_arg(work_coords[i]);
-            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
-        let f_minus = apply_lambda(lambda, &work_args, ctx);
-        // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
-            point_scratch = inner;
-        }
-        // Recovery above is infallible for the same reason as the f_plus recovery:
-        // apply_lambda cannot mutate work_args, and exactly one Value::Point was
-        // pushed before the call.
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
 
         // Restore coord[i] to original value.
         // Use exact restore (direct assignment) instead of arithmetic
         // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
         // drift from x + h - 2h + h ≠ x in floating-point).
         work_coords[i] = coord_i;
-        // Keep point_scratch in sync with the invariant.
+        // Keep work_point in sync with the invariant.
         if single_point_param {
-            point_scratch[i] = make_arg(coord_i);
+            work_point[i] = make_arg(coord_i);
         }
 
         // Extract numeric values, propagate Undef.

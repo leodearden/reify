@@ -46,6 +46,7 @@ import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessa
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
+import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -114,6 +115,9 @@ const App: Component = () => {
     const id = String(++toastIdCounter);
     setToasts((prev) => [...prev, { id, type, message }]);
   }
+
+  // Coalescer for serialization-error events — debounces and deduplicates bursts
+  const serializationErrorCoalescer = createSerializationErrorCoalescer(showToast);
 
   // Reload prompt state — tracks all files changed since last reload/dismiss
   const [changedFiles, setChangedFiles] = createSignal<Set<string>>(new Set());
@@ -262,7 +266,7 @@ const App: Component = () => {
     // Subscribe to serialization error events
     try {
       const unlistenSerializationError = await onSerializationError((data) => {
-        showToast(`Failed to serialize ${data.item_type} '${data.item_id}': ${data.error}`, 'error');
+        serializationErrorCoalescer.add(data);
       });
       if (!alive) {
         unlistenSerializationError();
@@ -300,6 +304,7 @@ const App: Component = () => {
     unsub?.();
     fileChangedUnsub?.();
     serializationErrorUnsub?.();
+    serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
   });
 

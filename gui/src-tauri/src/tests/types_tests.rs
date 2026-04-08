@@ -497,7 +497,7 @@ fn format_value_undef() {
 
 // --- serialize_finite_f32_vec characterization tests ---
 // These tests exercise serialize_finite_f32_vec (private fn) through MeshData's
-// Serialize impl, covering both happy-path and error paths before the loop merge.
+// Serialize impl, covering both happy-path and error paths, characterizing the merged single-pass loop behavior.
 
 #[test]
 fn serialize_finite_f32_vec_all_finite_values_round_trip() {
@@ -594,6 +594,12 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     // A non-finite value at position > 0 must still cause an error.
     // This verifies fail-fast semantics hold regardless of where the bad value sits
     // in the single-pass merged loop.
+    //
+    // Partial-output safety: although the loop writes earlier elements (1.0, 2.0)
+    // to the serializer's internal state before detecting the NaN, `serde_json::to_value`
+    // builds an in-memory `Value` that is simply dropped on `Err` — no partial output is
+    // observable by the caller.  For streaming-serializer callers see the `# Note` in
+    // `serialize_finite_f32_vec` (types.rs).
     let mesh = MeshData {
         entity_path: "test".to_string(),
         vertices: vec![1.0, 2.0, f32::NAN],

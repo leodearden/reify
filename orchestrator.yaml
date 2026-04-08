@@ -14,7 +14,7 @@ module_overrides:
 # Commands use `cargo --workspace`; orchestrator's scope_cargo rewriter rewrites
 # to `cargo -p <crate>` when all task files live in one crate. Do not pre-scope.
 test_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo test --workspace -- --test-threads=1 && if test -d gui; then (cd gui && npm ci && npm test); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi && if test -f tests/sync_comments_test.sh; then bash tests/sync_comments_test.sh; fi && if test -f tests/infra/run_all.sh; then bash tests/infra/run_all.sh; fi"
-lint_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo clippy --workspace -- -D warnings && if test -d gui; then (cd gui && npm ci && npx tsc --noEmit); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi && if test -f scripts/check-pm-standardization.sh; then bash scripts/check-pm-standardization.sh; fi"
+lint_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo clippy --workspace -- -D warnings && if test -d gui; then (cd gui && npm ci && npm run typecheck); fi && if test -f gui/sidecar/package-lock.json; then (cd gui/sidecar && npm ci); fi && if test -f tree-sitter-reify/package-lock.json; then (cd tree-sitter-reify && npm ci); fi && if test -f scripts/check-pm-standardization.sh; then bash scripts/check-pm-standardization.sh; fi"
 type_check_command: ". ~/.cargo/env && ./scripts/tree-sitter-generate.sh && cargo check --workspace"
 
 # Run test/lint/type sequentially in one verify invocation.
