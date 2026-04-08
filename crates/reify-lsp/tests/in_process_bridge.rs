@@ -473,6 +473,51 @@ async fn did_change_with_malformed_params_returns_error() {
     .await;
 }
 
+/// A valid `textDocument/didChange` notification should return exactly `Ok(Value::Null)`.
+///
+/// Documents the `Ok(Value::Null)` contract for the didChange arm of `handle_request`.
+/// The document is opened first so the change applies to a live entry, exercising the
+/// realistic open → change lifecycle rather than coupling to lenient missing-URI behavior.
+#[tokio::test]
+async fn did_change_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .expect("didOpen should succeed");
+
+    let result = lsp
+        .handle_request(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {
+                    "uri": "file:///test.ri",
+                    "version": 2
+                },
+                "contentChanges": [{ "text": source }]
+            }),
+        )
+        .await
+        .expect("didChange should return Ok");
+
+    assert_eq!(
+        result,
+        serde_json::Value::Null,
+        "didChange should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Malformed params for `textDocument/didClose` should return an Err
 /// containing "didClose params error".
 ///
