@@ -19273,11 +19273,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:24:57.770Z",
+        "updatedAt": "2026-04-08T23:24:58.021Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -24121,15 +24121,16 @@
         "description": "Three small follow-ups from Task 937's review:\n\n1. **Ordering consistency in diff_tests.rs** (gui/src-tauri/src/tests/diff_tests.rs:385): Update `warn_count.load(Ordering::Relaxed)` to `Ordering::Acquire` (or use the new `assert_warn_count` helper) for consistency with the convention established in Task 937 across tracing_support.rs and in_process_bridge.rs. Safe in practice (synchronous with_default block) but inconsistent.\n\n2. **Test gap in warn_counting_guard_stops_counting_after_drop** (crates/reify-test-support/src/tracing_support.rs:1275-1285): The test claims to verify post-drop events are not counted but never emits a `tracing::warn!` after `drop(guard)`. Add `tracing::warn!(\"after drop\")` after the drop and re-assert count is still 1. The warn goes to the no-op fallback so it's harmless.\n\n3. **Replace saturating_sub with checked subtraction** (crates/reify-test-support/src/tracing_support.rs:33): `assert_warn_count_delta` uses `saturating_sub` which silently yields 0 when `before > after`, potentially masking bugs where a stale/wrong counter is passed. Replace with: `assert!(after >= before, \"warn counter went backwards (before={before}, after={after}): {context}\"); let actual_delta = after - before;`\n\nmemory_hints:\n- search: \"warn counter ordering Acquire convention Task 937\"\n- entity: \"WarnCountingSubscriber\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:24:57.897Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:24:57.770Z",
+      "lastModified": "2026-04-08T23:24:58.021Z",
       "taskCount": 1182,
       "completedCount": 867,
       "tags": [
