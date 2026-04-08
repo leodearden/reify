@@ -32,13 +32,13 @@ fn compile_module(source: &str) -> reify_compiler::CompiledModule {
 // ─── step-1: direct self-reference ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; recursion now requires `where` guard. Re-enable after rewriting test sources to add guards. See project_regression_c88ca9635.md."]
 fn direct_self_reference_tagged_recursive() {
-    // Structure A has `sub x = A()` — directly references itself.
+    // Structure A has a self-referencing sub (with termination guard per task 204).
     // Expect: A.is_recursive == true, warning diagnostic with 'recursive structure cycle'.
     let source = r#"
         structure A {
-            sub x = A()
+            param n : Int = 3
+            sub x = A(n: n - 1) where n > 0
         }
     "#;
     let compiled = compile_module(source);
@@ -69,16 +69,17 @@ fn direct_self_reference_tagged_recursive() {
 // ─── step-3: mutual recursion ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn mutual_recursion_both_tagged() {
-    // A has sub b = B(), B has sub a = A() — mutually recursive.
+    // A references B, B references A (with termination guards per task 204).
     // Expect: both A and B are tagged is_recursive=true.
     let source = r#"
         structure A {
-            sub b = B()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
         }
         structure B {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
     "#;
     let compiled = compile_module(source);
@@ -107,19 +108,21 @@ fn mutual_recursion_both_tagged() {
 // ─── step-5: indirect cycle through 3 structures ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn indirect_cycle_three_structures_all_tagged() {
-    // A -> B -> C -> A — indirect cycle through 3 structures.
+    // A -> B -> C -> A — indirect cycle through 3 structures (with termination guards).
     // Expect: all three tagged is_recursive=true, diagnostic contains full cycle path.
     let source = r#"
         structure A {
-            sub b = B()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
         }
         structure B {
-            sub c = C()
+            param n : Int = 3
+            sub c = C(n: n - 1) where n > 0
         }
         structure C {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
     "#;
     let compiled = compile_module(source);
@@ -199,15 +202,16 @@ fn non_recursive_dag_no_false_positives() {
 // ─── step-9: mixed recursive and non-recursive ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn mixed_recursive_and_non_recursive_only_cycle_tagged() {
-    // A->B->A cycle plus standalone C->D — only A and B should be tagged.
+    // A<->B cycle (with termination guards) plus standalone C->D — only A and B should be tagged.
     let source = r#"
         structure A {
-            sub b = B()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
         }
         structure B {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
         structure D { param z : Scalar = 1mm }
         structure C { sub d = D() }
@@ -269,19 +273,20 @@ fn unknown_structure_reference_no_panic_no_false_positive() {
 // ─── step-13: multiple subs, one creating a cycle ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn multiple_subs_one_cycle_correct_tagging() {
-    // A has sub b = B() and sub c = C().
-    // B has sub a = A() — creates A<->B cycle.
-    // C has no subs — not in any cycle.
-    // Expect: A and B are recursive, C is not.
+    // A has sub b = B() (recursive, guarded) and sub c = C() (non-recursive — C is a leaf).
+    // B has sub a = A() (recursive, guarded) — creates A<->B cycle.
+    // Expect: A and B are recursive, C is not. Only the A<->B sub needs a guard;
+    // the A -> C edge is not in the A<->B SCC so no guard is required there.
     let source = r#"
         structure C { param w : Scalar = 1mm }
         structure B {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
         structure A {
-            sub b = B()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
             sub c = C()
         }
     "#;
@@ -299,9 +304,8 @@ fn multiple_subs_one_cycle_correct_tagging() {
 // ─── step-17: multi-path cycle convergence (Tarjan bug) ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn multi_path_convergence_all_cycle_participants_tagged() {
-    // Graph: A→B, A→D, B→C, D→C, C→A
+    // Graph: A→B, A→D, B→C, D→C, C→A (with termination guards per task 204).
     // Two cycles exist: A→B→C→A and A→D→C→A.
     // All four nodes A, B, C, D participate in a cycle.
     //
@@ -313,17 +317,21 @@ fn multi_path_convergence_all_cycle_participants_tagged() {
     // mutually reachable through the cycles.
     let source = r#"
         structure A {
-            sub b = B()
-            sub d = D()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
+            sub d = D(n: n - 1) where n > 0
         }
         structure B {
-            sub c = C()
+            param n : Int = 3
+            sub c = C(n: n - 1) where n > 0
         }
         structure D {
-            sub cc = C()
+            param n : Int = 3
+            sub cc = C(n: n - 1) where n > 0
         }
         structure C {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
     "#;
     let compiled = compile_module(source);
@@ -394,18 +402,21 @@ fn no_subs_not_recursive() {
 // ─── step-19: false-positive resistance — pointing into a cycle without being in it ───
 
 #[test]
-#[ignore = "871ec2dbd test pre-dates task 204 termination check; needs `where` guards. See project_regression_c88ca9635.md."]
 fn pointer_into_cycle_not_tagged_recursive() {
-    // Z has sub a = A(). A→B→A is a cycle. No path from A or B back to Z.
+    // A<->B cycle (with termination guards). Z has sub a = A() — no path from A back to Z.
     // Z points INTO the A<->B cycle but is not a member of it.
     // Tarjan's SCC correctly excludes Z: mutual reachability is required.
     // Z can reach A, but A cannot reach Z, so Z is in its own singleton SCC with no self-edge.
+    // Z's sub needs no guard because Z is not in a cyclic SCC (the termination check
+    // only inspects subs whose target is in the same cyclic SCC as the template).
     let source = r#"
         structure A {
-            sub b = B()
+            param n : Int = 3
+            sub b = B(n: n - 1) where n > 0
         }
         structure B {
-            sub a = A()
+            param n : Int = 3
+            sub a = A(n: n - 1) where n > 0
         }
         structure Z {
             sub a = A()
