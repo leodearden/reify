@@ -22304,7 +22304,7 @@
         "description": "Deferred from task 1048 review suggestion S2 (reviewer_comprehensive).\n\nTwo copies of `errorMessage()` are explicitly kept in sync via NOTE comments:\n- gui/src/utils/errorClassifier.ts\n- gui/sidecar/src/utils.ts\n\nEvery hardening change (null/undefined guards, try/catch widening) must be applied identically to both copies. Task 1048 demonstrated the drift risk — its review flagged test-coverage drift between the two suites and the repeated duplication pattern.\n\n**Scope**: Extract `errorMessage()` into a shared module that both the main gui bundle and the sidecar bundle import. The sidecar bundles separately from gui so this needs either (a) a workspace utility package both can depend on, (b) a build-time copy step, or (c) a TypeScript path alias + bundler config. Option (a) is cleanest if the project's npm workspace supports it.\n\n**Acceptance**:\n- Single source of truth for `errorMessage()`\n- Both gui vitest and sidecar vitest suites exercise the shared implementation (not two copies of tests)\n- NOTE sync comments removed\n- No duplication warning from future reviewers\n\n**Out of scope**: Any other duplicated helpers between gui and sidecar — this task targets errorMessage only.\n\nOriginated from review suggestion [2] on task 1048.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -22323,7 +22323,8 @@
             "gui/sidecar/src",
             "gui/shared"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:14:11.377Z"
       },
       {
         "id": "1082",
@@ -23340,7 +23341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:14:10.192Z",
+      "lastModified": "2026-04-08T21:14:11.377Z",
       "taskCount": 1136,
       "completedCount": 804,
       "tags": [
