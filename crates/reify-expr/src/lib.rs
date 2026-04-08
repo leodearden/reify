@@ -4448,6 +4448,118 @@ mod tests {
         }
     }
 
+    // ── method: conjugate (NaN/Inf sanitization) ─────────────────────────────
+
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // -1.0 (or -NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.conjugate → Undef
+        // -(NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry +Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with +Inf real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_im_returns_undef() {
+        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.conjugate → Undef
+        // The conjugate would flip -Inf → +Inf, still non-finite; should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_re_returns_undef() {
+        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry -Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf real part should return Undef"
+        );
+    }
+
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 
     #[test]
