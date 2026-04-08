@@ -207,6 +207,127 @@ impl tracing::Subscriber for WarnCountingSubscriber {
     fn exit(&self, _span: &tracing::span::Id) {}
 }
 
+// ── WarnCapture (public) ──────────────────────────────────────────────────────
+
+/// Captured output from [`warn_capturing_subscriber`]: event count and message
+/// text for all WARN events.
+pub struct WarnCapture {
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl WarnCapture {
+    /// Return the number of WARN events that have been emitted so far.
+    pub fn count(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// Return a snapshot of all captured WARN event message strings.
+    pub fn messages(&self) -> Vec<String> {
+        self.messages.lock().unwrap().clone()
+    }
+
+    /// Assert that exactly `expected` WARN events were emitted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the count does not equal `expected`.
+    pub fn assert_count(&self, expected: usize) {
+        let n = self.count();
+        assert_eq!(
+            n, expected,
+            "expected {expected} WARN events, got {n}"
+        );
+    }
+
+    /// Assert that exactly `expected` WARN events were emitted **and** that at
+    /// least one captured message contains `substring`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either condition fails.
+    pub fn assert_count_and_any_message_contains(&self, expected: usize, substring: &str) {
+        self.assert_count(expected);
+        let msgs = self.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains(substring)),
+            "no WARN message contained {substring:?}; captured messages: {msgs:?}"
+        );
+    }
+}
+
+/// Build a minimal [`tracing::Subscriber`] that captures WARN-level events:
+/// both the count and the formatted message text.
+///
+/// Returns a `(subscriber, capture)` pair.  The [`WarnCapture`] is shared via
+/// [`Arc`] so callers can inspect results after the subscriber has been
+/// installed and removed.
+pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
+    let count = Arc::new(AtomicUsize::new(0));
+    let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let capture = WarnCapture {
+        count: Arc::clone(&count),
+        messages: Arc::clone(&messages),
+    };
+    let subscriber = WarnCapturingSubscriber {
+        count,
+        messages,
+        span_counter: AtomicU64::new(1),
+    };
+    (subscriber, capture)
+}
+
+// ── WarnCapturingSubscriber (private) ─────────────────────────────────────────
+
+struct WarnCapturingSubscriber {
+    count: Arc<AtomicUsize>,
+    messages: Arc<std::sync::Mutex<Vec<String>>>,
+    span_counter: AtomicU64,
+}
+
+/// A [`tracing::field::Visit`] implementation that extracts the formatted
+/// `message` field from a tracing event.
+struct MessageVisitor(String);
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
+impl tracing::Subscriber for WarnCapturingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.level() == &tracing::Level::WARN
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
+        tracing::span::Id::from_u64(id)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        debug_assert_eq!(
+            event.metadata().level(),
+            &tracing::Level::WARN,
+            "WarnCapturingSubscriber: event() reached with non-WARN — enabled() contract violated"
+        );
+        self.count.fetch_add(1, Ordering::Relaxed);
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+        self.messages.lock().unwrap().push(visitor.0);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -673,5 +794,113 @@ mod tests {
             id_a, id_b,
             "successive new_span calls must return distinct IDs"
         );
+    }
+
+    // ── warn_capturing_subscriber tests ──────────────────────────────────────
+
+    /// `WarnCapture::count()` returns the number of WARN events that were
+    /// emitted while the capturing subscriber was active.
+    #[test]
+    fn warn_capturing_count_returns_warn_event_count() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        assert_eq!(capture.count(), 0, "count should start at 0");
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("first warning");
+            tracing::warn!("second warning");
+        });
+
+        assert_eq!(capture.count(), 2, "count should be 2 after two WARN events");
+    }
+
+    /// `WarnCapture::messages()` captures the formatted text of each WARN event.
+    #[test]
+    fn warn_capturing_messages_captures_message_text() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("hello from warn");
+        });
+
+        let msgs = capture.messages();
+        assert_eq!(msgs.len(), 1, "should capture exactly one message");
+        assert!(
+            msgs[0].contains("hello from warn"),
+            "captured message should contain 'hello from warn', got: {:?}",
+            msgs[0]
+        );
+    }
+
+    /// Non-WARN events are not counted and their messages are not captured.
+    #[test]
+    fn warn_capturing_ignores_non_warn_events() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("info message");
+            tracing::error!("error message");
+            tracing::debug!("debug message");
+        });
+
+        assert_eq!(capture.count(), 0, "non-WARN events must not be counted");
+        assert!(
+            capture.messages().is_empty(),
+            "non-WARN event messages must not be captured"
+        );
+    }
+
+    /// `WarnCapture::assert_count_and_any_message_contains` passes when the
+    /// count matches and at least one message contains the given substring.
+    #[test]
+    fn warn_capture_assert_count_and_message_passes_on_match() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("values RwLock poisoned, recovering: err");
+        });
+
+        // Should not panic
+        capture.assert_count_and_any_message_contains(1, "values RwLock poisoned");
+    }
+
+    /// `WarnCapture::assert_count_and_any_message_contains` panics when no
+    /// captured message contains the expected substring.
+    #[test]
+    #[should_panic(expected = "no WARN message contained")]
+    fn warn_capture_assert_message_panics_on_missing_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("some other warning");
+        });
+
+        capture.assert_count_and_any_message_contains(1, "values RwLock poisoned");
+    }
+
+    /// `WarnCapture::assert_count_and_any_message_contains` panics when the
+    /// count does not match, even if a message would otherwise match.
+    #[test]
+    #[should_panic(expected = "expected 2 WARN events")]
+    fn warn_capture_assert_count_panics_on_wrong_count() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("values RwLock poisoned, recovering");
+        });
+
+        capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
     }
 }
