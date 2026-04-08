@@ -33,7 +33,7 @@ beforeEach(() => {
 /**
  * Factory for a minimal mock EditorView used by gotoDefinition tests.
  * Overrides are merged per-leaf: only the fields you pass are replaced;
- * sibling defaults are preserved.
+ * sibling defaults (e.g. `lineAt` when only `line` is overridden) are preserved.
  */
 function makeMockView(overrides?: {
   posAtCoords?: () => number;
