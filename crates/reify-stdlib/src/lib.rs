@@ -3967,6 +3967,19 @@ mod tests {
         );
     }
 
+    // Private helper: emits four per-component closeness asserts given
+    // pre-bound locals `tol`, `w`/`x`/`y`/`z` (actual) and expected exprs.
+    // Not exported — only used by the arms of `assert_orientation_approx!`.
+    macro_rules! __assert_orientation_close {
+        ($tol:ident, $w:ident, $x:ident, $y:ident, $z:ident,
+         $ew:expr, $ex:expr, $ey:expr, $ez:expr) => {
+            assert!(($w - $ew).abs() < $tol, "w: expected {}, got {}", $ew, $w);
+            assert!(($x - $ex).abs() < $tol, "x: expected {}, got {}", $ex, $x);
+            assert!(($y - $ey).abs() < $tol, "y: expected {}, got {}", $ey, $y);
+            assert!(($z - $ez).abs() < $tol, "z: expected {}, got {}", $ez, $z);
+        };
+    }
+
     /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }`.
     ///
     /// Three calling forms:
@@ -3986,10 +3999,7 @@ mod tests {
             let tol = $tol;
             match $expr {
                 Value::Orientation { w, x, y, z } => {
-                    assert!((w - $ew).abs() < tol, "w: expected {}, got {}", $ew, w);
-                    assert!((x - $ex).abs() < tol, "x: expected {}, got {}", $ex, x);
-                    assert!((y - $ey).abs() < tol, "y: expected {}, got {}", $ey, y);
-                    assert!((z - $ez).abs() < tol, "z: expected {}, got {}", $ez, z);
+                    __assert_orientation_close!(tol, w, x, y, z, $ew, $ex, $ey, $ez);
                 }
                 other => panic!(
                     "expected Orientation({}, {}, {}, {}), got {:?}",
