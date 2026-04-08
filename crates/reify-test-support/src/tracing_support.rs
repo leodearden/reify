@@ -414,52 +414,20 @@ mod tests {
     /// ERROR event is rejected at the gate and `dispatch_count` stays 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
-        // ── thin wrapper ────────────────────────────────────────────────────
-        struct EventDispatchCounter<S> {
-            inner: S,
-            dispatch_count: Arc<AtomicUsize>,
-        }
-
-        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
-            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-                // Delegate to the inner subscriber so its filter is exercised.
-                self.inner.enabled(metadata)
-            }
-
-            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-                self.inner.new_span(span)
-            }
-
-            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
-                self.inner.record(span, values)
-            }
-
-            fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
-                self.inner.record_follows_from(span, follows)
-            }
-
-            fn event(&self, event: &tracing::Event<'_>) {
-                // Reached only when enabled() returned true.
-                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
-                self.inner.event(event)
-            }
-
-            fn enter(&self, span: &tracing::span::Id) {
-                self.inner.enter(span)
-            }
-
-            fn exit(&self, span: &tracing::span::Id) {
-                self.inner.exit(span)
-            }
-        }
-
-        // ── test body ───────────────────────────────────────────────────────
         let (inner, warn_count) = warn_counting_subscriber();
         let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
 
-        let subscriber = EventDispatchCounter {
+        // ForwardingSubscriber delegates enabled() to the inner subscriber so
+        // its filter is exercised.  The event_fn increments dispatch_count
+        // before delegating — it is only reached when enabled() returned true.
+        let subscriber = ForwardingSubscriber {
             inner,
-            dispatch_count: Arc::clone(&dispatch_count),
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: move |s: &_, event| {
+                dispatch_count_clone.fetch_add(1, Ordering::Relaxed);
+                s.event(event);
+            },
         };
 
         tracing::subscriber::with_default(subscriber, || {
