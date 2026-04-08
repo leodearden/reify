@@ -195,14 +195,25 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
 
     const mockEvent = makeMouseEvent();
 
-    const mockView = makeMockView();
+    // Throwing doc.line() is defense-in-depth: if the guard moves after a doc.line()
+    // call, the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
 
-    // Negative line must be rejected before delegating to onNavigate
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Negative line must be rejected before delegating to onNavigate
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Guard fires before doc.line(); no warn should be logged
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('does not call onNavigate when LSP character is negative (malformed response)', async () => {
@@ -223,14 +234,95 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
 
     const mockEvent = makeMouseEvent();
 
-    const mockView = makeMockView();
+    // Throwing doc.line() is defense-in-depth: if the guard moves after a doc.line()
+    // call, the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
 
-    // Negative character must be rejected before delegating to onNavigate
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Negative character must be rejected before delegating to onNavigate
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Guard fires before doc.line(); no warn should be logged
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not call onNavigate when LSP line is NaN (non-integer cross-file)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Cross-file response with NaN line (serialised as null via JSON).
+    // null < 0 → false, so the current guard passes null through to onNavigate.
+    // Guard should reject null/non-integer before delegating to onNavigate.
+    const crossFileNanLine = {
+      uri: 'file:///other.ri',
+      range: { start: { line: NaN, character: 0 }, end: { line: NaN, character: 0 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileNanLine));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    // Throwing doc.line() is defense-in-depth: if cross-file guard bypasses and
+    // somehow reaches doc.line(), the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN (null) line must be rejected; onNavigate must not be called
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not call onNavigate when LSP character is NaN (non-integer cross-file)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Cross-file response with valid line but NaN character (serialised as null via JSON).
+    // null < 0 → false, so the current guard passes null through to onNavigate.
+    // Guard should reject null/non-integer before delegating to onNavigate.
+    const crossFileNanChar = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 5, character: NaN }, end: { line: 5, character: NaN } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileNanChar));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN (null) character must be rejected; onNavigate must not be called
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it.each([
@@ -425,6 +517,43 @@ describe('line-bounds guard', () => {
     }
   });
 
+  it('does not dispatch when LSP line is NaN (non-integer)', async () => {
+    const currentUri = 'file:///current.ri';
+    // NaN line bypasses `line < 0` (NaN < 0 → false) and `line + 1 > doc.lines`
+    // (NaN + 1 → NaN, NaN > 100 → false), reaching doc.line(NaN + 1) which throws RangeError.
+    // The .catch() logs a warning. Guard should reject NaN before reaching doc.line().
+    const nanLineLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: NaN, character: 0 }, end: { line: NaN, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(nanLineLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    // doc.line() throws to prove the guard fires BEFORE it is reached.
+    // If the guard fires, doc.line() is never called and no console.warn is emitted.
+    // If the guard is absent, doc.line() throws on NaN+1=NaN, .catch() logs a warning.
+    const mockView = makeMockView({
+      state: { doc: { line: () => { throw new RangeError('line out of range'); } } },
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN line should be rejected by the guard; dispatch must never be called
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // The guard fires before doc.line(), so no warning should be logged
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('dispatches when LSP line is exactly at document boundary (start.line=4, doc.lines=5)', async () => {
     const currentUri = 'file:///current.ri';
     // LSP reports line 4 (0-based), so line+1=5 which equals doc.lines=5; guard 5>5 is false.
@@ -553,6 +682,36 @@ describe('character-bounds guard', () => {
       selection: { anchor: 50 },
       scrollIntoView: true,
     });
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch when LSP character is NaN (non-integer)', async () => {
+    const currentUri = 'file:///current.ri';
+    // NaN character bypasses `character < 0` (NaN < 0 → false) and
+    // `character > length` (NaN > 10 → false), resulting in dispatch with
+    // anchor = from + NaN = 100 + NaN = NaN. Guard should reject NaN.
+    const location = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: NaN }, end: { line: 5, character: NaN } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    // line 6 (1-based): from=100, to=110 → length 10; character NaN is invalid
+    const mockView = makeMockView({
+      state: { doc: { line: () => ({ from: 100, to: 110 }) } },
+    });
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // NaN character must be rejected; neither dispatch nor onNavigate should be called
+    expect(mockView.dispatch).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
