@@ -4954,7 +4954,7 @@
         "testStrategy": "Parser tests: single annotation, multiple, with args, various declaration types.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -4962,7 +4962,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:07.852Z"
+        "updatedAt": "2026-04-08T17:00:11.084Z"
       },
       {
         "id": "265",
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:10.901Z",
+      "lastModified": "2026-04-08T17:00:11.084Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
