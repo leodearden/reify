@@ -3655,7 +3655,7 @@ fn gradient_codomain_type_with_dimensioned_domain() {
             },
             scalar_mass_per_length.clone(),
         ),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), scalar_length.clone()),
         scalar_mass.clone(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
