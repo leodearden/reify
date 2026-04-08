@@ -55,6 +55,10 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 /// Used by source-level regression tests that read this file's own contents.
 const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs");
 
+/// Absolute path to build.rs, resolved at compile time via CARGO_MANIFEST_DIR.
+/// Used by source-level regression tests that read the build script's contents.
+const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
