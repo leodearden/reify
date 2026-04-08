@@ -21738,11 +21738,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: The bridge has a dedicated `\"didOpen params error\"` error path in bridge.rs (symmetric with didChange and didClose), but there is no corresponding malformed-params test for `textDocument/didOpen`. Add `did_open_with_malformed_params_returns_error` following the same pattern as the existing didChange/didClose malformed-params tests: call `initialized_lsp().await`, send `handle_request(\"textDocument/didOpen\", json!(42))`, assert `result.is_err()`, and assert the error contains `\"didOpen params error\"`.\n\nMemory hints: search for \"LSP bridge test initialization pattern\" and \"initialized_lsp helper\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:07:28.264Z",
+        "updatedAt": "2026-04-08T22:15:01.691Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -23744,9 +23744,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:13:22.643Z",
+      "lastModified": "2026-04-08T22:15:01.691Z",
       "taskCount": 1159,
-      "completedCount": 837,
+      "completedCount": 838,
       "tags": [
         "master"
       ]
