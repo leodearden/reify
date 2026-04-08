@@ -21469,11 +21469,11 @@
         "description": "Add `did_change_returns_ok_null` and `did_close_returns_ok_null` tests in `crates/reify-lsp/tests/in_process_bridge.rs`, following the same pattern as the existing `did_open_returns_ok_null` and `initialized_returns_ok_null` tests. These tests should verify the `Ok(Value::Null)` return-value contract for `textDocument/didChange` and `textDocument/didClose` notifications at the bridge layer. The old `valid_notification_returns_ok_null` test documented coverage for all four notification types, but after the task 1017 refactor only `initialized` and `didOpen` have explicit contract tests. The `lifecycle.rs` tests call these at the trait level (returning `()`) and don't verify the bridge-layer contract. Also use the `expect()` pattern instead of `is_ok()` + `unwrap()` in the new tests (see preferences_and_norms for this convention).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:12:11.211Z",
+        "updatedAt": "2026-04-08T21:34:38.242Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -23458,7 +23458,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:34:37.895Z",
+      "lastModified": "2026-04-08T21:34:38.242Z",
       "taskCount": 1144,
       "completedCount": 814,
       "tags": [
