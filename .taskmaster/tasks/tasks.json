@@ -23662,11 +23662,11 @@
         "description": "Replace the opaque `strict: bool` parameter in `guard_state_fingerprint()` (crates/reify-eval/src/lib.rs:278) with a self-documenting enum, e.g. `enum GuardLookup { Lenient, Strict }`, so call sites read `GuardLookup::Strict` instead of `true`.\n\nAlso add `use crate::graph::GuardedGroupInfo;` at the top-level imports (currently only imported in the test module at line 4238) and shorten the function signature from `&[crate::graph::GuardedGroupInfo]` to `&[GuardedGroupInfo]`.\n\nCall sites to update: lines ~1532, ~1829, ~2106 (all pass `false` or `true`). Existing tests at lines 4854-4912 also need updating.\n\nSource: review suggestions S1+S2 on task 1140 (esc-1140-841).\n\nmemory_hints: search \"guard_state_fingerprint\" in reify-eval, get_entity \"GuardedGroupInfo\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:57:00.620Z",
+        "updatedAt": "2026-04-08T22:05:21.787Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -23710,7 +23710,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:05:20.623Z",
+      "lastModified": "2026-04-08T22:05:21.787Z",
       "taskCount": 1157,
       "completedCount": 833,
       "tags": [
