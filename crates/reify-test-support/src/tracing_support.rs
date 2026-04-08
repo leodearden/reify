@@ -220,13 +220,10 @@ mod tests {
     /// We verify this by wrapping the real `WarnCountingSubscriber` in a thin
     /// `EventDispatchCounter` that increments `dispatch_count` each time the
     /// tracing framework calls `event()` on us.  Because the wrapper delegates
-    /// `enabled()` to the inner subscriber, `event()` is only reached when the
-    /// inner subscriber's `enabled()` returns `true`.
-    ///
-    /// Under the current `<=` filter ERROR passes `enabled()`, so
-    /// `dispatch_count` ends up as 1 and this test **fails**.
-    /// After the fix (`==`), ERROR is rejected at `enabled()` and
-    /// `dispatch_count` stays 0.
+    /// `enabled()` to the inner subscriber, the tracing dispatcher only calls
+    /// `event()` on the wrapper — and therefore on the inner — when the inner's
+    /// `enabled()` returns `true`.  Our `enabled()` accepts only WARN, so an
+    /// ERROR event is rejected at the gate and `dispatch_count` stays 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
         // ── thin wrapper ────────────────────────────────────────────────────
@@ -281,18 +278,16 @@ mod tests {
             tracing::error!("error message");
         });
 
-        // warn_count is 0 even under the current code because event() checks
-        // level == WARN before incrementing.  This assertion passes both before
-        // and after the fix.
+        // The dispatcher rejected the ERROR at enabled(), so event() was never
+        // called on either wrapper or inner, and warn_count stays 0.
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
             "ERROR must not be counted as a WARN event"
         );
 
-        // dispatch_count is 0 only when enabled() rejected the ERROR event.
-        // Under the current `<=` filter dispatch_count == 1 → this FAILS.
-        // After the fix (`==` filter) dispatch_count == 0 → this PASSES.
+        // dispatch_count is 0 because the tracing dispatcher honoured the
+        // enabled() rejection and never forwarded the ERROR event to event().
         assert_eq!(
             dispatch_count.load(Ordering::Relaxed),
             0,
