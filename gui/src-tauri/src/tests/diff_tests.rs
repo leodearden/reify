@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;
 
@@ -381,11 +379,10 @@ fn delta_to_events_warns_and_skips_on_serialization_failure() {
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
 
     // One warn should have been emitted for the NaN mesh serialization failure
-    assert_eq!(
-        warn_count.load(Ordering::Relaxed),
+    reify_test_support::assert_warn_count(
+        &warn_count,
         1,
-        "expected exactly one tracing::warn for the NaN mesh; got {}",
-        warn_count.load(Ordering::Relaxed)
+        "expected exactly one tracing::warn for the NaN mesh",
     );
 
     // The valid mesh should still produce its event
@@ -432,11 +429,10 @@ fn delta_to_events_multiple_failures_warn_for_each() {
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
 
     // Two warnings, one per failing mesh
-    assert_eq!(
-        warn_count.load(Ordering::Relaxed),
+    reify_test_support::assert_warn_count(
+        &warn_count,
         2,
-        "expected exactly two tracing::warn calls; got {}",
-        warn_count.load(Ordering::Relaxed)
+        "expected exactly two tracing::warn calls",
     );
 
     // Two serialization-error events
@@ -505,11 +501,7 @@ fn push_serialized_event_pushes_error_and_warns_on_err() {
     tracing::subscriber::with_default(subscriber, || {
         push_serialized_event(&mut events, "value-update", "value", "V.x", Err(err));
     });
-    assert_eq!(
-        warn_count.load(Ordering::Relaxed),
-        1,
-        "expected exactly 1 warn"
-    );
+    reify_test_support::assert_warn_count(&warn_count, 1, "expected exactly 1 warn");
     assert_eq!(events.len(), 1, "expected exactly one serialization-error event");
     let (name, payload) = &events[0];
     assert_eq!(name, "serialization-error");
