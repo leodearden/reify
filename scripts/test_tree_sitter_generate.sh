@@ -220,5 +220,16 @@ echo "--- Test 15: stale-age comparison uses -ge (not -gt) ---"
 assert "stale-age check uses -ge (not -gt) for MAX_WAIT_SECS comparison" \
     grep -qE '_lock_age.*-ge.*MAX_WAIT_SECS' "$GENERATE_SCRIPT"
 
+# ── Test 16: timeout path removes partial output files ────────────
+echo ""
+echo "--- Test 16: timeout path cleans up partial output files ---"
+
+# On timeout, tree-sitter generate may leave partially-written parser.c,
+# grammar.json, and node-types.json.  The timeout error path must remove
+# these files before exiting so they don't confuse subsequent runs.
+# Grep for 'rm.*parser.c' (or similar) in the timeout error block.
+assert "timeout error path removes partial output files (rm parser.c)" \
+    grep -qE 'rm[[:space:]].*parser\.c' "$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
