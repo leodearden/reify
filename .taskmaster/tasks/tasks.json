@@ -23713,15 +23713,16 @@
         "description": "Two small improvements to the `assert_ord_consistent` test helper in `crates/reify-types/src/value.rs`:\n\n1. **Symmetric check in equal branch** (line ~2454): The `expect_equal=true` branch checks `a.cmp(b) == Equal` but not `b.cmp(a) == Equal`. Add `assert_eq!(b.cmp(a), std::cmp::Ordering::Equal, ...)` so the contract validation is fully symmetric, matching the antisymmetry check already present in the `expect_equal=false` branch.\n\n2. **Float meta-test** (lines ~2476-2486): The two meta-tests only use `Value::Int`, which takes a trivial integer comparison path. Add at least one meta-test using a float-bearing variant (e.g. `Value::Real(1.0)` vs `Value::Real(2.0)`) to exercise the `to_bits`/`total_cmp` code paths that the helper was specifically created to validate.\n\nBoth are minor hardening — the downstream bit-identity tests already provide real coverage.\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T22:10:29.697Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:10:29.390Z",
+      "lastModified": "2026-04-08T22:10:29.697Z",
       "taskCount": 1158,
       "completedCount": 836,
       "tags": [
