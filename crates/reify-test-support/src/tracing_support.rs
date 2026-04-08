@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Assert that `counter` has advanced by exactly `expected_delta` since the
 /// `before` snapshot.
 ///
-/// Computes the actual delta as `counter.load(Ordering::Acquire).saturating_sub(before)`
-/// and asserts it equals `expected_delta`.  Uses `Acquire` ordering so that all
+/// Computes the actual delta as `counter.load(Ordering::Acquire) - before`,
+/// panicking first if the counter appears to have gone backwards (indicating a
+/// stale or wrong `before` snapshot).  Uses `Acquire` ordering so that all
 /// WARN event stores (which use `Release`) are visible to this load.
 ///
 /// # Parameters
@@ -22,6 +23,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 ///
 /// # Panics
 ///
+/// Panics if `before` is greater than the current counter value (backwards
+/// counter — indicates a stale or wrong `before` snapshot).
+///
 /// Panics if the actual delta differs from `expected_delta`.
 pub fn assert_warn_count_delta(
     counter: &AtomicUsize,
@@ -30,7 +34,11 @@ pub fn assert_warn_count_delta(
     context: &str,
 ) {
     let after = counter.load(Ordering::Acquire);
-    let actual_delta = after.saturating_sub(before);
+    assert!(
+        after >= before,
+        "warn counter went backwards (before={before}, after={after}): {context}"
+    );
+    let actual_delta = after - before;
     assert_eq!(
         actual_delta,
         expected_delta,
