@@ -48,7 +48,7 @@ fn deprecated_structure_used_as_sub_emits_warning() {
         structure OldBolt { param d : Real = 1.0 }
 
         structure Assembly {
-            sub b : OldBolt
+            sub b = OldBolt()
         }
     "#;
     let module = compile_module(source);
@@ -78,7 +78,7 @@ fn deprecated_structure_with_no_message_sub_emits_generic_warning() {
         structure OldPart { param w : Real = 2.0 }
 
         structure Assembly {
-            sub p : OldPart
+            sub p = OldPart()
         }
     "#;
     let module = compile_module(source);
@@ -253,8 +253,8 @@ fn multiple_uses_of_deprecated_structure_produce_multiple_warnings() {
         @deprecated("Old")
         structure OldBolt { param d : Real = 1.0 }
 
-        structure Assembly1 { sub b1 : OldBolt }
-        structure Assembly2 { sub b2 : OldBolt }
+        structure Assembly1 { sub b1 = OldBolt() }
+        structure Assembly2 { sub b2 = OldBolt() }
     "#;
     let module = compile_module(source);
     assert!(
