@@ -592,7 +592,10 @@ mod tests {
     /// deliver an ERROR event directly into the inner subscriber's `event()`.
     /// The `debug_assert_eq!` inside `event()` detects the contract violation
     /// and panics with a message containing `"enabled() contract violated"`.
+    // debug_assert_eq! is compiled out in release builds, so this test would
+    // incorrectly fail under #[should_panic] without the cfg gate.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "enabled() contract violated")]
     fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
         struct ForcedEventDispatcher<S> {
@@ -614,7 +617,11 @@ mod tests {
                 self.inner.record(span, values)
             }
 
-            fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
                 self.inner.record_follows_from(span, follows)
             }
 
