@@ -20502,7 +20502,7 @@
         "description": "Three #[ignore = \"requires task 153\"] tests in crates/reify-eval/tests/self_keyword_eval.rs match dimensioned scalars against Value::Real(f64), but the codebase stores 5mm/3mm/7mm as Value::Scalar { si_value, .. }. When these tests are un-ignored they will panic with cryptic mismatches. Task 153 is marked done but the tests remain ignored — fix the patterns first so they can be enabled cleanly.\n\nAffected tests at lines 80, 126, 173:\n- self_param_eval_produces_correct_value\n- self_in_let_arithmetic_eval\n- self_in_constraint_eval_satisfied (x-value assertion)\n\nReplace `Value::Real(t)` / `Value::Real(v)` match arms with `Value::Scalar { si_value: t, .. }` / `Value::Scalar { si_value: v, .. }`. Reference patterns: incremental.rs:1097 and occurrence_eval.rs:56 use `Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10`.\n\nAlso: change the `1e-15` tolerance check at line 92-95 to `1e-9` to match the surrounding assertions and prevent fragility from float operations in the eval path.\n\nOnce the patterns are correct, also remove the #[ignore] guards if task 153's compiler support is genuinely complete.\n\nSource: review escalations esc-154-29, esc-154-30 (auto-dismissed apr 1, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -20514,7 +20514,7 @@
             "crates/reify-eval/tests"
           ]
         },
-        "updatedAt": "2026-04-08T18:38:34.668Z"
+        "updatedAt": "2026-04-07T16:03:57.568Z"
       },
       {
         "id": "991",
@@ -22340,7 +22340,7 @@
         "description": "Re-type OptionNone values at let-binding sites so `let x: Option[T] = none` carries Type::Option(T) instead of bare OptionNone. Un-ignores qualified_access_compile_tests.rs::let_none_with_typed_annotation_gets_correct_type.",
         "details": "## Primary fix (required, ~15 lines)\n\nIn `compile_entity`'s `MemberDecl::Let` handling: after compiling the let's value expression, check whether the resulting kind is `OptionNone` and whether `let_decl.type_expr` resolves to `Type::Option(_)`. If both hold, re-create the `OptionNone` value with the resolved `cell_type` so downstream type queries (and goto-def / qualified access) see the annotated Option type rather than the bare sentinel.\n\n- Likely location: at or near the existing let-decl `cell_type` derivation inside `compile_entity`'s `MemberDecl::Let` arm.\n- Un-ignore the test: `crates/*/tests/qualified_access_compile_tests.rs::let_none_with_typed_annotation_gets_correct_type` (currently the only remaining `#[ignore]` in that file).\n- Parallel logic already exists on the param-default path — mirror its shape rather than inventing a new helper unless both sites deduplicate cleanly.\n\n## Speculative follow-ups (DO NOT fix unless a test surfaces the gap)\n\nTwo other param-default sites were identified as not covered by the original param-default fix:\n1. `compile_entity`'s nested `port_members` loop.\n2. `compile_guarded_members`.\n\nNo currently-failing test demands these. Only address them if a regression or new test exposes the gap — otherwise leave alone to avoid speculative change.\n\n## Acceptance\n\n- `let_none_with_typed_annotation_gets_correct_type` passes with `#[ignore]` removed.\n- No other tests regress.\n- Change is ~15 lines, scoped to the let-binding arm; no drive-by refactoring of the param-default path.\n\n## Memory hints\n\n- Search: \"OptionNone typed annotation let binding\" in project reify\n- Prior context: task-162 restored some/none compilation interception (commit 81d333299)\n- Related file: `crates/*/tests/qualified_access_compile_tests.rs`\n- Related symbol: `compile_entity` `MemberDecl::Let`",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -22352,7 +22352,8 @@
           "modules": [
             "crates/reify-compiler"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T18:38:33.892Z"
       },
       {
         "id": "1084",
@@ -22598,7 +22599,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T18:38:34.668Z",
+      "lastModified": "2026-04-08T18:38:33.892Z",
       "taskCount": 1098,
       "completedCount": 771,
       "tags": [
