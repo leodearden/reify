@@ -148,8 +148,11 @@ assert "MAX_WAIT_SECS is defined in the script" \
 assert "flock uses \$MAX_WAIT_SECS (not hardcoded 120)" \
     grep -q 'flock -x -w \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
 
-assert "mkdir attempt limit uses \$MAX_WAIT_SECS (not hardcoded 75)" \
-    grep -q '\-ge \$MAX_WAIT_SECS' "$GENERATE_SCRIPT"
+assert "MAX_LOCK_ATTEMPTS constant is defined in the script" \
+    grep -q '^MAX_LOCK_ATTEMPTS=' "$GENERATE_SCRIPT"
+
+assert "mkdir loop -ge comparison uses \$MAX_LOCK_ATTEMPTS (not \$MAX_WAIT_SECS)" \
+    grep -q '\-ge \$MAX_LOCK_ATTEMPTS' "$GENERATE_SCRIPT"
 
 # ── Test 10: timeout guard via portable_timeout ──────────────────
 echo ""
@@ -202,6 +205,16 @@ echo "--- Test 14: timeout check uses _PORTABLE_TIMEOUT_TIMED_OUT ---"
 
 assert "script checks _PORTABLE_TIMEOUT_TIMED_OUT alongside exit code 124" \
     grep -q '_PORTABLE_TIMEOUT_TIMED_OUT' "$GENERATE_SCRIPT"
+
+# ── Test 15: stale-age comparison uses -ge (inclusive) ───────────
+echo ""
+echo "--- Test 15: stale-age comparison uses -ge (not -gt) ---"
+
+# The stale-lock detection must use -ge so that a lock exactly MAX_WAIT_SECS
+# old is treated as stale.  Using -gt collapses the safety buffer to zero
+# when the poll loop also uses MAX_LOCK_ATTEMPTS=75 iterations.
+assert "stale-age check uses -ge (not -gt) for MAX_WAIT_SECS comparison" \
+    grep -qE '_lock_age.*-ge.*MAX_WAIT_SECS' "$GENERATE_SCRIPT"
 
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
