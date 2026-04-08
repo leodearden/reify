@@ -23697,11 +23697,11 @@
         "description": "In `gui/src-tauri/src/tests/claude_bridge_tests.rs`, the `tool_result_write_failure_emits_claude_error_event` test (around line 700) verifies the error message but does not assert that the `id` field in the emitted `claude-error` payload matches the expected tool_call id (`\"msg-fail\"`). The `id` is the primary correlation key for the frontend to associate the error with a specific tool call.\n\nAdd an assertion after the message check:\n```rust\nassert_eq!(payload[\"id\"].as_str().unwrap(), \"msg-fail\", \"error event should carry the original tool_call id\");\n```\n\nmemory_hints: search \"claude-error event test\", get_entity \"SidecarHandle\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:00:55.107Z",
+        "updatedAt": "2026-04-08T22:48:45.450Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -23943,7 +23943,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:48:44.631Z",
+      "lastModified": "2026-04-08T22:48:45.450Z",
       "taskCount": 1170,
       "completedCount": 851,
       "tags": [
