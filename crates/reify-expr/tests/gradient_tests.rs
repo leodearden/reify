@@ -3799,3 +3799,120 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
         _ => panic!("gradient should return a Field, got {:?}", grad_result),
     }
 }
+
+/// Sampling a gradient field with dimensioned-domain codomain mismatch does NOT panic.
+///
+/// This is the dimensioned-domain counterpart to `gradient_runtime_codomain_dim_mismatch_panics`.
+/// For a dimensionless domain, sampling panics in debug mode because the hard assertion
+/// fires (`domain_dim.is_none()`). For a dimensioned domain, the assertion is intentionally
+/// skipped — dimensioned lambda arithmetic produces apparent type mismatches that are not
+/// actual errors.
+///
+/// **DESIGN DECISION: dimensioned-domain mismatches are not caught by the debug assertion**
+/// The lambda return type is influenced by domain arithmetic: `Real * Scalar<LENGTH>`
+/// naturally returns `Scalar<LENGTH>` regardless of the declared codomain. A hard
+/// assertion there would produce false positives in legitimate use cases. Instead,
+/// a soft eprintln! warning is emitted (see the implementation) without blocking execution.
+///
+/// Setup:
+/// - domain_type = Type::length() = Scalar{LENGTH}
+/// - codomain_type = Type::Scalar { dimension: MASS } (declared mass)
+/// - lambda body: |x| 2*x — at runtime returns Scalar{LENGTH} (not MASS)
+/// - Sample point: Scalar{si_value: 1.0, dimension: LENGTH}
+///
+/// Expected: completes without panic; result is Scalar{≈2.0, MASS/LENGTH}.
+/// The derivative 2.0 is computed numerically from the lambda (which correctly
+/// evaluates d(2x)/dx = 2), and MASS/LENGTH comes from the declared codomain
+/// (MASS) divided by the domain dimension (LENGTH).
+#[cfg(debug_assertions)]
+#[test]
+fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH}
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        Type::length(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
+    let domain_type = Type::length();
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::MASS,
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type.clone()),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Gradient codomain is Scalar{MASS/LENGTH}
+    let grad_codomain = Type::Scalar {
+        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
+    };
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain.clone()),
+    };
+
+    // Sample at Scalar{1.0, LENGTH} — must NOT panic (unlike the dimensionless-domain case)
+    let point = Value::Scalar {
+        si_value: 1.0,
+        dimension: DimensionVector::LENGTH,
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::length()),
+        ],
+        grad_codomain,
+    );
+
+    // This must not panic (contrast: gradient_runtime_codomain_dim_mismatch_panics does panic)
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0
+    match &sample_result {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::MASS.div(&DimensionVector::LENGTH),
+                "derivative dimension should be MASS/LENGTH, got {:?}",
+                dimension
+            );
+            assert!(
+                (si_value - 2.0).abs() < 1e-4,
+                "derivative should be ≈2.0 (d/dx[2x] = 2), got {}",
+                si_value
+            );
+        }
+        _ => panic!(
+            "sample should return Scalar{{MASS/LENGTH}}, got {:?}",
+            sample_result
+        ),
+    }
+}
