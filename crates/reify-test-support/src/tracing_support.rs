@@ -290,6 +290,15 @@ struct WarnCapturingSubscriber {
 struct MessageVisitor(String);
 
 impl tracing::field::Visit for MessageVisitor {
+    /// Intercept `&str` message values and store them directly, bypassing
+    /// `record_debug`'s `{value:?}` formatting which would add surrounding
+    /// double-quotes around string literals.
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.0 = value.to_owned();
+        }
+    }
+
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.0 = format!("{value:?}");
