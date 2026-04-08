@@ -112,6 +112,65 @@ fn e2e_meta_access_multiple_keys() {
 }
 
 // ---------------------------------------------------------------------------
+// task-213: E2E — meta.key on an `occurrence def` entity
+// ---------------------------------------------------------------------------
+
+/// Full pipeline: parse source with an `occurrence def` that has a meta block
+/// and a let binding reading `meta.key`. Compile, eval, assert the let
+/// resolves to the expected string. This exercises the occurrence code path
+/// alongside the already-tested structure path, confirming meta access works
+/// uniformly across entity kinds.
+#[test]
+fn e2e_meta_access_on_occurrence() {
+    let source = r#"
+        occurrence def Welding {
+            meta {
+                method = "TIG"
+            }
+            let label : String = meta.method
+        }
+    "#;
+
+    // Parse
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    // Compile
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    // Sanity: the compiled template should be tagged as an Occurrence.
+    assert_eq!(compiled.templates.len(), 1);
+    assert_eq!(
+        compiled.templates[0].entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "expected occurrence entity kind"
+    );
+
+    // Eval
+    let checker = MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // Assert
+    let label_id = ValueCellId::new("Welding", "label");
+    assert_eq!(
+        result.values.get(&label_id),
+        Some(&Value::String("TIG".to_string())),
+        "Welding.label should resolve to 'TIG' via meta.method on an occurrence"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-17: E2E — meta.key in a constraint expression
 // ---------------------------------------------------------------------------
 
