@@ -22987,15 +22987,16 @@
         "description": "Follow-up improvements from Task 1097 review (4 suggestions grouped):\n\n1. **Fix stale doc comment (engine.rs:786-788):** The doc bullet \"Offset beyond source.len()\" still says \"silent clamping — no panic or error\", but the new `debug_assert!(offset <= source.len())` panics in debug builds. Update to: \"**Offset beyond `source.len()`**: panics in debug builds (`debug_assert`); in release builds the loop exhausts all characters and returns the position after the last character (silent clamping).\"\n\n2. **Add release-mode clamping test (engine_tests.rs):** The `#[cfg(debug_assertions)]` guard on `byte_offset_to_line_col_offset_beyond_len` means release-profile runs (`cargo test --release`) have no coverage for beyond-len behavior. Add a complementary `#[cfg(not(debug_assertions))]` test asserting `byte_offset_to_line_col(\"ab\", 100) == (1, 3)`.\n\n3. **Add mid-codepoint byte offset test (engine_tests.rs):** In `byte_offset_to_line_col_multibyte_chars`, add an assertion for offset 1 in \"αβ\\nγ\" (mid-codepoint, inside the 2-byte α). Expected: `(1, 2)` — the `char_indices` loop skips past non-boundary offsets, landing on the next codepoint. Add a comment explaining this behavior.\n\n4. **Add expected absolute coordinates to empty-span test (engine_tests.rs:1217-1265):** `get_diagnostics_empty_span_has_identical_start_end` cross-validates but never checks that the actual line/col values are correct. Compute expected line/col from `bracket_source` for the 'width' offset and assert `d.line == expected_line` and `d.column == expected_col`.\n\nmemory_hints: search(\"byte_offset_to_line_col debug_assert offset_to_line_col_fast tests\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:59:26.596Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:59:26.399Z",
+      "lastModified": "2026-04-08T20:59:26.596Z",
       "taskCount": 1120,
       "completedCount": 795,
       "tags": [
