@@ -22804,15 +22804,16 @@
         "description": "Five small improvements to portable_timeout code and tests from task 1088 review (esc-1088-777):\n\n## S1 — Fix Test 18 comment tense (test_portable_timeout.sh:343-345)\nThe comment says \"Current code unconditionally runs set +m...\" in present tense, but the patch already fixed this. Reword to past tense: \"Before this fix, the code unconditionally ran set +m...\" to make it a regression-guard comment.\n\n## S2 — Replace `&&`/`||` idiom with explicit `if` (lib_portable.sh:112, 120)\n`[ \"$_pt_had_monitor\" -eq 0 ] && set +m 2>/dev/null || true` relies on left-associative shell operator precedence. Replace with explicit `if [ ... ]; then set +m 2>/dev/null || true; fi` at both lines 112 and 120.\n\n## S3 — Add caller guidance for SIGTERM-only termination (lib_portable.sh:42-49)\nThe header documents SIGTERM-only but doesn't explain how callers should detect/handle the case where the command ignores SIGTERM. Add a brief note, e.g. \"Callers needing SIGKILL can wrap the command or check process liveness after portable_timeout returns.\"\n\n## S4 — Scope Test 17 grep to function body (test_portable_timeout.sh:335-336)\nTest 17 greps the entire file for `kill -9`/`kill -KILL`. Future functions could legitimately use SIGKILL. Scope the grep to the portable_timeout function body using `sed -n '/^portable_timeout()/,/^}/p'`.\n\n## S5 — Add Test 18b for degraded-path monitor-mode preservation (test_portable_timeout.sh)\nTest 18 only exercises the normal path (mktemp succeeds). Add a Test 18b using MKTEMP_FAIL_SETUP to verify monitor-mode preservation on the degraded path (mktemp fails, lines 116-120).\n\n## Verification\nRun `tests/infra/test_portable_timeout.sh` and `scripts/test_tree_sitter_generate.sh`.\n\nMemory hints: search \"portable_timeout POSIX fallback\" and \"task 1088 robustness hardening\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:44:11.109Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:44:10.204Z",
+      "lastModified": "2026-04-08T20:44:11.109Z",
       "taskCount": 1111,
       "completedCount": 781,
       "tags": [
