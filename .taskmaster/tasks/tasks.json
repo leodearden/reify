@@ -3823,7 +3823,7 @@
         "dependencies": [
           "212"
         ],
-        "status": "in-progress",
+        "status": "blocked",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -3833,7 +3833,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:13.115Z"
+        "updatedAt": "2026-04-08T10:28:50.366Z"
       },
       {
         "id": "214",
@@ -21371,7 +21371,13 @@
         "metadata": {
           "modules": [
             "gui/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix vacuous assertion and add missing boundary/edge-case tests for gotoDefinition"
+            ]
+          }
         }
       },
       {
@@ -21682,7 +21688,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:27:20.672Z",
+      "lastModified": "2026-04-08T10:28:50.368Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
