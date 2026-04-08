@@ -21966,11 +21966,11 @@
         "description": "Follow-up from Task 1001 review triage (esc-1001-81). Three related cleanups in gui/src-tauri/src/tests/lsp_bridge_tests.rs, all in the block lines 192-233:\n\n## (1) Rename `lsp_request_impl_accepts_valid_json_null_literal` (S1)\nThe current name suggests the call succeeds (Ok), but after Task 1001 the body asserts `result.unwrap_err()` must succeed — i.e. the call must return Err. The invariant actually being checked is narrower: 'null' passes the JSON parse step, even if the downstream LSP handler rejects it.\n\nRename to `lsp_request_impl_null_literal_passes_json_parse_step` (or similar) and update the body comment accordingly. Source: reviewer_comprehensive S1.\n\n## (2) Pin the initialize-handler contract comment (S2)\n`unwrap_err()` at line 214 couples the test to the current behavior of the `initialize` LSP handler (that it rejects null params). If the handler is later changed to accept null params, the test will fail via `unwrap_err` panic even though the JSON-parsing behavior being tested is still correct.\n\nAdd an explicit assertion comment pinning \"initialize rejects null params\" as part of the contract being tested, and reference the handler code location. This documents the coupling rather than hiding it. Source: reviewer_comprehensive S2 option (b).\n\n## (3) Parameterize the malformed-JSON cases (S5)\n`lsp_request_impl_rejects_empty_string_params` (lines 221-233) is functionally a subset of `lsp_request_impl_rejects_malformed_json_params` (line 193) — both exercise the `serde_json::from_str(&params).map_err(...)` branch and assert the `invalid JSON params` prefix.\n\nParameterize the malformed-JSON test with a table like `[\"not json\", \"\", \"{\", \"\\\"unterminated\"]` to cover multiple edge cases in one place, replacing the two separate tests. Source: reviewer_comprehensive S5.\n\n## Verification\nRun `cargo test -p <gui-tauri-crate> lsp_request_impl` to confirm all parameterized cases pass.\n\nSource escalation: esc-1001-81.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:38:09.797Z",
+        "updatedAt": "2026-04-08T17:00:21.683Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:20.022Z",
+      "lastModified": "2026-04-08T17:00:21.683Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
