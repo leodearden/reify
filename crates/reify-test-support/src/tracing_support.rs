@@ -903,4 +903,32 @@ mod tests {
 
         capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
     }
+
+    /// When the `message` field is a `&str` (e.g. `tracing::warn!(message =
+    /// "literal")`), the captured text must equal the raw string exactly —
+    /// without the surrounding double-quotes that `{value:?}` (Debug) would
+    /// add for a `&str`.
+    ///
+    /// This is the failing test for the `record_str` fix: before the override
+    /// is added, `record_str`'s default falls back to `record_debug`, which
+    /// formats `&str` with `{:?}` and produces `"literal"` (with quotes) rather
+    /// than `literal`.
+    #[test]
+    fn warn_capturing_str_field_has_no_debug_quotes() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(message = "direct string value");
+        });
+
+        let msgs = capture.messages();
+        assert_eq!(msgs.len(), 1, "should capture exactly one message");
+        assert_eq!(
+            msgs[0], "direct string value",
+            "captured message must be the raw string without Debug quotes; got: {:?}",
+            msgs[0]
+        );
+    }
 }
