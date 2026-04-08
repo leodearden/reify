@@ -4046,6 +4046,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn orient_per_component_diagnostic_x() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.5, // wrong x
+                0.0,
+                0.0
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("x:"),
+            "expected panic message to contain 'x:', got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn orient_per_component_diagnostic_y() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.0,
+                0.5, // wrong y
+                0.0
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("y:"),
+            "expected panic message to contain 'y:', got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn orient_per_component_diagnostic_z() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.0,
+                0.0,
+                0.5 // wrong z
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("z:"),
+            "expected panic message to contain 'z:', got: {msg:?}"
+        );
+    }
+
     // ── assert_orientation_approx_sign_insensitive tests ────────────────────
 
     #[test]
