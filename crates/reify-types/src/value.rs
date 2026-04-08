@@ -2172,7 +2172,7 @@ mod tests {
     #[test]
     fn value_ord_real_nan_and_neg_zero_still_consistent() {
         // Ord-only consistency checks for NaN and negative zero.
-        // PartialEq NaN coverage lives in value_ord_real_nan_total_order.
+        // PartialEq NaN coverage lives in nan_partialeq_bit_identity.
 
         // NaN: total_cmp() places NaN after +Infinity, giving it a defined position.
         let nan = Value::Real(f64::NAN);
