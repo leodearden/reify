@@ -774,8 +774,10 @@ fn compute_numerical_gradient_at_point(
     };
 
     // Take ownership of coords — no clone needed.
-    // work_coords[i] is guaranteed to equal the original coords[i] at each
-    // axis-loop start because Fix 3 uses exact restore (work_coords[i] = coord_i).
+    // work_coords[i] equals the original coords[i] bit-for-bit at the start of
+    // every axis iteration: at the bottom of the loop, work_coords[i] is restored
+    // via direct assignment (`work_coords[i] = coord_i`), which is an exact
+    // bit-identical restore of the value captured at the top of the iteration.
     let mut work_coords = coords;
     // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
     let args_capacity = if single_point_param { 1 } else { n };
@@ -794,8 +796,12 @@ fn compute_numerical_gradient_at_point(
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
-        // Read from work_coords (not the dropped coords) — safe because
-        // Fix 3 guarantees work_coords[i] equals the original at loop start.
+        // Read from work_coords — the original coords Vec was taken by ownership
+        // above and is no longer accessible.  work_coords[i] holds the original
+        // value bit-for-bit at this point: on the first iteration it comes
+        // directly from the caller; on subsequent iterations the bottom of the
+        // loop restores it via `work_coords[i] = coord_i` (direct assignment,
+        // not arithmetic, so no ULP drift).
         let coord_i = work_coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
