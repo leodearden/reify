@@ -163,3 +163,37 @@ fn known_module_pragma_no_warning() {
         warns
     );
 }
+
+// ── Step 7: entity-level pragmas propagated to TopologyTemplate ───────────────
+
+/// Block-level pragma on a structure body is propagated to TopologyTemplate.pragmas.
+#[test]
+fn structure_pragma_propagated_to_topology_template() {
+    let module = compile_module(
+        r#"structure S { #solver(backend="ipopt") param x : Real }"#,
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(module.templates.len(), 1, "expected 1 template");
+    let template = &module.templates[0];
+    assert_eq!(
+        template.pragmas.len(),
+        1,
+        "expected 1 pragma on template, got {}: {:?}",
+        template.pragmas.len(),
+        template.pragmas
+    );
+    let solver = &template.pragmas[0];
+    assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
+    assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
+    match &solver.args[0] {
+        reify_syntax::PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "backend");
+            assert_eq!(value, &reify_syntax::PragmaValue::String("ipopt".to_string()));
+        }
+        other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
+    }
+}
