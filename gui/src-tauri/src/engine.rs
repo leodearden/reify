@@ -783,9 +783,11 @@ pub(crate) fn offset_to_line_col_fast(
 ///
 /// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
 ///   body never executes.
-/// - **Offset beyond `source.len()`**: the loop exhausts all characters
-///   without reaching the break condition and returns the position *after* the
-///   last character (silent clamping — no panic or error).
+/// - **Offset beyond `source.len()`**: panics in debug builds via
+///   `debug_assert!(offset <= source.len())`; in release builds the
+///   `debug_assert` is a no-op, so the loop exhausts all characters without
+///   reaching the break condition and returns the position *after* the last
+///   character (silent clamping).
 /// - **Empty spans** (`start == end`): calling this function twice with the
 ///   same offset produces identical `(line, col)` coordinates, as expected for
 ///   zero-length diagnostic spans.
