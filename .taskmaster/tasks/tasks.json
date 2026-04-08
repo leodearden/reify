@@ -22934,17 +22934,18 @@
         "description": "Improve the `content_hash_tags_are_unique_across_variants` test and tag documentation in `crates/reify-types/src/value.rs` with three enhancements from the Task 1094 review.",
         "details": "Three related improvements to the content_hash tag system in value.rs:\n\n1. **Tag registry comment** (S1): Add a comment block or companion constant array at the top of the `content_hash()` method that enumerates all assigned tag bytes (0=Bool, 1=Int, 2=Real, 3=String, 4=Scalar, 5=Undef, 6=Enum, 7=List, 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field, 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector, 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix). This makes it easy for future contributors to see what's taken and avoid accidental reuse.\n\n2. **Cross-type Satisfaction coverage** (S2): Extend the `content_hash_tags_are_unique_across_variants` test to also include `Satisfaction::Satisfied`, `Satisfaction::Violated`, and `Satisfaction::Indeterminate` hashes in the `seen` set before iterating Value variants. Satisfaction uses tag 10 in the shared namespace; the existing test only checks Value variants.\n\n3. **Better collision error messages** (S3): Replace the `HashSet<ContentHash>` with a `HashMap<ContentHash, &str>` so the assertion can report both colliding variant names: `\"content_hash collision: Value::{name} collides with Value::{previous_name}\"`. Currently only the second variant name is reported.\n\nmemory_hints: search \"content hash tag collision Point Matrix value.rs\"; get_entity \"ContentHash\"",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1094"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:54:35.257Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:54:33.913Z",
+      "lastModified": "2026-04-08T20:54:35.259Z",
       "taskCount": 1117,
       "completedCount": 790,
       "tags": [
