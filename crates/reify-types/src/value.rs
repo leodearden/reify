@@ -318,6 +318,11 @@ impl Value {
     /// See `nan_payload_hash_equality_invariant_exception` for the invariant
     /// exception test.
     pub fn content_hash(&self) -> ContentHash {
+        // Content-hash tag registry (first byte of every ContentHash payload):
+        // 0=Bool, 1=Int, 2=Real, 3=String, 4=Scalar, 5=Undef, 6=Enum, 7=List,
+        // 8=Set, 9=Map, 10=Satisfaction(reserved), 11=Option, 12=Lambda, 13=Field,
+        // 14=Tensor, 15=Complex, 16=Orientation, 17=Range, 18=Point, 19=Vector,
+        // 20=Frame, 21=Transform, 22=Plane, 23=Axis, 24=BoundingBox, 25=Matrix
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
             Value::Int(i) => {
