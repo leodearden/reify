@@ -22221,15 +22221,16 @@
         "description": "In hooks/project-checks line 52, the GUI typecheck step uses `npx tsc --noEmit` directly, while orchestrator.yaml line 15 (lint_command) uses `npm run typecheck`. Both are semantically equivalent today, but if the `typecheck` script in gui/package.json is ever updated (e.g. stricter flags, additional checks), the two paths would diverge silently.\n\nFix: Change hooks/project-checks line 52 from `npx tsc --noEmit` to `npm run typecheck` for consistency.\n\nmemory_hints: search \"hooks project-checks typecheck consistency\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T12:08:58.634Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T12:08:55.287Z",
+      "lastModified": "2026-04-08T12:08:58.634Z",
       "taskCount": 1080,
       "completedCount": 753,
       "tags": [
