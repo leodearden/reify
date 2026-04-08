@@ -46,7 +46,6 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_param_resolves_to_value_ref() {
     // `self.x` inside a structure should resolve to the same value cell as `x`.
     let source = r#"structure S {
@@ -361,7 +360,6 @@ fn self_error_at_module_scope() {
 // ─── step-11: self.param equivalence with bare param ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
     let source = r#"structure S {
