@@ -5270,7 +5270,7 @@
         "testStrategy": "Parser tests: module-level pragma, block-level, with arguments.",
         "priority": "high",
         "dependencies": [],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-syntax"
@@ -5278,7 +5278,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T23:02:36.906Z"
+        "updatedAt": "2026-04-08T13:55:10.368Z"
       },
       {
         "id": "279",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:09.836Z",
+      "lastModified": "2026-04-08T13:55:10.368Z",
       "taskCount": 1082,
-      "completedCount": 753,
+      "completedCount": 752,
       "tags": [
         "master"
       ]
