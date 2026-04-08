@@ -2225,8 +2225,6 @@ mod poison_recovery_extended {
 #[cfg(feature = "test-utils")]
 mod poison_shared_fallback {
     use super::*;
-    use reify_test_support::tracing_support::warn_counting_subscriber;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     // -----------------------------------------------------------------------
     // values shared-fallback
@@ -2236,7 +2234,8 @@ mod poison_shared_fallback {
     /// poisoned values lock via the shared-fallback (Err(arc) → read()) path.
     ///
     /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 215-221 of concurrent_eval.rs.
+    /// exercising the shared-fallback branch in concurrent_eval.rs.
+    /// Message must contain "values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_values() {
         let setup = simple_setup();
@@ -2245,26 +2244,18 @@ mod poison_shared_fallback {
 
         // Hold a second Arc reference — try_unwrap will return Err(arc)
         let _guard = adapter.values_arc();
-
-        // Poison the values lock
         adapter.poison_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count, 1,
-            "into_result() shared-fallback (values) should emit exactly 1 tracing::warn!, got {count}"
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "values RwLock poisoned (shared fallback)",
         );
     }
 
     /// Verify that into_result() does not panic and returns usable data when
     /// recovering from a poisoned values lock via the shared-fallback path.
+    /// Verifies T.a = Real(10.0) from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_values() {
         let setup = simple_setup();
@@ -2273,16 +2264,17 @@ mod poison_shared_fallback {
 
         // Hold a second Arc reference — try_unwrap will return Err(arc)
         let _guard = adapter.values_arc();
-
         adapter.poison_values();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned values lock (shared fallback), not panic"
+        let edit_result = assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "values RwLock poisoned (shared fallback)",
+        );
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after shared-fallback values poison recovery"
         );
     }
 
@@ -2293,8 +2285,8 @@ mod poison_shared_fallback {
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
     /// poisoned snapshot_values lock via the shared-fallback (Err(arc) → read()) path.
     ///
-    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 228-236 of concurrent_eval.rs.
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
+    /// Message must contain "snapshot_values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_snapshot_values() {
         let setup = simple_setup();
@@ -2302,25 +2294,18 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         let _guard = adapter.snapshot_values_arc();
-
         adapter.poison_snapshot_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count, 1,
-            "into_result() shared-fallback (snapshot_values) should emit exactly 1 tracing::warn!, got {count}"
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "snapshot_values RwLock poisoned (shared fallback)",
         );
     }
 
     /// Verify that into_result() does not panic and returns usable data when
     /// recovering from a poisoned snapshot_values lock via the shared-fallback path.
+    /// Verifies T.a and T.b tuples from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_snapshot_values() {
         let setup = simple_setup();
@@ -2328,16 +2313,22 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         let _guard = adapter.snapshot_values_arc();
-
         adapter.poison_snapshot_values();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned snapshot_values lock (shared fallback), not panic"
+        let edit_result = assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "snapshot_values RwLock poisoned (shared fallback)",
+        );
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after shared-fallback poison recovery"
+        );
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (Real(10.0), Determined) after shared-fallback poison recovery"
         );
     }
 
@@ -2348,8 +2339,8 @@ mod poison_shared_fallback {
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
     /// poisoned results lock via the shared-fallback (Err(arc) → lock()) path.
     ///
-    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 243-249 of concurrent_eval.rs.
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
+    /// Message must contain "results Mutex poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_results() {
         let setup = simple_setup();
@@ -2357,20 +2348,12 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         let _guard = adapter.results_arc();
-
         adapter.poison_results();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count, 1,
-            "into_result() shared-fallback (results) should emit exactly 1 tracing::warn!, got {count}"
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "results Mutex poisoned (shared fallback)",
         );
     }
 
@@ -2384,18 +2367,13 @@ mod poison_shared_fallback {
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
         let _guard = adapter.results_arc();
-
         adapter.poison_results();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned results lock (shared fallback), not panic"
+        let edit_result = assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            "results Mutex poisoned (shared fallback)",
         );
-        let edit_result = result.unwrap();
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after shared-fallback poison recovery"
