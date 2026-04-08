@@ -476,3 +476,50 @@ async fn shutdown_returns_ok_null() {
         "shutdown should return exactly Ok(Value::Null)"
     );
 }
+
+/// Each `error_prefix` constant must actually appear in the error message
+/// returned when the corresponding method receives malformed params.
+///
+/// This test serves as a compile-time anchor: if a format-string prefix in
+/// bridge.rs is renamed, the constant definition must be updated too —
+/// otherwise this test will fail at runtime, catching the drift immediately.
+#[tokio::test]
+async fn error_prefix_constants_match_actual_errors() {
+    use reify_lsp::bridge::error_prefix;
+
+    let lsp = InProcessLsp::new();
+
+    // Verify each constant is contained in the error for its matching method.
+    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        .await;
+    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+        .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didOpen",
+        error_prefix::DID_OPEN_PARAMS,
+    )
+    .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didChange",
+        error_prefix::DID_CHANGE_PARAMS,
+    )
+    .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didClose",
+        error_prefix::DID_CLOSE_PARAMS,
+    )
+    .await;
+
+    // The unsupported-method constant covers the prefix portion of the error.
+    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
+    assert!(result.is_err(), "unsupported method should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains(error_prefix::UNSUPPORTED_METHOD),
+        "error should contain '{}', got: {err}",
+        error_prefix::UNSUPPORTED_METHOD
+    );
+}
