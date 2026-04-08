@@ -21669,7 +21669,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/gotoDefinition.test.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       }
     ],
     "metadata": {
