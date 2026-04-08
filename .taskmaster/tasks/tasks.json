@@ -4974,7 +4974,7 @@
         "dependencies": [
           "264"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -4983,7 +4983,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:08.830Z"
+        "updatedAt": "2026-04-08T17:40:46.155Z"
       },
       {
         "id": "266",
@@ -4995,7 +4995,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5009,7 +5009,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:09.533Z"
+        "updatedAt": "2026-04-08T17:40:46.261Z"
       },
       {
         "id": "267",
@@ -5270,7 +5270,7 @@
         "testStrategy": "Parser tests: module-level pragma, block-level, with arguments.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-syntax",
@@ -5280,7 +5280,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:19:01.637Z"
+        "updatedAt": "2026-04-08T17:40:46.325Z"
       },
       {
         "id": "279",
@@ -5313,7 +5313,7 @@
         "dependencies": [
           "279"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-syntax",
@@ -5323,7 +5323,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:37.507Z"
+        "updatedAt": "2026-04-08T17:40:46.397Z"
       },
       {
         "id": "281",
@@ -6082,7 +6082,7 @@
           "301",
           "302"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6090,7 +6090,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:38.532Z"
+        "updatedAt": "2026-04-08T17:40:46.447Z"
       },
       {
         "id": "314",
@@ -6844,7 +6844,7 @@
           "317",
           "319"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -6853,7 +6853,7 @@
         },
         "subtasks": [],
         "details": "Two tests: (1) dimensional — 10-step unit chains, sqrt(area)→length round-trips, complex engineering formulas; (2) query_consistency — Pappus theorem, sphere V=4/3πr³, centroid symmetry, contains(solid, centroid(solid))=true.",
-        "updatedAt": "2026-04-08T13:55:39.308Z"
+        "updatedAt": "2026-04-08T17:40:46.503Z"
       },
       {
         "id": "347",
@@ -22568,9 +22568,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:40:40.908Z",
+      "lastModified": "2026-04-08T17:40:46.504Z",
       "taskCount": 1096,
-      "completedCount": 762,
+      "completedCount": 768,
       "tags": [
         "master"
       ]
