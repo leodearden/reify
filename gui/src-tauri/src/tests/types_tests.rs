@@ -610,27 +610,3 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     let msg = err.to_string();
     assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
 }
-
-#[test]
-fn serialize_finite_f32_vec_partial_output_not_observable_on_error() {
-    // Documents the safety guarantee for `serde_json::to_value` callers:
-    // The single-pass loop begins the JSON sequence *before* validating all
-    // elements, so earlier elements (1.0, 2.0) are written to the serializer's
-    // internal state before the NAN is detected.  However, `to_value` builds an
-    // in-memory `serde_json::Value` — on `Err`, the partial Value is simply
-    // dropped and never returned to the caller.  No partial output is observable.
-    let mesh = MeshData {
-        entity_path: "test".to_string(),
-        vertices: vec![1.0, 2.0, f32::NAN],
-        indices: vec![],
-        normals: None,
-    };
-    // The error must be returned — the caller sees no partial output.
-    let result = serde_json::to_value(&mesh);
-    assert!(result.is_err(), "expected Err but got Ok");
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
-    // Specifically: no partial vertex array is accessible; the caller receives
-    // only the error.  This is safe because to_value is the sole caller path
-    // (via delta_to_events / diff.rs) — see the `# Note` in types.rs.
-}
