@@ -55,6 +55,10 @@ const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json
 /// Used by source-level regression tests that read this file's own contents.
 const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs");
 
+/// Absolute path to build.rs, resolved at compile time via CARGO_MANIFEST_DIR.
+/// Used by source-level regression tests that read the build script's contents.
+const BUILD_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs");
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
@@ -224,7 +228,7 @@ fn test_all_three_outputs_verified() {
 #[test]
 fn test_no_redundant_rerun_if_changed() {
     // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(BUILD_RS)
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
     assert!(
         !build_rs.contains("rerun-if-changed=src/parser.c"),
@@ -326,7 +330,7 @@ fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), S
 fn test_try_wait_error_path_kills_child() {
     // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
     // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(BUILD_RS)
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
     // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
@@ -460,7 +464,7 @@ fn test_out_dir_no_silent_fallback() {
     // Source-level regression guard: build.rs must NOT silently fall back to "." when
     // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
     // means something is fundamentally wrong — we should panic, not pollute the source tree.
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(BUILD_RS)
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
     // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
@@ -1248,5 +1252,49 @@ fn test_drop_logs_error_check_is_form_agnostic() {
          Add a comment to the function body using that exact phrase. \
          Function body:\n{}",
         drop_logs_body
+    );
+}
+
+#[test]
+fn test_build_rs_reads_use_manifest_dir() {
+    // Meta-test / regression guard: each source-inspection test that reads build.rs
+    // must use the `BUILD_RS` constant rather than the bare relative path
+    // `read_to_string("build.rs")`.
+    // A bare relative path is fragile — it depends on the working directory from which
+    // `cargo test` is invoked, causing failures when tests are run from outside the
+    // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
+    //
+    // BUILD_RS resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
+    // so it is safe regardless of invocation directory.
+    //
+    // Note: this meta-test's own source references use escaped quotes
+    // (\"build.rs\") in the literal pattern definition below, so it does not
+    // self-match when scanning for the unescaped bare pattern.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let bare_pattern = "read_to_string(\"build.rs\")";
+
+    let violations: Vec<(usize, &str)> = source
+        .lines()
+        .enumerate()
+        .filter(|(_i, line)| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("//") && line.contains(bare_pattern)
+        })
+        .map(|(i, line)| (i + 1, line))
+        .collect();
+
+    assert!(
+        violations.is_empty(),
+        "Found {} bare read_to_string(\"build.rs\") call(s) on non-comment lines. \
+         Use the BUILD_RS constant instead (defined via CARGO_MANIFEST_DIR). \
+         Violations:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
