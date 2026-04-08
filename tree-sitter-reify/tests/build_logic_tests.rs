@@ -1230,4 +1230,14 @@ fn test_drop_logs_error_check_is_form_agnostic() {
          Any equivalent error-handling form is acceptable. Function body:\n{}",
         drop_logs_body
     );
+
+    assert!(
+        drop_logs_body.contains("semantic (not syntactic)"),
+        "test_readonly_guard_drop_logs_error must contain a design-decision comment \
+         with the phrase 'semantic (not syntactic)' explaining why only semantic invariants \
+         are enforced (no silent discard + must log), not syntactic form. \
+         Add a comment to the function body using that exact phrase. \
+         Function body:\n{}",
+        drop_logs_body
+    );
 }
