@@ -23270,7 +23270,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/diff.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
+        }
       },
       {
         "id": 1134,
@@ -23281,7 +23289,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/claude_bridge.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src"
+          ]
+        }
       },
       {
         "id": 1135,
