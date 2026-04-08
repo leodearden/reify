@@ -29,20 +29,21 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 #   2. strip the leading 'grep -qE '' prefix
 #   3. strip the trailing '' "$filename"' suffix
 #   4. replace the shell variable reference (e.g. '"${ref_fn}"') with 'sanitize_value'
-EXTRACTED_PATTERN=$(
+# If extraction fails (empty result) we exit early with a diagnostic so the
+# cause is visible rather than producing cryptic fixture failures.
+PATTERN=$(
     grep 'grep -qE' "$SYNC_TEST" | \
     grep -F '[[:space:](]' | \
     head -1 | \
     sed "s/^[[:space:]]*grep -qE '//; s/'[[:space:]]*\"[^\"]*\"[[:space:]]*$//; s/'\"[^\"]*\"'/sanitize_value/"
 )
+if [ -z "$PATTERN" ]; then
+    echo "ERROR: could not extract fn-existence regex from $SYNC_TEST" >&2
+    echo "       Expected a 'grep -qE' line containing '[[:space:](]'" >&2
+    exit 1
+fi
 assert "pattern extraction from sync_comments_test.sh succeeded" \
-    test -n "$EXTRACTED_PATTERN"
-
-# The POSIX-portable fn-existence regex with a concrete name substituted in.
-# This mirrors what grep evaluates in sync_comments_test.sh after variable
-# expansion of ${_expr_ref_fn} / ${_stdlib_ref_fn}.
-# TODO(step-4): replace with PATTERN="$EXTRACTED_PATTERN"
-PATTERN='^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+sanitize_value[[:space:](]'
+    test -n "$PATTERN"
 
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
