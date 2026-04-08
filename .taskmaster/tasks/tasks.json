@@ -23789,7 +23789,7 @@
         "description": "Refactor `open_bracket_doc_params()` in `crates/reify-lsp/tests/in_process_bridge.rs` into a parameterized helper `open_doc_params(uri: &str, text: &str) -> serde_json::Value`, and have `open_bracket_doc_params()` delegate to it with the default bracket-source values.\n\nCurrently the helper (lines 67-82) hard-codes `uri`, `languageId`, `version`, and `text`. The three remaining inline didOpen blocks (for doc-comment source, syntax-error source, and malformed params tests) cannot use it because they need different `text` values. A parameterized version would cover more call sites and further reduce duplication.\n\nSource: review suggestion S2 from reviewer_comprehensive on task 1056 (esc-1056-870).\n\nMemory hints: search for \"open_bracket_doc_params\" and \"in_process_bridge test helpers\" for context on the original extraction in task 1017.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23800,7 +23800,8 @@
           "modules": [
             "crates/reify-lsp/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T23:25:33.065Z"
       },
       {
         "id": "1163",
@@ -24130,7 +24131,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:25:32.090Z",
+      "lastModified": "2026-04-08T23:25:33.065Z",
       "taskCount": 1182,
       "completedCount": 867,
       "tags": [
