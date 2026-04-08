@@ -410,6 +410,34 @@ async fn initialized_with_malformed_params_returns_error() {
     );
 }
 
+/// LSP clients (e.g. some VS Code extensions, Neovim) may send `params: null` for
+/// notifications with no meaningful payload. `InitializedParams` is an empty interface
+/// (`{}` in the LSP spec), so `null` should be treated as equivalent to `{}`.
+///
+/// This test documents that `initialized` with `Value::Null` returns `Ok(Value::Null)`
+/// rather than a deserialization error.
+#[tokio::test]
+async fn initialized_with_null_params_returns_ok() {
+    let lsp = initialized_lsp().await;
+
+    // Value::Null simulates a JSON-RPC client that omits params or sends null
+    // for a notification with no meaningful payload.
+    let result = lsp
+        .handle_request("initialized", serde_json::Value::Null)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "initialized with null params should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "initialized with null params should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Malformed params for `textDocument/didChange` should return an Err
 /// containing "didChange params error".
 ///
