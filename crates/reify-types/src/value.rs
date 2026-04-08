@@ -329,7 +329,8 @@ impl Value {
             Value::Real(r) => {
                 let mut buf = [0u8; 9];
                 buf[0] = 2;
-                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                // Canonicalize NaN → collapses payload differences (see method doc for
+                // invariant exception). Preserve -0.0 (PartialEq uses to_bits).
                 let bits = if r.is_nan() {
                     f64::NAN.to_bits() // canonical NaN
                 } else {
@@ -343,7 +344,8 @@ impl Value {
                 si_value,
                 dimension,
             } => {
-                // Canonicalize NaN but preserve -0.0 (PartialEq uses to_bits)
+                // Canonicalize NaN → collapses payload differences (see method doc for
+                // invariant exception). Preserve -0.0 (PartialEq uses to_bits).
                 let bits = if si_value.is_nan() {
                     f64::NAN.to_bits()
                 } else {
@@ -442,7 +444,8 @@ impl Value {
                 h
             }
             Value::Complex { re, im, dimension } => {
-                // tag=15; NaN canonicalization for both re and im; combine with dimension hash
+                // tag=15; NaN canonicalization for both re and im → collapses payload differences
+                // (see method doc for invariant exception); combine with dimension hash
                 let re_bits = if re.is_nan() {
                     f64::NAN.to_bits()
                 } else {
@@ -460,7 +463,8 @@ impl Value {
                 ContentHash::of(&buf).combine(dimension.content_hash())
             }
             Value::Orientation { w, x, y, z } => {
-                // tag=16; NaN canonicalization for all 4 components
+                // tag=16; NaN canonicalization for all 4 components → collapses payload
+                // differences (see method doc for invariant exception)
                 let canon = |v: &f64| -> u64 {
                     if v.is_nan() {
                         f64::NAN.to_bits()
