@@ -23612,6 +23612,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1154,
+        "title": "Relax grep patterns in sync_comments_test structural checks",
+        "description": "In tests/infra/test_test_helpers.sh, two structural-check grep patterns are unnecessarily brittle:\n\n1. Line 263: `'^assert_sync_ref_exists\\(\\)'` requires no whitespace before parens. Relax to `'^assert_sync_ref_exists\\s*\\(\\)'` to tolerate `assert_sync_ref_exists ()` (valid bash syntax).\n\n2. Line 270: `grep -Fq 'if [ -n \"$_'` only catches underscore-prefixed variables. Broaden to `grep -E 'if \\[ -n.*ref' \"$SYNC_FILE\"` (or similar) to catch guards using any variable name referencing ref_fn.\n\nBoth are minor fragility improvements to existing structural checks.\n\nmemory_hints: search(\"test_test_helpers structural checks sync_comments_test\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23624,7 +23635,7 @@
       ],
       "created": "2026-04-08T21:49:35.536Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:49:43.299Z"
+      "updated": "2026-04-08T21:49:48.343Z"
     }
   }
 }
