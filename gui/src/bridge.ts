@@ -15,6 +15,7 @@ import type {
   EvaluationStatus,
   SourceLocation,
   FileData,
+  SerializationError,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -377,6 +378,15 @@ export async function onConstraintRemoved(
   callback: (nodeId: string) => void,
 ): Promise<UnlistenFn> {
   return listen<string>('constraint-removed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/** Subscribe to serialization error events. */
+export async function onSerializationError(
+  callback: (data: SerializationError) => void,
+): Promise<UnlistenFn> {
+  return listen<SerializationError>('serialization-error', (event) => {
     callback(event.payload);
   });
 }
