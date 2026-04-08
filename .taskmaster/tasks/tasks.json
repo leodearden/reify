@@ -10396,7 +10396,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10417,7 +10417,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-07T16:20:20.734Z"
+        "updatedAt": "2026-04-08T10:22:26.169Z"
       },
       {
         "id": "508",
@@ -20751,7 +20751,7 @@
         "description": "Three small test-strengthening tasks bundled (low individual cost):\n\n## (1) type_alias_tests: assert documented invariant for empty-RHS recovery\ncrates/reify-syntax/tests/type_alias_tests.rs:parse_type_alias_empty_rhs_no_panic comment explicitly states `errors` is expected to be empty (Tree-sitter silent recovery), but never asserts it. A future grammar change emitting parse errors for `type Foo =` would go undetected.\n\nImmediately after capturing errors, add:\n```rust\nassert!(errors.is_empty(), \"expected no parse errors for empty-RHS recovery, got: {errors:?}\");\n```\n\nSource: esc-758-40.\n\n## (2) deferred() helper: missing reject() argument coverage\ngui/src/__tests__/test-utils.test.ts: deferred<T>().reject takes `reason?: unknown`. Current coverage only tests reject(new Error(...)). Edge cases like reject() with no argument and reject('string') are unverified.\n\nAdd tests for:\n- d.reject() with no argument → `await expect(d.promise).rejects.toBeUndefined()`\n- d.reject('string reason') → rejects with the string primitive\n\nSource: esc-813-19 / esc-813-23.\n\n## (3) lsp_request_impl null-params test: avoid vacuously-passing if-let\ngui/src-tauri/src/tests/lsp_bridge_tests.rs:lsp_request_impl_accepts_valid_json_null_literal wraps its body in `if let Err(ref e) = result { ... }`. If result is Ok(_), zero assertions execute and the test passes silently.\n\nMake the assertion unconditional:\n```rust\nlet err = result.unwrap_err();\nassert!(!err.contains(\"invalid JSON params\"), \"null literal should not trigger a JSON parse error, got: {err}\");\n```\n\nAdd a test case for `\"\"` (empty string params, a realistic accidental input).\n\nSource: esc-869-84.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20767,7 +20767,7 @@
             "gui/src-tauri/src/tests"
           ]
         },
-        "updatedAt": "2026-04-07T16:03:57.635Z"
+        "updatedAt": "2026-04-08T10:22:22.475Z"
       },
       {
         "id": "1002",
@@ -21682,7 +21682,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:22:21.362Z",
+      "lastModified": "2026-04-08T10:22:26.169Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
