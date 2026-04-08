@@ -1230,6 +1230,30 @@ fn byte_offset_to_line_col_empty_span_identical_coords() {
     assert_eq!(start_coord, (2, 1));
 }
 
+#[test]
+fn byte_offset_to_line_col_multibyte_chars() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source: "αβ\nγ"
+    // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
+    // β = U+03B2, 2 bytes (UTF-8: 0xCE 0xB2), byte offset 2
+    // \n              ,  byte offset 4
+    // γ = U+03B3, 2 bytes (UTF-8: 0xCE 0xB3), byte offset 5
+    //
+    // Columns must be codepoint-based (1, 2, 3), not byte-based (1, 3, 5).
+    let source = "αβ\nγ";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+
+    // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
+    assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
+    // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
+    assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
+    // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+}
+
 // --- Task 837: offset_to_line_col_fast unit tests ---
 
 /// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
