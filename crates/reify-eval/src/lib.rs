@@ -1791,10 +1791,13 @@ impl Engine {
                 // representation of an undetermined guard state during initial evaluation.
                 // Compare with Sites 2 and 3 in edit_param(), which use expect() because the
                 // invariant is stronger there (eval() has already completed and populated all cells).
+                //
+                // Format unified with Sites 2 and 3: "guard:{}={:?}" includes the guard_cell ID
+                // to disambiguate cells (two guards holding the same value produce different hashes).
                 let guard_state_hash = {
                     let hashes = graph.guarded_groups.iter().map(|g| {
                         let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("{:?}", gv))
+                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, gv))
                     });
                     ContentHash::combine_all(hashes)
                 };
