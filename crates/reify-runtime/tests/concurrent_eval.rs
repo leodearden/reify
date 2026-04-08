@@ -2159,17 +2159,7 @@ mod poison_recovery_extended {
     /// Message must contain "values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned",
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_values, "values RwLock poisoned");
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2177,17 +2167,7 @@ mod poison_recovery_extended {
     /// Message must contain "snapshot_values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned",
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_snapshot_values, "snapshot_values RwLock poisoned");
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2195,17 +2175,7 @@ mod poison_recovery_extended {
     /// Message must contain "results Mutex poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned",
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_results, "results Mutex poisoned");
     }
 }
 
