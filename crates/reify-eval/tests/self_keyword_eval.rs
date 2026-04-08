@@ -52,7 +52,6 @@ fn check_source(source: &str) -> reify_eval::CheckResult {
 // ─── step-9: self.param eval produces correct value ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_param_eval_produces_correct_value() {
     // `self.thickness` should evaluate to the same value as `thickness`.
     // 5mm = 0.005 in SI (meters).
@@ -105,7 +104,6 @@ fn self_param_eval_produces_correct_value() {
 // ─── step-10: self in let arithmetic eval ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_let_arithmetic_eval() {
     // `self.a + self.b` should evaluate to the sum: 3mm + 7mm = 10mm = 0.010 SI.
     let result = eval_source(
@@ -137,7 +135,6 @@ fn self_in_let_arithmetic_eval() {
 // ─── step-12: self in constraint eval ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_eval_satisfied() {
     // `constraint self.x > 2mm` with x = 5mm should be satisfied.
     let result = check_source(
@@ -182,7 +179,6 @@ fn self_in_constraint_eval_satisfied() {
 }
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_eval_violated() {
     // `constraint self.x > 2mm` with x = 1mm should be violated.
     let result = check_source(
