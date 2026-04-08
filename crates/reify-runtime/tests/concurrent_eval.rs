@@ -2377,6 +2377,93 @@ mod poison_shared_fallback {
             "node_results should be empty (no evaluations occurred) after shared-fallback poison recovery"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // all-three shared-fallback: multi-lock simultaneous poison
+    // -----------------------------------------------------------------------
+
+    /// Verify that all three locks being poisoned simultaneously via the
+    /// shared-fallback path recovers gracefully: exactly 3 WARN events are
+    /// emitted with distinct messages, no panic occurs, and all result fields
+    /// contain usable data.
+    ///
+    /// Holds all 3 Arc guards so that `Arc::try_unwrap` fails for each lock,
+    /// forcing the shared-fallback (`Err(arc) → read()/lock()`) path for all three.
+    #[test]
+    fn all_three_locks_poisoned_shared_fallback_recovers_with_three_warns() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+
+        // Hold all 3 Arc guards — each Arc::try_unwrap will return Err, forcing
+        // all three locks through the shared-fallback (Err(arc) → read()/lock()) path.
+        let _values_guard = adapter.values_arc();
+        let _snapshot_guard = adapter.snapshot_values_arc();
+        let _results_guard = adapter.results_arc();
+
+        // Poison all 3 locks via intentional panics in separate threads.
+        adapter.poison_values();
+        adapter.poison_snapshot_values();
+        adapter.poison_results();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
+
+        // (1) No panic — into_result() must recover from all 3 poisoned locks.
+        assert!(
+            result.is_ok(),
+            "into_result() panicked when triple-lock poison recovery was expected"
+        );
+        let edit_result = result.unwrap();
+
+        // (2) Exactly 3 WARN events — one per poisoned lock.
+        capture.assert_count(3);
+
+        // (3) All 3 distinct shared-fallback messages present.
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("values RwLock poisoned (shared fallback)")),
+            "no WARN message contained 'values RwLock poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("snapshot_values RwLock poisoned (shared fallback)")),
+            "no WARN message contained 'snapshot_values RwLock poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("results Mutex poisoned (shared fallback)")),
+            "no WARN message contained 'results Mutex poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+
+        // (4) T.a = Real(10.0) from simple_setup.
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after triple shared-fallback poison recovery"
+        );
+
+        // (5) T.a snapshot = (Real(10.0), Determined) from simple_setup.
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after triple shared-fallback poison recovery"
+        );
+
+        // (6) node_results is empty (no evaluations occurred).
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) \
+             after triple shared-fallback poison recovery"
+        );
+    }
 }
 
 // Tests for evaluate() recovering from poisoned locks. The evaluate method
