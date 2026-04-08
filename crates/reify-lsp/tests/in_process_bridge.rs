@@ -25,6 +25,26 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
     );
 }
 
+/// Assert that calling `handle_request("shutdown", params)` returns exactly `Ok(Value::Null)`.
+///
+/// The `shutdown` bridge arm ignores params entirely, so every `params` value must
+/// produce the same result. The failure messages embed `params` so that a regression
+/// in the helper is immediately attributable to the specific params value that broke.
+///
+/// The caller is responsible for constructing `lsp` (either `InProcessLsp::new()` for
+/// pre-handshake tests or `initialized_lsp().await` for post-handshake tests).
+async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: serde_json::Value) {
+    let result = lsp.handle_request("shutdown", params.clone()).await;
+    let val = result.unwrap_or_else(|e| {
+        panic!("shutdown(params={params}) should return Ok, got Err: {e}")
+    });
+    assert_eq!(
+        val,
+        serde_json::Value::Null,
+        "shutdown(params={params}) should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Perform the standard two-step LSP handshake on an existing [`InProcessLsp`] instance.
 ///
 /// 1. `initialize` — the client advertises its capabilities and receives the
@@ -584,15 +604,7 @@ async fn did_close_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_returns_ok_null() {
     let lsp = initialized_lsp().await;
-
-    let result = lsp.handle_request("shutdown", json!({})).await;
-
-    let val = result.expect("shutdown should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "shutdown should return exactly Ok(Value::Null)"
-    );
+    assert_shutdown_returns_null(&lsp, json!({})).await;
 }
 
 /// The `shutdown` request with `null` params should return exactly `Ok(Value::Null)`.
@@ -608,15 +620,7 @@ async fn shutdown_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_with_null_params_returns_ok_null() {
     let lsp = initialized_lsp().await;
-
-    let result = lsp.handle_request("shutdown", json!(null)).await;
-
-    let val = result.expect("shutdown with null params should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "shutdown with null params should return exactly Ok(Value::Null)"
-    );
+    assert_shutdown_returns_null(&lsp, json!(null)).await;
 }
 
 /// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
@@ -629,19 +633,7 @@ async fn shutdown_with_null_params_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_before_initialize() {
     let lsp = InProcessLsp::new();
-
-    let result = lsp.handle_request("shutdown", json!({})).await;
-
-    assert!(
-        result.is_ok(),
-        "shutdown before initialize should return Ok, got: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        serde_json::Value::Null,
-        "shutdown before initialize should return exactly Ok(Value::Null)"
-    );
+    assert_shutdown_returns_null(&lsp, json!({})).await;
 }
 
 /// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
@@ -654,19 +646,7 @@ async fn shutdown_before_initialize() {
 #[tokio::test]
 async fn shutdown_before_initialize_with_null_params() {
     let lsp = InProcessLsp::new();
-
-    let result = lsp.handle_request("shutdown", json!(null)).await;
-
-    assert!(
-        result.is_ok(),
-        "shutdown before initialize with null params should return Ok, got: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        serde_json::Value::Null,
-        "shutdown before initialize with null params should return exactly Ok(Value::Null)"
-    );
+    assert_shutdown_returns_null(&lsp, json!(null)).await;
 }
 
 /// The `shutdown` bridge arm ignores params entirely — it never deserializes or
@@ -684,32 +664,10 @@ async fn shutdown_before_initialize_with_null_params() {
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params() {
     let lsp = InProcessLsp::new();
-
     // Object with unexpected extra fields — bridge must not reject this.
-    let result = lsp.handle_request("shutdown", json!({"foo": 42})).await;
-    assert!(
-        result.is_ok(),
-        "shutdown(params={{\"foo\":42}}) should return Ok, got: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        serde_json::Value::Null,
-        "shutdown(params={{\"foo\":42}}) should return exactly Ok(Value::Null)"
-    );
-
+    assert_shutdown_returns_null(&lsp, json!({"foo": 42})).await;
     // Wrong JSON type entirely — bridge must not reject this either.
-    let result = lsp.handle_request("shutdown", json!("oops")).await;
-    assert!(
-        result.is_ok(),
-        "shutdown(params=\"oops\") should return Ok, got: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        serde_json::Value::Null,
-        "shutdown(params=\"oops\") should return exactly Ok(Value::Null)"
-    );
+    assert_shutdown_returns_null(&lsp, json!("oops")).await;
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
