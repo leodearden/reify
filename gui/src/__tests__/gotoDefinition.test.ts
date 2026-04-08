@@ -312,14 +312,25 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
 
     const mockEvent = makeMouseEvent();
 
-    const mockView = makeMockView();
+    // Throwing doc.line() is defense-in-depth: if the guard moves after a doc.line()
+    // call, the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
 
-    // Negative character must be rejected before delegating to onNavigate
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Negative character must be rejected before delegating to onNavigate
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Guard fires before doc.line(); no warn should be logged
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('does not call onNavigate when LSP line is NaN (non-integer cross-file)', async () => {
