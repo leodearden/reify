@@ -191,14 +191,22 @@ async fn lsp_bridge_with_sink_routes_diagnostics() {
 
 #[tokio::test]
 async fn lsp_request_impl_rejects_malformed_json_params() {
-    let bridge = LspBridge::new();
-    let result = lsp_request_impl(&bridge, "initialize", "not json".to_string()).await;
-    assert!(result.is_err(), "malformed JSON params should return Err");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("invalid JSON params"),
-        "error should contain 'invalid JSON params', got: {err}"
-    );
+    // Table-driven: each entry is a string that is not valid JSON.
+    // serde_json::from_str rejects all of them, so `lsp_request_impl` must
+    // return Err with the "invalid JSON params" prefix (from lsp_bridge.rs).
+    for case in ["not json", "", "{", "\"unterminated"] {
+        let bridge = LspBridge::new();
+        let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
+        assert!(
+            result.is_err(),
+            "malformed JSON case {case:?} should return Err"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid JSON params"),
+            "case {case:?}: error should contain 'invalid JSON params', got: {err}"
+        );
+    }
 }
 
 #[tokio::test]
