@@ -250,6 +250,37 @@ for consumer in "${CONSUMERS[@]}"; do
 done
 
 # ==============================================================================
+# sync_comments_test.sh refactoring structural checks
+# Verify: DRY helper exists, defensive if-guards removed, head -1 documented.
+# ==============================================================================
+
+SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
+
+echo ""
+echo "--- sync_comments_test.sh structural checks ---"
+
+# (a) file defines assert_sync_ref_exists() helper function
+if grep -qE '^assert_sync_ref_exists\(\)' "$SYNC_FILE" 2>/dev/null; then
+    check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
+else
+    check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
+fi
+
+# (b) file has NO conditional if [ -n "$_..." ] guard (defensive guards removed)
+if ! grep -Fq 'if [ -n "$_' "$SYNC_FILE" 2>/dev/null; then
+    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "true"
+else
+    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "false"
+fi
+
+# (c) head -1 pipeline has adjacent comment documenting single-reference limitation
+if grep -B3 'head -1' "$SYNC_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
+    check "head -1 pipeline has single-reference documentation comment" "true"
+else
+    check "head -1 pipeline has single-reference documentation comment" "false"
+fi
+
+# ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
 # richer assert API and is intentionally excluded from this shared module.
