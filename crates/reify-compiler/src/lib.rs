@@ -2008,6 +2008,12 @@ struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     unit_registry: Option<&'u UnitRegistry>,
+    /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
+    /// False for function scopes, where `self` must produce an "unresolved name" error.
+    is_entity_scope: bool,
+    /// Member types for non-collection sub-components: sub_name → { member_name → Type }.
+    /// Used to resolve self.sub.member chains for non-collection subs.
+    sub_member_types: HashMap<String, HashMap<String, Type>>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -2023,6 +2029,8 @@ impl<'u> CompilationScope<'u> {
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
             unit_registry: None,
+            is_entity_scope: false,
+            sub_member_types: HashMap::new(),
         }
     }
 
@@ -2157,6 +2165,15 @@ fn compile_expr_guarded(
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
         reify_syntax::ExprKind::Ident(name) => {
+            // Intercept `self` in entity scope — bare `self` resolves to StructureRef(entity_name).
+            // In function scopes (is_entity_scope == false), self falls through to "unresolved name".
+            if name == "self" && scope.is_entity_scope {
+                let self_id = ValueCellId::new(&scope.entity_name, "__self");
+                return CompiledExpr::value_ref(
+                    self_id,
+                    Type::StructureRef(scope.entity_name.clone()),
+                );
+            }
             // Intercept `none` before scope lookup — it's a language-level keyword.
             // Default inner type is Real; contextual override happens at param/let sites.
             if name == "none" {
@@ -2641,6 +2658,83 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
+            // Check if this is a `self.member` or `self.sub.member` access in entity scope.
+            if scope.is_entity_scope {
+                // Pattern: self.member
+                if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
+                    && obj_name == "self"
+                {
+                    // Check for self.sub.member chaining (handled at outer level): skip here
+                    // if member is a sub-component name — return a StructureRef for the sub.
+                    if scope.sub_component_types.contains_key(member.as_str()) {
+                        // self.sub_name — return StructureRef so that chaining works
+                        // (but note: this case is handled by the outer MemberAccess pattern below)
+                        let structure_name = scope.sub_component_types[member.as_str()].clone();
+                        let scoped_entity = format!("{}.{}", scope.entity_name, member);
+                        let sub_id = ValueCellId::new(&scoped_entity, "__self");
+                        return CompiledExpr::value_ref(
+                            sub_id,
+                            Type::StructureRef(structure_name),
+                        );
+                    }
+                    // Resolve member from the entity scope (same as bare identifier).
+                    match scope.resolve(member) {
+                        Some((id, ty)) => {
+                            let id = id.clone();
+                            let ty = ty.clone();
+                            return CompiledExpr::value_ref(id, ty);
+                        }
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on self",
+                                    member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    }
+                }
+
+                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: sub_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.sub_component_types.contains_key(sub_name.as_str())
+                {
+                    // Resolve member type from sub_member_types
+                    let member_type = match scope
+                        .sub_member_types
+                        .get(sub_name.as_str())
+                        .and_then(|m| m.get(member.as_str()))
+                        .cloned()
+                    {
+                        Some(ty) => ty,
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on sub '{}'",
+                                    member, sub_name
+                                ))
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    };
+                    let scoped_entity =
+                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+            }
+
             // Check if this is a port member access (port_name.member_name)
             if let reify_syntax::ExprKind::Ident(name) = &object.kind
                 && scope.port_names.contains(name.as_str())
@@ -4903,6 +4997,7 @@ fn compile_entity(
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
+    scope.is_entity_scope = true;
 
     // Populate trait member index for qualified access resolution.
     for (trait_name, compiled_trait) in trait_registry {
@@ -5060,6 +5155,20 @@ fn compile_entity(
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                }
+                // Populate sub_member_types for ALL subs (for self.sub.member resolution).
+                if let Some(child_tmpl) = compiled_templates
+                    .iter()
+                    .find(|t| t.name == sub.structure_name)
+                {
+                    let member_types: HashMap<String, Type> = child_tmpl
+                        .value_cells
+                        .iter()
+                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+                        .collect();
+                    scope
+                        .sub_member_types
+                        .insert(sub.name.clone(), member_types);
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
