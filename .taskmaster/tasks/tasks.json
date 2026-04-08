@@ -23969,15 +23969,16 @@
         "description": "Two test coverage gaps exist for the serialization error subscription in App.tsx:\n\n1. **Subscription failure catch branch** (App.tsx line 272-274): No test where onSerializationError rejects, which should trigger the fallback toast \"Serialization error monitoring unavailable\". Fix: mock `bridge.onSerializationError` to reject and assert the fallback toast appears.\n\n2. **Alive guard race condition** (App.tsx lines 265-268): The `alive` guard pattern that calls unlisten immediately if the component unmounts while the promise is in-flight is not tested. Fix: unmount App before the onSerializationError promise resolves, then resolve it and verify the unlisten function is called immediately.\n\nMemory hints: search \"serialization-error event\" \"alive guard test coverage\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T22:51:22.557Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:51:22.263Z",
+      "lastModified": "2026-04-08T22:51:22.557Z",
       "taskCount": 1172,
       "completedCount": 852,
       "tags": [
