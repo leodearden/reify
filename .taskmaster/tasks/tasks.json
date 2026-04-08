@@ -23504,10 +23504,11 @@
         "description": "In gui/src-tauri/src/types.rs:14-31, serialize_finite_f32_vec iterates the slice twice: once for the finite-check loop and once for the serialize loop. For large mesh vertex buffers this doubles cache traffic. Merge into a single pass: inside one iteration, check `if !v.is_finite() { return Err(...) }` then `seq.serialize_element(&v)?;`. This preserves fail-fast semantics while avoiding the second pass.\n\nmemory_hints: search \"serialize_finite_f32_vec\", get_entity \"MeshData\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:42:15.089Z"
       },
       {
         "id": "1147",
@@ -23534,7 +23535,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:42:13.060Z",
+      "lastModified": "2026-04-08T21:42:15.095Z",
       "taskCount": 1148,
       "completedCount": 818,
       "tags": [
