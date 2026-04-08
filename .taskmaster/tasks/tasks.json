@@ -22494,7 +22494,13 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:35:04.794Z"
+        "updatedAt": "2026-04-08T20:35:04.794Z",
+        "metadata": {
+          "modules": [
+            "scripts/test_tree_sitter_generate.sh",
+            "scripts/tree-sitter-generate.sh"
+          ]
+        }
       },
       {
         "id": 1092,
