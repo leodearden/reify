@@ -86,4 +86,20 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledOnce();
     expect(showToast).toHaveBeenCalledWith('2 items failed to serialize', 'error');
   });
+
+  it('cleanup() clears the pending timer and buffer — showToast never called', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    coalescer.add({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32 value' });
+    coalescer.add({ item_type: 'value', item_id: 'param.width', error: 'Infinity' });
+
+    // Cleanup before the window elapses
+    coalescer.cleanup();
+
+    // Advance well past the window — timer was cancelled
+    vi.advanceTimersByTime(1000);
+
+    expect(showToast).not.toHaveBeenCalled();
+  });
 });
