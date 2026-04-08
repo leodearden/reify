@@ -1653,7 +1653,6 @@ fn assert_poison_recovers_checked<T: Send + 'static>(
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// values() recovers gracefully from a poisoned values RwLock: no panic,
     /// returned slice contains both T.a and T.b with correct values, and exactly
@@ -1686,7 +1685,8 @@ mod poison_recovery {
     }
 
     /// take_results() recovers gracefully from a poisoned results Mutex: no panic,
-    /// returned results are empty, and exactly one tracing::warn! is emitted.
+    /// returned results are empty, and exactly one tracing::warn! is emitted with
+    /// the "results Mutex poisoned" message.
     #[test]
     fn take_results_recovers_from_poisoned_results_lock_with_warn() {
         let setup = simple_setup();
@@ -1694,29 +1694,20 @@ mod poison_recovery {
 
         adapter.poison_results();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
-        });
-
-        assert!(
-            result.is_ok(),
-            "take_results() should recover from poisoned lock, not panic"
+        // take_results() acquires 1 lock: results Mutex. Only that lock is poisoned,
+        // so exactly 1 WARN fires, and the message must name the lock.
+        let results = assert_poison_recovers(
+            || adapter.take_results(),
+            1,
+            "results Mutex poisoned",
         );
-        let results = result.unwrap();
-        assert!(results.is_empty());
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
-        // poisoned, so exactly 1 WARN fires.
-        assert_eq!(
-            count, 1,
-            "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
-        );
+        assert_eq!(results.len(), 0, "results should be empty after poison recovery");
     }
 
     /// snapshot_values() recovers gracefully from a poisoned snapshot_values RwLock:
-    /// no panic, returned map contains both T.a and T.b, and exactly one tracing::warn!
-    /// is emitted.
+    /// no panic, returned map contains both T.a and T.b with correct (Value, DeterminacyState)
+    /// tuples, and exactly one tracing::warn! is emitted with the "snapshot_values RwLock
+    /// poisoned" message.
     #[test]
     fn snapshot_values_recovers_from_poisoned_lock_with_warn() {
         let setup = simple_setup();
@@ -1724,34 +1715,29 @@ mod poison_recovery {
 
         adapter.poison_snapshot_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| adapter.snapshot_values()))
-        });
-
-        assert!(
-            result.is_ok(),
-            "snapshot_values() should recover from poisoned lock, not panic"
+        // snapshot_values() acquires 1 lock: snapshot_values RwLock. Only that lock is
+        // poisoned, so exactly 1 WARN fires, and the message must name the lock.
+        let sv = assert_poison_recovers(
+            || adapter.snapshot_values(),
+            1,
+            "snapshot_values RwLock poisoned",
         );
-        let sv = result.unwrap();
-        assert!(
-            sv.contains_key(&ValueCellId::new("T", "a")),
-            "snapshot_values() should return T.a after poison recovery"
-        );
-        assert!(
-            sv.contains_key(&ValueCellId::new("T", "b")),
-            "snapshot_values() should return T.b after poison recovery"
-        );
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // snapshot_values() acquires 1 lock: snapshot_values RwLock (via read_snapshot_values()).
-        // Only that lock is poisoned, so exactly 1 WARN fires.
+        // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
-            count, 1,
-            "snapshot_values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+            sv.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after poison recovery"
+        );
+        assert_eq!(
+            sv.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (Real(10.0), Determined) after poison recovery"
         );
     }
 
-    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from poisoned snapshot_values.
+    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from
+    /// a poisoned snapshot_values lock.  Also asserts the action succeeds (is_ok),
+    /// fixing the previously discarded `_result`.
     #[test]
     fn tracing_warn_emitted_on_poison_snapshot_values_read() {
         let setup = simple_setup();
@@ -1760,20 +1746,13 @@ mod poison_recovery {
 
         adapter.poison_snapshot_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.build_result_shared(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         // Only snapshot_values is poisoned; values and results locks are healthy.
         // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
         // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
-        assert_eq!(
-            count, 1,
-            "build_result_shared() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        assert_poison_recovers(
+            || adapter.build_result_shared(&eval_set, HashSet::new()),
+            1,
+            "snapshot_values RwLock poisoned",
         );
     }
 }
