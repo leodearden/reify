@@ -23999,16 +23999,21 @@
         "description": "Follow-up from task 1066 review (esc-1066-883). Four small fixes in tests/infra/test_sync_comments_grep.sh:\n\n1. **Stale comment (line 4):** File header says `[[:space:](]` but pattern was updated to `[[:space:](<]`. Update to `# function name with [[:space:](<] instead.`\n\n2. **Stale comment (line 28):** Extraction pipeline comment says `[[:space:](]` but actual grep on line 36 uses `[[:space:](<]`. Update to `#   1. find the grep -qE invocation line that contains [[:space:](<]`\n\n3. **Combination accept tests (after line 87):** Add 1-2 cases exercising multiple qualifier groups together, e.g.:\n   - `pub(crate) const fn sanitize_value(`\n   - `pub(crate) unsafe fn sanitize_value(`\n\n4. **Generic reject case (after line 107):** Add reject case for `fn sanitize_value_raw<T>(` to document that the `<` terminator doesn't create false positives for suffixed names.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:57:06.054Z"
+        "updatedAt": "2026-04-08T22:58:47.967Z",
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:58:46.475Z",
+      "lastModified": "2026-04-08T22:58:47.967Z",
       "taskCount": 1174,
       "completedCount": 856,
       "tags": [
