@@ -22930,7 +22930,7 @@
         "description": "Two small improvements to test assertions in scripts/test_tree_sitter_generate.sh:\n\n1. **Test 16 (line 238):** Change `_cleanup_partial_outputs` count threshold from `>= 2` to `>= 3`. The script has 3 occurrences (1 definition + 2 call sites). The current `>= 2` would still pass if one call site were removed, defeating the purpose of verifying both error paths have cleanup.\n\n2. **Test 17 (lines 247-253):** Add `touch src/node-types.json` to the stub and a corresponding assertion `test '!' -f \"$TS_DIR/src/node-types.json\"` so all three partial output files are tested for cleanup on the non-timeout failure path.\n\nSource: review triage for task 1089 (esc-1089-788, suggestions S1 and S2).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -22938,7 +22938,8 @@
           "modules": [
             "scripts/test_tree_sitter_generate.sh"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:12:04.515Z"
       },
       {
         "id": "1116",
@@ -23315,7 +23316,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:04.237Z",
+      "lastModified": "2026-04-08T21:12:04.515Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
