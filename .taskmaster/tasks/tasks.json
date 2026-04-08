@@ -22150,6 +22150,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1078,
+        "title": "Extend equality and NaN-canonicalization tests to cover all Value variants",
+        "description": "Two test coverage gaps in `crates/reify-types/src/value.rs`:\n\n1. **Wrapper delegation test** (~lines 1905-1925): `wrapper_variants_delegate_equality_to_inner_value` only exercises Point and Vector, but the doc comment enumerates 9 wrapper variants. Struct-shaped wrappers (Frame, Transform, BoundingBox) have different field structures (origin/basis, rotation/translation) whose delegation paths differ from simple `Vec<Value>` wrappers. Extend to cover at least one struct-shaped wrapper (Frame, Transform, or BoundingBox) plus Matrix/Tensor.\n\n2. **NaN canonicalization test** (~lines 1927-1950): `nan_payload_canonicalized_in_content_hash` only verifies Real. The implementation has separate hand-rolled `if r.is_nan()` blocks for Scalar (~280-286), Complex (~293-298, ~391-407), and Orientation (~409-425) that could regress independently. Add cases for Value::Scalar, Value::Complex (both re and im), and Value::Orientation (w/x/y/z) using the same `from_bits(NAN.to_bits() ^ 1)` pattern.\n\nMemory hints: search \"Value wrapper variants delegate equality content_hash NaN canonicalization\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22162,7 +22173,7 @@
       ],
       "created": "2026-04-08T11:52:54.689Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T11:53:48.269Z"
+      "updated": "2026-04-08T11:53:57.147Z"
     }
   }
 }
