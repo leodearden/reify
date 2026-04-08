@@ -262,6 +262,38 @@ pub struct ConcurrentEditResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Compute a content hash over the current guard-cell values in `groups`.
+///
+/// Each guard cell is hashed as `"guard:{cell}={value:?}"` to ensure that two
+/// different cells holding the same value still produce distinct hashes.
+///
+/// `strict = false` (lenient): missing cells are treated as `Value::Undef`.
+/// Use this during or immediately after initial evaluation, where a guard cell
+/// might not yet have a value (semantically undetermined).
+///
+/// `strict = true`: panics if any guard cell is absent from `values`.
+/// Use this after `eval()` has completed, where every guard cell must be
+/// populated; a missing cell would silently produce a wrong fingerprint and
+/// corrupt the incremental cache.
+fn guard_state_fingerprint(
+    groups: &[crate::graph::GuardedGroupInfo],
+    values: &ValueMap,
+    strict: bool,
+) -> ContentHash {
+    let hashes = groups.iter().map(|g| {
+        let val = if strict {
+            values
+                .get(&g.guard_cell)
+                .cloned()
+                .expect("guard cell must have a value after initial evaluation")
+        } else {
+            values.get_or_undef(&g.guard_cell)
+        };
+        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
+    });
+    ContentHash::combine_all(hashes)
+}
+
 impl Engine {
     pub fn new(
         constraint_checker: Box<dyn ConstraintChecker>,
@@ -4248,6 +4280,7 @@ fn elaborate_child_lets_only<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::GuardedGroupInfo;
     use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
     use reify_types::GeometryHandleId;
 
@@ -4849,5 +4882,77 @@ mod tests {
             }
             other => panic!("expected Some(Mirror), got {:?}", other),
         }
+    }
+
+    // ── guard_state_fingerprint unit tests ────────────────────────────────────
+
+    fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
+        GuardedGroupInfo {
+            guard_cell: ValueCellId::new(entity, member),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }
+    }
+
+    #[test]
+    fn guard_state_fingerprint_empty_groups_returns_combine_all_empty() {
+        let values = ValueMap::new();
+        let result = guard_state_fingerprint(&[], &values, false);
+        let expected = ContentHash::combine_all(std::iter::empty());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_single_group_present_value() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(true);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![GuardedGroupInfo {
+            guard_cell: cell.clone(),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }];
+        let result = guard_state_fingerprint(&groups, &values, false);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_lenient_missing_value_uses_undef() {
+        let cell = ValueCellId::new("E", "g");
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        let result = guard_state_fingerprint(&groups, &values, false);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_strict_present_matches_lenient() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(false);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![make_guard_group("E", "g")];
+        let strict = guard_state_fingerprint(&groups, &values, true);
+        let lenient = guard_state_fingerprint(&groups, &values, false);
+        assert_eq!(strict, lenient);
+    }
+
+    #[test]
+    #[should_panic(expected = "guard cell must have a value")]
+    fn guard_state_fingerprint_strict_missing_panics() {
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        guard_state_fingerprint(&groups, &values, true);
     }
 }
