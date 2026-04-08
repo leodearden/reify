@@ -23627,11 +23627,11 @@
         "description": "In tests/sync_comments_test.sh, the `assert_sync_ref_exists` helper (line 29-38) has a subtle robustness gap: when `ref_fn` is empty (grep chain finds no match), the pattern `^(pub )?(fn|async fn) \\b` matches ANY function definition, causing the assert to silently pass. Two improvements needed:\n\n1. Add an early-fail assertion on `ref_fn` being non-empty inside the helper:\n   ```bash\n   if [ -z \"$ref_fn\" ]; then\n       assert \"SYNC in ${src_crate} references a ${tgt_crate} function\" false\n       return\n   fi\n   ```\n2. Use a display fallback in the assert message to avoid the empty name: `local display_fn=\"${ref_fn:-<none>}\"`\n\nThese restore the defense-in-depth that the original `test -n` guard provided, while keeping the DRY helper structure.\n\nmemory_hints: search(\"assert_sync_ref_exists empty ref_fn\", project_id=\"reify\"); search(\"sync_comments_test DRY helper\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:51:31.600Z",
+        "updatedAt": "2026-04-08T22:18:38.895Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -23744,7 +23744,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:18:37.992Z",
+      "lastModified": "2026-04-08T22:18:38.895Z",
       "taskCount": 1159,
       "completedCount": 841,
       "tags": [
