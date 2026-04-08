@@ -1,3 +1,4 @@
+pub mod annotation;
 pub mod constraint;
 pub mod expr;
 pub mod field;
@@ -6,6 +7,7 @@ pub mod purpose;
 pub mod topology;
 pub mod trait_def;
 
+pub use annotation::*;
 pub use constraint::*;
 pub use expr::*;
 pub use field::*;
