@@ -22491,11 +22491,11 @@
         "description": "## S8 — Naming clarity and error actionability\nIn `scripts/tree-sitter-generate.sh`, the two constants at lines 20-24 (`MAX_WAIT_SECS=120`, `MAX_LOCK_ATTEMPTS=75`) are clearly commented, but:\n\n1. The error message at line 110 — `could not acquire generation lock after $MAX_LOCK_ATTEMPTS attempts` — reports iteration count rather than wall time, which is less actionable for an operator trying to understand how long the script waited.\n\n2. `MAX_LOCK_ATTEMPTS` silently depends on the `sleep 1` at the bottom of the poll loop (line 113). If someone ever changes that sleep to `sleep 0.5`, `MAX_LOCK_ATTEMPTS`'s meaning shifts from 75s to 37.5s wall time, undetected.\n\nPick one:\n- **(a)** Rename to `MAX_LOCK_WAIT_SECS=75`, and keep the 1s `sleep` so the iteration count still equals wall-time seconds. Update the error message to `\"could not acquire generation lock after ${MAX_LOCK_WAIT_SECS}s\"`. Most future-proof.\n- **(b)** Keep `MAX_LOCK_ATTEMPTS` but print approximate wall time in the error: `\"could not acquire generation lock after ~${MAX_LOCK_ATTEMPTS}s\"` and document the 1s-sleep dependency in a comment above the constant.\n\nLow priority — this is a readability/UX improvement, not a correctness bug.\n\n## Verification\nRun `scripts/test_tree_sitter_generate.sh`. Tests 9 and 15 reference `MAX_LOCK_ATTEMPTS` by name — if renamed, update those assertions accordingly.\n\nSource: review escalation esc-994-69 (suggestion S8).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:36:30.908Z",
+        "updatedAt": "2026-04-08T20:49:37.457Z",
         "metadata": {
           "modules": [
             "scripts/test_tree_sitter_generate.sh",
@@ -22882,7 +22882,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:47:33.878Z"
+        "updatedAt": "2026-04-08T20:47:33.878Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1115",
@@ -22898,7 +22903,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:49:35.155Z",
+      "lastModified": "2026-04-08T20:49:37.460Z",
       "taskCount": 1115,
       "completedCount": 787,
       "tags": [
