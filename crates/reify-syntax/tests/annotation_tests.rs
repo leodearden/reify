@@ -353,6 +353,21 @@ fn parse_annotation_on_occurrence() {
     assert!(o.annotations[0].args.is_empty());
 }
 
+#[test]
+fn parse_annotation_on_type_alias() {
+    let source = "@builtin type Pressure = Force / Area";
+    let module = parse_module(source);
+    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+
+    let ta = match &module.declarations[0] {
+        Declaration::TypeAlias(ta) => ta,
+        other => panic!("expected TypeAlias, got {:?}", other),
+    };
+    assert_eq!(ta.annotations.len(), 1, "expected 1 annotation");
+    assert_eq!(ta.annotations[0].name, "builtin");
+    assert!(ta.annotations[0].args.is_empty());
+}
+
 // ── Step 15/16: empty annotation arg list ────────────────────────────────────
 
 #[test]
