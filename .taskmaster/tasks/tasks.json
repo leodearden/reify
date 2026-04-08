@@ -24036,11 +24036,11 @@
         "description": "The trailing-edge debounce in `createSerializationErrorCoalescer` resets the 500ms window on every new error. If errors arrive continuously at <500ms intervals (e.g. a tight loop emitting serialization failures), the toast is deferred indefinitely and the `buffer` Map grows without bound.\n\nAdd a max-wait ceiling (e.g. 3–5 seconds) that forces a flush regardless of whether new errors keep arriving. Track the timestamp of the first buffered error and force-flush when `Date.now() - firstArrival > maxWaitMs`.\n\nMemory hints: search \"serialization error coalescer\" \"createSerializationErrorCoalescer debounce\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:10:58.677Z"
+        "updatedAt": "2026-04-08T23:33:00.520Z"
       },
       {
         "id": "1177",
@@ -24155,9 +24155,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:32:59.049Z",
+      "lastModified": "2026-04-08T23:33:00.520Z",
       "taskCount": 1183,
-      "completedCount": 870,
+      "completedCount": 871,
       "tags": [
         "master"
       ]
