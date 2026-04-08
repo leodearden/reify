@@ -22281,7 +22281,23 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/utils/errorClassifier.ts",
+            "gui/sidecar/src/utils.ts",
+            "gui/sidecar/src/__tests__/utils.test.ts",
+            "gui/shared/src/errorMessage.ts",
+            "gui/shared/package.json",
+            "gui/package.json",
+            "gui/sidecar/package.json"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/sidecar/src",
+            "gui/shared"
+          ]
+        }
       },
       {
         "id": 1082,
@@ -22292,7 +22308,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-test-support/src/tracing_support.rs"
+          ],
+          "modules": [
+            "crates/reify-test-support"
+          ]
+        }
       },
       {
         "id": 1083,
@@ -22303,7 +22327,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       }
     ],
     "metadata": {
