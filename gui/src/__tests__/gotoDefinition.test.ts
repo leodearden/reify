@@ -92,7 +92,7 @@ describe('reifyGotoDefinition', () => {
   });
 });
 
-describe('cross-file goto-definition (onNavigate)', () => {
+describe('goto-definition routing (same-file vs cross-file)', () => {
   it('calls onNavigate callback when definition is in a different file', async () => {
     const currentUri = 'file:///current.ri';
     const crossFileLocation = {
@@ -218,8 +218,9 @@ describe('cross-file goto-definition (onNavigate)', () => {
     // onNavigate should NOT be called — it is the same file after URI normalization
     expect(onNavigate).not.toHaveBeenCalled();
     // view.dispatch SHOULD be called for same-file cursor movement
+    // anchor = doc.line(8).from + 4 = (8-1)*20 + 4 = 140 + 4 = 144
     expect(mockView.dispatch).toHaveBeenCalledWith({
-      selection: { anchor: expect.any(Number) },
+      selection: { anchor: 144 },
       scrollIntoView: true,
     });
   });
