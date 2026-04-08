@@ -21508,11 +21508,11 @@
         "description": "Add a sibling test to the bare-path/file:// normalization test (task 949) that covers the inverse direction:\n- `currentUri = 'file:///project/src/foo.ri'` (file:// URI)\n- LSP returns `uri: '/project/src/foo.ri'` (bare path)\n- Assert `onNavigate` is NOT called and `view.dispatch` IS called\n\nThis confirms URI normalization works symmetrically at the integration level. The forward direction (bare→file://) is already tested; this covers file://→bare. The resolveUri call inside the handler resolves currentUri before passing to isSameFile, so regressions there would only surface in integration tests.\n\nMemory hints: search \"task 949 gotoDefinition tests\" for origin context; look at gui/src/__tests__/gotoDefinition.test.ts line 178 for the existing forward-direction test to mirror.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:00:10.258Z",
+        "updatedAt": "2026-04-08T17:00:20.022Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:19.118Z",
+      "lastModified": "2026-04-08T17:00:20.022Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
