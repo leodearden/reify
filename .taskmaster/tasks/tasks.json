@@ -23035,7 +23035,7 @@
         "description": "Improve test output readability by adding descriptive labels to the `it.each` parameterized URI normalization symmetry test. Currently the test description renders verbose full URIs in failure output. Use labeled tuples with a descriptive tag instead.",
         "details": "In `gui/src/__tests__/gotoDefinition.test.ts` around line 236, change the `it.each` from:\n\n```js\nit.each([\n  ['/project/src/foo.ri', 'file:///project/src/foo.ri'],\n  ['file:///project/src/foo.ri', '/project/src/foo.ri'],\n])(\n  '%s currentUri with %s location.uri for same file dispatches cursor movement',\n  async (currentUri, locationUri) => { … }\n)\n```\n\nTo labeled tuples:\n\n```js\nit.each([\n  ['bare-path → file://', '/project/src/foo.ri', 'file:///project/src/foo.ri'],\n  ['file:// → bare-path', 'file:///project/src/foo.ri', '/project/src/foo.ri'],\n])(\n  '%s: same file dispatches cursor movement',\n  async (_label, currentUri, locationUri) => { … }\n)\n```\n\nThis makes failure output more scannable by showing labels like 'bare-path → file://' instead of full URIs in the test name.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23046,7 +23046,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:12:04.673Z"
       },
       {
         "id": "1122",
@@ -23316,7 +23317,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:04.515Z",
+      "lastModified": "2026-04-08T21:12:04.673Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
