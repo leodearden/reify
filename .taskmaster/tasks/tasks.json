@@ -23518,6 +23518,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1148,
+        "title": "Add frontend handler for serialization-error events",
+        "description": "The Tauri backend emits 'serialization-error' events from delta_to_events() (gui/src-tauri/src/diff.rs), but the frontend may not register a listener for this event type. If no handler exists, the errors are silently dropped (tracing::warn is the only observable signal). Either add a frontend handler (e.g., display a toast/console warning) or document that these events are intentionally fire-and-forget with tracing::warn as the primary observability mechanism.\n\nmemory_hints: search \"serialization-error event frontend handler\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23530,7 +23541,7 @@
       ],
       "created": "2026-04-08T21:41:43.438Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:41:48.509Z"
+      "updated": "2026-04-08T21:41:53.242Z"
     }
   }
 }
