@@ -148,28 +148,52 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
     for mesh in &delta.changed_meshes {
         match serde_json::to_value(mesh) {
             Ok(val) => events.push(("mesh-update".to_string(), val)),
-            Err(err) => warn!(
-                "failed to serialize mesh {}: {}",
-                mesh.entity_path, err
-            ),
+            Err(err) => {
+                warn!("failed to serialize mesh {}: {}", mesh.entity_path, err);
+                events.push((
+                    "serialization-error".to_string(),
+                    serde_json::json!({
+                        "item_type": "mesh",
+                        "item_id": mesh.entity_path,
+                        "error": err.to_string(),
+                    }),
+                ));
+            }
         }
     }
     for value in &delta.changed_values {
         match serde_json::to_value(value) {
             Ok(val) => events.push(("value-update".to_string(), val)),
-            Err(err) => warn!(
-                "failed to serialize value {}: {}",
-                value.cell_id, err
-            ),
+            Err(err) => {
+                warn!("failed to serialize value {}: {}", value.cell_id, err);
+                events.push((
+                    "serialization-error".to_string(),
+                    serde_json::json!({
+                        "item_type": "value",
+                        "item_id": value.cell_id,
+                        "error": err.to_string(),
+                    }),
+                ));
+            }
         }
     }
     for constraint in &delta.changed_constraints {
         match serde_json::to_value(constraint) {
             Ok(val) => events.push(("constraint-update".to_string(), val)),
-            Err(err) => warn!(
-                "failed to serialize constraint {}: {}",
-                constraint.node_id, err
-            ),
+            Err(err) => {
+                warn!(
+                    "failed to serialize constraint {}: {}",
+                    constraint.node_id, err
+                );
+                events.push((
+                    "serialization-error".to_string(),
+                    serde_json::json!({
+                        "item_type": "constraint",
+                        "item_id": constraint.node_id,
+                        "error": err.to_string(),
+                    }),
+                ));
+            }
         }
     }
     for path in &delta.removed_mesh_paths {
