@@ -7688,11 +7688,11 @@
         "description": "Review findings from task 190 (trait merge let-binding dedup):\n\nCORRECTNESS:\n1. After seen_let_hashes insert, use continue to skip seen_defaults path for Let bindings (lib.rs:4370-4376) — currently Let defaults fall through to seen_defaults with Type::Real sentinel, causing misleading error messages if a param default with the same name exists later.\n2. Guard seen_let_hashes insert on !structure_members.contains_key (lib.rs:4367) — align hash-recording with error-suppression semantics.\n3. Track seen_let_conflict_names to emit only 1 diagnostic per conflicting name instead of N-1 (lib.rs:4351-4365).\n\nCODE QUALITY:\n4. Introduce MergeContext struct to bundle the 4 mutable tracking maps (visited, seen_names, seen_defaults, seen_let_hashes) — collect_all_requirements has 12 parameters.\n5. Rename parse_compile_check to parse_and_compile in trait_merge_eval.rs — name implies Engine::check is called but it only parses+compiles.\n6. Fix stale \"FAIL\" comment in let_conflict_different_expr (trait_merge_tests.rs:361).\n\nTESTS:\n7. Add multi_trait_constraints_partial_violation eval test — x=150mm satisfies one bound but violates another.\n8. Use errors[0].message instead of format!(\"{:?}\", errors) across 5 test functions.\n9. Assert no eval diagnostics before accessing result.values in let_from_trait_evaluated.\n10. Add comment on implicit hash assumption in let_merge_same_expr.\n\nMemory hints: search \"collect_all_requirements seen_let_hashes trait merge\", entities: collect_all_requirements, seen_defaults",
         "details": "",
         "testStrategy": "",
-        "status": "done",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-03-25T22:51:25.121Z"
+        "updatedAt": "2026-04-08T13:55:40.289Z"
       },
       {
         "id": "386",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:39.308Z",
+      "lastModified": "2026-04-08T13:55:40.289Z",
       "taskCount": 1082,
-      "completedCount": 747,
+      "completedCount": 746,
       "tags": [
         "master"
       ]
