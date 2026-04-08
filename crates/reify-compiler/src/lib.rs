@@ -158,6 +158,9 @@ pub struct CompiledModule {
     /// Constraint definitions declared in this module.
     /// Stored so downstream modules can reference them during compilation.
     pub constraint_defs: Vec<reify_syntax::ConstraintDef>,
+    /// Module-level pragmas declared in this module (e.g., `#no_prelude`, `#precision`).
+    /// All pragmas are stored here, including consumed ones like `#no_prelude`.
+    pub pragmas: Vec<reify_syntax::Pragma>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -4547,6 +4550,7 @@ pub fn compile_with_prelude(
         units: compiled_units,
         type_aliases,
         constraint_defs,
+        pragmas: parsed.pragmas.clone(),
         diagnostics,
         content_hash,
     }

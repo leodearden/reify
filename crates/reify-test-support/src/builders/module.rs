@@ -134,6 +134,7 @@ impl CompiledModuleBuilder {
             units: Vec::new(),
             type_aliases: Vec::new(),
             constraint_defs: Vec::new(),
+            pragmas: Vec::new(),
             diagnostics: self.diagnostics,
             content_hash,
         }
