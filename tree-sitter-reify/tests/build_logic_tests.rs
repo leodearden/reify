@@ -1039,6 +1039,69 @@ fn test_find_cfg_unix_test_fns_discovers_dynamically() {
 }
 
 #[test]
+fn test_find_self_reading_test_fns_discovers_dynamically() {
+    // Tests for the find_self_reading_test_fns() helper.
+    // The helper should find all #[test] functions whose body calls a function
+    // with THIS_FILE as an argument (i.e., body contains the substring "(THIS_FILE)").
+
+    let synthetic_source = concat!(
+        // Case (a): a test fn whose body contains read_to_string(THIS_FILE) — should be collected.
+        "#[test]\n",
+        "fn test_reads_this_file() {\n",
+        "    let source = std::fs::read_to_string(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (a2): a test fn whose body contains File::open(THIS_FILE) — should be collected.
+        "#[test]\n",
+        "fn test_opens_this_file() {\n",
+        "    let f = File::open(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (b): a non-test fn with (THIS_FILE) in body — should be ignored.
+        "fn helper_with_this_file() {\n",
+        "    let _ = fs::read(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (c): a test fn without (THIS_FILE) in body — should be ignored.
+        "#[test]\n",
+        "fn test_no_this_file() {\n",
+        "    let _ = 1;\n",
+        "}\n\n",
+        // Case (d): a test fn that mentions THIS_FILE only in a comment — should be ignored.
+        "#[test]\n",
+        "fn test_comment_only_mention() {\n",
+        "    // This test does not use (THIS_FILE) as a call argument\n",
+        "    let _ = 2;\n",
+        "}\n",
+    );
+
+    let fns = find_self_reading_test_fns(synthetic_source);
+
+    assert!(
+        fns.contains(&"fn test_reads_this_file()".to_string()),
+        "should discover test_reads_this_file; got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_opens_this_file()".to_string()),
+        "should discover test_opens_this_file; got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("helper_with_this_file")),
+        "should NOT include helper_with_this_file (not a #[test]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_no_this_file()".to_string()),
+        "should NOT include test_no_this_file (no (THIS_FILE) in body); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_comment_only_mention()".to_string()),
+        "should NOT include test_comment_only_mention (THIS_FILE only in comment); got: {:?}",
+        fns
+    );
+}
+
+#[test]
 fn test_self_read_paths_use_manifest_dir() {
     // Meta-test / regression guard: the two source-self-inspection tests that read
     // this file must use the `THIS_FILE` constant rather than the bare relative path
