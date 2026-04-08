@@ -333,7 +333,74 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use tracing::Subscriber as _;
+
     use crate::warn_counting_subscriber;
+
+    // ── ForwardingSubscriber ──────────────────────────────────────────────────
+
+    /// A generic tracing subscriber that forwards all span bookkeeping to an
+    /// inner subscriber and delegates `enabled()` and `event()` to caller-
+    /// supplied closures.
+    ///
+    /// This eliminates the per-test boilerplate of repeating five identical
+    /// forwarding methods (`new_span`, `record`, `record_follows_from`, `enter`,
+    /// `exit`) every time a test needs to customise filtering or event handling.
+    ///
+    /// # Closure signatures
+    ///
+    /// - `EnabledFn(&S, &tracing::Metadata<'_>) -> bool` — receives a shared
+    ///   reference to the inner subscriber so it can delegate if needed.
+    /// - `EventFn(&S, &tracing::Event<'_>)` — same; can delegate to
+    ///   `inner.event(event)` or perform custom side effects.
+    ///
+    /// External state (e.g. `Arc<AtomicUsize>` counters) is captured via
+    /// `move` closures, consistent with the existing test patterns.
+    struct ForwardingSubscriber<S, EnabledFn, EventFn>
+    where
+        S: tracing::Subscriber,
+        EnabledFn: Fn(&S, &tracing::Metadata<'_>) -> bool + Send + Sync + 'static,
+        EventFn: Fn(&S, &tracing::Event<'_>) + Send + Sync + 'static,
+    {
+        inner: S,
+        enabled_fn: EnabledFn,
+        event_fn: EventFn,
+    }
+
+    impl<S, EnabledFn, EventFn> tracing::Subscriber for ForwardingSubscriber<S, EnabledFn, EventFn>
+    where
+        S: tracing::Subscriber,
+        EnabledFn: Fn(&S, &tracing::Metadata<'_>) -> bool + Send + Sync + 'static,
+        EventFn: Fn(&S, &tracing::Event<'_>) + Send + Sync + 'static,
+    {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            (self.enabled_fn)(&self.inner, metadata)
+        }
+
+        fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            self.inner.new_span(span)
+        }
+
+        fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            self.inner.record(span, values)
+        }
+
+        fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+            self.inner.record_follows_from(span, follows)
+        }
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            (self.event_fn)(&self.inner, event)
+        }
+
+        fn enter(&self, span: &tracing::span::Id) {
+            self.inner.enter(span)
+        }
+
+        fn exit(&self, span: &tracing::span::Id) {
+            self.inner.exit(span)
+        }
+    }
 
     /// ERROR events should be rejected at the `enabled()` gate, not silently
     /// accepted and then discarded inside `event()`.
