@@ -22109,11 +22109,11 @@
         "description": "The poison-recovery tests in crates/reify-runtime/tests/concurrent_eval.rs use two shapes:\n\n- **Split (values/take_results):** Separate `*_recovers_from_poisoned_*` and `tracing_warn_emitted_on_poison_*` tests\n- **Combined (snapshot_values):** Single `snapshot_values_recovers_from_poisoned_lock_with_warn` test that asserts both no-panic recovery and exactly-one warn\n\nThe combined form is better (one poison setup, both invariants verified together). Refactor the older split pairs for `values()` and `take_results()` to use the combined form for symmetry:\n- Merge `values_recovers_from_poisoned_values_lock` + `tracing_warn_emitted_on_poison_values_read` \n- Merge `take_results_recovers_from_poisoned_results_lock` + `tracing_warn_emitted_on_poison_results_lock`\n\nMemory hints: search for \"concurrent_eval poison test pattern\" and \"task 964 test consistency\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:20:32.704Z",
+        "updatedAt": "2026-04-08T17:31:10.403Z",
         "metadata": {
           "files": [
             "crates/reify-runtime/tests/concurrent_eval.rs"
@@ -22528,9 +22528,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:27:55.968Z",
+      "lastModified": "2026-04-08T17:31:10.403Z",
       "taskCount": 1095,
-      "completedCount": 759,
+      "completedCount": 760,
       "tags": [
         "master"
       ]
