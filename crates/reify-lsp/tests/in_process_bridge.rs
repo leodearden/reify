@@ -1,10 +1,9 @@
 //! Integration tests for the InProcessLsp bridge.
 
-use std::sync::atomic::Ordering;
-
 use reify_lsp::bridge::error_prefix;
 use reify_lsp::bridge::InProcessLsp;
-use reify_test_support::warn_counting_subscriber;
+use reify_test_support::assert_warn_count;
+use reify_test_support::warn_counting_guard;
 use serde_json::json;
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
@@ -109,15 +108,14 @@ async fn open_bracket_doc(lsp: &InProcessLsp) {
 /// to other threads that don't have the guard.  current_thread avoids this.
 #[tokio::test(flavor = "current_thread")]
 async fn set_default_guard_captures_warn_on_current_thread() {
-    let (subscriber, warn_count) = warn_counting_subscriber();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (_guard, warn_count) = warn_counting_guard();
 
     tracing::warn!("test");
 
-    assert_eq!(
-        warn_count.load(Ordering::Relaxed),
+    assert_warn_count(
+        &warn_count,
         1,
-        "set_default guard must capture exactly one WARN event on current_thread runtime"
+        "set_default guard must capture exactly one WARN event on current_thread runtime",
     );
 }
 
