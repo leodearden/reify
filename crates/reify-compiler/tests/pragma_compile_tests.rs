@@ -203,7 +203,7 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
         structure S { param x : Real = 0.0 }
         purpose p(s : Structure) {
             #solver(method="gradient")
-            constraint s.x >= 0.0
+            constraint 1 > 0
         }
     "#;
     let module = compile_module(source);
