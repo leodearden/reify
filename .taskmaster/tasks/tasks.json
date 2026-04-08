@@ -21758,11 +21758,11 @@
         "description": "Follow-up from Task 1033 review triage (esc-1033-1). Three small test-hygiene cleanups in `gui/src/__tests__/gotoDefinition.test.ts`:\n\n(S1) In the 'line-bounds guard' > stale-response test (~lines 263-301), the `onNavigate = vi.fn()` mock is declared and passed to `reifyGotoDefinition` but never asserted on (the vacuous assertion was removed in Task 1033). Drop the unused `onNavigate` mock entirely — call `reifyGotoDefinition(currentUri)` instead. This removes dead code and matches the documented test intent.\n\n(S5) In the 'line-bounds guard' > exact-boundary test (~lines 303-344), the assertion uses `selection: { anchor: expect.any(Number) }`. Because the test provides a deterministic `line: (n) => ({ from: (n - 1) * 20 })` and `character: 0`, the anchor is knowable: line=4 (LSP) → codemirror line 5 → `from = 80`, plus character 0 → anchor=80. Replace `expect.any(Number)` with `80` and add a brief comment showing the arithmetic. This turns the test into a true boundary check that would catch off-by-one errors (e.g. `line.number` vs `line.number - 1`).\n\n(S4) In the '.catch() error handler' > 'view.dispatch() throws' test (~lines 436-483), the `withSuppressedRejections` wrapper is misleading because `.catch()` handles the dispatch error synchronously — no unhandled rejection is produced. Either drop the wrapper (call `mousedownHandler(...); await flushMacrotasks();` directly) or add a short comment: `// wrapper is defense-in-depth; .catch() should already handle this`. The same consideration applies to the sibling 'doc.line() throws' test.\n\nVerify with `npm test -- src/__tests__/gotoDefinition.test.ts` in gui/.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:16:30.067Z",
+        "updatedAt": "2026-04-08T17:27:18.732Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22521,9 +22521,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:27:12.232Z",
+      "lastModified": "2026-04-08T17:27:18.732Z",
       "taskCount": 1095,
-      "completedCount": 758,
+      "completedCount": 759,
       "tags": [
         "master"
       ]
