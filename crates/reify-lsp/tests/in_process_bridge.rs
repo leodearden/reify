@@ -6,6 +6,25 @@ use reify_lsp::bridge::InProcessLsp;
 use reify_test_support::warn_counting_subscriber;
 use serde_json::json;
 
+/// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
+/// malformed payload) returns an `Err` whose message contains `fragment`.
+///
+/// All five "malformed params" tests share this identical assertion triple.
+/// The caller is responsible for constructing `lsp` (uninitialized via
+/// `InProcessLsp::new()` or fully handshook via `initialized_lsp()`).
+async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str) {
+    let result = lsp.handle_request(method, json!(42)).await;
+    assert!(
+        result.is_err(),
+        "{method} with malformed params should return Err, got: {result:?}"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains(fragment),
+        "error message should contain '{fragment}', got: {err}"
+    );
+}
+
 /// Create a fully initialized [`InProcessLsp`] server, ready to receive document
 /// requests and notifications.
 ///
