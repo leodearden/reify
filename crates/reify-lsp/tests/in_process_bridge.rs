@@ -142,21 +142,7 @@ async fn initialize_returns_server_capabilities() {
 async fn did_open_and_completion_returns_items() {
     let lsp = initialized_lsp().await;
 
-    // Open a document with bracket source
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    open_bracket_doc(&lsp).await;
 
     // Request completions
     let result = lsp
@@ -184,20 +170,7 @@ async fn did_open_and_completion_returns_items() {
 async fn hover_returns_info_for_known_symbol() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .unwrap();
+    open_bracket_doc(&lsp).await;
 
     let result = lsp
         .handle_request(
@@ -272,20 +245,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 async fn goto_definition_returns_location() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .unwrap();
+    open_bracket_doc(&lsp).await;
 
     // Position on 'thickness' in a constraint line (line 9, col 15)
     let result = lsp
@@ -511,21 +471,10 @@ async fn did_change_with_malformed_params_returns_error() {
 async fn did_change_returns_ok_null() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    open_bracket_doc(&lsp).await;
 
+    // Re-bind source for the didChange contentChanges payload.
+    let source = reify_test_support::bracket_source();
     let result = lsp
         .handle_request(
             "textDocument/didChange",
@@ -572,20 +521,7 @@ async fn did_close_with_malformed_params_returns_error() {
 async fn did_close_returns_ok_null() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    open_bracket_doc(&lsp).await;
 
     let result = lsp
         .handle_request(
