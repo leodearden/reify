@@ -408,13 +408,9 @@ async fn valid_notification_returns_ok_null() {
     // notifications and returns Ok(Value::Null) each time.
     let result = lsp.handle_request("initialized", json!({})).await;
 
-    assert!(
-        result.is_ok(),
-        "valid notification should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("valid notification should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "valid notification should return exactly Ok(Value::Null)"
     );
@@ -449,13 +445,9 @@ async fn initialized_with_null_params_returns_ok() {
         .handle_request("initialized", serde_json::Value::Null)
         .await;
 
-    assert!(
-        result.is_ok(),
-        "initialized with null params should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("initialized with null params should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "initialized with null params should return exactly Ok(Value::Null)"
     );
@@ -592,13 +584,9 @@ async fn shutdown_returns_ok_null() {
 
     let result = lsp.handle_request("shutdown", json!({})).await;
 
-    assert!(
-        result.is_ok(),
-        "shutdown should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("shutdown should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "shutdown should return exactly Ok(Value::Null)"
     );
