@@ -4503,7 +4503,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(1e-15))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "near-zero extrude distance should return None"
@@ -4581,7 +4581,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "near-zero revolve angle should return None"
