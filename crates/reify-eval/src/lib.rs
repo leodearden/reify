@@ -2902,6 +2902,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -2981,6 +2982,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3101,6 +3103,7 @@ impl Engine {
                         &step_handles[handle_start..],
                         &module.functions,
                         meta_map,
+                        diagnostics,
                     );
                     match geom_op {
                         Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3346,21 +3349,26 @@ fn compile_geometry_op(
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> reify_types::Value {
+                match args.iter().find(|(n, _)| n == name) {
+                    Some((_, expr)) => reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                    ),
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "missing required geometry argument '{}' for {:?}",
+                            name, kind
+                        )));
+                        reify_types::Value::Undef
+                    }
+                }
             };
 
             match kind {
@@ -4278,7 +4286,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(2.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Scale");
 
         match result {
@@ -4309,7 +4317,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for RotateAround");
 
         match result {
@@ -4345,7 +4353,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Loft");
 
         match result {
@@ -4371,7 +4379,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.05))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4420,7 +4428,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'ox' arg, got {:?}",
@@ -4439,7 +4447,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'distance' arg, got {:?}",
@@ -4459,7 +4467,7 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN extrude distance should return None");
     }
 
@@ -4475,7 +4483,7 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::INFINITY))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "Inf extrude distance should return None");
     }
 
@@ -4499,7 +4507,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "zero-length rotation axis should return None"
@@ -4526,7 +4534,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN rotation axis should return None");
     }
 
@@ -4549,7 +4557,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result =
             result.expect("compile_geometry_op should return Some for Revolve with valid axis");
 
@@ -4584,7 +4592,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.03))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4619,7 +4627,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(-1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "negative scale factor should return None (inside-out geometry)"
@@ -4638,7 +4646,7 @@ mod tests {
             args: vec![("dx".into(), literal_f64(1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing dy/dz should return None, not silently default to 0.0"
@@ -4656,7 +4664,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN scale factor should return None");
     }
 
@@ -4680,7 +4688,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "missing axis_z should return None");
     }
 
@@ -4702,7 +4710,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing spacing should return None, not silently default to Value::Undef"
@@ -4730,7 +4738,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing angle should return None, not silently default to Value::Undef"
@@ -4754,7 +4762,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::LinearPattern {
                 target,
@@ -4795,7 +4803,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::CircularPattern {
                 target,
@@ -4836,7 +4844,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::Mirror {
                 target,
