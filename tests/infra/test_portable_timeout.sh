@@ -454,6 +454,11 @@ echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 #
 # Sentinel duration 31339 is distinct from 31337 (Test 16) to avoid ps conflicts.
 # Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
+#
+# Regression guard (verified manually, step-5): temporarily commenting out the
+# 'kill -9' line in lib_portable.sh causes Test 18a to FAIL (exit 143 never
+# arrives, process stays alive, flag check never triggers, returns 143 not 124).
+# This confirms the test has discriminating power and is not vacuous.
 
 assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
     env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
