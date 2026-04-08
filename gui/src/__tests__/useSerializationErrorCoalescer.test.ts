@@ -28,4 +28,22 @@ describe('createSerializationErrorCoalescer', () => {
       'error',
     );
   });
+
+  it('emits a single summary toast for multiple distinct errors after the window', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    coalescer.add({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32 value' });
+    coalescer.add({ item_type: 'value', item_id: 'param.width', error: 'Infinity' });
+    coalescer.add({ item_type: 'constraint', item_id: 'c42', error: 'NaN distance' });
+
+    // No toast yet
+    expect(showToast).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(500);
+
+    // Exactly one call with the summary message
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('3 items failed to serialize', 'error');
+  });
 });
