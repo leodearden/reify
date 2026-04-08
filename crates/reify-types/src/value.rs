@@ -2199,6 +2199,72 @@ mod tests {
     }
 
     #[test]
+    fn value_btreeset_boundary_real_iteration_order() {
+        // End-to-end boundary coverage: BTreeSet iteration must yield the
+        // IEEE 754 totalOrder sequence for all boundary cases.
+        // Expected order: [NEG_INFINITY, -1.0, -0.0, +0.0, 1.0, INFINITY, NaN]
+        //
+        // NaN sorts last (after +Infinity) under total_cmp().
+        // -0.0 sorts before +0.0 (IEEE 754 totalOrder: negative zero precedes positive zero).
+        //
+        // This subsumes value_ord_real_negative_vs_positive and
+        // value_ord_real_negative_magnitude which test a subset of these pairings.
+        use std::collections::BTreeSet;
+        let values: &[f64] = &[
+            0.0,           // +0.0
+            -0.0,          // -0.0
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -1.0,
+            1.0,
+        ];
+        let mut set = BTreeSet::new();
+        for &v in values {
+            set.insert(Value::Real(v));
+        }
+        let sorted: Vec<f64> = set
+            .iter()
+            .map(|v| match v {
+                Value::Real(f) => *f,
+                _ => panic!("unexpected value"),
+            })
+            .collect();
+
+        // Verify count (all 7 bit-distinct values must be stored)
+        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
+
+        // Verify positions by property, not by bit-pattern indexing
+        let neg_inf_idx = sorted
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_negative())
+            .expect("NEG_INFINITY must be present");
+        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
+        let neg_zero_idx = sorted
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_negative())
+            .expect("-0.0 must be present");
+        let pos_zero_idx = sorted
+            .iter()
+            .position(|f| *f == 0.0 && f.is_sign_positive())
+            .expect("+0.0 must be present");
+        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
+        let pos_inf_idx = sorted
+            .iter()
+            .position(|f| f.is_infinite() && f.is_sign_positive())
+            .expect("INFINITY must be present");
+        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
+
+        // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
+        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
+        assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
+        assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
+        assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
+        assert!(pos_one_idx < pos_inf_idx, "1.0 must come before INFINITY");
+        assert!(pos_inf_idx < nan_idx, "INFINITY must come before NaN");
+    }
+
+    #[test]
     fn value_ord_real_negative_vs_positive() {
         // A negative real must order before a positive real.
         // to_bits() gets this WRONG: (-0.5_f64).to_bits() > (0.5_f64).to_bits()
@@ -4056,6 +4122,55 @@ mod tests {
         assert_eq!(r1.cmp(&r2), Ordering::Equal);
     }
 
+    #[test]
+    fn value_ord_range_negative_bounds() {
+        // Range delegates bound ordering to Value::cmp, which uses total_cmp() for
+        // Real bounds. Negative-bound ranges must therefore sort correctly.
+
+        // Real lower=-5.0, upper=5.0 (half-open [−5, 5))
+        let r_neg_real = make_range(
+            Some(Value::Real(-5.0)),
+            Some(Value::Real(5.0)),
+            true,
+            false,
+        );
+        // Real lower=0.0, upper=10.0 (half-open [0, 10))
+        let r_pos_real = make_range(
+            Some(Value::Real(0.0)),
+            Some(Value::Real(10.0)),
+            true,
+            false,
+        );
+        // [-5, 5) < [0, 10) because lower bounds: −5.0 < 0.0
+        assert!(r_neg_real < r_pos_real);
+        // Antisymmetry
+        assert_eq!(
+            r_neg_real.cmp(&r_pos_real),
+            r_pos_real.cmp(&r_neg_real).reverse()
+        );
+
+        // Int lower=-10, upper=-1 (closed [−10, −1])
+        let r_neg_int = make_range(
+            Some(Value::Int(-10)),
+            Some(Value::Int(-1)),
+            true,
+            true,
+        );
+        // Int lower=-5, upper=-1 (closed [−5, −1])
+        let r_less_neg_int = make_range(
+            Some(Value::Int(-5)),
+            Some(Value::Int(-1)),
+            true,
+            true,
+        );
+        // [−10, −1] < [−5, −1] because lower bounds: −10 < −5
+        assert!(r_neg_int < r_less_neg_int);
+        assert_eq!(
+            r_neg_int.cmp(&r_less_neg_int),
+            r_less_neg_int.cmp(&r_neg_int).reverse()
+        );
+    }
+
     // ── Range PartialEq tests (step-3) ───────────────────────────────────────
 
     fn make_range(
@@ -4065,6 +4180,13 @@ mod tests {
         upper_inclusive: bool,
     ) -> Value {
         Value::range(lower, upper, lower_inclusive, upper_inclusive)
+    }
+
+    /// Construct a `Value::Orientation` from four f64 components.
+    /// Placed near `make_range()` following the project convention of defining
+    /// test helpers close to the tests that use them.
+    fn orient(w: f64, x: f64, y: f64, z: f64) -> Value {
+        Value::Orientation { w, x, y, z }
     }
 
     #[test]
