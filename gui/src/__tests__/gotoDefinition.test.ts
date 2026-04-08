@@ -238,8 +238,9 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     // onNavigate should NOT be called — it is the same file after URI normalization
     expect(onNavigate).not.toHaveBeenCalled();
     // view.dispatch SHOULD be called for same-file cursor movement
+    // anchor = doc.line(8).from + 4 = (8-1)*20 + 4 = 144
     expect(mockView.dispatch).toHaveBeenCalledWith({
-      selection: { anchor: expect.any(Number) },
+      selection: { anchor: 144 },
       scrollIntoView: true,
     });
   });
