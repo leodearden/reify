@@ -3627,9 +3627,7 @@ mod tests {
             z: 0.0,
         };
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
-        assert_eq!(nan_w_a, nan_w_b);
-        // Ord must agree.
-        assert_eq!(nan_w_a.cmp(&nan_w_b), std::cmp::Ordering::Equal);
+        assert_ord_consistent(&nan_w_a, &nan_w_b, true);
 
         // --- neg-zero in `w`: Ord consistency (PartialEq covered by value_orientation_eq_neg_zero) ---
         let pos_w = Value::Orientation {
@@ -3644,13 +3642,8 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert_ne!(pos_w, neg_w);
-        // Ord must also distinguish them.
-        assert_ne!(pos_w.cmp(&neg_w), std::cmp::Ordering::Equal);
-        // Antisymmetry.
-        assert_eq!(pos_w.cmp(&neg_w), neg_w.cmp(&pos_w).reverse());
-        // IEEE 754 totalOrder: -0.0 < +0.0.
-        assert!(neg_w < pos_w);
+        // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_w as the smaller value.
+        assert_ord_consistent(&neg_w, &pos_w, false);
 
         // --- Spot-check NaN in a non-w component (`z`) to exercise all component call sites ---
         let nan_z_a = Value::Orientation {
@@ -3665,8 +3658,7 @@ mod tests {
             y: 0.0,
             z: f64::NAN,
         };
-        assert_eq!(nan_z_a, nan_z_b);
-        assert_eq!(nan_z_a.cmp(&nan_z_b), std::cmp::Ordering::Equal);
+        assert_ord_consistent(&nan_z_a, &nan_z_b, true);
     }
 
     #[test]
