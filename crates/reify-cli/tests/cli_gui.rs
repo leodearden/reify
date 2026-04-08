@@ -57,9 +57,9 @@ fn gui_nonexistent_file_shows_error() {
 
 #[test]
 fn gui_non_ri_file_shows_error() {
-    // Create a temporary .txt file
-    let tmp_dir = std::env::temp_dir();
-    let txt_file = tmp_dir.join("test_reify_gui.txt");
+    // Create a temporary .txt file inside a unique temp directory
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let txt_file = tmp_dir.path().join("test_reify_gui.txt");
     std::fs::write(&txt_file, "not a reify file").expect("failed to create temp file");
 
     let output = reify_cmd()
@@ -68,9 +68,6 @@ fn gui_non_ri_file_shows_error() {
         .expect("failed to execute reify binary");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Cleanup
-    let _ = std::fs::remove_file(&txt_file);
 
     assert!(
         !output.status.success(),
