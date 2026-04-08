@@ -1545,9 +1545,9 @@ mod tests {
             },
         };
 
-        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
-
-        result.expect("add_line_pair should return Ok");
+        let pair = builder
+            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
         // 3 unique Fixed points (deduped) + 2 line segments = 5 entities
         assert_eq!(
             builder.entities.len(),
@@ -1558,6 +1558,24 @@ mod tests {
             builder.point_entities.len(),
             3,
             "expected 3 unique point cache entries (shared endpoint deduped)"
+        );
+        // Verify the shared endpoint handle propagates into the Slvs_Entity arrays:
+        // segment_a.point[1] (la_end = (1,0,0)) must equal segment_b.point[0] (lb_start = (1,0,0))
+        let segment_a = builder
+            .entities
+            .iter()
+            .find(|e| e.h == pair.line_a)
+            .expect("line_a entity must be present in builder.entities");
+        let segment_b = builder
+            .entities
+            .iter()
+            .find(|e| e.h == pair.line_b)
+            .expect("line_b entity must be present in builder.entities");
+        assert_eq!(
+            segment_a.point[1],
+            segment_b.point[0],
+            "shared endpoint handle must be identical in both segment Slvs_Entity.point arrays: \
+             segment_a.point[1] (la_end) should equal segment_b.point[0] (lb_start)"
         );
     }
 
