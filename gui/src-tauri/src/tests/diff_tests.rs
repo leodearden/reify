@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::diff::{StateDelta, delta_to_events, diff_gui_state, try_serialize_event};
+use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event, try_serialize_event};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
@@ -519,4 +519,15 @@ fn try_serialize_event_pushes_error_and_warns_on_err() {
         payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
         "error must be a non-empty string"
     );
+}
+
+/// push_serialized_event: on Ok, a single (event_name, val) tuple is pushed.
+#[test]
+fn push_serialized_event_exists() {
+    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
+    let val = serde_json::json!({"x": 42});
+    push_serialized_event(&mut events, "mesh-update", "mesh", "B.body", Ok(val.clone()));
+    assert_eq!(events.len(), 1, "expected exactly one event");
+    assert_eq!(events[0].0, "mesh-update");
+    assert_eq!(events[0].1, val);
 }
