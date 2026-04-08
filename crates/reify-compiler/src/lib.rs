@@ -38,6 +38,8 @@ pub struct CompiledTrait {
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#precision(bits=32)`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -138,6 +140,8 @@ pub struct CompiledPurpose {
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#solver(method="gradient")`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -158,6 +162,9 @@ pub struct CompiledModule {
     /// Constraint definitions declared in this module.
     /// Stored so downstream modules can reference them during compilation.
     pub constraint_defs: Vec<reify_syntax::ConstraintDef>,
+    /// Module-level pragmas declared in this module (e.g., `#no_prelude`, `#precision`).
+    /// All pragmas are stored here, including consumed ones like `#no_prelude`.
+    pub pragmas: Vec<reify_syntax::Pragma>,
     pub diagnostics: Vec<reify_types::Diagnostic>,
     pub content_hash: ContentHash,
 }
@@ -207,6 +214,8 @@ pub struct TopologyTemplate {
     pub is_recursive: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -2501,6 +2510,16 @@ fn compile_expr_guarded(
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall
+                    // Deprecation check: warn if the called function is @deprecated.
+                    if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                        emit_deprecation_warning(
+                            "function",
+                            name,
+                            &msg,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
                         let mut h = ContentHash::of(&[6]).combine(ContentHash::of_str(name));
@@ -3596,6 +3615,7 @@ fn compile_trait(
 
     let annotations = lower_annotations(&trait_decl.annotations, diagnostics);
     validate_annotations(&annotations, "trait", diagnostics);
+    validate_pragmas(&trait_decl.pragmas, "trait", diagnostics);
 
     CompiledTrait {
         name: trait_decl.name.clone(),
@@ -3606,6 +3626,7 @@ fn compile_trait(
         defaults,
         content_hash,
         annotations,
+        pragmas: trait_decl.pragmas.clone(),
     }
 }
 
@@ -3630,6 +3651,18 @@ fn compile_purpose(
     // Use StructureRef so member access resolves correctly against the entity type.
     for param in &purpose_def.params {
         scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
+        // Deprecation check: warn if the referenced entity kind is @deprecated.
+        if let Some(template) = template_registry.get(&param.entity_kind)
+            && let Some(msg) = deprecation_message(&template.annotations)
+        {
+            emit_deprecation_warning(
+                &template.entity_kind.to_string().to_lowercase(),
+                &param.entity_kind,
+                &msg,
+                param.span,
+                diagnostics,
+            );
+        }
     }
 
     let mut constraints = Vec::new();
@@ -3814,6 +3847,7 @@ fn compile_purpose(
 
     let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
     validate_annotations(&annotations, "purpose", diagnostics);
+    validate_pragmas(&purpose_def.pragmas, "purpose", diagnostics);
 
     CompiledPurpose {
         name: purpose_def.name.clone(),
@@ -3824,6 +3858,7 @@ fn compile_purpose(
         resolved_queries,
         content_hash: purpose_def.content_hash,
         annotations,
+        pragmas: purpose_def.pragmas.clone(),
     }
 }
 
@@ -3866,6 +3901,23 @@ pub fn compile_with_prelude(
                 .with_label(DiagnosticLabel::new(err.span, "parse error")),
         );
     }
+
+    // Validate module-level pragmas: warn on unknown names.
+    const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
+    for pragma in &parsed.pragmas {
+        if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+            );
+        }
+    }
+
+    // Handle #no_prelude: suppress ALL prelude-dependent behavior by shadowing
+    // the prelude parameter with an empty slice. This affects unit seeding,
+    // trait/enum/function resolution, and constraint def imports.
+    let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
+    let prelude: &[CompiledModule] = if has_no_prelude { &[] } else { prelude };
 
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
@@ -4148,6 +4200,24 @@ pub fn compile_with_prelude(
     // Module-local traits override prelude on name collision
     for t in &trait_defs {
         trait_registry.insert(t.name.clone(), t);
+    }
+
+    // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
+    // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
+    for trait_decl in &trait_refs {
+        for refinement_name in &trait_decl.refinements {
+            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
+                && let Some(msg) = deprecation_message(&parent_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    refinement_name,
+                    &msg,
+                    trait_decl.span,
+                    &mut diagnostics,
+                );
+            }
+        }
     }
 
     // 3. Fields (need all resolution_enums + all compiled functions)
@@ -4496,6 +4566,7 @@ pub fn compile_with_prelude(
         units: compiled_units,
         type_aliases,
         constraint_defs,
+        pragmas: parsed.pragmas.clone(),
         diagnostics,
         content_hash,
     }
@@ -4509,6 +4580,7 @@ struct EntityDefRef<'a> {
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
     annotations: &'a [reify_syntax::Annotation],
+    pragmas: &'a [reify_syntax::Pragma],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -4523,6 +4595,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             trait_bounds: &s.trait_bounds,
             members: &s.members,
             annotations: &s.annotations,
+            pragmas: &s.pragmas,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -4538,6 +4611,7 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             trait_bounds: &o.trait_bounds,
             members: &o.members,
             annotations: &o.annotations,
+            pragmas: &o.pragmas,
             span: o.span,
             content_hash: o.content_hash,
         }
@@ -4649,6 +4723,67 @@ fn validate_annotations(
             }
         }
     }
+}
+
+/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
+///
+/// Known block-level pragmas: `#precision`, `#solver`, `#kernel`.
+/// Unknown pragmas emit a `Severity::Warning` diagnostic.
+fn validate_pragmas(
+    pragmas: &[reify_syntax::Pragma],
+    _context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
+    for pragma in pragmas {
+        if !KNOWN_BLOCK_PRAGMAS.contains(&pragma.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+            );
+        }
+    }
+}
+
+// ─── Deprecation-on-use helpers ─────────────────────────────────────────────
+
+/// Extract the deprecation message from an annotation list.
+///
+/// Returns `Some(message)` if there is an `@deprecated("message")` annotation with a
+/// `String` first arg, `Some("")` if `@deprecated` has no args, or `None` if there
+/// is no `@deprecated` annotation at all.
+fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<String> {
+    for ann in annotations {
+        if ann.name == "deprecated" {
+            return Some(match ann.args.first() {
+                Some(reify_types::AnnotationArg::String(s)) => s.clone(),
+                _ => String::new(),
+            });
+        }
+    }
+    None
+}
+
+/// Emit a deprecation warning for a use-site reference to a deprecated entity.
+///
+/// Format: `use of deprecated <kind> '<name>': <message>` (with message)
+///         `use of deprecated <kind> '<name>'` (without message)
+fn emit_deprecation_warning(
+    entity_kind: &str,
+    entity_name: &str,
+    message: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let text = if message.is_empty() {
+        format!("use of deprecated {entity_kind} '{entity_name}'")
+    } else {
+        format!("use of deprecated {entity_kind} '{entity_name}': {message}")
+    };
+    diagnostics.push(
+        Diagnostic::warning(text)
+            .with_label(DiagnosticLabel::new(span, "deprecated")),
+    );
 }
 
 // ─── Recursive termination check (Task 204) ─────────────────────────────────
@@ -5152,6 +5287,16 @@ fn compile_entity(
                     .iter()
                     .find(|t| t.name == sub.structure_name)
                 {
+                    // Deprecation check: warn if the referenced structure is @deprecated.
+                    if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
+                        emit_deprecation_warning(
+                            "structure",
+                            &sub.structure_name,
+                            &msg,
+                            sub.span,
+                            diagnostics,
+                        );
+                    }
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
@@ -5220,6 +5365,21 @@ fn compile_entity(
             alias_registry,
             diagnostics,
         );
+
+        // Deprecation check: warn for each trait bound that references a @deprecated trait.
+        for trait_bound in structure.trait_bounds {
+            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
+                && let Some(msg) = deprecation_message(&compiled_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    &trait_bound.name,
+                    &msg,
+                    trait_bound.span,
+                    diagnostics,
+                );
+            }
+        }
 
         // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
         // to the post-compilation pass so forward references are resolved correctly.
@@ -6181,6 +6341,7 @@ fn compile_entity(
     };
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
+    validate_pragmas(structure.pragmas, context, diagnostics);
 
     TopologyTemplate {
         name: entity_name.to_string(),
@@ -6201,6 +6362,7 @@ fn compile_entity(
         content_hash,
         is_recursive: false,
         annotations,
+        pragmas: structure.pragmas.to_vec(),
     }
 }
 
