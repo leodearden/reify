@@ -1412,6 +1412,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vec2_dimensionless_creates_vector_with_two_real_components() {
+        let v = vec2_dimensionless(1.0, 2.0);
+        match v {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [1.0, 2.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Real(f) => {
+                            assert!(
+                                (f - expected).abs() < 1e-12,
+                                "component {} Real: expected {}, got {}",
+                                i,
+                                expected,
+                                f
+                            );
+                        }
+                        other => panic!("component {} should be Real, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn point2_dimensionless_creates_point_with_two_real_components() {
+        let p = point2_dimensionless(3.0, 4.0);
+        match p {
+            Value::Point(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [3.0, 4.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Real(f) => {
+                            assert!(
+                                (f - expected).abs() < 1e-12,
+                                "component {} Real: expected {}, got {}",
+                                i,
+                                expected,
+                                f
+                            );
+                        }
+                        other => panic!("component {} should be Real, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Point, got {:?}", other),
+        }
+    }
+
     // --- orientation_val tests (step 23) ---
 
     #[test]
