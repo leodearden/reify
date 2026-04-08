@@ -1248,13 +1248,11 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
 /// than reading the actual guard value from the values map), all guard states would produce
 /// the same fingerprint hash (hash of Undef), causing stale incremental caches.
 ///
-/// Note: `eval()` and `edit_param()` use different hash format strings for guard state, so
-/// the fingerprint from `eval(true)` cannot be directly compared to `edit_param(true)`. The
-/// round-trip is tested within the `edit_param` code path: after `false → true → false`, the
-/// final `false` fingerprint must equal the first `false` fingerprint (F4 == F2), and the
-/// intermediate `true` fingerprint must differ from both (F3 ≠ F2).
+/// Both `eval()` and `edit_param()` now use the same `"guard:{}={:?}"` format string for
+/// guard-state hashing, so cross-path fingerprints are directly comparable. F1 (from eval)
+/// must equal F3 (from edit_param with the same guard=true state).
 ///
-/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3 ≠ F2,
+/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3 == F1,
 ///           edit_param(false) → F4 == F2.
 #[test]
 fn edit_param_guard_fingerprint_round_trips() {
@@ -1341,6 +1339,13 @@ fn edit_param_guard_fingerprint_round_trips() {
     assert_ne!(
         f2, f3,
         "topology_fingerprint must change when guard transitions false→true (guard state must be reflected in fingerprint)"
+    );
+
+    // Cross-path consistency: eval(true) → F1 must equal edit_param(true) → F3.
+    // Both use the same "guard:{}={:?}" format string, so same guard state → same fingerprint.
+    assert_eq!(
+        f1, f3,
+        "topology_fingerprint from eval(true) must equal edit_param(true): cross-path consistency"
     );
 
     // Verify values returned to initial state
