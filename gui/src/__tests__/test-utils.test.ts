@@ -331,6 +331,6 @@ describe('expectNoUnhandledRejections', () => {
         // Simulate an unhandledrejection event firing during fn
         window.dispatchEvent(new Event('unhandledrejection'));
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/expected.*not.*called/i);
   });
 });
