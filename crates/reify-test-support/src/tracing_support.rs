@@ -343,7 +343,19 @@ mod tests {
         );
     }
 
-    /// Two calls to new_span must produce distinct span IDs (AtomicU64 uniqueness).
+    /// Two calls to new_span must produce distinct span IDs, and the non-zero
+    /// invariant required by `tracing::span::Id::from_u64` must hold.
+    ///
+    /// # Invariants
+    ///
+    /// - **Non-zero**: `Id::from_u64` panics if passed zero, so the subscriber
+    ///   must never issue an ID with underlying value 0.  The counter is
+    ///   initialised to 1 to guarantee this; a regression that started the
+    ///   counter at 0 would panic inside `new_span()` → `Id::from_u64(0)`
+    ///   before control returns to this test, so the non-zero invariant is
+    ///   enforced by construction rather than by a runtime assertion here.
+    /// - **Uniqueness**: successive calls return distinct IDs.  This is
+    ///   guaranteed by `AtomicU64::fetch_add` and asserted below.
     #[test]
     fn new_span_ids_are_unique() {
         // Each subscriber issues IDs starting from 1; what matters is that
@@ -364,6 +376,7 @@ mod tests {
             (a, b)
         });
 
+        // Uniqueness invariant: successive new_span calls must not collide.
         assert_ne!(
             id_a, id_b,
             "successive new_span calls must return distinct IDs"
