@@ -23114,7 +23114,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1126,
@@ -23125,7 +23135,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": 1127,
@@ -23136,7 +23154,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1128,
