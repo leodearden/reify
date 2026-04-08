@@ -22683,11 +22683,11 @@
         "description": "Orchestrator infrastructure bug surfaced by task 1061 escalation (esc-1061-763). verify.py treats concurrent_verify:false as dead config and always runs test/lint/type_check phases concurrently via asyncio.gather, causing spurious failures in merge worktrees.",
         "details": "Root cause (from task 1061 implementer diagnosis after 6 consecutive false-alarm post_merge_verify failures):\n\n- orchestrator.yaml sets `concurrent_verify: false` intending test/lint/type_check to run sequentially\n- verify.py ignores the flag and always runs phases concurrently via asyncio.gather with 300s timeouts\n- In merge worktrees where multiple tasks share the cargo registry/lockfile, concurrent cargo clippy invocations cause lock contention\n- 300s timeout exhausts and is reported as \"lint issues\"\n- None of the failures reproduce locally: cargo fmt, tree-sitter-generate, cargo clippy --workspace, and all test suites pass cleanly\n\nFix options (in order of preference):\n1. Honor concurrent_verify:false in verify.py — run test/lint/type_check sequentially when the flag is set\n2. Per-worktree cargo target directory (CARGO_TARGET_DIR share would help rustc, but cargo lock contention is on the source-of-truth registry)\n3. Increase verify timeouts for merge-worktree contexts\n4. Serialize cold-worktree builds for merge queue\n\nEvidence: task 1061 branch was merge-ready after 6 attempts. Cascading post_merge_verify failures across tasks 1006, 1017, 1039, 960, 1061, 912, 209 in a single orchestrator run all matching the same symptom.\n\nSource: esc-1061-763 (steward re-escalation of implementer infra_issue). Codebase: /home/leo/src/dark-factory/orchestrator/src/orchestrator/verify.py.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:35:04.334Z"
+        "updatedAt": "2026-04-08T20:55:57.360Z"
       },
       {
         "id": "1103",
@@ -22962,9 +22962,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:55:23.067Z",
+      "lastModified": "2026-04-08T20:55:57.360Z",
       "taskCount": 1118,
-      "completedCount": 791,
+      "completedCount": 792,
       "tags": [
         "master"
       ]
