@@ -3645,7 +3645,7 @@ fn compile_geometry_op(
                                         .with_meta(meta_map),
                                 )
                             })?;
-                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && *v != 0.0)?;
+                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && v.abs() >= 1e-12)?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
