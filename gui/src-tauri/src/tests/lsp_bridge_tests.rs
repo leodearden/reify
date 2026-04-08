@@ -7,6 +7,15 @@ use serde_json::json;
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
 use reify_lsp::test_support::RecordingSink;
 
+/// Error prefix emitted by the `initialize` handler in
+/// `crates/reify-lsp/src/bridge.rs` when `InitializeParams` deserialization
+/// fails (i.e. `.map_err(|e| format!("initialize params error: {e}"))`).
+///
+/// Pinned here so both `lsp_request_impl_null_literal_passes_json_parse_step`
+/// and `lsp_request_impl_rejects_wrong_shape_params` reference a single
+/// authoritative constant rather than independent string literals.
+const INIT_PARAMS_ERR: &str = "initialize params error";
+
 #[tokio::test]
 async fn lsp_bridge_can_be_constructed_and_initialized() {
     let bridge = LspBridge::new();
@@ -232,7 +241,7 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
         "null literal should not trigger a JSON parse error, got: {err}"
     );
     assert!(
-        err.contains("initialize params error"),
+        err.contains(INIT_PARAMS_ERR),
         "expected handler-side rejection, got: {err}"
     );
 }
@@ -255,7 +264,7 @@ async fn lsp_request_impl_rejects_wrong_shape_params() {
             "case {case:?}: valid JSON should not trigger a JSON parse error, got: {err}"
         );
         assert!(
-            err.contains("initialize params error"),
+            err.contains(INIT_PARAMS_ERR),
             "case {case:?}: expected handler-side rejection, got: {err}"
         );
     }
