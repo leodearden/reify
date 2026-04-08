@@ -1684,6 +1684,43 @@ mod poison_recovery {
         );
     }
 
+    /// snapshot_values() recovers gracefully from a poisoned snapshot_values RwLock:
+    /// no panic, returned map contains both T.a and T.b, and exactly one tracing::warn!
+    /// is emitted.
+    #[test]
+    fn snapshot_values_recovers_from_poisoned_lock_with_warn() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        adapter.poison_snapshot_values();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| adapter.snapshot_values()))
+        });
+
+        assert!(
+            result.is_ok(),
+            "snapshot_values() should recover from poisoned lock, not panic"
+        );
+        let sv = result.unwrap();
+        assert!(
+            sv.contains_key(&ValueCellId::new("T", "a")),
+            "snapshot_values() should return T.a after poison recovery"
+        );
+        assert!(
+            sv.contains_key(&ValueCellId::new("T", "b")),
+            "snapshot_values() should return T.b after poison recovery"
+        );
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // snapshot_values() acquires 1 lock: snapshot_values RwLock (via read_snapshot_values()).
+        // Only that lock is poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count, 1,
+            "snapshot_values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
     /// Verify that tracing::warn! is emitted when build_result_shared() recovers from poisoned snapshot_values.
     #[test]
     fn tracing_warn_emitted_on_poison_snapshot_values_read() {
