@@ -1626,27 +1626,6 @@ fn assert_poison_recovers<T: Send + 'static>(
     result.unwrap()
 }
 
-/// Simpler variant of [`assert_poison_recovers`] that only checks the WARN
-/// count, without a message-substring assertion.  Use this when multiple locks
-/// may fire (e.g. evaluate() touching both read and write paths) or when the
-/// exact message content is not the focus of the test.
-#[cfg(feature = "test-utils")]
-fn assert_poison_recovers_checked<T: Send + 'static>(
-    action: impl FnOnce() -> T + std::panic::UnwindSafe,
-    expected_warns: usize,
-) -> T {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-    let (subscriber, capture) = warn_capturing_subscriber();
-    let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(AssertUnwindSafe(action))
-    });
-    assert!(
-        result.is_ok(),
-        "action panicked when poison recovery was expected — catch_unwind returned Err"
-    );
-    capture.assert_count(expected_warns);
-    result.unwrap()
-}
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
