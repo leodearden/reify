@@ -30,6 +30,7 @@ import {
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
   onFileChanged,
+  onSerializationError,
   getSourceLocation as bridgeGetSourceLocation,
   focusEntity as bridgeFocusEntity,
   claudeSendMessage,
@@ -195,6 +196,7 @@ const App: Component = () => {
   let alive = true;
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
+  let serializationErrorUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
 
   async function initApp() {
@@ -204,6 +206,8 @@ const App: Component = () => {
     unsub = undefined;
     fileChangedUnsub?.();
     fileChangedUnsub = undefined;
+    serializationErrorUnsub?.();
+    serializationErrorUnsub = undefined;
     claudeEventUnsub?.();
     claudeEventUnsub = undefined;
 
@@ -255,6 +259,20 @@ const App: Component = () => {
       showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
 
+    // Subscribe to serialization error events
+    try {
+      const unlistenSerializationError = await onSerializationError((data) => {
+        showToast(`Failed to serialize ${data.item_type} '${data.item_id}': ${data.error}`, 'error');
+      });
+      if (!alive) {
+        unlistenSerializationError();
+        return;
+      }
+      serializationErrorUnsub = unlistenSerializationError;
+    } catch (_err) {
+      showToast('Serialization error monitoring unavailable', 'error');
+    }
+
     // Subscribe to Claude sidecar events
     try {
       const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
@@ -281,6 +299,7 @@ const App: Component = () => {
     alive = false;
     unsub?.();
     fileChangedUnsub?.();
+    serializationErrorUnsub?.();
     claudeEventUnsub?.();
   });
 

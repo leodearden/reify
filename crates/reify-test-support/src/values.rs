@@ -477,6 +477,20 @@ pub fn vec2(x: f64, y: f64) -> Value {
     Value::Vector(vec![Value::length(x), Value::length(y)])
 }
 
+/// Create a `Value::Vector` with two dimensionless `Real` components.
+///
+/// Useful for unit normals, directions, and other dimensionless 2D vectors in geometry tests.
+pub fn vec2_dimensionless(x: f64, y: f64) -> Value {
+    Value::Vector(vec![Value::Real(x), Value::Real(y)])
+}
+
+/// Create a `Value::Point` with two dimensionless `Real` components.
+///
+/// Useful for dimensionless 2D coordinate values in geometry tests.
+pub fn point2_dimensionless(x: f64, y: f64) -> Value {
+    Value::Point(vec![Value::Real(x), Value::Real(y)])
+}
+
 /// Create a `Value::Orientation` (unit quaternion: w + xi + yj + zk).
 pub fn orientation_val(w: f64, x: f64, y: f64, z: f64) -> Value {
     Value::Orientation { w, x, y, z }
@@ -1409,6 +1423,56 @@ mod tests {
                 }
             }
             _ => panic!("expected Value::Vector"),
+        }
+    }
+
+    #[test]
+    fn vec2_dimensionless_creates_vector_with_two_real_components() {
+        let v = vec2_dimensionless(1.0, 2.0);
+        match v {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [1.0, 2.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Real(f) => {
+                            assert!(
+                                (f - expected).abs() < 1e-12,
+                                "component {} Real: expected {}, got {}",
+                                i,
+                                expected,
+                                f
+                            );
+                        }
+                        other => panic!("component {} should be Real, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn point2_dimensionless_creates_point_with_two_real_components() {
+        let p = point2_dimensionless(3.0, 4.0);
+        match p {
+            Value::Point(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [3.0, 4.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Real(f) => {
+                            assert!(
+                                (f - expected).abs() < 1e-12,
+                                "component {} Real: expected {}, got {}",
+                                i,
+                                expected,
+                                f
+                            );
+                        }
+                        other => panic!("component {} should be Real, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("expected Value::Point, got {:?}", other),
         }
     }
 

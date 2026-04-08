@@ -74,6 +74,7 @@ vi.mock('../bridge', () => ({
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  onSerializationError: vi.fn().mockResolvedValue(() => {}),
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
@@ -100,6 +101,7 @@ beforeEach(() => {
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
+  vi.mocked(bridge.onSerializationError).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
 });
@@ -2162,5 +2164,47 @@ describe('App error-path integration: errorMessage propagation', () => {
         expect(errorToast!.textContent).toContain('dialog permission denied');
       });
     });
+  });
+});
+
+describe('App serialization-error subscription', () => {
+  let serializationErrorCallback: ((data: { item_type: string; item_id: string; error: string }) => void) | undefined;
+
+  beforeEach(() => {
+    serializationErrorCallback = undefined;
+    vi.mocked(bridge.onSerializationError).mockImplementation(async (cb: any) => {
+      serializationErrorCallback = cb;
+      return () => {};
+    });
+  });
+
+  it('subscribes to serialization-error events and shows toast', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(serializationErrorCallback).toBeDefined());
+
+    serializationErrorCallback!({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32 value' });
+
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const errorToast = toasts.find((t) => t.dataset.type === 'error');
+      expect(errorToast).toBeTruthy();
+      expect(errorToast!.textContent).toContain("Failed to serialize mesh 'Bracket.body': non-finite f32 value");
+    });
+  });
+
+  it('cleans up serialization-error subscription on unmount', async () => {
+    const serializationErrorUnsub = vi.fn();
+    vi.mocked(bridge.onSerializationError).mockResolvedValueOnce(serializationErrorUnsub);
+
+    const { unmount } = render(() => <App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    expect(serializationErrorUnsub).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(serializationErrorUnsub).toHaveBeenCalled();
   });
 });
