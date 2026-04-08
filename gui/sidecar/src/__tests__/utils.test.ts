@@ -28,6 +28,10 @@ describe('errorMessage re-export smoke test', () => {
     expect(errorMessage({ message: undefined })).toBe('Unknown error');
   });
 
+  it('returns "[object Object]" for plain object with no .message property', () => {
+    expect(errorMessage({})).toBe('[object Object]');
+  });
+
   it('returns "Unknown error" for plain object with throwing .message getter', () => {
     const hostile = { get message() { throw new Error('boom'); } };
     expect(errorMessage(hostile)).toBe('Unknown error');
