@@ -23416,6 +23416,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1142,
+        "title": "Refactor test_portable_timeout.sh: extract POSIX-fallback helper, add polling, fix cleanup",
+        "description": "Three related test quality improvements in `tests/infra/test_portable_timeout.sh`:\n\n1. **Extract shared POSIX-fallback setup helper** (from review S5): Tests 16a, 16b, 18a, and 18b all contain a nearly identical ~15-line block for PATH manipulation (rescue_dir creation, symlink loop, PATH stripping of timeout/gtimeout directories, hash -r, source). Extract into a `setup_posix_fallback_env` helper function that each test calls. This reduces ~60 lines of duplication to ~10.\n\n2. **Replace fixed sleep with polling loop in Test 16a** (from review S3): Test 16a at line 326 uses `sleep 0.5` to wait for the timer subshell to spawn `sleep 31337`. On heavily loaded CI, this could be flaky. Replace with a retry loop (e.g., poll `ps` up to 5 times with 200ms intervals). Also add a safety-net cleanup `kill` of any lingering 31337 sentinel at the end of the test block.\n\n3. **Add rescue_dir cleanup in Test 18b** (from review S6): Test 18b (line ~448) creates a `rescue_dir` via `mktemp -d` but never cleans it up (intentionally omits EXIT trap to avoid timer subshell inheritance). Add `rm -rf \"$rescue_dir\"` at the end of the `bash -c` block (after the ps/grep check) to avoid accumulating temp dirs in CI loops.\n\n## Memory hints\n- search: \"portable_timeout POSIX fallback tests\"\n- search: \"Task 1111 lib_portable test improvements\"\n- entity: \"test_portable_timeout.sh\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23428,7 +23439,7 @@
       ],
       "created": "2026-04-08T21:28:14.270Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:28:23.251Z"
+      "updated": "2026-04-08T21:31:16.919Z"
     }
   }
 }
