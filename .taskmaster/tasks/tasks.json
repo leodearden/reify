@@ -22571,15 +22571,16 @@
         "description": "Improve byte_offset_to_line_col robustness and test coverage (from Task 840 review S1/S2/S5):\n\n1. **debug_assert for offset bounds (S5):** Add `debug_assert!(offset <= source.len())` at the top of `byte_offset_to_line_col` in engine.rs:792. Release builds keep silent clamping; debug/test builds catch stale-span bugs loudly.\n\n2. **Multibyte UTF-8 test (S2):** Add `byte_offset_to_line_col_multibyte_chars` test verifying multi-byte codepoints (e.g. `\"αβ\\nγ\"` where α/β are 2 bytes each). Columns count codepoints, not bytes — this must be verified.\n\n3. **EOF boundary test (S2):** Add `byte_offset_to_line_col_at_source_len` test for offset exactly at `source.len()` — the realistic upper bound for diagnostic spans. Current `offset_beyond_len` test jumps to 100, skipping the boundary.\n\n4. **Fix tautological empty-span test (S1):** `byte_offset_to_line_col_empty_span_identical_coords` (engine_tests.rs:1216-1231) calls a pure function twice with identical args — guaranteed identical by the type system. Either fold the `(2, 1)` assertion into `byte_offset_to_line_col_basic_conversion` as another case, or rewrite at the diagnostic layer: inject a warning with `SourceSpan::new(offset, offset)` and assert `line == end_line && column == end_column`.\n\nmemory_hints: search(\"byte_offset_to_line_col edge cases offset_to_line_col_fast tests\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T17:41:59.577Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:41:58.516Z",
+      "lastModified": "2026-04-08T17:41:59.577Z",
       "taskCount": 1097,
       "completedCount": 770,
       "tags": [
