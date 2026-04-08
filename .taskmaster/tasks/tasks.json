@@ -24197,6 +24197,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1188,
+        "title": "Use Display (not Debug) formatting for geometry op kind in diagnostics",
+        "description": "In crates/reify-eval/src/lib.rs (lines ~3365-3368, 3425-3428), the new \"missing required geometry argument\" diagnostic uses `{:?}` (Debug) on `kind`, producing user-visible strings like `for Box` or `for Fillet` that depend on the Rust enum's `Debug` derive. This couples user-visible diagnostics to a `Debug` impl that can change without notice and doesn't degrade gracefully for compound variants. The codebase otherwise prefers Display formatting for user-facing messages (e.g. `Diagnostic::error(format!(\"geometry error: {}\", e))`).\n\n**Fix:** Either:\n- Add a small helper `fn primitive_kind_name(kind: &PrimitiveKind) -> &'static str` and `fn modify_kind_name(kind: &ModifyKind) -> &'static str` returning lowercase op names (`\"box\"`, `\"cylinder\"`, `\"sphere\"`, `\"fillet\"`, `\"chamfer\"`, `\"shell\"`, `\"draft\"`, `\"thicken\"`), and format the message as `format!(\"missing required argument '{}' for {}\", name, primitive_kind_name(kind))`.\n- Or implement `Display` on `PrimitiveKind` and `ModifyKind` in the `reify_compiler` crate, then use `{kind}` in the format string.\n\nUpdate the existing `compile_geometry_op_*_missing_arg_emits_diagnostic` tests to assert against the new lowercase wording.\n\n**Source review suggestion:** S3 (user_facing_format) from Task 1167 review.\n\nmemory_hints: search \"Display Debug formatting diagnostic user-facing\" entity \"PrimitiveKind\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24209,7 +24220,7 @@
       ],
       "created": "2026-04-08T23:36:48.952Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T23:38:14.348Z"
+      "updated": "2026-04-08T23:38:23.596Z"
     }
   }
 }
