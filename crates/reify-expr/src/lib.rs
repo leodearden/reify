@@ -754,6 +754,20 @@ fn compute_numerical_gradient_at_point(
         );
     }
 
+    // DESIGN DECISION: trust-the-declaration
+    // result_dim is derived from the declared codomain_type, not from the runtime return
+    // type of the lambda. This means a misconfigured codomain_type will silently produce
+    // gradient values with the declared (wrong) dimension rather than the runtime dimension.
+    // This is intentional: changing to runtime-driven dimensioning would require propagating
+    // dimension metadata through all arithmetic operations, which is architecturally expensive
+    // and error-prone. The two-tier validation strategy is:
+    //   - Dimensionless domains (domain_dim = None): hard assert_eq! below catches mismatches;
+    //     the lambda's return type is unambiguous (receives Real, must return Real or Scalar).
+    //   - Dimensioned domains (domain_dim = Some): soft eprintln! warning below catches
+    //     mismatches; hard assertions would produce false positives because arithmetic like
+    //     `Real * Scalar<LENGTH>` naturally returns `Scalar<LENGTH>` regardless of the
+    //     declared codomain.
+    //
     // Extract per-component gradient dimension from codomain_type.
     // codomain_type is now the gradient field's codomain (already R/Q-divided by
     // compute_gradient), so no further division is needed here:
