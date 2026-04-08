@@ -925,4 +925,23 @@ mod tests {
             "custom event_fn must be called exactly once for the WARN event"
         );
     }
+
+    /// Verifies that `CONTRACT_VIOLATION_MARKER` matches the substring used in
+    /// `#[should_panic(expected = ...)]` on
+    /// `event_panics_on_non_warn_when_dispatcher_contract_violated`.
+    ///
+    /// # Sync requirement
+    ///
+    /// `#[should_panic(expected = ...)]` requires a string literal; it cannot
+    /// reference a const.  This test acts as the compile-time link: if the const
+    /// value ever drifts from the literal in the attribute, this assertion will
+    /// fail loudly before the drift can go unnoticed.
+    #[test]
+    fn contract_violation_marker_matches_panic_expected() {
+        assert_eq!(
+            super::CONTRACT_VIOLATION_MARKER,
+            "enabled() contract violated",
+            "CONTRACT_VIOLATION_MARKER must match the #[should_panic(expected = ...)] literal"
+        );
+    }
 }
