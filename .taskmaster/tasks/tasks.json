@@ -22642,10 +22642,11 @@
         "description": "tree-sitter-reify/tests/build_logic_tests.rs — tighten test_self_read_paths_use_manifest_dir assertions and add one missing scanner edge case.",
         "details": "From esc-1059-785 review triage (4 suggestions, 1 skipped):\n\n(1) test_self_read_paths_use_manifest_dir is effectively tautological: find_self_reading_test_fns discovers tests whose body contains (THIS_FILE), then the loop asserts each body contains (THIS_FILE) — can never fail by construction. Only the `>= 3` count is a real guard, and it's stale: if a 4th self-reading test is added and one original regresses, the count still passes.\nFix: broaden the scanner's discovery criterion so the loop becomes a genuine cross-property check. For example, scan for functions that contain read_to_string/File::open applied to any path argument, then assert they specifically use (THIS_FILE) rather than a bare relative path. Alternatively, add a complementary negative scan for bare path strings like \"tests/build_logic_tests.rs\" outside of comments, asserting none are used as function arguments.\n\n(2) Add edge-case coverage to test_find_self_reading_test_fns_discovers_dynamically for a `#[test]` function with an intermediate attribute (e.g. `#[test]\\n#[allow(unused)]\\nfn test_with_attr() { let _ = read(THIS_FILE); }`). find_cfg_unix_test_fns's test covers this, but the new scanner's test doesn't — the code handles it via the starts_with('#') branch, so the test is straightforward to add.\n\nSkipped: state-machine duplication between find_self_reading_test_fns and find_cfg_unix_test_fns — reviewer self-marked \"no action required\" unless a third scanner is ever needed.\n\nSource: esc-1059-785.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:35:05.101Z"
       },
       {
         "id": "1102",
@@ -22662,7 +22663,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:35:04.794Z",
+      "lastModified": "2026-04-08T20:35:05.101Z",
       "taskCount": 1102,
       "completedCount": 771,
       "tags": [
