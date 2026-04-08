@@ -20108,11 +20108,11 @@
         "description": "In gui/src/utils/pathUtils.ts: (1) Replace decodeURIComponent with `new URL(p).pathname` (wrapped in try/catch) to correctly handle %2F and other edge cases. (2) Update JSDoc to mention percent-decoding behavior and add @example with encoded URI. In gui/src/__tests__/pathUtils.test.ts: (3) Add test that bare paths with %20 are NOT decoded. (4) Add reverse-ordering isSameFile test for percent-encoded URIs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:12.094Z",
+        "updatedAt": "2026-04-08T21:12:09.182Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -23320,7 +23320,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:07.864Z",
+      "lastModified": "2026-04-08T21:12:09.182Z",
       "taskCount": 1135,
       "completedCount": 803,
       "tags": [
