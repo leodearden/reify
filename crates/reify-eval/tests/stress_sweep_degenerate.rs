@@ -8,9 +8,56 @@
 //!   - self_intersecting_path_sweep: kernel failure produces diagnostic
 //!   - sweep_degenerate_ri_parses: fixture parses and compiles without errors
 
+use std::f64::consts::PI;
+
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{ExportFormat, GeometryOp, ModulePath, Type};
+use reify_types::{
+    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
+    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, Severity, TessError, Type, Value,
+};
+
+// ---------------------------------------------------------------------------
+// FailingMockGeometryKernel — execute() always returns Err
+// (copied from geometry_error_handling.rs pattern)
+// ---------------------------------------------------------------------------
+
+struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        writer
+            .write_all(b"BOGUS_EXPORT")
+            .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
+    fn tessellate(
+        &self,
+        _handle: GeometryHandleId,
+        _tolerance: f64,
+    ) -> Result<Mesh, TessError> {
+        Ok(Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test
@@ -69,5 +116,294 @@ fn zero_extrude_distance() {
          but kernel received {} Extrude op(s): {:?}",
         extrude_ops.len(),
         extrude_ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-15: revolve_zero_angle — failing test
+// ---------------------------------------------------------------------------
+
+/// Build a Revolve op with angle=0 (degenerate — zero rotation).
+/// After step-16 the evaluator should skip zero-angle revolves.
+///
+/// FAILS before step-16 because the evaluator currently dispatches all
+/// revolves with finite angles (including 0.0, since 0.0.is_finite() == true).
+#[test]
+fn revolve_zero_angle() {
+    let e = "TestRevolveZero";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    // Op 0: Sphere (profile provider at Step(0))
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 1: Revolve around z-axis with angle=0 (degenerate)
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)), // z-axis (magnitude=1.0 — valid)
+            ("angle".into(), real_literal(0.0)), // ZERO angle — degenerate
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_revolve_zero"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    // Zero-angle revolve should be skipped — kernel should receive no Revolve ops.
+    let revolve_ops: Vec<_> = ops
+        .iter()
+        .filter(|o| matches!(&o.op, GeometryOp::Revolve { .. }))
+        .collect();
+    assert!(
+        revolve_ops.is_empty(),
+        "zero-angle revolve should be skipped by the evaluator, \
+         but kernel received {} Revolve op(s): {:?}",
+        revolve_ops.len(),
+        revolve_ops.iter().map(|o| &o.op).collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-17/18: revolve_720_degrees — edge-case valid operation
+// ---------------------------------------------------------------------------
+
+/// Build a Revolve op with angle=4π (720° — double full revolution).
+/// This is a valid but edge-case operation (double full revolution).
+/// The evaluator should dispatch it with angle_rad ≈ 4π.
+#[test]
+fn revolve_720_degrees() {
+    let e = "TestRevolve720";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+    let real_literal =
+        |v: f64| reify_types::CompiledExpr::literal(Value::Real(v), Type::Real);
+
+    // Op 0: Sphere (profile provider at Step(0))
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    let angle_720_rad = 4.0 * PI; // 720° in radians
+
+    // Op 1: Revolve around z-axis with angle=4π (720°)
+    let revolve_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("ox".into(), real_literal(0.0)),
+            ("oy".into(), real_literal(0.0)),
+            ("oz".into(), real_literal(0.0)),
+            ("ax".into(), real_literal(0.0)),
+            ("ay".into(), real_literal(0.0)),
+            ("az".into(), real_literal(1.0)), // z-axis
+            ("angle".into(), real_literal(angle_720_rad)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op, revolve_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_revolve_720"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let _result = engine.build(&module, ExportFormat::Step);
+
+    let ops = ops_ref.lock().unwrap();
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry ops (sphere + revolve), got {}",
+        ops.len()
+    );
+
+    match &ops[1].op {
+        GeometryOp::Revolve { angle_rad, .. } => {
+            assert!(
+                (angle_rad - angle_720_rad).abs() < 1e-9,
+                "Revolve angle should be 4π ({}) radians, got {}",
+                angle_720_rad,
+                angle_rad
+            );
+        }
+        other => panic!("expected GeometryOp::Revolve at op index 1, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// step-19/20: loft_one_profile_rejected — compiler rejects < 2 profiles
+// ---------------------------------------------------------------------------
+
+/// Verify the compiler rejects loft() with only 1 argument.
+/// The compiler requires at least 2 profiles for a valid loft operation.
+#[test]
+fn loft_one_profile_rejected() {
+    let source = r#"structure S {
+    param profile: Length = 5mm
+    let result = loft(profile)
+}"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("test_loft_1"));
+    // Parse may succeed (loft is syntactically valid with any arg count)
+    let compiled = reify_compiler::compile(&parsed);
+
+    // Compiler should produce an error about minimum 2 arguments
+    let error_diags: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !error_diags.is_empty(),
+        "expected compiler error for loft(1 arg), got no diagnostics"
+    );
+    let has_min_args_msg = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("expects at least 2 arguments"));
+    assert!(
+        has_min_args_msg,
+        "expected diagnostic containing 'expects at least 2 arguments', got: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-21/22: self_intersecting_path_sweep — kernel failure diagnostic
+// ---------------------------------------------------------------------------
+
+/// Simulate a sweep on a self-intersecting path by using FailingMockGeometryKernel.
+/// When the kernel rejects the op, build() should return geometry_output=None
+/// and include a diagnostic about all geometry operations failing.
+#[test]
+fn self_intersecting_path_sweep() {
+    let e = "TestSelfIntersect";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Sphere (stand-in profile)
+    let sphere_op_0 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(5.0))],
+    };
+
+    // Op 1: Sphere (stand-in path)
+    let sphere_op_1 = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_literal(3.0))],
+    };
+
+    // Op 2: Sweep referencing Step(0) as profile, Step(1) as path (self-intersecting)
+    let sweep_op = CompiledGeometryOp::Sweep {
+        kind: SweepKind::Sweep,
+        profiles: vec![GeomRef::Step(0), GeomRef::Step(1)],
+        args: vec![
+            ("profile".into(), mm_literal(5.0)),
+            ("path".into(), mm_literal(3.0)),
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .realization(e, 0, vec![sphere_op_0, sphere_op_1, sweep_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test_self_intersect"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = FailingMockGeometryKernel;
+
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Kernel failure → no geometry output
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when kernel fails, got Some({} bytes)",
+        result.geometry_output.as_ref().map_or(0, |v| v.len())
+    );
+
+    // Should contain a summary diagnostic about all ops failing
+    let has_failure_msg = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("all geometry operations failed"));
+    assert!(
+        has_failure_msg,
+        "expected diagnostic 'all geometry operations failed', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-23/24: sweep_degenerate_ri_parses — fixture smoke test
+// ---------------------------------------------------------------------------
+
+/// Smoke test: verify sweep_degenerate.ri parses and compiles without errors.
+/// The fixture contains valid geometry call syntax (extrude, revolve_full, loft)
+/// that exercises the geometry function compiler paths.
+#[test]
+fn sweep_degenerate_ri_parses() {
+    let source = std::fs::read_to_string("../../examples/sweep_degenerate.ri")
+        .expect("sweep_degenerate.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("sweep_degenerate"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in sweep_degenerate.ri: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compile errors in sweep_degenerate.ri: {:?}",
+        errors
+    );
+    // Fixture has 3 valid structures (ValidExtrude, ValidRevolveFullTurn, ValidLoftThreeProfiles)
+    assert!(
+        !compiled.templates.is_empty(),
+        "expected non-empty templates from sweep_degenerate.ri"
     );
 }
