@@ -23146,6 +23146,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1134,
+        "title": "Log error when sidecar tool-result write fails instead of .ok() swallow",
+        "description": "In `gui/src-tauri/src/claude_bridge.rs:292`, the tool result write to the sidecar is swallowed with `.ok()`:\n```rust\nwrite_to_sidecar(&mut *writer, &response).await.ok();\n```\nIf this write fails, the sidecar hangs forever waiting for a ToolResult that never arrives. The Claude session becomes stuck with no error reporting.\n\nFix: replace `.ok()` with error handling that (a) logs `tracing::error!(\"failed to send tool result to sidecar: {err}\")` and (b) emits a `claude-error` event to the frontend so the user sees the failure.\n\nmemory_hints: search \"sidecar tool result write failure\", get_entity \"SidecarHandle\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23158,7 +23169,7 @@
       ],
       "created": "2026-04-08T21:10:10.379Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:10:15.570Z"
+      "updated": "2026-04-08T21:10:20.064Z"
     }
   }
 }
