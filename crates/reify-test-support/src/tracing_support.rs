@@ -152,6 +152,24 @@ impl tracing::Subscriber for CountingSubscriber {
 }
 
 
+// ── Contract violation marker ─────────────────────────────────────────────────
+
+/// Canonical substring embedded in `debug_assert_eq!` panic messages when a
+/// non-WARN event reaches `event()` in violation of the dispatcher contract.
+///
+/// # Sync requirement
+///
+/// `#[should_panic(expected = ...)]` in
+/// `tests::event_panics_on_non_warn_when_dispatcher_contract_violated` uses the
+/// literal `"enabled() contract violated"` — the same text as this const.
+/// Because Rust requires a **string literal** (not a const expression) in the
+/// `expected` parameter of `#[should_panic]`, the sync cannot be enforced by
+/// the type system.  Instead it is enforced by the
+/// `tests::contract_violation_marker_matches_panic_expected` test, which
+/// asserts `CONTRACT_VIOLATION_MARKER == "enabled() contract violated"` at
+/// runtime.  **Do not change this const without updating that attribute.**
+const CONTRACT_VIOLATION_MARKER: &str = "enabled() contract violated";
+
 // ── private implementation ────────────────────────────────────────────────────
 
 struct WarnCountingSubscriber {
@@ -197,7 +215,8 @@ impl tracing::Subscriber for WarnCountingSubscriber {
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
-            "event() reached with non-WARN — enabled() contract violated"
+            "event() reached with non-WARN — {}",
+            CONTRACT_VIOLATION_MARKER
         );
         self.warn_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -315,7 +334,8 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
-            "WarnCapturingSubscriber: event() reached with non-WARN — enabled() contract violated"
+            "WarnCapturingSubscriber: event() reached with non-WARN — {}",
+            CONTRACT_VIOLATION_MARKER
         );
         self.count.fetch_add(1, Ordering::Relaxed);
         let mut visitor = MessageVisitor(String::new());
