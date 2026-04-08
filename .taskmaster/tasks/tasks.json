@@ -7692,7 +7692,18 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:40.289Z"
+        "updatedAt": "2026-04-08T13:55:40.289Z",
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-eval/tests/trait_merge_eval.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": 386,
@@ -21939,7 +21950,15 @@
           "955"
         ],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-stdlib/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-stdlib"
+          ]
+        }
       },
       {
         "id": 1063,
