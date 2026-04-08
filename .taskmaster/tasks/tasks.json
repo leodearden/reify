@@ -19941,11 +19941,11 @@
         "description": "Revise module-level doc comment in crates/reify-runtime/src/concurrent_eval.rs to describe the observable poison-recovery contract rather than explaining why into_result() uses inline recovery vs helper methods.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:49:55.673Z",
+        "updatedAt": "2026-04-08T10:22:12.040Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime"
@@ -20077,11 +20077,11 @@
         "description": "In gui/src/utils/pathUtils.ts: (1) Replace decodeURIComponent with `new URL(p).pathname` (wrapped in try/catch) to correctly handle %2F and other edge cases. (2) Update JSDoc to mention percent-decoding behavior and add @example with encoded URI. In gui/src/__tests__/pathUtils.test.ts: (3) Add test that bare paths with %20 are NOT decoded. (4) Add reverse-ordering isSameFile test for percent-encoded URIs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:48:26.070Z",
+        "updatedAt": "2026-04-08T10:22:12.094Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21061,11 +21061,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Rename `valid_notification_returns_ok_null` to `did_open_returns_ok_null` to match the naming convention of surrounding tests (every other test names the specific LSP method). (2) Restore coverage for the `initialized` notification's `Ok(Value::Null)` contract — either add a dedicated `initialized_returns_ok_null` test, or change the `initialized_lsp()` helper's `.expect()` to `assert_eq!(result.unwrap(), Value::Null)`. Currently the helper only checks for no-error, losing the explicit return-value assertion that existed before task 927 moved the test to cover `didOpen`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:34:33.066Z",
+        "updatedAt": "2026-04-08T10:22:12.142Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs"
@@ -21682,7 +21682,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:22:11.977Z",
+      "lastModified": "2026-04-08T10:22:12.142Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
