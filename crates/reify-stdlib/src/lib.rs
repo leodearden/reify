@@ -4245,6 +4245,70 @@ mod tests {
         );
     }
 
+    // ── non-Orientation arm regression tests (step-1) ───────────────────────
+
+    #[test]
+    fn sign_insensitive_macro_rejects_non_orientation() {
+        // Passing Value::Real(1.0) to the sign_insensitive arm must hit the
+        // `other => panic!` branch and produce a message that mentions
+        // "expected Orientation(±" and "got".
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Real(1.0),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                sign_insensitive = 1e-10
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx sign_insensitive to panic for non-Orientation value");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("expected Orientation(\u{b1}"),
+            "expected panic message to contain 'expected Orientation(\u{b1}', got: {msg:?}"
+        );
+        assert!(
+            msg.contains("got"),
+            "expected panic message to contain 'got', got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn strict_macro_rejects_non_orientation() {
+        // Passing Value::Real(1.0) to the strict tol arm must hit the
+        // `other => panic!` branch and produce a message that mentions
+        // "expected Orientation(" and "got".
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Real(1.0),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                tol = 1e-10
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx tol arm to panic for non-Orientation value");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("expected Orientation("),
+            "expected panic message to contain 'expected Orientation(', got: {msg:?}"
+        );
+        assert!(
+            msg.contains("got"),
+            "expected panic message to contain 'got', got: {msg:?}"
+        );
+    }
+
     // ── orient_identity tests (step-6) ──────────────────────────────────────
 
     #[test]
