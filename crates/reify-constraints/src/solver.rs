@@ -1185,6 +1185,88 @@ mod tests {
         }
     }
 
+    // ---- solutions_agree tests ----
+
+    #[test]
+    fn solutions_agree_matching_values_returns_true() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.5000001, // within tolerance
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            solutions_agree(&params, &solved, &perturbed),
+            "nearly-identical values should be considered agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_different_values_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.9,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "significantly different values should not agree"
+        );
+    }
+
+    // ---- end solutions_agree baseline tests ----
+
     #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
