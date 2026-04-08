@@ -40,6 +40,9 @@ function makeMockView(overrides?: {
   state?: {
     doc?: {
       lines?: number;
+      // `to` is intentionally optional: the test at ~line 196 omits it to exercise the
+      // code path in isValidLspPosition where `character > (targetLine.to - targetLine.from)`
+      // becomes `character > NaN` (always false), effectively bypassing the character-bounds guard.
       line?: (n: number) => { from: number; to?: number };
     };
   };
