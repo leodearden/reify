@@ -317,20 +317,8 @@ async fn initialize_with_malformed_params_returns_error() {
 #[tokio::test]
 async fn notification_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-
-    // json!(42) is not a valid DidOpenTextDocumentParams (expects an object)
-    let result = lsp.handle_request("textDocument/didOpen", json!(42)).await;
-
-    assert!(
-        result.is_err(),
-        "notification with malformed params should return Err, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("didOpen params error"),
-        "error message should contain 'didOpen params error', got: {err}"
-    );
+    assert_malformed_params_returns_error(&lsp, "textDocument/didOpen", "didOpen params error")
+        .await;
 }
 
 /// An unknown/unsupported method name should return Err, not panic or silently succeed.
