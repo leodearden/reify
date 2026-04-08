@@ -23961,6 +23961,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1172,
+        "title": "Add test coverage for serialization error subscription edge cases",
+        "description": "Two test coverage gaps exist for the serialization error subscription in App.tsx:\n\n1. **Subscription failure catch branch** (App.tsx line 272-274): No test where onSerializationError rejects, which should trigger the fallback toast \"Serialization error monitoring unavailable\". Fix: mock `bridge.onSerializationError` to reject and assert the fallback toast appears.\n\n2. **Alive guard race condition** (App.tsx lines 265-268): The `alive` guard pattern that calls unlisten immediately if the component unmounts while the promise is in-flight is not tested. Fix: unmount App before the onSerializationError promise resolves, then resolve it and verify the unlisten function is called immediately.\n\nMemory hints: search \"serialization-error event\" \"alive guard test coverage\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23973,7 +23984,7 @@
       ],
       "created": "2026-04-08T22:51:09.591Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T22:51:09.605Z"
+      "updated": "2026-04-08T22:51:14.920Z"
     }
   }
 }
