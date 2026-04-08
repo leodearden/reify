@@ -21218,11 +21218,11 @@
         "description": "In tests/sync_comments_test.sh lines 36 and 48, `grep -q \"fn ${name}\"` will false-positive on prefix-named functions (e.g., `fn sanitize_value_raw`) and on commented-out mentions. Replace with an anchored pattern such as `grep -qE \"^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+${name}[[:space:](]\"` to require a proper function declaration with the exact name followed by whitespace or `(`.\n\nNote: Do NOT use grep -P (PCRE) as it is non-portable — macOS grep does not support -P.\n\nmemory_hints: search(\"sync_comments_test fn grep anchoring\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:54:47.219Z",
+        "updatedAt": "2026-04-08T10:22:12.189Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -21295,11 +21295,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`: (1) Add a `makeMockView(overrides?)` factory function near the top of the file that returns the default mock view shape (with `lines: 100`, `lineAt`, `line`, `dispatch: vi.fn()`, `dom.isConnected: true`). Replace all 7 copy-pasted `mockView` literals with calls to `makeMockView(...)`, passing only the per-test overrides (e.g. `{ dom: { isConnected: false } }` or `{ state: { doc: { lines: 5 } } }`). (2) Add a module-level `const BASE_MOUSE_EVENT = { ctrlKey: true, metaKey: false, clientX: 100, clientY: 50 } as MouseEvent;` and replace all 7 copy-pasted `mockEvent` literals with it.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:30:55.721Z",
+        "updatedAt": "2026-04-08T10:22:12.250Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21682,7 +21682,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:22:12.142Z",
+      "lastModified": "2026-04-08T10:22:12.250Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
