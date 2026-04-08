@@ -191,3 +191,39 @@ impl Default for InProcessLsp {
         Self::new()
     }
 }
+
+/// Error-message prefix constants for [`InProcessLsp::handle_request`].
+///
+/// These constants are the leading substrings that appear in `Err(String)`
+/// values returned by `handle_request` when a method receives malformed
+/// params.  Exposing them as named constants lets tests import and assert
+/// against the real values rather than duplicating hardcoded string literals.
+///
+/// If a prefix changes in the implementation, updating the constant here
+/// causes the test file's `use … error_prefix::*` import to reflect the
+/// change automatically — mismatches become compile errors or immediate
+/// test failures rather than silent runtime drift.
+///
+/// Only the six prefixes asserted by existing tests are exported.  Additional
+/// constants can be added here when new tests need them.
+pub mod error_prefix {
+    /// Prefix for deserialization failures on `initialize` params.
+    pub const INITIALIZE_PARAMS: &str = "initialize params error";
+
+    /// Prefix for deserialization failures on `initialized` params.
+    pub const INITIALIZED_PARAMS: &str = "initialized params error";
+
+    /// Prefix for deserialization failures on `textDocument/didOpen` params.
+    pub const DID_OPEN_PARAMS: &str = "didOpen params error";
+
+    /// Prefix for deserialization failures on `textDocument/didChange` params.
+    pub const DID_CHANGE_PARAMS: &str = "didChange params error";
+
+    /// Prefix for deserialization failures on `textDocument/didClose` params.
+    pub const DID_CLOSE_PARAMS: &str = "didClose params error";
+
+    /// Prefix used when an unrecognised LSP method name is requested.
+    ///
+    /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
+    pub const UNSUPPORTED_METHOD: &str = "unsupported LSP method:";
+}
