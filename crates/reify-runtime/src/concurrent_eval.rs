@@ -275,6 +275,20 @@ impl ConcurrentEvalAdapter {
     }
 }
 
+/// Generates a `pub fn $fn_name(&self) -> $ret_ty` method that returns
+/// `Arc::clone(&self.$field)`.  Intended for use inside the test-utils impl
+/// block of [`ConcurrentEvalAdapter`] to eliminate repetitive Arc-accessor
+/// boilerplate.
+#[cfg(any(test, feature = "test-utils"))]
+macro_rules! arc_accessor {
+    ($(#[$meta:meta])* $fn_name:ident => $field:ident : $ret_ty:ty) => {
+        $(#[$meta])*
+        pub fn $fn_name(&self) -> $ret_ty {
+            Arc::clone(&self.$field)
+        }
+    };
+}
+
 // Test-only helpers that poison specific locks for recovery testing.
 // Gated behind cfg(test) for unit tests and feature = "test-utils" for integration tests.
 #[cfg(any(test, feature = "test-utils"))]
@@ -312,28 +326,26 @@ impl ConcurrentEvalAdapter {
         .ok();
     }
 
-    /// Return a second Arc owner for `values`, preventing `into_result()` from
-    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
-    /// to exercise the shared-reference fallback path.
-    pub fn values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
-        Arc::clone(&self.values)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `values`, preventing `into_result()` from
+        /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+        /// to exercise the shared-reference fallback path.
+        values_arc => values : Arc<std::sync::RwLock<ValueMap>>
+    );
 
-    /// Return a second Arc owner for `snapshot_values`, preventing `into_result()`
-    /// from taking exclusive ownership via `try_unwrap`. Intended for tests that
-    /// need to exercise the shared-reference fallback path.
-    pub fn snapshot_values_arc(
-        &self,
-    ) -> Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>> {
-        Arc::clone(&self.snapshot_values)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `snapshot_values`, preventing `into_result()`
+        /// from taking exclusive ownership via `try_unwrap`. Intended for tests that
+        /// need to exercise the shared-reference fallback path.
+        snapshot_values_arc => snapshot_values : Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>>
+    );
 
-    /// Return a second Arc owner for `results`, preventing `into_result()` from
-    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
-    /// to exercise the shared-reference fallback path.
-    pub fn results_arc(&self) -> Arc<Mutex<Vec<ConcurrentNodeResult>>> {
-        Arc::clone(&self.results)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `results`, preventing `into_result()` from
+        /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+        /// to exercise the shared-reference fallback path.
+        results_arc => results : Arc<Mutex<Vec<ConcurrentNodeResult>>>
+    );
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {

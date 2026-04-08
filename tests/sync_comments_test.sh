@@ -24,28 +24,23 @@ assert \
     "reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
 
-# Extract the function name referenced in reify-expr's SYNC comment and verify
-# it actually exists as a function definition in reify-stdlib
-_expr_ref_fn=$(grep 'SYNC:' "$EXPR_FILE" | grep -oE 'reify-stdlib::[a-z_]+' | head -1 | sed 's/.*:://' || true)
-assert \
-    "SYNC comment in reify-expr references a reify-stdlib function" \
-    test -n "$_expr_ref_fn"
-if [ -n "$_expr_ref_fn" ]; then
+# Helper: verify that source_file's SYNC comment references a function that
+# exists in target_file.  Args: source_crate target_crate source_file target_file
+assert_sync_ref_exists() {
+    local src_crate="$1" tgt_crate="$2" src_file="$3" tgt_file="$4"
+    # Only the first SYNC cross-reference is validated here; files with multiple
+    # cross-references to the same target crate would require a loop.
+    local ref_fn
+    ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
+    if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
+    local display_fn="${ref_fn:-<none>}"
     assert \
-        "fn ${_expr_ref_fn} exists in reify-stdlib/src/lib.rs (as referenced by SYNC in reify-expr)" \
-        grep -qE '^(pub )?(fn|async fn) '"${_expr_ref_fn}"'\b' "$STDLIB_FILE"
-fi
+        "fn ${display_fn} exists in ${tgt_crate}/src/lib.rs (as referenced by SYNC in ${src_crate})" \
+        grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](]' "$tgt_file"
+}
 
-# Extract the function name referenced in reify-stdlib's SYNC comment and verify
-# it actually exists as a function definition in reify-expr
-_stdlib_ref_fn=$(grep 'SYNC:' "$STDLIB_FILE" | grep -oE 'reify-expr::[a-z_]+' | head -1 | sed 's/.*:://' || true)
-assert \
-    "SYNC comment in reify-stdlib references a reify-expr function" \
-    test -n "$_stdlib_ref_fn"
-if [ -n "$_stdlib_ref_fn" ]; then
-    assert \
-        "fn ${_stdlib_ref_fn} exists in reify-expr/src/lib.rs (as referenced by SYNC in reify-stdlib)" \
-        grep -qE '^(pub )?(fn|async fn) '"${_stdlib_ref_fn}"'\b' "$EXPR_FILE"
-fi
+# Verify each SYNC cross-reference points to a real function in the peer crate
+assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
+assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 test_summary
