@@ -109,4 +109,14 @@ assert "sync_comments_test.sh does not use \b word-boundary anchor" \
 assert "sync_comments_test.sh does not use grep -P (non-POSIX flag)" \
     bash -c "! grep -qF 'grep -P' '$SYNC_TEST'"
 
+# Scoped consistency assertions: check only non-comment grep invocation lines.
+# Rationale: the file-wide searches above would false-positive on documentation
+# comments like '# POSIX: do not use \b here', breaking CI without a real
+# regression.  ^[^#]*grep matches lines where 'grep' appears before any '#'.
+assert "no \\b in grep invocations, non-comment lines only (scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_TEST'"
+
+assert "no grep -P in grep invocations, non-comment lines only (scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
+
 test_summary
