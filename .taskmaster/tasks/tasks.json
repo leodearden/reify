@@ -23907,11 +23907,16 @@
         "description": "In tests/infra/test_test_helpers.sh (lines 301-312), the behavioral test for `assert_sync_ref_exists` sources the entire `sync_comments_test.sh` file to get access to the helper function. This executes all top-level code (real assertions, `set -euo pipefail`, variable assignments) as a side effect, which is fragile.\n\nTwo improvements:\n1. **Isolate the function extraction**: Instead of `source '${SYNC_FILE}'`, extract just the `assert_sync_ref_exists` function definition (e.g., via `sed -n '/^assert_sync_ref_exists/,/^}/p'`) or move the function to a shared helper that can be sourced independently. This prevents future top-level code additions from breaking the test.\n2. **Use trap-based cleanup**: Replace the explicit `rm -f` at the end with `trap 'rm -f \"$tmp_src\" \"$tmp_tgt\"' EXIT` immediately after the mktemp calls, so temp files are cleaned up even on early exit (e.g., if `set -euo pipefail` from the sourced file triggers unexpectedly).\n\nmemory_hints: search(\"assert_sync_ref_exists behavioral test\", project_id=\"reify\"); search(\"test_test_helpers sourcing fragile\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:37:43.123Z"
+        "updatedAt": "2026-04-08T22:48:59.859Z",
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": "1169",
@@ -23944,7 +23949,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:48:45.743Z",
+      "lastModified": "2026-04-08T22:48:59.859Z",
       "taskCount": 1170,
       "completedCount": 851,
       "tags": [
