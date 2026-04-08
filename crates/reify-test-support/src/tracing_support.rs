@@ -333,7 +333,74 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use tracing::Subscriber as _;
+
     use crate::warn_counting_subscriber;
+
+    // ── ForwardingSubscriber ──────────────────────────────────────────────────
+
+    /// A generic tracing subscriber that forwards all span bookkeeping to an
+    /// inner subscriber and delegates `enabled()` and `event()` to caller-
+    /// supplied closures.
+    ///
+    /// This eliminates the per-test boilerplate of repeating five identical
+    /// forwarding methods (`new_span`, `record`, `record_follows_from`, `enter`,
+    /// `exit`) every time a test needs to customise filtering or event handling.
+    ///
+    /// # Closure signatures
+    ///
+    /// - `EnabledFn(&S, &tracing::Metadata<'_>) -> bool` — receives a shared
+    ///   reference to the inner subscriber so it can delegate if needed.
+    /// - `EventFn(&S, &tracing::Event<'_>)` — same; can delegate to
+    ///   `inner.event(event)` or perform custom side effects.
+    ///
+    /// External state (e.g. `Arc<AtomicUsize>` counters) is captured via
+    /// `move` closures, consistent with the existing test patterns.
+    struct ForwardingSubscriber<S, EnabledFn, EventFn>
+    where
+        S: tracing::Subscriber,
+        EnabledFn: Fn(&S, &tracing::Metadata<'_>) -> bool + Send + Sync + 'static,
+        EventFn: Fn(&S, &tracing::Event<'_>) + Send + Sync + 'static,
+    {
+        inner: S,
+        enabled_fn: EnabledFn,
+        event_fn: EventFn,
+    }
+
+    impl<S, EnabledFn, EventFn> tracing::Subscriber for ForwardingSubscriber<S, EnabledFn, EventFn>
+    where
+        S: tracing::Subscriber,
+        EnabledFn: Fn(&S, &tracing::Metadata<'_>) -> bool + Send + Sync + 'static,
+        EventFn: Fn(&S, &tracing::Event<'_>) + Send + Sync + 'static,
+    {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            (self.enabled_fn)(&self.inner, metadata)
+        }
+
+        fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            self.inner.new_span(span)
+        }
+
+        fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            self.inner.record(span, values)
+        }
+
+        fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+            self.inner.record_follows_from(span, follows)
+        }
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            (self.event_fn)(&self.inner, event)
+        }
+
+        fn enter(&self, span: &tracing::span::Id) {
+            self.inner.enter(span)
+        }
+
+        fn exit(&self, span: &tracing::span::Id) {
+            self.inner.exit(span)
+        }
+    }
 
     /// ERROR events should be rejected at the `enabled()` gate, not silently
     /// accepted and then discarded inside `event()`.
@@ -347,52 +414,20 @@ mod tests {
     /// ERROR event is rejected at the gate and `dispatch_count` stays 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
-        // ── thin wrapper ────────────────────────────────────────────────────
-        struct EventDispatchCounter<S> {
-            inner: S,
-            dispatch_count: Arc<AtomicUsize>,
-        }
-
-        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
-            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-                // Delegate to the inner subscriber so its filter is exercised.
-                self.inner.enabled(metadata)
-            }
-
-            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-                self.inner.new_span(span)
-            }
-
-            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
-                self.inner.record(span, values)
-            }
-
-            fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
-                self.inner.record_follows_from(span, follows)
-            }
-
-            fn event(&self, event: &tracing::Event<'_>) {
-                // Reached only when enabled() returned true.
-                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
-                self.inner.event(event)
-            }
-
-            fn enter(&self, span: &tracing::span::Id) {
-                self.inner.enter(span)
-            }
-
-            fn exit(&self, span: &tracing::span::Id) {
-                self.inner.exit(span)
-            }
-        }
-
-        // ── test body ───────────────────────────────────────────────────────
         let (inner, warn_count) = warn_counting_subscriber();
         let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
 
-        let subscriber = EventDispatchCounter {
+        // ForwardingSubscriber delegates enabled() to the inner subscriber so
+        // its filter is exercised.  The event_fn increments dispatch_count
+        // before delegating — it is only reached when enabled() returned true.
+        let subscriber = ForwardingSubscriber {
             inner,
-            dispatch_count: Arc::clone(&dispatch_count),
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: move |s: &_, event| {
+                dispatch_count_clone.fetch_add(1, Ordering::Relaxed);
+                s.event(event);
+            },
         };
 
         tracing::subscriber::with_default(subscriber, || {
@@ -633,63 +668,22 @@ mod tests {
 
         use crate::CountingSubscriberBuilder;
 
-        struct EventDispatchCounter<S> {
-            inner: S,
-            dispatch_count: Arc<AtomicUsize>,
-        }
-
-        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
-            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-                self.inner.enabled(metadata)
-            }
-
-            fn new_span(
-                &self,
-                span: &tracing::span::Attributes<'_>,
-            ) -> tracing::span::Id {
-                self.inner.new_span(span)
-            }
-
-            fn record(
-                &self,
-                span: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-            ) {
-                self.inner.record(span, values)
-            }
-
-            fn record_follows_from(
-                &self,
-                span: &tracing::span::Id,
-                follows: &tracing::span::Id,
-            ) {
-                self.inner.record_follows_from(span, follows)
-            }
-
-            fn event(&self, event: &tracing::Event<'_>) {
-                // Reached only when enabled() returned true.
-                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
-                self.inner.event(event)
-            }
-
-            fn enter(&self, span: &tracing::span::Id) {
-                self.inner.enter(span)
-            }
-
-            fn exit(&self, span: &tracing::span::Id) {
-                self.inner.exit(span)
-            }
-        }
-
         let dispatch_count = Arc::new(AtomicUsize::new(0));
+        let dispatch_count_clone = Arc::clone(&dispatch_count);
 
         let (inner, _counters) = CountingSubscriberBuilder::new()
             .count_level(Level::WARN)
             .build();
 
-        let subscriber = EventDispatchCounter {
+        // ForwardingSubscriber delegates enabled() to the inner CountingSubscriber
+        // (which only accepts WARN) and increments dispatch_count on event().
+        let subscriber = ForwardingSubscriber {
             inner,
-            dispatch_count: Arc::clone(&dispatch_count),
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: move |s: &_, event| {
+                dispatch_count_clone.fetch_add(1, Ordering::Relaxed);
+                s.event(event);
+            },
         };
 
         tracing::subscriber::with_default(subscriber, || {
@@ -708,8 +702,8 @@ mod tests {
     /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
     /// loudly in debug builds rather than silently swallowing the event.
     ///
-    /// We simulate this by wrapping the subscriber in a `ForcedEventDispatcher`
-    /// whose `enabled()` always returns `true`, causing the tracing framework to
+    /// We simulate this by wrapping the subscriber in a `ForwardingSubscriber`
+    /// whose `enabled_fn` always returns `true`, causing the tracing framework to
     /// deliver an ERROR event directly into the inner subscriber's `event()`.
     /// The `debug_assert_eq!` inside `event()` detects the contract violation
     /// and panics with a message containing `"enabled() contract violated"`.
@@ -719,49 +713,15 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "enabled() contract violated")]
     fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
-        struct ForcedEventDispatcher<S> {
-            inner: S,
-        }
-
-        impl<S: tracing::Subscriber> tracing::Subscriber for ForcedEventDispatcher<S> {
-            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-                // Unconditionally true — bypasses the inner subscriber's filter,
-                // forcing non-WARN events through to inner.event().
-                true
-            }
-
-            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-                self.inner.new_span(span)
-            }
-
-            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
-                self.inner.record(span, values)
-            }
-
-            fn record_follows_from(
-                &self,
-                span: &tracing::span::Id,
-                follows: &tracing::span::Id,
-            ) {
-                self.inner.record_follows_from(span, follows)
-            }
-
-            fn event(&self, event: &tracing::Event<'_>) {
-                // Forward unconditionally, even for non-WARN events.
-                self.inner.event(event)
-            }
-
-            fn enter(&self, span: &tracing::span::Id) {
-                self.inner.enter(span)
-            }
-
-            fn exit(&self, span: &tracing::span::Id) {
-                self.inner.exit(span)
-            }
-        }
-
         let (inner, _warn_count) = warn_counting_subscriber();
-        let subscriber = ForcedEventDispatcher { inner };
+
+        // enabled_fn ignores the inner subscriber and always returns true,
+        // bypassing its WARN-only filter so non-WARN events reach inner.event().
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: |s: &_, event| s.event(event),
+        };
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::error!("non-WARN event delivered directly");
@@ -902,5 +862,67 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
+    }
+
+    // ── ForwardingSubscriber tests ────────────────────────────────────────────
+
+    /// `ForwardingSubscriber` correctly delegates `enabled()` to the closure.
+    ///
+    /// Wraps a `warn_counting_subscriber` (which accepts only WARN) in a
+    /// `ForwardingSubscriber` whose `enabled_fn` delegates to `inner.enabled()`
+    /// and whose `event_fn` delegates to `inner.event()`.  Emits one WARN and
+    /// one ERROR event; asserts the inner counter reads 1 — the ERROR was
+    /// rejected at the `enabled()` gate and never reached `event()`.
+    #[test]
+    fn forwarding_subscriber_delegates_enabled_to_closure() {
+        let (inner, warn_count) = warn_counting_subscriber();
+
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: |s: &_, event| s.event(event),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn event");
+            tracing::error!("error event — should be rejected at enabled()");
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Relaxed),
+            1,
+            "only the WARN event should be counted; ERROR must be rejected at enabled()"
+        );
+    }
+
+    /// `ForwardingSubscriber` correctly delegates `event()` to the closure.
+    ///
+    /// Creates a `ForwardingSubscriber` whose `enabled_fn` always returns `true`
+    /// and whose `event_fn` increments a shared counter without delegating to
+    /// the inner subscriber.  Emits one WARN event; asserts the counter is 1.
+    /// This validates that `event()` is driven by the closure, not hardcoded.
+    #[test]
+    fn forwarding_subscriber_delegates_event_to_closure() {
+        let (inner, _warn_count) = warn_counting_subscriber();
+        let custom_count = Arc::new(AtomicUsize::new(0));
+        let custom_count_clone = Arc::clone(&custom_count);
+
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: move |_s: &_, _event| {
+                custom_count_clone.fetch_add(1, Ordering::Relaxed);
+            },
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn event");
+        });
+
+        assert_eq!(
+            custom_count.load(Ordering::Relaxed),
+            1,
+            "custom event_fn must be called exactly once for the WARN event"
+        );
     }
 }

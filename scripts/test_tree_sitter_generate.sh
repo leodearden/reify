@@ -237,8 +237,8 @@ assert "timeout error path removes all three partial output files (rm -f parser.
 # Both error paths (timeout AND non-timeout failure) must call cleanup.
 # With the helper-function approach, _cleanup_partial_outputs must be called
 # at least twice — once per error branch.
-assert "cleanup is called on both error paths (_cleanup_partial_outputs called >= 2 times)" \
-    bash -c '[ "$(grep -c "_cleanup_partial_outputs" "$1")" -ge 2 ]' _ "$GENERATE_SCRIPT"
+assert "cleanup is called on both error paths (_cleanup_partial_outputs called >= 3 times)" \
+    bash -c '[ "$(grep -c "_cleanup_partial_outputs" "$1")" -ge 3 ]' _ "$GENERATE_SCRIPT"
 
 # ── Test 17: non-timeout failure removes partial output files ─────
 echo ""
@@ -252,6 +252,7 @@ cat > "$_test17_tmpdir/tree-sitter" << 'STUB'
 # Simulate a partial write: create output files before failing.
 touch src/parser.c
 touch src/grammar.json
+touch src/node-types.json
 exit 1
 STUB
 chmod +x "$_test17_tmpdir/tree-sitter"
@@ -273,8 +274,21 @@ assert "non-timeout failure: partial parser.c is cleaned up" \
 assert "non-timeout failure: partial grammar.json is cleaned up" \
     test '!' -f "$TS_DIR/src/grammar.json"
 
+assert "non-timeout failure: partial node-types.json is cleaned up" \
+    test '!' -f "$TS_DIR/src/node-types.json"
+
 # Clean up stub.
 rm -rf "$_test17_tmpdir"
+
+# ── Test 18: mkdir poll loop uses _lock_elapsed_secs (not _lock_attempts) ──
+echo ""
+echo "--- Test 18: mkdir poll loop variable named _lock_elapsed_secs ---"
+
+assert "mkdir poll loop uses _lock_elapsed_secs (naming consistency with MAX_LOCK_WAIT_SECS)" \
+    grep -q '_lock_elapsed_secs' "$GENERATE_SCRIPT"
+
+assert "mkdir poll loop does NOT use _lock_attempts (old name fully renamed)" \
+    bash -c '! grep -q "_lock_attempts" '"$GENERATE_SCRIPT"
 
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
