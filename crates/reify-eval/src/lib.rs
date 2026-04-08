@@ -4244,7 +4244,6 @@ fn elaborate_child_lets_only<'t>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::GuardedGroupInfo;
     use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
     use reify_types::GeometryHandleId;
 
