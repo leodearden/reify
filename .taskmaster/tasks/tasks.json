@@ -23268,7 +23268,7 @@
         "description": "In `gui/src-tauri/src/diff.rs:148-161`, delta_to_events() silently skips any mesh/value/constraint that fails serde_json::to_value(). If serialization fails (e.g., unexpected NaN in a field), the frontend never receives the update event and its state becomes permanently stale for that item — with no indication of failure.\n\nFix: replace `if let Ok(val) = serde_json::to_value(mesh)` with a match that logs `tracing::warn!(\"failed to serialize {}: {}\", item_id, err)` on the Err branch. Consider also emitting an error event so the frontend can show a diagnostic.\n\nmemory_hints: search \"delta event serialization failure\", get_entity \"StateDelta\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23279,7 +23279,8 @@
           "modules": [
             "gui/src-tauri/src"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:12:04.006Z"
       },
       {
         "id": "1134",
@@ -23314,7 +23315,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:03.788Z",
+      "lastModified": "2026-04-08T21:12:04.007Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
