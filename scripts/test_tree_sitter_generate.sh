@@ -237,5 +237,41 @@ assert "timeout error path removes all three partial output files (rm -f parser.
 assert "cleanup is called on both error paths (_cleanup_partial_outputs called >= 2 times)" \
     bash -c '[ "$(grep -c "_cleanup_partial_outputs" "$1")" -ge 2 ]' _ "$GENERATE_SCRIPT"
 
+# ── Test 17: non-timeout failure removes partial output files ─────
+echo ""
+echo "--- Test 17: non-timeout failure cleans up partial output files ---"
+
+# Create a stub tree-sitter that writes partial output then exits 1,
+# simulating a grammar compilation error that partially writes files.
+_test17_tmpdir=$(mktemp -d)
+cat > "$_test17_tmpdir/tree-sitter" << 'STUB'
+#!/bin/sh
+# Simulate a partial write: create output files before failing.
+touch src/parser.c
+touch src/grammar.json
+exit 1
+STUB
+chmod +x "$_test17_tmpdir/tree-sitter"
+
+# Remove stamp so the script does not skip generation.
+rm -f "$STAMP_FILE"
+
+# Run generate script with stub shadowing the real tree-sitter.
+# Capture exit code; expect non-zero (generation failure).
+_test17_exit=0
+(export PATH="$_test17_tmpdir:$PATH"; "$GENERATE_SCRIPT" >/dev/null 2>&1) || _test17_exit=$?
+
+assert "non-timeout failure: generate script exits non-zero" \
+    test "$_test17_exit" -ne 0
+
+assert "non-timeout failure: partial parser.c is cleaned up" \
+    test '!' -f "$TS_DIR/src/parser.c"
+
+assert "non-timeout failure: partial grammar.json is cleaned up" \
+    test '!' -f "$TS_DIR/src/grammar.json"
+
+# Clean up stub.
+rm -rf "$_test17_tmpdir"
+
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
