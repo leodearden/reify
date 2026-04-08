@@ -33,13 +33,13 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 # cause is visible rather than producing cryptic fixture failures.
 PATTERN=$(
     grep 'grep -qE' "$SYNC_TEST" | \
-    grep -F '[[:space:](]' | \
+    grep -F '[[:space:](<]' | \
     head -1 | \
     sed "s/^[[:space:]]*grep -qE '//; s/'[[:space:]]*\"[^\"]*\"[[:space:]]*$//; s/'\"[^\"]*\"'/sanitize_value/"
 )
 if [ -z "$PATTERN" ]; then
     echo "ERROR: could not extract fn-existence regex from $SYNC_TEST" >&2
-    echo "       Expected a 'grep -qE' line containing '[[:space:](]'" >&2
+    echo "       Expected a 'grep -qE' line containing '[[:space:](<]'" >&2
     exit 1
 fi
 assert "pattern extraction from sync_comments_test.sh succeeded" \
@@ -71,6 +71,21 @@ assert "accepts: multi-space between fn and name (fn   sanitize_value()" \
 assert "accepts: trailing space before paren (fn sanitize_value ()" \
     bash -c "printf '%s\n' 'fn sanitize_value (v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(crate) fn sanitize_value(" \
+    bash -c "printf '%s\n' 'pub(crate) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(super) fn sanitize_value(" \
+    bash -c "printf '%s\n' 'pub(super) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: unsafe fn sanitize_value(" \
+    bash -c "printf '%s\n' 'unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: const fn sanitize_value(" \
+    bash -c "printf '%s\n' 'const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: fn sanitize_value<T>(" \
+    bash -c "printf '%s\n' 'fn sanitize_value<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
@@ -97,8 +112,8 @@ echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
-assert "sync_comments_test.sh uses POSIX-portable [[:space:](] post-name class" \
-    grep -qF '[[:space:](]' "$SYNC_TEST"
+assert "sync_comments_test.sh uses POSIX-portable [[:space:](<] post-name class" \
+    grep -qF '[[:space:](<]' "$SYNC_TEST"
 
 # Scoped assertions check only non-comment grep invocation lines
 # (^[^#]*grep matches lines where 'grep' appears before any '#').
