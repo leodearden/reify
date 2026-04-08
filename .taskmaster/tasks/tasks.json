@@ -6842,7 +6842,7 @@
           "317",
           "319"
         ],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
@@ -6851,7 +6851,7 @@
         },
         "subtasks": [],
         "details": "Two tests: (1) dimensional — 10-step unit chains, sqrt(area)→length round-trips, complex engineering formulas; (2) query_consistency — Pappus theorem, sphere V=4/3πr³, centroid symmetry, contains(solid, centroid(solid))=true.",
-        "updatedAt": "2026-03-25T03:27:13.153Z"
+        "updatedAt": "2026-04-08T13:55:39.308Z"
       },
       {
         "id": "347",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:38.532Z",
+      "lastModified": "2026-04-08T13:55:39.308Z",
       "taskCount": 1082,
-      "completedCount": 748,
+      "completedCount": 747,
       "tags": [
         "master"
       ]
