@@ -23556,15 +23556,16 @@
         "description": "Two small improvements to the NaN hash-equality invariant documentation and test in `crates/reify-types/src/value.rs`:\n\n1. **Test robustness (line 1964):** Change `debug_assert!(non_canon_nan.is_nan(), ...)` to `assert!(non_canon_nan.is_nan(), ...)` in `nan_payload_hash_equality_invariant_exception`. The `debug_assert!` is a test-setup precondition that becomes a no-op if tests are ever run under `--release`, silently passing even if the NaN construction is wrong.\n\n2. **Documentation accuracy (lines 315-319):** The caller guidance says \"treat a hash-hit as 'possibly equal' and re-check PartialEq if exact bit-pattern identity of the NaN payload matters.\" Add a note that the incremental cache (`cache.rs` `record_evaluation`) intentionally relies on hash-only comparison — collapsing NaN payloads is the desired behaviour there — so future readers don't think `cache.rs` has a bug.\n\nMemory hints: search \"Value content_hash NaN canonicalization hash-equality invariant\", search \"cache record_evaluation early cutoff hash\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:45:15.460Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:45:15.169Z",
+      "lastModified": "2026-04-08T21:45:15.460Z",
       "taskCount": 1149,
       "completedCount": 819,
       "tags": [
