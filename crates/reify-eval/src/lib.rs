@@ -25,6 +25,7 @@ use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
 use crate::dirty::topological_sort;
+use crate::graph::GuardedGroupInfo;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
