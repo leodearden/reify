@@ -22877,13 +22877,13 @@
         "description": "The guard-state hash format strings differ between eval() and edit_param() in crates/reify-eval/src/lib.rs, causing the same logical guard state to produce different topology fingerprints depending on the code path:\n\n- Site 1 (eval(), ~line 1797): `format!(\"{:?}\", gv)` — hash of just the debug representation\n- Site 2 (edit_param(), ~line 2092): `format!(\"guard:{}={:?}\", g.guard_cell, val)` — includes cell ID prefix\n\nThis inconsistency could cause subtle bugs if fingerprints are ever compared across eval/edit_param boundaries. Currently the test doesn't cross-assert F1==F3 (same guard state computed via different paths).\n\n## Fix\nUnify to the more descriptive `guard:{}={:?}` format in both paths (or choose a single canonical form). Then add a test assertion that F1 == F3 to verify cross-path fingerprint consistency.\n\n## Memory hints\n- search: \"guard state hash topology fingerprint\"\n- search: \"feedback_silent_defaults_pattern\"\n- entity: task 1003 (parent task that added the current comments/expect() calls)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1003"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:55:23.067Z",
+        "updatedAt": "2026-04-08T21:20:57.398Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -23399,9 +23399,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:20:51.947Z",
+      "lastModified": "2026-04-08T21:20:57.398Z",
       "taskCount": 1139,
-      "completedCount": 805,
+      "completedCount": 806,
       "tags": [
         "master"
       ]
