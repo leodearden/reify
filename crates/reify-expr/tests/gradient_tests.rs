@@ -2943,6 +2943,88 @@ fn gradient_single_point_param_irrational_coords() {
     );
 }
 
+/// Regression test for the point_scratch (work_point) take/recover idiom across
+/// all 3 axes, sampled at two distinct points.
+///
+/// The single_point_param path uses a pre-allocated inner Vec (`point_scratch`,
+/// soon to be renamed `work_point`) that is transferred to `work_args` via
+/// `std::mem::take` and then recovered by popping the `Value::Point` back out.
+/// This pattern runs for both f_plus and f_minus on every axis — 6 take/recover
+/// cycles per sample call on a 3D field.
+///
+/// **Invariant documented by this test:** after every recovery cycle, the inner
+/// Vec must have exactly n=3 elements. A broken recovery (wrong variant, missing
+/// pop, or ownership leak) would either panic, produce garbage gradient values,
+/// or silently corrupt subsequent axes.
+///
+/// Sampling at two different points ensures the gradient field can be re-used
+/// and that no state leaks between calls: each `sample` call dispatches to a
+/// fresh invocation of `compute_numerical_gradient_at_point`, so this also
+/// validates that the field itself is correctly structured after the first sample.
+///
+/// Field: |p| dot(p, p) = x² + y² + z²; gradient = 2p = (2x, 2y, 2z).
+///
+/// Tolerance 1e-8: central difference truncation error vanishes for quadratics,
+/// leaving only FP rounding. At larger coordinates the intermediate sums
+/// (e.g., x² + y² + z² ≈ 195 at (5,7,11)) amplify cancellation error by ~195/20h;
+/// 1e-8 gives comfortable margin (theoretical worst-case ~6e-9 at (5,7,11)).
+#[test]
+fn gradient_single_point_param_recovery_across_axes() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_quadratic_gradient_field();
+    let values = ValueMap::new();
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(grad_codomain_type.clone()),
+    };
+
+    // --- First sample: Point3(1.0, 2.0, 3.0) → gradient = (2.0, 4.0, 6.0) ---
+    let point1 = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let sample_expr1 = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result.clone(), grad_field_type.clone()),
+            CompiledExpr::literal(point1, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let result1 = eval_expr(&sample_expr1, &EvalContext::simple(&values));
+    assert_gradient_vector(
+        &result1,
+        &[2.0, 4.0, 6.0],
+        1e-8,
+        "gradient of dot(p,p) at (1,2,3): work_point recovery must preserve n=3 inner Vec",
+    );
+
+    // --- Second sample: Point3(5.0, 7.0, 11.0) → gradient = (10.0, 14.0, 22.0) ---
+    // A distinct point confirms the gradient field is reusable and no state from
+    // the first sample leaks into the second invocation.
+    let point2 = Value::Point(vec![
+        Value::Real(5.0),
+        Value::Real(7.0),
+        Value::Real(11.0),
+    ]);
+
+    let sample_expr2 = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point2, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let result2 = eval_expr(&sample_expr2, &EvalContext::simple(&values));
+    assert_gradient_vector(
+        &result2,
+        &[10.0, 14.0, 22.0],
+        1e-8,
+        "gradient of dot(p,p) at (5,7,11): work_point recovery must preserve n=3 inner Vec",
+    );
+}
+
 /// NaN in a Point coordinate causes gradient sampling to return Undef
 /// via the single-point-param path.
 ///
