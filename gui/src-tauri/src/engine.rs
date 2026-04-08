@@ -482,6 +482,15 @@ impl EngineSession {
             .diagnostics
             .push(diag);
     }
+
+    /// Thin wrapper around `resolve_source` for use in tests.
+    ///
+    /// Exposes the private method so tests can call it directly and verify
+    /// that the `debug_assert!(self.compiled.is_some())` precondition fires
+    /// when no module is loaded.
+    pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
+        self.resolve_source()
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.

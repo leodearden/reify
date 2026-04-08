@@ -1645,6 +1645,23 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
     assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
 }
 
+// --- Task 899: resolve_source precondition test ---
+
+/// resolve_source panics (via debug_assert) when called without a loaded module.
+///
+/// The debug_assert!(self.compiled.is_some()) in resolve_source is the contract
+/// guard — this test verifies it fires when the precondition is violated.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "compiled")]
+fn resolve_source_panics_without_loaded_module() {
+    use reify_constraints::SimpleConstraintChecker;
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    // No load — compiled is None. debug_assert should fire.
+    let _ = session.resolve_source_for_test();
+}
+
 // --- Task 899: module_key unit tests ---
 
 /// module_key("bracket") == "bracket.ri" — normal identifier.
