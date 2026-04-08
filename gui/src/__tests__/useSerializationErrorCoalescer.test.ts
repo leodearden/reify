@@ -102,4 +102,26 @@ describe('createSerializationErrorCoalescer', () => {
 
     expect(showToast).not.toHaveBeenCalled();
   });
+
+  it('resets after a flush — can accumulate and emit a second batch', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    // First batch
+    coalescer.add({ item_type: 'mesh', item_id: 'A', error: 'err1' });
+    vi.advanceTimersByTime(500);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenNthCalledWith(
+      1,
+      "Failed to serialize mesh 'A': err1",
+      'error',
+    );
+
+    // Second batch — coalescer should have reset
+    coalescer.add({ item_type: 'mesh', item_id: 'B', error: 'err2' });
+    coalescer.add({ item_type: 'value', item_id: 'C', error: 'err3' });
+    vi.advanceTimersByTime(500);
+    expect(showToast).toHaveBeenCalledTimes(2);
+    expect(showToast).toHaveBeenNthCalledWith(2, '2 items failed to serialize', 'error');
+  });
 });
