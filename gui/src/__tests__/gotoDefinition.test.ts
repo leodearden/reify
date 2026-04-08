@@ -648,14 +648,18 @@ describe('.catch() error handler', () => {
       state: { doc: { line: () => { throw rangeError; } } },
     });
 
-    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+    // .catch() handles errors synchronously — a plain warn spy is sufficient (no unhandled rejection possible).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
       // .catch() should log a warning with the expected prefix and the error
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
       // dispatch should not have been called (line() threw before it could be called)
       expect(mockView.dispatch).not.toHaveBeenCalled();
-    });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('logs a warning when view.dispatch() throws (catch covers full .then() body)', async () => {
