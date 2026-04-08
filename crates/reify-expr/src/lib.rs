@@ -1446,11 +1446,20 @@ fn eval_method_call(
                 return Value::Undef;
             }
             match obj {
-                Value::Complex { re, im, dimension } => Value::Complex {
-                    re: *re,
-                    im: -im,
-                    dimension: *dimension,
-                },
+                Value::Complex { re, im, dimension } => {
+                    // Defense-in-depth: reject poisoned inputs before constructing
+                    // the output Complex, mirroring the phase-method pattern (line ~1423).
+                    // sanitize_value's Complex arm provides a secondary layer but a
+                    // direct pre-guard is independent and more robust.
+                    if !re.is_finite() || !im.is_finite() {
+                        return Value::Undef;
+                    }
+                    Value::Complex {
+                        re: *re,
+                        im: -im,
+                        dimension: *dimension,
+                    }
+                }
                 _ => Value::Undef,
             }
         }
