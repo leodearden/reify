@@ -129,6 +129,43 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledWith('7 items failed to serialize', 'error');
   });
 
+  it('caps the timer at remaining time when the next add is near the maxWaitMs boundary', () => {
+    const showToast = vi.fn();
+    // windowMs=200ms, maxWaitMs=500ms
+    const coalescer = createSerializationErrorCoalescer(showToast, 200, 500);
+
+    // Add errors every 100ms to keep resetting the debounce without letting any timer fire.
+    // firstArrival is anchored at t=0 throughout.
+    //
+    // t=0  : add A, elapsed=0,   remaining=500, timer=min(200,500)=200ms → fires at t=200
+    // t=100: add B, elapsed=100, remaining=400, timer=min(200,400)=200ms → fires at t=300
+    // t=200: add C, elapsed=200, remaining=300, timer=min(200,300)=200ms → fires at t=400
+    // t=300: add D, elapsed=300, remaining=200, timer=min(200,200)=200ms → fires at t=500
+    // t=400: add E, elapsed=400, remaining=100, timer=min(200,100)=100ms → fires at t=500
+    //                                                     ^^^  ← key: capped to remaining
+    coalescer.add({ item_type: 'mesh', item_id: 'A', error: 'err' });
+    vi.advanceTimersByTime(100);
+    coalescer.add({ item_type: 'mesh', item_id: 'B', error: 'err' });
+    vi.advanceTimersByTime(100);
+    coalescer.add({ item_type: 'mesh', item_id: 'C', error: 'err' });
+    vi.advanceTimersByTime(100);
+    coalescer.add({ item_type: 'mesh', item_id: 'D', error: 'err' });
+    vi.advanceTimersByTime(100);
+    // t=400: elapsed=400, remaining=100 < windowMs=200 → timer set to 100ms
+    coalescer.add({ item_type: 'mesh', item_id: 'E', error: 'err' });
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Advance 99ms → t=499: flush has not fired yet
+    vi.advanceTimersByTime(99);
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Advance 1ms → t=500: flush fires (100ms after t=400, not 200ms)
+    // Without Math.min the timer would fire at t=600; this assertion fails without it.
+    vi.advanceTimersByTime(1);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('5 items failed to serialize', 'error');
+  });
+
   it('resets firstArrival after a max-wait force-flush — second batch runs independently', () => {
     const showToast = vi.fn();
     // windowMs=100ms, maxWaitMs=300ms
