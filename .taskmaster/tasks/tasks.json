@@ -19273,11 +19273,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:53:48.247Z",
+        "updatedAt": "2026-04-08T20:53:48.635Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -22921,15 +22921,16 @@
         "description": "The `shutdown_returns_ok_null` test (crates/reify-lsp/tests/in_process_bridge.rs:505-520) only covers the happy path on an initialized server. Add a companion test `shutdown_before_initialize` that calls `handle_request(\"shutdown\", json!({}))` on an `InProcessLsp::new()` instance (before the initialize/initialized handshake) to document the pre-handshake behavior and guard against unexpected panics.\n\nPattern: mirror the malformed-params tests that use `InProcessLsp::new()` directly.\n\nmemory_hints:\n- search: \"Task 996 bridge.rs initialized param validation\"\n- entity: \"InProcessLsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:53:48.522Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:53:48.247Z",
+      "lastModified": "2026-04-08T20:53:48.635Z",
       "taskCount": 1116,
       "completedCount": 789,
       "tags": [
