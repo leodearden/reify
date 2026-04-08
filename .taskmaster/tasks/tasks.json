@@ -4974,7 +4974,7 @@
         "dependencies": [
           "264"
         ],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-types",
@@ -4983,7 +4983,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T03:52:45.575Z"
+        "updatedAt": "2026-04-08T13:55:08.830Z"
       },
       {
         "id": "266",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:07.852Z",
+      "lastModified": "2026-04-08T13:55:08.830Z",
       "taskCount": 1082,
-      "completedCount": 756,
+      "completedCount": 755,
       "tags": [
         "master"
       ]
