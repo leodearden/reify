@@ -287,6 +287,13 @@ else
     check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "false"
 fi
 
+# (e) assert_sync_ref_exists uses a display_fn fallback variable
+if grep -Fq 'display_fn' "$SYNC_FILE" 2>/dev/null; then
+    check "assert_sync_ref_exists uses display_fn fallback variable" "true"
+else
+    check "assert_sync_ref_exists uses display_fn fallback variable" "false"
+fi
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
