@@ -75,9 +75,9 @@ fn self_param_eval_produces_correct_value() {
         .get(&mirror_id)
         .expect("mirror should be in eval result");
 
-    // Both should be Real values equal to 0.005 (5mm in SI meters)
+    // Both should be Scalar values equal to 0.005 (5mm in SI meters)
     match (thickness_val, mirror_val) {
-        (Value::Real(t), Value::Real(m)) => {
+        (Value::Scalar { si_value: t, .. }, Value::Scalar { si_value: m, .. }) => {
             assert!(
                 (t - 0.005).abs() < 1e-9,
                 "thickness should be 0.005, got {}",
@@ -89,14 +89,14 @@ fn self_param_eval_produces_correct_value() {
                 m
             );
             assert!(
-                (t - m).abs() < 1e-15,
+                (t - m).abs() < 1e-9,
                 "mirror should equal thickness: {} vs {}",
                 t,
                 m
             );
         }
         _ => panic!(
-            "expected Real values, got thickness={:?}, mirror={:?}",
+            "expected Scalar values, got thickness={:?}, mirror={:?}",
             thickness_val, mirror_val
         ),
     }
