@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy } from './test-utils';
+import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -697,22 +697,20 @@ describe('error recovery', () => {
       state: { doc: { line: () => { throw rangeError; } } },
     });
 
-    const unhandledSpy = vi.fn();
-    window.addEventListener('unhandledrejection', unhandledSpy, { once: true });
     // No unhandledrejection suppression needed: the production .catch() at gotoDefinition.ts:155 fully consumes this rejection.
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      mousedownHandler(mockEvent, mockView);
-      await flushMacrotasks();
-      // .catch() should log a warning with the expected prefix and the error
-      expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
-      // dispatch should not have been called (line() threw before it could be called)
-      expect(mockView.dispatch).not.toHaveBeenCalled();
-      expect(unhandledSpy).not.toHaveBeenCalled();
-    } finally {
-      window.removeEventListener('unhandledrejection', unhandledSpy);
-      warnSpy.mockRestore();
-    }
+    await expectNoUnhandledRejections(async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        mousedownHandler(mockEvent, mockView);
+        await flushMacrotasks();
+        // .catch() should log a warning with the expected prefix and the error
+        expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
+        // dispatch should not have been called (line() threw before it could be called)
+        expect(mockView.dispatch).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   it('logs a warning when view.dispatch() throws (catch covers full .then() body)', async () => {
@@ -736,21 +734,19 @@ describe('error recovery', () => {
       dispatch: vi.fn().mockImplementation(() => { throw dispatchError; }),
     });
 
-    const unhandledSpy = vi.fn();
-    window.addEventListener('unhandledrejection', unhandledSpy, { once: true });
     // No unhandledrejection suppression needed: the production .catch() at gotoDefinition.ts:155 fully consumes this rejection.
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      mousedownHandler(mockEvent, mockView);
-      await flushMacrotasks();
-      // .catch() should log a warning — proving it covers dispatch(), not just doc.line()
-      expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', dispatchError);
-      // dispatch WAS called (it just threw)
-      expect(mockView.dispatch).toHaveBeenCalled();
-      expect(unhandledSpy).not.toHaveBeenCalled();
-    } finally {
-      window.removeEventListener('unhandledrejection', unhandledSpy);
-      warnSpy.mockRestore();
-    }
+    await expectNoUnhandledRejections(async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        mousedownHandler(mockEvent, mockView);
+        await flushMacrotasks();
+        // .catch() should log a warning — proving it covers dispatch(), not just doc.line()
+        expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', dispatchError);
+        // dispatch WAS called (it just threw)
+        expect(mockView.dispatch).toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 });
