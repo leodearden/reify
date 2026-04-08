@@ -97,24 +97,13 @@ describe('errorClassifier', () => {
       expect(errorMessage(new Error('x'))).toBe('x');
     });
 
-    it('returns "Unknown error" for plain object with throwing .message getter', () => {
-      const hostile = { get message() { throw new Error('boom'); } };
-      expect(errorMessage(hostile)).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" for Error subclass with throwing message getter', () => {
-      class ThrowingError extends Error {
-        get message(): string { throw new Error('boom'); }
-      }
-      expect(errorMessage(new ThrowingError())).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" when valueOf() and toString() both throw', () => {
-      const hostile = {
-        valueOf() { throw new Error('boom'); },
-        toString() { throw new Error('boom'); },
-      };
-      expect(errorMessage(hostile)).toBe('Unknown error');
+    it('returns "Unknown error" when Error instance .message getter throws (re-export hostile-input guard)', () => {
+      const err = new Error('original');
+      Object.defineProperty(err, 'message', {
+        get() { throw new Error('boom'); },
+        configurable: true,
+      });
+      expect(errorMessage(err)).toBe('Unknown error');
     });
   });
 
