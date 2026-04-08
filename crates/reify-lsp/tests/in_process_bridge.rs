@@ -60,6 +60,35 @@ async fn initialized_lsp() -> InProcessLsp {
     lsp
 }
 
+/// Open the standard bracket document in `lsp` as `file:///test.ri`.
+///
+/// Sends a `textDocument/didOpen` notification with [`reify_test_support::bracket_source()`]
+/// as the document text.  All tests that need a pre-populated document for the
+/// standard bracket fixture should call this helper rather than repeating the
+/// 8-line JSON payload inline.
+///
+/// Panics if the notification fails — callers that exercise error paths should
+/// build the `didOpen` payload directly rather than using this helper.
+///
+/// Mirrors the `open_bracket_source` helper in `server.rs` tests, adapted for
+/// the [`InProcessLsp`] bridge interface.
+async fn open_bracket_doc(lsp: &InProcessLsp) {
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .expect("open_bracket_doc: didOpen should succeed");
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
