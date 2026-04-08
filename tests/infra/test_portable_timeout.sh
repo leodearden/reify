@@ -374,5 +374,15 @@ assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeou
         esac
     '
 
+# -- Test 20: structural: header documents SIGTERM-only termination ------------
+echo ""
+echo "--- Test 20: portable_timeout header documents SIGTERM-only termination ---"
+
+# S4 requires that the portable_timeout header comment documents that the POSIX
+# fallback uses SIGTERM only and does not escalate to SIGKILL (PID-reuse safety).
+# This structural test fails until the header is updated in the next step.
+assert "portable_timeout header documents SIGTERM-only termination" \
+    grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
