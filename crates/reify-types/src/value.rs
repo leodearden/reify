@@ -3581,6 +3581,67 @@ mod tests {
     }
 
     #[test]
+    fn value_orientation_bit_identity_nan_and_neg_zero_consistent() {
+        // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
+        // for the Orientation variant's bit-identity edge cases.
+
+        // --- NaN in `w` ---
+        let nan_w_a = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let nan_w_b = Value::Orientation {
+            w: f64::NAN,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        // PartialEq uses to_bits(): identical NaN bit patterns → equal.
+        assert_eq!(nan_w_a, nan_w_b);
+        // Ord must agree.
+        assert_eq!(nan_w_a.cmp(&nan_w_b), std::cmp::Ordering::Equal);
+
+        // --- neg-zero in `w`: Ord consistency (PartialEq covered by value_orientation_eq_neg_zero) ---
+        let pos_w = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let neg_w = Value::Orientation {
+            w: -0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_ne!(pos_w, neg_w);
+        // Ord must also distinguish them.
+        assert_ne!(pos_w.cmp(&neg_w), std::cmp::Ordering::Equal);
+        // Antisymmetry.
+        assert_eq!(pos_w.cmp(&neg_w), neg_w.cmp(&pos_w).reverse());
+        // IEEE 754 totalOrder: -0.0 < +0.0.
+        assert!(neg_w < pos_w);
+
+        // --- Spot-check NaN in a non-w component (`z`) to exercise all component call sites ---
+        let nan_z_a = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NAN,
+        };
+        let nan_z_b = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: f64::NAN,
+        };
+        assert_eq!(nan_z_a, nan_z_b);
+        assert_eq!(nan_z_a.cmp(&nan_z_b), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
     fn value_orientation_ord_cross_type() {
         // Orientation should sort after Complex (tag 14), so Orientation tag = 15
         let complex = Value::Complex {
