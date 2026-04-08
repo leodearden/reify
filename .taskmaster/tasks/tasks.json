@@ -21221,7 +21221,13 @@
           ],
           "modules": [
             "tree-sitter-reify/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Relax over-constrained if-let-Err assertion in drop-logging guard test"
+            ]
+          }
         },
         "updatedAt": "2026-04-08T12:07:41.460Z"
       },
@@ -21903,13 +21909,13 @@
         "description": "Improve robustness and documentation of the gui_extension_validation_fires_before_existence_check test in reify-cli.",
         "details": "1. **Eliminate /tmp Path Flake:** Replace the current sentinel path with a unique, per-invocation path to avoid flakiness. Use `tempfile::TempDir` to create a temporary directory and append a non-existent child path, ensuring the path is unique and does not rely on global state.\n\n2. **Fix Stale Doc Comment:** Update the misleading comment on lines 88-89 to accurately reflect the current behavior. Change it to: \"Regression test: extension validation must fire before existence check, ensuring a non-existent non-.ri path reports the extension error rather than not-found.\"\n\nImplement these changes in `crates/reify-cli/tests/cli_gui.rs` and ensure the test logic remains intact.",
         "testStrategy": "Run `cargo test -p reify-cli --test cli_gui gui_extension_validation_fires_before_existence_check` to verify the test exercises both assertions: that stderr contains '.ri' and does not contain not-found language. Ensure the path used in the test is definitively non-existent.",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "551"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T12:03:01.090Z",
+        "updatedAt": "2026-04-08T12:07:42.752Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -22211,7 +22217,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T12:07:41.474Z",
+      "lastModified": "2026-04-08T12:07:42.756Z",
       "taskCount": 1079,
       "completedCount": 753,
       "tags": [
