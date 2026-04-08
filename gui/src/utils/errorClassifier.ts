@@ -46,7 +46,7 @@ export function errorMessage(err: unknown): string {
       return 'Unknown error';
     }
   }
-  return String(err).trim() || 'Unknown error';
+  try { return String(err).trim() || 'Unknown error'; } catch { return 'Unknown error'; }
 }
 
 export function classifyError(message: string): ClassifiedError {
