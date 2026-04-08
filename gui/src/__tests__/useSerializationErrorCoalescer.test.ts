@@ -65,4 +65,25 @@ describe('createSerializationErrorCoalescer', () => {
       'error',
     );
   });
+
+  it('resets the debounce window on each new error arrival', () => {
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast);
+
+    // Send first error, advance 400ms (not yet fired)
+    coalescer.add({ item_type: 'mesh', item_id: 'A', error: 'err1' });
+    vi.advanceTimersByTime(400);
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Send second error (different key), advance 400ms more (800ms from first, 400ms from second)
+    coalescer.add({ item_type: 'mesh', item_id: 'B', error: 'err2' });
+    vi.advanceTimersByTime(400);
+    // Timer reset — still not fired (only 400ms from the second add)
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Advance remaining 100ms (500ms from second add) — now fires
+    vi.advanceTimersByTime(100);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('2 items failed to serialize', 'error');
+  });
 });
