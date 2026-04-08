@@ -3903,6 +3903,12 @@ pub fn compile_with_prelude(
         }
     }
 
+    // Handle #no_prelude: suppress ALL prelude-dependent behavior by shadowing
+    // the prelude parameter with an empty slice. This affects unit seeding,
+    // trait/enum/function resolution, and constraint def imports.
+    let has_no_prelude = parsed.pragmas.iter().any(|p| p.name == "no_prelude");
+    let prelude: &[CompiledModule] = if has_no_prelude { &[] } else { prelude };
+
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
     // trait, field) with a single match dispatch.

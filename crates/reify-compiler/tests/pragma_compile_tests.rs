@@ -92,6 +92,46 @@ fn module_pragmas_stored_on_compiled_module() {
     }
 }
 
+// ── Step 5: #no_prelude suppresses stdlib ─────────────────────────────────────
+
+/// With #no_prelude and no stdlib-specific names, compilation should succeed.
+#[test]
+fn no_prelude_simple_structure_compiles_clean() {
+    let module = compile_module_with_stdlib("#no_prelude\nstructure S { param x : Real = 1.0 }");
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors for simple #no_prelude structure, got: {:?}",
+        errs
+    );
+}
+
+/// With #no_prelude, stdlib units like `mm` should NOT be resolved — expect errors.
+/// (Currently fails because #no_prelude has no effect.)
+#[test]
+fn no_prelude_suppresses_stdlib_units() {
+    let module = compile_module_with_stdlib(
+        "#no_prelude\nstructure S { param x : Length = 10mm }",
+    );
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "expected errors when using stdlib unit `mm` with #no_prelude, but got none"
+    );
+}
+
+/// Without #no_prelude, stdlib units like `mm` should resolve cleanly.
+#[test]
+fn without_no_prelude_stdlib_units_resolve() {
+    let module = compile_module_with_stdlib("structure S { param x : Length = 10mm }");
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "expected no errors when using stdlib unit `mm` without #no_prelude, got: {:?}",
+        errs
+    );
+}
+
 // ── Step 1: module-level unknown pragma warnings ─────────────────────────────
 
 /// Unknown module-level pragma `#optimize` should emit an "unknown pragma" warning.
