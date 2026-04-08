@@ -21739,7 +21739,7 @@
         "description": "Reviewer suggestions from task 949 review cycle, all in gui/src/__tests__/gotoDefinition.test.ts:\n\n1. Rename describe block from 'cross-file goto-definition (onNavigate)' to something broader like 'goto-definition routing (same-file vs cross-file)' — it now contains same-file tests too (architect reviewer).\n\n2. Extract shared mockView/mockEvent fixtures — 4+ near-identical copy-pasted literals across tests in the describe block. Create a makeMockView()/makeMockEvent() factory or beforeEach-scoped helper (architect, reuse auditor, performance reviewers).\n\n3. Replace expect.any(Number) with concrete value 144 at line ~218 for the dispatch anchor assertion — the value is deterministic from the mock setup: doc.line(8).from + 4 = 140 + 4 = 144 (test analyst).\n\n4. Add inverse direction integration test: file:// currentUri + bare-path LSP response, verifying same-file dispatch works symmetrically (test analyst).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21750,7 +21750,8 @@
           "modules": [
             "gui/src/__tests__"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T17:32:45.724Z"
       },
       {
         "id": "1052",
@@ -22528,7 +22529,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:32:44.821Z",
+      "lastModified": "2026-04-08T17:32:45.724Z",
       "taskCount": 1095,
       "completedCount": 761,
       "tags": [
