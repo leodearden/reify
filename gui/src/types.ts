@@ -118,3 +118,10 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'info';
   message: string;
 }
+
+/** Error emitted when the backend fails to serialize a mesh, value, or constraint. */
+export interface SerializationError {
+  item_type: string;
+  item_id: string;
+  error: string;
+}
