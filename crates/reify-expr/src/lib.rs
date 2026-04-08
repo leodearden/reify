@@ -786,7 +786,10 @@ fn compute_numerical_gradient_at_point(
 
     // point_scratch: reusable inner Vec for the single_point_param path.
     // Pre-allocated once; only the perturbed element is updated each axis,
-    // reducing inner-Vec allocations from O(n) to O(1).
+    // eliminating the per-axis .collect() allocation on the caller side.
+    // (apply_lambda still clones the Vec once per eval when populating its
+    // eval_map, so the savings are roughly halving inner-Vec allocations,
+    // not reducing to O(1) overall.)
     // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
     let mut point_scratch: Vec<Value> = if single_point_param {
         work_coords.iter().map(|&v| make_arg(v)).collect()
@@ -821,10 +824,9 @@ fn compute_numerical_gradient_at_point(
         if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
             point_scratch = inner;
         }
-        debug_assert!(
-            !single_point_param || !point_scratch.is_empty(),
-            "point_scratch recovery failed after apply_lambda (f_plus)"
-        );
+        // Recovery above is infallible: apply_lambda borrows &[Value] and cannot
+        // mutate work_args; we pushed exactly one Value::Point, so pop() always
+        // succeeds and always yields Value::Point.  The if-let is just destructuring.
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
@@ -840,10 +842,9 @@ fn compute_numerical_gradient_at_point(
         if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
             point_scratch = inner;
         }
-        debug_assert!(
-            !single_point_param || !point_scratch.is_empty(),
-            "point_scratch recovery failed after apply_lambda (f_minus)"
-        );
+        // Recovery above is infallible for the same reason as the f_plus recovery:
+        // apply_lambda cannot mutate work_args, and exactly one Value::Point was
+        // pushed before the call.
 
         // Restore coord[i] to original value.
         // Use exact restore (direct assignment) instead of arithmetic
