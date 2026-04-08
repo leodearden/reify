@@ -595,6 +595,30 @@ async fn shutdown_returns_ok_null() {
     );
 }
 
+/// The `shutdown` request with `null` params should return exactly `Ok(Value::Null)`.
+///
+/// Per the LSP spec, `shutdown` is a parameterless request — `null` (or omitted params)
+/// is the canonical JSON-RPC representation. This test exercises that spec-correct path
+/// and guards against the `json!({})` variant above failing "for the wrong reason" if a
+/// future change adds strict param validation to the shutdown arm (e.g. rejecting `{}`
+/// while accepting `null`).
+///
+/// The naming follows the `initialized_with_null_params_returns_ok` pattern already
+/// established for the analogous null-params case in the `initialized` arm.
+#[tokio::test]
+async fn shutdown_with_null_params_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let result = lsp.handle_request("shutdown", json!(null)).await;
+
+    let val = result.expect("shutdown with null params should return Ok");
+    assert_eq!(
+        val,
+        serde_json::Value::Null,
+        "shutdown with null params should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
 /// handshake should not panic and should return `Ok(Value::Null)`.
 ///
@@ -617,6 +641,31 @@ async fn shutdown_before_initialize() {
         result.unwrap(),
         serde_json::Value::Null,
         "shutdown before initialize should return exactly Ok(Value::Null)"
+    );
+}
+
+/// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
+/// initialize/initialized handshake should not panic and should return `Ok(Value::Null)`.
+///
+/// This covers the canonical parameterless shutdown call (`params: null` per the LSP spec)
+/// on a pre-handshake server, paralleling the `json!({})` variant in
+/// `shutdown_before_initialize` above. Both variants must be safe on the pre-handshake
+/// path because the shutdown arm in the bridge ignores params entirely.
+#[tokio::test]
+async fn shutdown_before_initialize_with_null_params() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp.handle_request("shutdown", json!(null)).await;
+
+    assert!(
+        result.is_ok(),
+        "shutdown before initialize with null params should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown before initialize with null params should return exactly Ok(Value::Null)"
     );
 }
 
