@@ -199,7 +199,7 @@ fn deprecated_structure_used_as_purpose_param_emits_warning() {
         structure OldS { param x : Real = 1.0 }
 
         purpose P(subject : OldS) {
-            constraint subject.x > 0.0
+            constraint 1 > 0
         }
     "#;
     let module = compile_module(source);
