@@ -280,5 +280,15 @@ assert "non-timeout failure: partial node-types.json is cleaned up" \
 # Clean up stub.
 rm -rf "$_test17_tmpdir"
 
+# ── Test 18: mkdir poll loop uses _lock_elapsed_secs (not _lock_attempts) ──
+echo ""
+echo "--- Test 18: mkdir poll loop variable named _lock_elapsed_secs ---"
+
+assert "mkdir poll loop uses _lock_elapsed_secs (naming consistency with MAX_LOCK_WAIT_SECS)" \
+    grep -q '_lock_elapsed_secs' "$GENERATE_SCRIPT"
+
+assert "mkdir poll loop does NOT use _lock_attempts (old name fully renamed)" \
+    bash -c '! grep -q "_lock_attempts" '"$GENERATE_SCRIPT"
+
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
