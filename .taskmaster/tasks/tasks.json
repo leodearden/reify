@@ -21972,11 +21972,16 @@
         "description": "In `.gitignore` line 36, delete the explicit `gui/node_modules` entry. Line 11 already contains `node_modules/`, a recursive pattern that matches any `node_modules` directory at any depth (including `gui/node_modules`), so the explicit entry is dead weight. Pure cleanup — no functional change.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:32:30.321Z"
+        "updatedAt": "2026-04-08T11:35:29.857Z",
+        "metadata": {
+          "modules": [
+            ".gitignore"
+          ]
+        }
       },
       {
         "id": "1068",
@@ -22029,7 +22034,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:34:23.876Z",
+      "lastModified": "2026-04-08T11:35:29.868Z",
       "taskCount": 1071,
       "completedCount": 751,
       "tags": [
