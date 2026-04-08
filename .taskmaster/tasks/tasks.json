@@ -22975,15 +22975,16 @@
         "description": "The re-export smoke-test files for errorMessage (`gui/sidecar/src/__tests__/utils.test.ts` and `gui/src/__tests__/errorClassifier.test.ts`) contain three hostile-input test cases that are copy-pasted identically and duplicate tests already comprehensively covered in the canonical test suite at `gui/packages/shared-utils/src/__tests__/errorMessage.test.ts` (lines 90-116).\n\nThe re-export smoke-test files exist to verify re-export wiring (function is reachable, delegates correctly), not to re-test implementation behavior. Remove the duplicate hostile-input tests from both files. If keeping one representative hostile-input test per consumer file to guard against broken re-exports specifically for hostile inputs, prefer the `Object.defineProperty` approach from the canonical suite (more realistic than the class-based approach).\n\nOriginated from review suggestions S1 (code_duplication) and S2 (test_quality) on Task 1055 (esc-1055-798).\n\nMemory hints: search for \"errorMessage test coverage\", \"Task 1047 shared-utils consolidation\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:57:13.806Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:57:12.461Z",
+      "lastModified": "2026-04-08T20:57:13.806Z",
       "taskCount": 1119,
       "completedCount": 792,
       "tags": [
