@@ -1077,14 +1077,18 @@ mod tests {
     }
 
     /// Verifies that `CONTRACT_VIOLATION_MARKER` matches the substring used in
-    /// `#[should_panic(expected = ...)]` on
-    /// `event_panics_on_non_warn_when_dispatcher_contract_violated`.
+    /// `#[should_panic(expected = ...)]` on the two contract-violation tests:
+    ///
+    /// - `event_panics_on_non_warn_when_dispatcher_contract_violated`
+    ///   (`WarnCountingSubscriber`)
+    /// - `capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
+    ///   (`WarnCapturingSubscriber`)
     ///
     /// # Sync requirement
     ///
     /// `#[should_panic(expected = ...)]` requires a string literal; it cannot
     /// reference a const.  This test acts as the compile-time link: if the const
-    /// value ever drifts from the literal in the attribute, this assertion will
+    /// value ever drifts from the literal in either attribute, this assertion will
     /// fail loudly before the drift can go unnoticed.
     #[test]
     fn contract_violation_marker_matches_panic_expected() {
