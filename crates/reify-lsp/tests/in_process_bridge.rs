@@ -12,7 +12,7 @@ use serde_json::json;
 ///
 /// All five "malformed params" tests share this identical assertion triple.
 /// The caller is responsible for constructing `lsp` (uninitialized via
-/// `InProcessLsp::new()` or fully handshook via `initialized_lsp()`).
+/// `InProcessLsp::new()` or fully handshook via `init_lsp()` / `initialized_lsp()`).
 async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str) {
     let result = lsp.handle_request(method, json!(42)).await;
     assert!(
@@ -26,21 +26,30 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
     );
 }
 
-/// Create a fully initialized [`InProcessLsp`] server, ready to receive document
-/// requests and notifications.
-///
-/// Performs the standard two-step LSP handshake:
+/// Perform the standard two-step LSP handshake on an existing [`InProcessLsp`] instance.
 ///
 /// 1. `initialize` — the client advertises its capabilities and receives the
 ///    server's [`InitializeResult`].
 /// 2. `initialized` — the client sends a one-way notification confirming it
-///    has processed the result.  `initialized` is a **notification**, not a
-///    request: the LSP spec does not define a response payload for it.
-///    `handle_request` therefore returns `Ok(Value::Null)` — the sentinel for
-///    a successfully processed notification — rather than a meaningful JSON
-///    object.  The `.expect()` on that call documents the protocol contract
-///    (the notification must not fail), not a guard against a server-level
-///    error.
+///    has processed the result.
+///
+/// Panics if the handshake fails.  Prefer [`initialized_lsp()`] for tests that
+/// only need a ready server; use this helper directly when you need to configure
+/// the instance before or after initialization.
+async fn init_lsp(lsp: &InProcessLsp) {
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("init_lsp: initialize should succeed");
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .expect("init_lsp: initialized should succeed");
+}
+
+/// Create a fully initialized [`InProcessLsp`] server, ready to receive document
+/// requests and notifications.
+///
+/// Delegates to [`init_lsp()`] for the two-step LSP handshake, then returns the
+/// ready server instance.
 ///
 /// Panics if the handshake fails — all tests that need a ready server should
 /// use this helper rather than repeating the setup inline.
@@ -51,12 +60,7 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
 /// handshake overhead when the server state after handshake is irrelevant.
 async fn initialized_lsp() -> InProcessLsp {
     let lsp = InProcessLsp::new();
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialized_lsp: initialize should succeed");
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .expect("initialized_lsp: initialized should succeed");
+    init_lsp(&lsp).await;
     lsp
 }
 
