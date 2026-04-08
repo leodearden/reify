@@ -3889,6 +3889,17 @@ pub fn compile_with_prelude(
         );
     }
 
+    // Validate module-level pragmas: warn on unknown names.
+    const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
+    for pragma in &parsed.pragmas {
+        if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+            );
+        }
+    }
+
     // Consolidated pre-pass: iterate declarations once, collecting references
     // for deferred compilation. This replaces 4 separate loops (enum, function,
     // trait, field) with a single match dispatch.
