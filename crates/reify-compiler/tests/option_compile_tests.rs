@@ -3,13 +3,6 @@
 //! Tests verify that the compiler emits CompiledExprKind::OptionSome and
 //! CompiledExprKind::OptionNone with correct types instead of falling through
 //! to generic function call resolution.
-//!
-//! DISABLED 2026-04-08: All 8 tests fail because Option/some/none semantics drifted
-//! since 871ec2dbd: `none` keyword no longer in scope, `some(x)` returns Int not
-//! Option<Int>. This file was restored as part of the c88ca9635 regression cluster
-//! recovery (see project_regression_c88ca9635.md). The Option framework needs a
-//! separate restoration task — re-enable by removing the cfg attribute below.
-#![cfg(any())]
 
 use reify_types::{CompiledExprKind, Type};
 
