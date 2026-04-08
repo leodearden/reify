@@ -2484,6 +2484,27 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         assert!(nan_a > inf);
+
+        // --- distinct NaN payloads: canonical NaN vs payload NaN ---
+        // Strengthens the to_bits() contract: not all NaN values are equivalent.
+        // 0x7ff8_0000_0000_0000 is canonical quiet NaN; 0x7ff8_0000_0000_0001 differs by 1 bit.
+        let nan_canonical = Value::Scalar {
+            si_value: f64::NAN, // 0x7ff8_0000_0000_0000
+            dimension: DimensionVector::LENGTH,
+        };
+        let nan_payload = Value::Scalar {
+            si_value: f64::from_bits(0x7ff8_0000_0000_0001),
+            dimension: DimensionVector::LENGTH,
+        };
+        // PartialEq uses to_bits(): different bit patterns → not equal.
+        assert_ne!(nan_canonical, nan_payload);
+        // Ord must also distinguish them (different total_cmp ordering).
+        assert_ne!(nan_canonical.cmp(&nan_payload), std::cmp::Ordering::Equal);
+        // Antisymmetry.
+        assert_eq!(
+            nan_canonical.cmp(&nan_payload),
+            nan_payload.cmp(&nan_canonical).reverse()
+        );
     }
 
     // --- Option tests (step-11) ---
