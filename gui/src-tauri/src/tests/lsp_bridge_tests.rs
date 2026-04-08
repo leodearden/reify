@@ -218,6 +218,14 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
     // must NOT carry the "invalid JSON params" prefix — that prefix is emitted only
     // by the JSON parse step, not by the handler.
     let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
+    // Contract pinned: as of crates/reify-lsp/src/bridge.rs lines 108-116, the
+    // `initialize` handler rejects null params via
+    // `serde_json::from_value::<InitializeParams>(Value::Null)`, so `result` is
+    // currently Err. If the handler is later changed to accept null params (e.g.,
+    // falling back to defaults), `unwrap_err()` below will panic — that is the
+    // signal to update this test to handle the Ok path. The primary invariant
+    // being tested (null passes the JSON parse step) remains valid regardless of
+    // how the initialize handler treats null.
     let err = result.unwrap_err();
     assert!(
         !err.contains("invalid JSON params"),
