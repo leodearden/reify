@@ -73,4 +73,26 @@ describe('errorMessage', () => {
     const obj = { toString() { throw new Error('boom'); } };
     expect(errorMessage(obj)).toBe('Unknown error');
   });
+
+  it('returns "Unknown error" when plain object .message getter throws', () => {
+    const obj = { get message() { throw new Error('boom'); } };
+    expect(errorMessage(obj)).toBe('Unknown error');
+  });
+
+  it('returns "Unknown error" when Error instance .message getter throws', () => {
+    const err = new Error('original');
+    Object.defineProperty(err, 'message', {
+      get() { throw new Error('boom'); },
+      configurable: true,
+    });
+    expect(errorMessage(err)).toBe('Unknown error');
+  });
+
+  it('returns "Unknown error" when valueOf() and toString() both throw', () => {
+    const obj = {
+      valueOf() { throw new Error('boom'); },
+      toString() { throw new Error('boom'); },
+    };
+    expect(errorMessage(obj)).toBe('Unknown error');
+  });
 });
