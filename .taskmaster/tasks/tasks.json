@@ -19273,11 +19273,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:12:04.237Z",
+        "updatedAt": "2026-04-08T21:12:49.072Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -23320,7 +23320,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:09.182Z",
+      "lastModified": "2026-04-08T21:12:49.072Z",
       "taskCount": 1135,
       "completedCount": 803,
       "tags": [
