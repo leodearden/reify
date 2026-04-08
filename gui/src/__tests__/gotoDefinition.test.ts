@@ -487,6 +487,98 @@ describe('character-bounds guard', () => {
     expect(mockView.dispatch).not.toHaveBeenCalled();
     expect(onNavigate).not.toHaveBeenCalled();
   });
+
+  it('dispatches when character offset equals line length (end-of-line boundary)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Line has from=100, to=110 → length=10. Character offset 10 equals the length.
+    // This is a valid end-of-line cursor position and must be accepted.
+    const location = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: 10 }, end: { line: 5, character: 10 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // line 6 (1-based): from=100, to=110 → length 10; character 10 == length (valid)
+          line: () => ({ from: 100, to: 110 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // character == line length is valid (end-of-line); dispatch must be called
+    // targetPos = from + character = 100 + 10 = 110
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: 110 },
+      scrollIntoView: true,
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('dispatches when character offset is 0 on an empty line', async () => {
+    const currentUri = 'file:///current.ri';
+    // Empty line: from=50, to=50 → length=0. Character offset 0 is the only valid position.
+    const location = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 2, character: 0 }, end: { line: 2, character: 0 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // line 3 (1-based): from=50, to=50 → empty line; character 0 == length 0 (valid)
+          line: () => ({ from: 50, to: 50 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // character 0 on an empty line is valid; dispatch must be called with anchor 50
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: 50 },
+      scrollIntoView: true,
+    });
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
 });
 
 describe('.catch() error handler', () => {
