@@ -3407,6 +3407,31 @@ mod tests {
         assert_eq!(pos_im.cmp(&neg_im), neg_im.cmp(&pos_im).reverse());
         // IEEE 754 totalOrder: -0.0 < +0.0.
         assert!(neg_im < pos_im);
+
+        // --- both-component: NaN in `re`, neg-zero in `im` ---
+        // When re components are identical NaN bits (Equal via total_cmp), the Ord
+        // comparison chains to im, where -0.0 < +0.0 (lexicographic fallthrough).
+        let nan_re_neg_im = Value::Complex {
+            re: f64::NAN,
+            im: -0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let nan_re_pos_im = Value::Complex {
+            re: f64::NAN,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        // PartialEq uses to_bits(): im differs (-0.0 vs +0.0) → not equal.
+        assert_ne!(nan_re_neg_im, nan_re_pos_im);
+        // Ord must also distinguish them (chains through to im after re compares Equal).
+        assert_ne!(nan_re_neg_im.cmp(&nan_re_pos_im), std::cmp::Ordering::Equal);
+        // Antisymmetry.
+        assert_eq!(
+            nan_re_neg_im.cmp(&nan_re_pos_im),
+            nan_re_pos_im.cmp(&nan_re_neg_im).reverse()
+        );
+        // Lexicographic fallthrough: -0.0 in im sorts before +0.0.
+        assert!(nan_re_neg_im < nan_re_pos_im);
     }
 
     #[test]
