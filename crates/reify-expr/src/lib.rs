@@ -741,7 +741,8 @@ fn compute_numerical_gradient_at_point(
     // the warning surfaces the root cause during development.
     #[cfg(debug_assertions)]
     if let Value::Lambda { params, .. } = lambda
-        && !single_point_param && params.len() != n
+        && !single_point_param
+        && params.len() != n
     {
         eprintln!(
             "[reify-expr] gradient: lambda has {} params but point has {} coords",
@@ -817,10 +818,9 @@ fn compute_numerical_gradient_at_point(
         }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
         // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param
-            && let Some(Value::Point(inner)) = work_args.pop() {
-                point_scratch = inner;
-            }
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
         debug_assert!(
             !single_point_param || !point_scratch.is_empty(),
             "point_scratch recovery failed after apply_lambda (f_plus)"
@@ -837,10 +837,9 @@ fn compute_numerical_gradient_at_point(
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
         // Recover point_scratch from work_args (single_point_param only).
-        if single_point_param
-            && let Some(Value::Point(inner)) = work_args.pop() {
-                point_scratch = inner;
-            }
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
         debug_assert!(
             !single_point_param || !point_scratch.is_empty(),
             "point_scratch recovery failed after apply_lambda (f_minus)"
@@ -887,7 +886,10 @@ fn compute_numerical_gradient_at_point(
     }
 
     if n == 1 {
-        gradient_components.into_iter().next().unwrap_or(Value::Undef)
+        gradient_components
+            .into_iter()
+            .next()
+            .unwrap_or(Value::Undef)
     } else {
         Value::Vector(gradient_components)
     }
