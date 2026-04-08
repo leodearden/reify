@@ -22332,7 +22332,7 @@
         "description": "Four non-blocking suggestions from the comprehensive review of task 972 (commits 47d21a1b3..1930d5c6d on main). All in `crates/reify-test-support/src/tracing_support.rs`.\n\n**S1: Release-mode test failure (robustness)**\n`event_panics_on_non_warn_when_dispatcher_contract_violated` (around lines 568-614) uses `debug_assert_eq!` which is a no-op in release builds. Running `cargo test --release` will produce no panic and the `#[should_panic(expected = \"enabled() contract violated\")]` attribute will fail. Standard `cargo test --workspace` in `orchestrator.yaml` is debug mode so CI is green today, but the test silently breaks the assumption that release-mode testing passes.\n\nFix: gate the test on debug builds, e.g. `#[cfg_attr(not(debug_assertions), ignore)]` above the `#[test]` attribute (or `#[cfg(debug_assertions)]` on the `fn`). Document the rationale inline.\n\n**S2: Release-mode robustness asymmetry with `CountingSubscriber`**\nRemoving the explicit `if level == WARN` guard in `WarnCountingSubscriber::event()` means that in release builds the `debug_assert_eq!` is compiled out and any non-WARN event reaching `event()` will be silently miscounted as a WARN. The contract is currently honored by `enabled()`, but the defensive check was free insurance against future wrapper-code or `enabled()` refactors. `CountingSubscriber::event()` still defensively filters via `counters.get`, creating an asymmetry.\n\nOptions:\n- (a) Keep a cheap guard alongside the `debug_assert_eq!` (mirrors `CountingSubscriber`)\n- (b) Use `assert_eq!` instead of `debug_assert_eq!` so the contract is enforced in all profiles\n- (c) Add a brief inline comment explaining why the trust-the-dispatcher asymmetry with `CountingSubscriber::event()` is acceptable\n\nPick one; the inline-comment approach (c) is cheapest and preserves the silent-defaults alignment the task 972 description called for.\n\n**S3: Subscriber-wrapper duplication**\nThe test file now has three nearly-identical `tracing::Subscriber` wrapper structs:\n- `EventDispatchCounter` in `error_events_rejected_by_enabled_filter` (lines ~230-266)\n- A second `EventDispatchCounter` in `counting_subscriber_enabled_rejects_unregistered_levels` (lines ~488-534)\n- The new `ForcedEventDispatcher` (lines ~571-606)\n\nEach forwards all trait methods to an inner subscriber and differs only in `enabled()` / `event()`. Substantial boilerplate obscures per-test intent.\n\nFix: hoist a single generic `ForwardingSubscriber<S>` at module scope with closure or generic parameters for the `enabled`/`event` overrides, or at minimum extract a shared `EventDispatchCounter` struct used by both passing tests. Test-only code — purely maintainability.\n\n**S4: Doc-comment / assertion message drift**\nThe doc comment for `event_panics_on_non_warn_when_dispatcher_contract_violated` states the assertion message contains `\"enabled() contract violated\"`, but the actual message in `event()` is `\"event() reached with non-WARN — enabled() contract violated\"`. The substring match used by `#[should_panic(expected = ...)]` works today but future renames would miss the doc reference.\n\nFix: either reference the full panic message in the doc comment, or extract the marker string `\"enabled() contract violated\"` into a `const` and use it in both the `debug_assert_eq!` message and the `#[should_panic(expected = ...)]` attribute (if Rust attribute syntax permits).\n\nmemory_hints: search(\"WarnCountingSubscriber debug_assert release mode\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -22343,7 +22343,8 @@
           "modules": [
             "crates/reify-test-support"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T21:56:23.122Z"
       },
       {
         "id": "1083",
@@ -23682,7 +23683,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:56:21.998Z",
+      "lastModified": "2026-04-08T21:56:23.122Z",
       "taskCount": 1156,
       "completedCount": 829,
       "tags": [
