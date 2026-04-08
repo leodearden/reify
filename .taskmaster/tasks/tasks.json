@@ -22432,6 +22432,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1090,
+        "title": "portable_timeout tests: replace vacuous-truth Test 16 and add behavioral SIGKILL escalation test",
+        "description": "## S5 — Test 16 orphan-sleep test is susceptible to vacuous passes\n`tests/infra/test_portable_timeout.sh:290-324` runs `portable_timeout 31337 true`. `true` exits almost immediately, and on a fast system the timer subshell may not have forked `sleep 31337` yet by the time the main shell issues `kill -- -$timer_pid`. In that case no orphan could have existed regardless of whether the fix is correct, and the test passes even for a buggy implementation. It does not positively verify the sleep was ever spawned.\n\nFix (pick one):\n- **(a)** Introduce a short delay so the timer subshell is guaranteed to have spawned its inner sleep — e.g., `portable_timeout 31337 bash -c 'sleep 0.2'` combined with a pre-kill `ps` check that the sentinel sleep actually exists briefly.\n- **(b)** Add a positive assertion after invocation but before cleanup that the sleep did exist at some point.\n\nWithout one of these, the test cannot distinguish the fix from the bug in fast paths.\n\n## S7 — Replace pure-structural Tests 15 and 17 with behavioral SIGKILL escalation test\nTests 15 (lines 273-274) and 17 (lines 333-334) are pure `grep` structural assertions against the source: they verify the literal strings `kill -- -$timer_pid` and `kill -9`/`kill -KILL` exist, but don't verify they work or that the SIGKILL path actually runs on a stuck process.\n\nAdd a behavioral test: spawn a command that ignores SIGTERM and assert the process is gone after `portable_timeout` returns within the grace window. Example:\n```bash\nportable_timeout 1 bash -c 'trap \"\" TERM; sleep 60' || rc=$?\n# Assert rc == 124 AND no `sleep 60` process still exists.\n```\n\nKeep the structural tests as cheap guards but complement them with a real behavioral assertion so refactors of the kill path remain protected.\n\nNote: this interacts with the robustness-hardening task (S3) — if the SIGKILL escalation moves out of the timer subshell and into the main-shell cleanup path, the behavioral test still applies but the assertion changes shape (the main shell becomes responsible for killing the stuck child).\n\n## Verification\nRun `tests/infra/test_portable_timeout.sh` — existing tests continue to pass; new behavioral test fails against an intentionally-broken SIGKILL path.\n\nSource: review escalation esc-994-69 (suggestions S5, S7).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22444,7 +22455,7 @@
       ],
       "created": "2026-04-08T17:20:40.111Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T17:20:40.118Z"
+      "updated": "2026-04-08T17:20:58.357Z"
     }
   }
 }
