@@ -16,6 +16,10 @@ export interface SerializationErrorCoalescer {
  *
  * Deduplication is by (item_type, item_id) key — the last error for a given key
  * wins within the window.
+ *
+ * A hard ceiling (`maxWaitMs`, default 3000ms) guarantees a flush even when
+ * errors arrive faster than `windowMs` would otherwise allow (i.e. when
+ * continuous arrivals keep resetting the debounce indefinitely).
  */
 export function createSerializationErrorCoalescer(
   showToast: ShowToast,
