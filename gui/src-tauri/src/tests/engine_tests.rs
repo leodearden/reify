@@ -1213,21 +1213,53 @@ fn byte_offset_to_line_col_offset_beyond_len() {
 }
 
 #[test]
-fn byte_offset_to_line_col_empty_span_identical_coords() {
+fn get_diagnostics_empty_span_has_identical_start_end() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
 
-    // When a diagnostic span has start == end (empty span), both calls to
-    // byte_offset_to_line_col with the same offset must return identical coords.
-    // offset 6 in "hello\nworld" (after '\n') → start of second line → (2, 1).
-    let source = "hello\nworld";
-    let offset = 6; // 'w' is the first char of "world"
-    let start_coord = byte_offset_to_line_col(source, offset);
-    let end_coord = byte_offset_to_line_col(source, offset);
+    // Verify that a zero-length span (start == end) produces identical
+    // start and end coordinates through the full get_diagnostics pipeline,
+    // including the optimised offset_to_line_col_fast path.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let offset = source.find("width").expect("'width' not in bracket_source") as u32;
+
+    let diag = Diagnostic::warning("empty-span-test")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset, offset), // zero-length span
+            "zero-length label",
+        ));
+    session.inject_diagnostic_for_test(diag);
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "empty-span-test")
+        .expect("injected empty-span diagnostic not found");
+
+    // The real concern: start and end coords must be identical for an empty span.
     assert_eq!(
-        start_coord, end_coord,
-        "empty span: identical offsets must produce identical coords"
+        d.line, d.end_line,
+        "empty span: line ({}) != end_line ({})",
+        d.line, d.end_line
     );
-    assert_eq!(start_coord, (2, 1));
+    assert_eq!(
+        d.column, d.end_column,
+        "empty span: column ({}) != end_column ({})",
+        d.column, d.end_column
+    );
+
+    // Cross-validate against the reference implementation.
+    let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
+    assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
+    assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
 }
 
 #[test]
