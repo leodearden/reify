@@ -316,7 +316,16 @@ mod tests {
         );
     }
 
-    /// Non-WARN events (DEBUG, INFO, ERROR) are rejected at the `enabled()` gate.
+    /// Non-WARN events (DEBUG, INFO, ERROR) do not affect the warn counter.
+    ///
+    /// The subscriber implements two-level filtering as defense in depth:
+    /// `enabled()` is the first gate (rejects non-WARN events before `event()` is
+    /// called), and `event()` is the second gate (only increments the counter when
+    /// the level is WARN).  This test validates end-to-end counting correctness —
+    /// that the counter stays zero when only non-WARN events are emitted.
+    ///
+    /// See `error_events_rejected_by_enabled_filter` for the test that
+    /// specifically validates the `enabled()` gate.
     #[test]
     fn non_warn_events_are_not_counted() {
         let (subscriber, warn_count) = warn_counting_subscriber();
@@ -330,7 +339,7 @@ mod tests {
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
-            "DEBUG/INFO/ERROR events are rejected at the enabled() gate and never reach event()"
+            "warn counter must remain zero when only non-WARN events are emitted"
         );
     }
 
