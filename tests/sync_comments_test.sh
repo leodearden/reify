@@ -32,6 +32,7 @@ assert_sync_ref_exists() {
     # cross-references to the same target crate would require a loop.
     local ref_fn
     ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
+    if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
     assert \
         "fn ${ref_fn} exists in ${tgt_crate}/src/lib.rs (as referenced by SYNC in ${src_crate})" \
         grep -qE "^(pub )?(fn|async fn) ${ref_fn}\b" "$tgt_file"
