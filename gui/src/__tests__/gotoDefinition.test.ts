@@ -326,11 +326,11 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
   });
 
   it.each([
-    ['/project/src/foo.ri', 'file:///project/src/foo.ri'],
-    ['file:///project/src/foo.ri', '/project/src/foo.ri'],
+    ['bare-path → file://', '/project/src/foo.ri', 'file:///project/src/foo.ri'],
+    ['file:// → bare-path', 'file:///project/src/foo.ri', '/project/src/foo.ri'],
   ])(
-    '%s currentUri with %s location.uri for same file dispatches cursor movement',
-    async (currentUri, locationUri) => {
+    '%s: same file dispatches cursor movement',
+    async (_label, currentUri, locationUri) => {
       // isSameFile() should normalize both URIs to the same bare path and recognize them as
       // equal, so the handler dispatches cursor movement instead of calling onNavigate.
       const sameFileLocation = {
