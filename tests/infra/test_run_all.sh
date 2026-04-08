@@ -4,9 +4,9 @@
 # discovery of test_*.sh files, exit-code aggregation, and
 # orchestrator.yaml wiring.
 #
-# Note: This file is auto-discovered by run_all.sh itself. To avoid
-# infinite recursion the aggregation tests use a temp dir with mock
-# scripts rather than invoking run_all.sh on the real directory.
+# IMPORTANT: All tests that exercise run_all.sh use temp dirs with mock
+# scripts to avoid infinite recursion (this file is itself auto-discovered
+# by run_all.sh when it runs on the real tests/infra/ directory).
 
 set -euo pipefail
 
@@ -30,51 +30,66 @@ assert "run_all.sh file exists" \
 assert "run_all.sh is executable" \
     test -x "$RUN_ALL"
 
-# -- Test 2: test_helpers.sh is excluded from discovery -------------------------
+# -- Test 2: test_helpers.sh excluded from discovery ----------------------------
+# Use a temp dir containing only test_helpers.sh to verify it is excluded.
 echo ""
 echo "--- Test 2: test_helpers.sh excluded from discovery ---"
 
-# If run_all.sh exists, check its output doesn't include test_helpers.sh
-# We capture list of scripts run_all.sh would discover via a dry-run approach:
-# look at what run_all.sh globs by running it against a temp dir that only
-# contains test_helpers.sh and see it's skipped.
 if [ -f "$RUN_ALL" ]; then
     TMPDIR_T2="$(mktemp -d)"
-    # Copy test_helpers.sh there
     cp "$SCRIPT_DIR/test_helpers.sh" "$TMPDIR_T2/test_helpers.sh"
-    # Run run_all.sh with INFRA_DIR set to temp dir (uses env override if supported,
-    # else check via output — run_all.sh should discover 0 tests in this temp dir)
-    t2_output=$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1) && t2_rc=0 || t2_rc=$?
+    t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" && t2_rc=0 || t2_rc=$?
     rm -rf "$TMPDIR_T2"
-    # Output should NOT contain "test_helpers" as a discovered test
-    assert "test_helpers.sh not listed as discovered test" \
-        bash -c "! echo '$t2_output' | grep -q 'Running.*test_helpers'"
+
+    if ! echo "$t2_output" | grep -q "Running.*test_helpers"; then
+        assert "test_helpers.sh not listed as a discovered test" true
+    else
+        assert "test_helpers.sh not listed as a discovered test (got: $t2_output)" false
+    fi
 else
-    assert "test_helpers.sh not listed as discovered test (skipped - run_all.sh missing)" \
+    assert "test_helpers.sh not listed as a discovered test (skipped - run_all.sh missing)" \
         false
 fi
 
-# -- Test 3: real test_*.sh files are discovered --------------------------------
+# -- Test 3: test_*.sh files are discovered, test_helpers.sh excluded -----------
+# Use a temp dir with mock test_*.sh scripts and test_helpers.sh to verify
+# discovery logic. We do NOT invoke run_all.sh on the real SCRIPT_DIR —
+# that would cause infinite recursion since this file is auto-discovered.
 echo ""
-echo "--- Test 3: real test_*.sh files are discovered ---"
+echo "--- Test 3: test_*.sh discovery (mock dir) ---"
 
 if [ -f "$RUN_ALL" ]; then
-    # Run against SCRIPT_DIR itself - should discover existing test_*.sh files
-    # Use a subshell with timeout guard; may fail due to actual test failures
-    # but the important thing is the DISCOVERY output is present.
-    # We check by capturing output and seeing if known test files are mentioned.
-    t3_output=$(bash "$RUN_ALL" 2>&1) && t3_rc=0 || t3_rc=$?
-    assert "test_portable_sha256.sh is discovered" \
-        bash -c "echo '$t3_output' | grep -q 'test_portable_sha256'"
-    assert "test_test_helpers.sh is discovered" \
-        bash -c "echo '$t3_output' | grep -q 'test_test_helpers'"
-    assert "test_helpers.sh is NOT in discovered output" \
-        bash -c "! echo '$t3_output' | grep -q 'Running.*test_helpers\.sh'"
+    TMPDIR_T3="$(mktemp -d)"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_portable_sha256.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_test_helpers.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_helpers.sh"
+    chmod +x "$TMPDIR_T3/test_portable_sha256.sh" \
+              "$TMPDIR_T3/test_test_helpers.sh" \
+              "$TMPDIR_T3/test_helpers.sh"
+    t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" && t3_rc=0 || t3_rc=$?
+    rm -rf "$TMPDIR_T3"
+
+    if echo "$t3_output" | grep -q "test_portable_sha256"; then
+        assert "test_portable_sha256.sh is discovered" true
+    else
+        assert "test_portable_sha256.sh is discovered (got: $t3_output)" false
+    fi
+
+    if echo "$t3_output" | grep -q "test_test_helpers"; then
+        assert "test_test_helpers.sh is discovered" true
+    else
+        assert "test_test_helpers.sh is discovered (got: $t3_output)" false
+    fi
+
+    if ! echo "$t3_output" | grep -q "Running.*test_helpers\.sh"; then
+        assert "test_helpers.sh is NOT in discovered output" true
+    else
+        assert "test_helpers.sh is NOT in discovered output (got: $t3_output)" false
+    fi
 else
-    assert "real test_*.sh files are discovered (skipped - run_all.sh missing)" \
-        false
-    assert "test_helpers.sh is NOT in discovered output (skipped - run_all.sh missing)" \
-        false
+    assert "test_portable_sha256.sh is discovered (skipped - run_all.sh missing)" false
+    assert "test_test_helpers.sh is discovered (skipped - run_all.sh missing)" false
+    assert "test_helpers.sh is NOT in discovered output (skipped - run_all.sh missing)" false
 fi
 
 # -- Test 4: exit-code aggregation using temp dir mock scripts ------------------
@@ -130,7 +145,7 @@ echo ""
 echo "--- Test 5: orchestrator.yaml test_command includes run_all.sh ---"
 
 assert "orchestrator.yaml references tests/infra/run_all.sh" \
-    bash -c "grep -q 'tests/infra/run_all.sh' '$ORCHESTRATOR_YAML'"
+    bash -c "grep -q 'tests/infra/run_all\.sh' '$ORCHESTRATOR_YAML'"
 
 # -- Summary --------------------------------------------------------------------
 test_summary
