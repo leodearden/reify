@@ -451,6 +451,82 @@ pub fn undef() -> Value {
     Value::Undef
 }
 
+// --- Complex value constructors ---
+
+/// Create a `Value::Complex` with the given real and imaginary parts (dimensionless).
+pub fn complex_val(re: f64, im: f64) -> Value {
+    Value::Complex {
+        re,
+        im,
+        dimension: DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// Create a `Value::Complex` with the given real/imaginary parts and explicit dimension.
+pub fn complex_val_dimensioned(re: f64, im: f64, dimension: DimensionVector) -> Value {
+    Value::Complex { re, im, dimension }
+}
+
+/// Create a `Value::Point` with two length-dimensioned components (in meters).
+pub fn point2(x: f64, y: f64) -> Value {
+    Value::Point(vec![Value::length(x), Value::length(y)])
+}
+
+/// Create a `Value::Vector` with two length-dimensioned components (in meters).
+pub fn vec2(x: f64, y: f64) -> Value {
+    Value::Vector(vec![Value::length(x), Value::length(y)])
+}
+
+/// Create a `Value::Orientation` (unit quaternion: w + xi + yj + zk).
+pub fn orientation_val(w: f64, x: f64, y: f64, z: f64) -> Value {
+    Value::Orientation { w, x, y, z }
+}
+
+/// Create a `Value::Frame` with the given origin (Point) and basis (Orientation).
+pub fn frame_val(origin: Value, basis: Value) -> Value {
+    Value::Frame {
+        origin: Box::new(origin),
+        basis: Box::new(basis),
+    }
+}
+
+/// Create a `Value::Transform` with the given rotation (Orientation) and translation (Vector).
+pub fn transform_val(rotation: Value, translation: Value) -> Value {
+    Value::Transform {
+        rotation: Box::new(rotation),
+        translation: Box::new(translation),
+    }
+}
+
+/// Create a `Value::Plane` with the given origin (Point) and normal (Vector).
+pub fn plane_val(origin: Value, normal: Value) -> Value {
+    Value::Plane {
+        origin: Box::new(origin),
+        normal: Box::new(normal),
+    }
+}
+
+/// Create a `Value::Axis` with the given origin (Point) and direction (Vector).
+pub fn axis_val(origin: Value, direction: Value) -> Value {
+    Value::Axis {
+        origin: Box::new(origin),
+        direction: Box::new(direction),
+    }
+}
+
+/// Create a `Value::BoundingBox` with the given min and max corner points.
+pub fn bbox_val(min: Value, max: Value) -> Value {
+    Value::BoundingBox {
+        min: Box::new(min),
+        max: Box::new(max),
+    }
+}
+
+/// Create a `Value::Tensor` wrapping the given items.
+pub fn tensor_val(items: Vec<Value>) -> Value {
+    Value::Tensor(items)
+}
+
 // --- TypeAliasMap builder ---
 
 /// Fluent builder for `HashMap<String, Type>`, used to describe type alias mappings
@@ -1263,6 +1339,163 @@ mod tests {
                 assert_ne!(dimension, reify_types::DimensionVector::DIMENSIONLESS);
             }
             _ => panic!("Pressure should be a Scalar type"),
+        }
+    }
+
+    // --- complex_val tests (step 19) ---
+
+    #[test]
+    fn complex_val_produces_dimensionless_complex() {
+        let v = complex_val(3.0, 4.0);
+        match v {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 3.0).abs() < 1e-12);
+                assert!((im - 4.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
+            }
+            _ => panic!("expected Value::Complex"),
+        }
+    }
+
+    #[test]
+    fn complex_val_dimensioned_produces_complex_with_dimension() {
+        let v = complex_val_dimensioned(1.0, 2.0, DimensionVector::LENGTH);
+        match v {
+            Value::Complex { re, im, dimension } => {
+                assert!((re - 1.0).abs() < 1e-12);
+                assert!((im - 2.0).abs() < 1e-12);
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            _ => panic!("expected Value::Complex"),
+        }
+    }
+
+    // --- point2/vec2 tests (step 21) ---
+
+    #[test]
+    fn point2_creates_value_point_with_length_components() {
+        let p = point2(1.0, 2.0);
+        match p {
+            Value::Point(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [1.0, 2.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Scalar { si_value, dimension } => {
+                            assert!((si_value - expected).abs() < 1e-12);
+                            assert_eq!(*dimension, DimensionVector::LENGTH);
+                        }
+                        _ => panic!("component {} should be Scalar", i),
+                    }
+                }
+            }
+            _ => panic!("expected Value::Point"),
+        }
+    }
+
+    #[test]
+    fn vec2_creates_value_vector_with_length_components() {
+        let v = vec2(5.0, -3.0);
+        match v {
+            Value::Vector(items) => {
+                assert_eq!(items.len(), 2);
+                for (i, expected) in [5.0, -3.0].iter().enumerate() {
+                    match &items[i] {
+                        Value::Scalar { si_value, dimension } => {
+                            assert!((si_value - expected).abs() < 1e-12);
+                            assert_eq!(*dimension, DimensionVector::LENGTH);
+                        }
+                        _ => panic!("component {} should be Scalar", i),
+                    }
+                }
+            }
+            _ => panic!("expected Value::Vector"),
+        }
+    }
+
+    // --- orientation_val tests (step 23) ---
+
+    #[test]
+    fn orientation_val_produces_quaternion() {
+        let v = orientation_val(1.0, 0.0, 0.0, 0.0);
+        match v {
+            Value::Orientation { w, x, y, z } => {
+                assert!((w - 1.0).abs() < 1e-12);
+                assert!((x - 0.0).abs() < 1e-12);
+                assert!((y - 0.0).abs() < 1e-12);
+                assert!((z - 0.0).abs() < 1e-12);
+            }
+            _ => panic!("expected Value::Orientation"),
+        }
+    }
+
+    // --- frame_val / transform_val tests (step 25) ---
+
+    #[test]
+    fn frame_val_produces_frame() {
+        let origin = point3(0.0, 0.0, 0.0);
+        let basis = orientation_val(1.0, 0.0, 0.0, 0.0);
+        let v = frame_val(origin.clone(), basis.clone());
+        match v {
+            Value::Frame { origin: o, basis: b } => {
+                assert!(matches!(*o, Value::Point(_)));
+                assert!(matches!(*b, Value::Orientation { .. }));
+            }
+            _ => panic!("expected Value::Frame"),
+        }
+    }
+
+    #[test]
+    fn transform_val_produces_transform() {
+        let rotation = orientation_val(1.0, 0.0, 0.0, 0.0);
+        let translation = vec3(1.0, 2.0, 3.0);
+        let v = transform_val(rotation, translation);
+        match v {
+            Value::Transform { rotation: r, translation: t } => {
+                assert!(matches!(*r, Value::Orientation { .. }));
+                assert!(matches!(*t, Value::Vector(_)));
+            }
+            _ => panic!("expected Value::Transform"),
+        }
+    }
+
+    // --- plane_val / axis_val / bbox_val tests (step 27) ---
+
+    #[test]
+    fn plane_val_produces_plane() {
+        let origin = point3(0.0, 0.0, 0.0);
+        let normal = vec3_dimensionless(0.0, 0.0, 1.0);
+        let v = plane_val(origin, normal);
+        assert!(matches!(v, Value::Plane { .. }));
+    }
+
+    #[test]
+    fn axis_val_produces_axis() {
+        let origin = point3(0.0, 0.0, 0.0);
+        let direction = vec3_dimensionless(1.0, 0.0, 0.0);
+        let v = axis_val(origin, direction);
+        assert!(matches!(v, Value::Axis { .. }));
+    }
+
+    #[test]
+    fn bbox_val_produces_bounding_box() {
+        let min = point3(0.0, 0.0, 0.0);
+        let max = point3(1.0, 1.0, 1.0);
+        let v = bbox_val(min, max);
+        assert!(matches!(v, Value::BoundingBox { .. }));
+    }
+
+    // --- tensor_val tests (step 29) ---
+
+    #[test]
+    fn tensor_val_wraps_items() {
+        let items = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let v = tensor_val(items.clone());
+        match v {
+            Value::Tensor(vals) => {
+                assert_eq!(vals.len(), 3);
+                assert!(matches!(vals[0], Value::Real(1.0)));
+            }
+            _ => panic!("expected Value::Tensor"),
         }
     }
 }
