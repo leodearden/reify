@@ -23,9 +23,25 @@ echo "=== sync_comments grep pattern meta-test ==="
 echo ""
 echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 
+# Extract the fn-existence regex from sync_comments_test.sh at runtime so
+# the meta-test stays coupled to the real test.  Pipeline:
+#   1. find the grep -qE invocation line that contains [[:space:](]
+#   2. strip the leading 'grep -qE '' prefix
+#   3. strip the trailing '' "$filename"' suffix
+#   4. replace the shell variable reference (e.g. '"${ref_fn}"') with 'sanitize_value'
+EXTRACTED_PATTERN=$(
+    grep 'grep -qE' "$SYNC_TEST" | \
+    grep -F '[[:space:](]' | \
+    head -1 | \
+    sed "s/^[[:space:]]*grep -qE '//; s/'[[:space:]]*\"[^\"]*\"[[:space:]]*$//; s/'\"[^\"]*\"'/sanitize_value/"
+)
+assert "pattern extraction from sync_comments_test.sh succeeded" \
+    test -n "$EXTRACTED_PATTERN"
+
 # The POSIX-portable fn-existence regex with a concrete name substituted in.
 # This mirrors what grep evaluates in sync_comments_test.sh after variable
 # expansion of ${_expr_ref_fn} / ${_stdlib_ref_fn}.
+# TODO(step-4): replace with PATTERN="$EXTRACTED_PATTERN"
 PATTERN='^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+sanitize_value[[:space:](]'
 
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
