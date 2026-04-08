@@ -1098,4 +1098,64 @@ mod tests {
             "CONTRACT_VIOLATION_MARKER must match the #[should_panic(expected = ...)] literal"
         );
     }
+
+    // ── assert_warn_count_delta tests ─────────────────────────────────────────
+
+    /// `assert_warn_count_delta` passes when the counter advanced by exactly
+    /// `expected_delta` since the `before` snapshot.
+    ///
+    /// (a) After 2 WARN events with `before=0`, delta==2 → passes.
+    /// (b) After 2 WARN events with `before=1`, delta==1 → passes (only the
+    ///     increment since the snapshot counts).
+    #[test]
+    fn assert_warn_count_delta_passes_on_correct_delta() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("first warn");
+            tracing::warn!("second warn");
+        });
+
+        // (a) before=0, delta=2: the counter went from 0 to 2
+        assert_warn_count_delta(&counter, 0, 2, "two warns from zero");
+
+        // Synthesise a mid-test snapshot: counter is at 2, before=1 means delta=1
+        assert_warn_count_delta(&counter, 1, 1, "delta since snapshot at 1");
+    }
+
+    /// `assert_warn_count_delta` panics when the actual delta does not match.
+    #[test]
+    #[should_panic(expected = "expected warn delta")]
+    fn assert_warn_count_delta_panics_on_wrong_delta() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("only one warn");
+        });
+
+        // counter is at 1, but we claim delta of 2 from before=0 → should panic
+        assert_warn_count_delta(&counter, 0, 2, "expected warn delta");
+    }
+
+    /// `assert_warn_count` (convenience wrapper with before=0) passes when
+    /// counter equals `expected`.
+    #[test]
+    fn assert_warn_count_passes_on_correct_count() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_subscriber;
+
+        let (subscriber, counter) = warn_counting_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("one warn");
+        });
+
+        assert_warn_count(&counter, 1, "exactly one warn");
+    }
 }
