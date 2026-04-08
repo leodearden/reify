@@ -22382,13 +22382,13 @@
         "description": "Refactor two symmetric URI normalization tests into a single parameterized test using `it.each` in `gotoDefinition.test.ts`.",
         "details": "The task involves consolidating two nearly identical tests in `gotoDefinition.test.ts` into a single `it.each` parameterized test. These tests verify the symmetry of URI normalization using `isSameFile` from `pathUtils.ts`. The refactor should eliminate code duplication and make the symmetry explicit. Use `it.each` with test cases `[['/project/src/foo.ri', 'file:///project/src/foo.ri'], ['file:///project/src/foo.ri', '/project/src/foo.ri']]` to cover both directions. Ensure the tests utilize existing mock factories `makeMockView` and `makeMouseEvent` for consistency and mock fidelity. Populate mock documents realistically to exercise line and character bounds checks, ensuring guards in `gotoDefinition.ts` are tested with real comparisons. Adjust the mock line function to include `to: (n - 1) * 20 + 15` for accurate character bounds. Assert the exact expected anchor to catch off-by-one errors, using `doc.line(8).from + 4 = 144` for the expected anchor. Coordinate with Task 1037 to avoid conflicts and ensure the tightened assertion is maintained.",
         "testStrategy": "Run `npm test -- src/__tests__/gotoDefinition.test.ts` to verify both parameterized cases pass. Ensure `onNavigate` is called zero times and `view.dispatch` is called once per case. Confirm the consolidated test maintains the same behavior as the original tests, with correct mock fidelity and assertions.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1037"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:20:04.667Z",
+        "updatedAt": "2026-04-08T20:37:51.783Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22686,7 +22686,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:37:51.092Z",
+      "lastModified": "2026-04-08T20:37:51.783Z",
       "taskCount": 1103,
       "completedCount": 773,
       "tags": [
