@@ -22953,15 +22953,16 @@
         "description": "In `crates/reify-eval/tests/e2e_meta.rs`, the two task-1045 regression tests (`e2e_meta_access_missing_key` at ~line 536 and `e2e_meta_access_no_meta_block` at ~line 574) only assert `!errors.is_empty()`. This means any unrelated compile error (e.g., a type mismatch) would satisfy the assertion, masking a regression in the meta-specific error path.\n\nAdd a secondary loose keyword assertion to each test checking that at least one error message contains `\"meta\"`, e.g.:\n```rust\nassert!(\n    errors.iter().any(|d| d.message.contains(\"meta\")),\n    \"expected a meta-related error, got: {:?}\",\n    errors\n);\n```\n\nThis keeps the tests wording-resilient (they intentionally avoid exact message checks like the task-213 tests do) while preventing false-positive passes from unrelated errors.\n\nmemory_hints: search for \"task 1045 meta error path tests\" and get_entity for \"e2e_meta.rs\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:55:13.773Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:55:13.004Z",
+      "lastModified": "2026-04-08T20:55:13.778Z",
       "taskCount": 1118,
       "completedCount": 790,
       "tags": [
