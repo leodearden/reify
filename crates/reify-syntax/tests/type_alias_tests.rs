@@ -323,6 +323,10 @@ fn parse_type_alias_empty_rhs_no_panic() {
     // that gets lowered to a TypeAlias with an empty-name type_expr.
     let source = "type Foo =";
     let (decls, errors) = parse_decls(source);
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors for empty-RHS recovery, got: {errors:?}"
+    );
 
     // NOTE: Tree-sitter silently recovers `type Foo =` without emitting parse errors.
     // The `errors` vector is empty — this is expected Tree-sitter behavior, not a bug.
