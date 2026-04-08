@@ -22839,11 +22839,11 @@
         "description": "The new `@reify/shared-utils` package created by Task 1047 needs three hardening improvements:\n\n1. **Add tsconfig.json and typecheck script** — The package has no `tsconfig.json`, so standalone `tsc --noEmit` cannot catch type errors. Add a minimal tsconfig (strict, noEmit, target ESNext, module ESNext, moduleResolution bundler) and a `\"typecheck\": \"tsc --noEmit\"` script in package.json, matching the sidecar package pattern.\n\n2. **Add vitest devDependency** — The package declares `\"test\": \"vitest run\"` but doesn't list vitest in devDependencies. Add `\"vitest\": \"^3.0.0\"` to devDependencies for self-containment, matching the convention in gui/sidecar/package.json.\n\n3. **Add referential identity assertion to sidecar re-export test** — In `gui/sidecar/src/__tests__/utils.test.ts`, import `errorMessage` directly from `@reify/shared-utils` and assert `expect(errorMessage).toBe(canonical)` to verify the re-export actually delegates to the shared package (not a stale copy). Apply the same pattern to `gui/src/__tests__/errorClassifier.test.ts` if applicable.\n\nMemory hints: search for \"shared-utils package\", \"errorMessage re-export\", \"Task 1047 shared utils extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:47:33.615Z",
+        "updatedAt": "2026-04-08T21:34:44.146Z",
         "metadata": {
           "modules": [
             "gui/packages",
@@ -23458,7 +23458,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:34:43.128Z",
+      "lastModified": "2026-04-08T21:34:44.146Z",
       "taskCount": 1144,
       "completedCount": 815,
       "tags": [
