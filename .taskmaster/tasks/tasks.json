@@ -21468,11 +21468,11 @@
         "description": "Clean up gotoDefinition.test.ts with three improvements from task 949 review:\n\n1. **Rename describe block** (S2): Change 'cross-file goto-definition (onNavigate)' to something broader like 'goto-definition routing (same-file vs cross-file)' since the block contains both same-file and cross-file tests.\n\n2. **Extract shared test fixtures** (S3): The file has 6+ near-identical copies of `mockEvent` and `mockView`. Extract a module-level `const baseMockEvent` and a `makeMockView(connected = true)` factory in the 'cross-file' describe block. Each test should only override what's unique (e.g., `dispatch: vi.fn()`).\n\n3. **Strengthen weak assertion** (S6): In the bare-path/file:// normalization test (line ~218), replace `expect.any(Number)` with the concrete value `144`. The mock `line: (n) => ({ from: (n-1)*20 })` with LSP range `line: 7, character: 4` gives `doc.line(8).from + 4 = 140 + 4 = 144`.\n\nMemory hints: search \"task 949 gotoDefinition tests\" for origin context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:15:50.578Z",
+        "updatedAt": "2026-04-08T11:32:46.822Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22005,7 +22005,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:32:46.500Z",
+      "lastModified": "2026-04-08T11:32:46.822Z",
       "taskCount": 1069,
       "completedCount": 750,
       "tags": [
