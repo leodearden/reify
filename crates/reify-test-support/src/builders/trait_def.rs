@@ -12,6 +12,7 @@ pub struct TraitDefBuilder {
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
     defaults: Vec<TraitDefault>,
+    annotations: Vec<reify_types::Annotation>,
 }
 
 impl TraitDefBuilder {
@@ -23,7 +24,20 @@ impl TraitDefBuilder {
             refinements: Vec::new(),
             required_members: Vec::new(),
             defaults: Vec::new(),
+            annotations: Vec::new(),
         }
+    }
+
+    /// Push a single annotation onto this builder.
+    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+        self.annotations.push(ann);
+        self
+    }
+
+    /// Replace all annotations with the given vec.
+    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+        self.annotations = anns;
+        self
     }
 
     pub fn is_pub(mut self) -> Self {
@@ -99,7 +113,7 @@ impl TraitDefBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
-            annotations: Vec::new(),
+            annotations: self.annotations,
         }
     }
 }
@@ -114,6 +128,7 @@ pub struct CompiledTraitBuilder {
     refinements: Vec<String>,
     required_members: Vec<TraitRequirement>,
     defaults: Vec<reify_compiler::TraitDefault>,
+    annotations: Vec<reify_types::Annotation>,
 }
 
 impl CompiledTraitBuilder {
@@ -125,7 +140,20 @@ impl CompiledTraitBuilder {
             refinements: Vec::new(),
             required_members: Vec::new(),
             defaults: Vec::new(),
+            annotations: Vec::new(),
         }
+    }
+
+    /// Push a single annotation onto this builder.
+    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+        self.annotations.push(ann);
+        self
+    }
+
+    /// Replace all annotations with the given vec.
+    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+        self.annotations = anns;
+        self
     }
 
     pub fn public(mut self) -> Self {
@@ -211,7 +239,7 @@ impl CompiledTraitBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
-            annotations: Vec::new(),
+            annotations: self.annotations,
         }
     }
 }
@@ -416,6 +444,97 @@ mod tests {
             ct1.content_hash, ct2.content_hash,
             "traits differing only in defaults must produce distinct content_hashes"
         );
+    }
+}
+
+// --- Tests for TraitDefBuilder annotation support (steps 7-8) ---
+
+#[cfg(test)]
+mod trait_def_annotation_tests {
+    use super::*;
+    use crate::builders::{ann_str, annotation, annotation_with_args};
+
+    #[test]
+    fn trait_def_builder_single_annotation() {
+        let t = TraitDefBuilder::new("T")
+            .annotation(annotation("deprecated"))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].name, "deprecated");
+    }
+
+    #[test]
+    fn trait_def_builder_annotation_with_args() {
+        let t = TraitDefBuilder::new("T")
+            .annotation(annotation_with_args("deprecated", vec![ann_str("use Bar")]))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].args.len(), 1);
+    }
+
+    #[test]
+    fn trait_def_builder_annotations_replace_all() {
+        let t = TraitDefBuilder::new("T")
+            .annotations(vec![annotation("a"), annotation("b")])
+            .build();
+        assert_eq!(t.annotations.len(), 2);
+    }
+
+    #[test]
+    fn trait_def_builder_annotation_does_not_affect_content_hash() {
+        let t1 = TraitDefBuilder::new("T").build();
+        let t2 = TraitDefBuilder::new("T")
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(t1.content_hash, t2.content_hash);
+    }
+}
+
+// --- Tests for CompiledTraitBuilder annotation support (steps 5-6) ---
+
+#[cfg(test)]
+mod compiled_trait_annotation_tests {
+    use super::*;
+    use crate::builders::{ann_str, annotation, annotation_with_args};
+
+    #[test]
+    fn compiled_trait_builder_single_annotation() {
+        let t = CompiledTraitBuilder::new("T")
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].name, "test");
+    }
+
+    #[test]
+    fn compiled_trait_builder_annotation_with_args() {
+        let t = CompiledTraitBuilder::new("T")
+            .annotation(annotation_with_args("deprecated", vec![ann_str("use Foo")]))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].name, "deprecated");
+        assert_eq!(t.annotations[0].args.len(), 1);
+    }
+
+    #[test]
+    fn compiled_trait_builder_annotations_replace_all() {
+        let ann1 = annotation("a");
+        let ann2 = annotation("b");
+        let t = CompiledTraitBuilder::new("T")
+            .annotations(vec![ann1, ann2])
+            .build();
+        assert_eq!(t.annotations.len(), 2);
+        assert_eq!(t.annotations[0].name, "a");
+        assert_eq!(t.annotations[1].name, "b");
+    }
+
+    #[test]
+    fn compiled_trait_builder_annotation_does_not_affect_content_hash() {
+        let t1 = CompiledTraitBuilder::new("T").build();
+        let t2 = CompiledTraitBuilder::new("T")
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(t1.content_hash, t2.content_hash);
     }
 }
 
