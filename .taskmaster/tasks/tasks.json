@@ -22712,11 +22712,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`, the test at ~line 214 ('file:// currentUri with bare-path location.uri') constructs its own mock view and mouse event inline (lines ~230-247) instead of using the `makeMockView` and `makeMouseEvent` factories. Replace the inline objects with the factory calls for consistency with all other tests in the file.\n\nSuggested change:\n- Replace the inline `mockEvent` (lines ~230-235) with `makeMouseEvent()`\n- Replace the inline `mockView` (lines ~237-247) with `makeMockView({ state: { doc: { line: (n: number) => ({ from: (n - 1) * 20 }) } } })`\n\nmemory_hints: search for \"makeMockView gotoDefinition test factory\" and \"task 1086 cleanup\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:51:12.341Z",
+        "updatedAt": "2026-04-08T20:58:14.739Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22984,9 +22984,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:57:18.271Z",
+      "lastModified": "2026-04-08T20:58:14.739Z",
       "taskCount": 1119,
-      "completedCount": 793,
+      "completedCount": 794,
       "tags": [
         "master"
       ]
