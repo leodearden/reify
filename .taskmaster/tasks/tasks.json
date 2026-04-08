@@ -20841,7 +20841,7 @@
         "description": "crates/reify-eval/src/lib.rs has 2 instances of `values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef)` for guard cells:\n- Line 1767 (initial guard_state_hash computation)\n- Line 2042 (edit_param guard fingerprint recomputation in topology_fingerprint update)\n\nThese use the silent default pattern that violates feedback_silent_defaults_pattern.md. The original integration review (esc-review-20260401T113255-25) flagged a third site that has since been removed/refactored.\n\n## Design question\nDuring the FIRST evaluation pass, guard cells may not have been evaluated yet, so Undef is the correct 'undetermined' state. But during re-evaluation (line 2042 — edit_param path), all guard cells SHOULD have values from the prior snapshot.\n\nDecide one of:\n- (a) Replace `.unwrap_or(Value::Undef)` on line 2042 with `.expect(\"guard cell must be present after initial evaluation\")` — and keep line 1767 as-is with an explicit comment exempting it.\n- (b) Both sites are correct as-is, but each needs an explicit comment explaining why Undef is the correct fallback (when can guard_cell legitimately be missing here?).\n\nInvestigate what happens when a guard cell is missing during re-evaluation in practice — does it currently cause silent wrong topology fingerprints? Add a regression test for whichever direction is chosen.\n\n## Related convention\nfeedback_silent_defaults_pattern.md: Errors must be noisy — never silently swallow logic errors with unwrap_or(Value::Undef). Recent fix in commit 3c99ec707 removed a similar silent default from Pattern eval_arg.\n\nSource: integration-review escalation esc-review-20260401T113255-25 (auto-dismissed when orchestrator restarted).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20853,7 +20853,7 @@
             "crates/reify-eval/src"
           ]
         },
-        "updatedAt": "2026-04-07T16:03:57.659Z"
+        "updatedAt": "2026-04-08T19:08:44.972Z"
       },
       {
         "id": "1004",
@@ -22613,7 +22613,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T19:08:44.730Z",
+      "lastModified": "2026-04-08T19:08:44.972Z",
       "taskCount": 1098,
       "completedCount": 770,
       "tags": [
