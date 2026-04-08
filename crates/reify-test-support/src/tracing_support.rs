@@ -903,4 +903,35 @@ mod tests {
 
         capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
     }
+
+    // ── ForwardingSubscriber tests ────────────────────────────────────────────
+
+    /// `ForwardingSubscriber` correctly delegates `enabled()` to the closure.
+    ///
+    /// Wraps a `warn_counting_subscriber` (which accepts only WARN) in a
+    /// `ForwardingSubscriber` whose `enabled_fn` delegates to `inner.enabled()`
+    /// and whose `event_fn` delegates to `inner.event()`.  Emits one WARN and
+    /// one ERROR event; asserts the inner counter reads 1 — the ERROR was
+    /// rejected at the `enabled()` gate and never reached `event()`.
+    #[test]
+    fn forwarding_subscriber_delegates_enabled_to_closure() {
+        let (inner, warn_count) = warn_counting_subscriber();
+
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |s: &_, meta| s.enabled(meta),
+            event_fn: |s: &_, event| s.event(event),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn event");
+            tracing::error!("error event — should be rejected at enabled()");
+        });
+
+        assert_eq!(
+            warn_count.load(Ordering::Relaxed),
+            1,
+            "only the WARN event should be counted; ERROR must be rejected at enabled()"
+        );
+    }
 }
