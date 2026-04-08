@@ -22063,6 +22063,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1073,
+        "title": "Deduplicate forwarding Subscriber wrappers in tracing_support tests",
+        "description": "The test module in `crates/reify-test-support/src/tracing_support.rs` contains three nearly-identical `tracing::Subscriber` wrapper structs:\n\n1. `EventDispatchCounter<S>` (lines ~230-266) — used by `error_events_rejected_by_enabled_filter`\n2. `EventDispatchCounter<S>` (lines ~488-534) — used by `counting_subscriber_enabled_rejects_unregistered_levels`\n3. `ForcedEventDispatcher<S>` (lines ~571-606) — used by `event_panics_on_non_warn_when_dispatcher_contract_violated`\n\nEach forwards all trait methods to an inner subscriber and differs only in `enabled()` / `event()` behavior. The boilerplate is substantial and obscures per-test intent.\n\nExtract a single shared `ForwardingSubscriber<S>` at module scope (or a macro) that handles the forwarding boilerplate and allows tests to customize only `enabled()` and `event()` via closures, generics, or trait specialization. This is test-only code, so the goal is purely maintainability.\n\nThis was identified during review of task 972.\n\nmemory_hints: search(\"tracing Subscriber wrapper boilerplate test\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22075,7 +22086,7 @@
       ],
       "created": "2026-04-08T11:39:15.922Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T11:39:16.044Z"
+      "updated": "2026-04-08T11:39:22.816Z"
     }
   }
 }
