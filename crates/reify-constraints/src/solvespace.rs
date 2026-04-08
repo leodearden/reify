@@ -617,16 +617,44 @@ impl SystemBuilder {
         eh
     }
 
-    /// Add 4 point entities and 2 line segment entities for a pair of lines.
+    /// Adds up to 4 point entities and 2 line segment entities for a pair of lines.
     ///
     /// Extracts the start/end points of `line_a` and `line_b`, creates point
-    /// entities for each, then creates two line segment entities from those
-    /// points. Returns the two line segment handles as `(line_a_e, line_b_e)`.
+    /// entities for each via [`add_point`], then creates two
+    /// [`SLVS_E_LINE_SEGMENT`] entities from those points.  Returns a
+    /// [`LinePairEntities`] with the two segment handles.
+    ///
+    /// [`add_point`]: SystemBuilder::add_point
+    /// [`SLVS_E_LINE_SEGMENT`]: crate::slvs_sys::SLVS_E_LINE_SEGMENT
+    ///
+    /// ## Point deduplication
+    ///
+    /// [`add_point`] maintains a `PointKey`-based cache, so shared endpoints
+    /// are reused rather than duplicated:
+    ///
+    /// - **Fixed** points dedup when coordinates are bit-equal (`f64::to_bits`).
+    /// - **Auto** points dedup when all three `ValueCellId` components are equal.
+    ///
+    /// If two or more of the four corner points are identical, the actual number
+    /// of new entities is between 3 (one shared endpoint: 3 points + 2 lines)
+    /// and 6 (all distinct: 4 points + 2 lines).
+    ///
+    /// # Partial mutation
+    ///
+    /// On `Err`, point entities created by earlier successful [`add_point`]
+    /// calls are **not** rolled back.  They remain in `builder.point_entities`
+    /// and `builder.entities`.  Callers that abandon the builder on `Err`
+    /// (such as [`solve`]) are unaffected, but callers that reuse the builder
+    /// after an error must account for the pre-existing partial state.
+    ///
+    /// [`solve`]: crate::solvespace::solve
     ///
     /// # Errors
     ///
-    /// Returns `Err` if any point entity cannot be created (e.g. a non-auto
-    /// parameter is missing from `current_values`).
+    /// Returns `Err(BuilderError)` if any point entity cannot be created —
+    /// specifically, when a non-auto coordinate `cell_id` is absent from
+    /// `current_values`.  The error carries the offending `cell_id` so the
+    /// caller can surface a precise diagnostic.
     fn add_line_pair(
         &mut self,
         line_a: &LineRef,
