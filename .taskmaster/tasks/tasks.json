@@ -22428,10 +22428,11 @@
         "description": "## S2 — Partial-output cleanup must cover non-timeout failures\nIn `scripts/tree-sitter-generate.sh` (lines 146-154), the `rm -f src/parser.c src/grammar.json src/node-types.json` cleanup runs only on the timeout path. A non-timeout failure — e.g., `tree-sitter generate` exits non-zero due to a grammar error after having written a partial parser.c — hits the `elif [ \"$GEN_EXIT\" -ne 0 ]` branch and leaves the corrupted files on disk. Subsequent runs then see them and the staleness check at lines 56-61 treats them as present. This is the same failure mode the diff was trying to prevent; only the timeout path is closed.\n\nFix: hoist the cleanup into a shared helper or duplicate it on the non-timeout failure branch:\n```bash\nelif [ \"$GEN_EXIT\" -ne 0 ]; then\n    echo \"ERROR: tree-sitter generate failed (exit code $GEN_EXIT)\" >&2\n    rm -f src/parser.c src/grammar.json src/node-types.json\n    exit 1\nfi\n```\n\nRecommended: define a `_cleanup_partial_outputs()` local function at the top of the generation block and call it on both branches — avoids drift.\n\n## S6 — Tighten Test 16 cleanup assertion\nIn `scripts/test_tree_sitter_generate.sh:231-232`, Test 16 uses `grep -qE 'rm[[:space:]].*parser\\.c'` which is very loose — it would match `# TODO: maybe rm src/parser.c later` or any `rm …parser.c` anywhere in the file (including a newly added non-timeout branch, which is fine, but also unrelated rms). Tighten to require the three output files together:\n```bash\ngrep -qE 'rm -f .*parser\\.c .*grammar\\.json .*node-types\\.json' \"$GENERATE_SCRIPT\"\n```\nAnd ideally add a second assertion that the cleanup appears inside both error branches. With S2's fix, the test should verify cleanup exists in *both* the timeout and non-timeout failure paths.\n\n## Verification\nRun `scripts/test_tree_sitter_generate.sh` — existing tests pass, Test 16 tightened. Add a new test case that forces `tree-sitter generate` to fail (e.g., stub it) and asserts the partial outputs are removed.\n\nSource: review escalation esc-994-69 (suggestions S2, S6).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T17:21:31.550Z"
       },
       {
         "id": "1090",
@@ -22471,7 +22472,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:21:30.286Z",
+      "lastModified": "2026-04-08T17:21:31.550Z",
       "taskCount": 1092,
       "completedCount": 754,
       "tags": [
