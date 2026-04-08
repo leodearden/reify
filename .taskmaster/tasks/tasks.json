@@ -23331,17 +23331,18 @@
         "description": "The re-export test files (gui/sidecar/src/__tests__/utils.test.ts and gui/src/__tests__/errorClassifier.test.ts) duplicate edge-case tests that are already comprehensively covered in the canonical test at gui/packages/shared-utils/src/__tests__/errorMessage.test.ts.\n\nThe re-export files should be trimmed to only smoke tests proving the re-export wiring works (export exists + basic delegation), while all edge-case and implementation-detail tests stay in shared-utils.\n\nSpecifically, remove from both re-export files:\n- 'returns \"Unknown error\" for plain object with null .message'\n- 'returns \"Unknown error\" for plain object with numeric .message'\n- 'returns \"Unknown error\" for plain object with undefined .message'\n- 'returns \"[object Object]\" for plain object with no .message property'\n- 'returns \"Unknown error\" for plain object with throwing .message getter'\n- 'returns \"Unknown error\" for Error subclass with throwing message getter'\n- 'returns \"Unknown error\" when valueOf() and toString() both throw'\n\nKeep only 'is exported from utils' and 'delegates to @reify/shared-utils implementation' in each re-export file.\n\nThe canonical shared-utils test already covers all of these cases and more.\n\nmemory_hints: search \"errorMessage re-export test sync convention\" to understand the mirror-file convention.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1058"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:14:11.832Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:14:11.377Z",
+      "lastModified": "2026-04-08T21:14:11.832Z",
       "taskCount": 1136,
       "completedCount": 804,
       "tags": [
