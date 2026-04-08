@@ -22526,16 +22526,21 @@
         "description": "Follow-up from Task 1054 review triage (esc-1054-65, suggestions S1, S2, S3).\n\nThe `isValidLspPosition` helper and the cross-file branch in `gotoDefinition.ts` guard against negative and out-of-bounds values but not NaN or non-integer inputs. Since any comparison with NaN returns false, `NaN` bypasses both `line < 0` and `line + 1 > doc.lines`, reaching `doc.line(NaN + 1)` which throws RangeError (caught by `.catch()` — silent failure). In the cross-file branch, `NaN < 0` is false, so NaN values are forwarded to `onNavigate` and ultimately compute `targetLine.from + NaN = NaN` cursor positions in Editor.tsx.\n\nThree changes:\n\n1. **Add `Number.isInteger` gate** — In `isValidLspPosition`, add `if (!Number.isInteger(line) || !Number.isInteger(character)) return null;` as the first check. This rejects NaN, Infinity, fractional numbers, and non-number types.\n\n2. **Extract shared `isValidPositionShape` helper** — Factor the minimal shape check (`Number.isInteger(x) && x >= 0`) into a helper callable from both the same-file branch (via `isValidLspPosition`) and the cross-file branch (before `onNavigate` call). This centralizes the \"what counts as a malformed position\" definition per the task 1054 consolidation intent.\n\n3. **Harden cross-file tests** — The two cross-file malformed-response tests (lines 211-264) use a benign `doc.line()` mock, so they pass even if the guard is moved after `doc.line()`. Apply the throwing-`doc.line()` pattern (already used in the line-bounds guard test at line 383-418) or spy on `doc.line` and assert it was never called, to make the tests regression-proof.\n\nAdd NaN test cases for both branches. Verify with `npm test -- src/__tests__/gotoDefinition.test.ts`.\n\nmemory_hints:\n- search: \"isValidLspPosition gotoDefinition validation\"\n- search: \"Task 1054 consolidate boundary checks\"\n- entity: \"gotoDefinition.ts\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:27:00.663Z"
+        "updatedAt": "2026-04-08T17:35:05.948Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:35:03.769Z",
+      "lastModified": "2026-04-08T17:35:05.948Z",
       "taskCount": 1095,
       "completedCount": 762,
       "tags": [
