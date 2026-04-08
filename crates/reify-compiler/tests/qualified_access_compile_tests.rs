@@ -279,7 +279,6 @@ structure def Outer {
 /// (Option<Real> placeholder) instead of consulting let_decl.type_expr, and lacks the
 /// OptionNone fixup present in the param-default path.
 #[test]
-#[ignore = "Let-binding path needs its own OptionNone fixup — the param-default site was restored in 81d333299 but `let y : Option<T> = none` still takes Option<Real> from compiled_expr.result_type instead of resolving let_decl.type_expr. See project_regression_c88ca9635.md."]
 fn let_none_with_typed_annotation_gets_correct_type() {
     let source = r#"
 structure def S {
