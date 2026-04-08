@@ -421,6 +421,27 @@ async fn valid_notification_returns_ok_null() {
     );
 }
 
+/// A valid `textDocument/didOpen` notification should return exactly `Ok(Value::Null)`.
+///
+/// Documents the `Ok(Value::Null)` contract for the didOpen arm of `handle_request`.
+/// Uses a fully initialized server to match the realistic call-site where
+/// didOpen is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn did_open_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let result = lsp
+        .handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .expect("didOpen should return Ok");
+
+    assert_eq!(
+        result,
+        serde_json::Value::Null,
+        "didOpen should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Malformed (non-object) params for `initialized` should return an Err
 /// containing "initialized params error", not silently succeed.
 ///
