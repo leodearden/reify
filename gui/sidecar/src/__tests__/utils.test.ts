@@ -65,4 +65,12 @@ describe('errorMessage', () => {
     expect(errorMessage({ message: '   ' })).toBe('Unknown error');
   });
 
+  it('falls through to String() for bare object', () => {
+    expect(errorMessage({})).toBe('[object Object]');
+  });
+
+  it('returns "Unknown error" when value\'s toString() throws', () => {
+    const obj = { toString() { throw new Error('boom'); } };
+    expect(errorMessage(obj)).toBe('Unknown error');
+  });
 });

@@ -147,6 +147,11 @@ describe('errorClassifier', () => {
     it('falls through to String() for plain object without .message', () => {
       expect(errorMessage({ code: 500 })).toBe('[object Object]');
     });
+
+    it('returns "Unknown error" when value\'s toString() throws', () => {
+      const obj = { toString() { throw new Error('boom'); } };
+      expect(errorMessage(obj)).toBe('Unknown error');
+    });
   });
 
   describe('unknown errors', () => {
