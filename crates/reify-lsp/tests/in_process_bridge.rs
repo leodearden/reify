@@ -669,6 +669,49 @@ async fn shutdown_before_initialize_with_null_params() {
     );
 }
 
+/// The `shutdown` bridge arm ignores params entirely — it never deserializes or
+/// validates them. This test locks in that permissive contract by sending two
+/// unexpected values: an object with extra fields (`{"foo": 42}`) and a wrong JSON
+/// type entirely (`"oops"`). Both must return `Ok(Value::Null)`.
+///
+/// See bridge.rs lines 177–183: the `"shutdown"` arm calls `server.shutdown().await`
+/// and returns `Ok(Value::Null)` without touching `params`. If a future change adds
+/// strict param validation, this test will fail — making the behavior change
+/// inescapable rather than accidental.
+///
+/// Uses `InProcessLsp::new()` (pre-handshake) to avoid handshake overhead; the
+/// shutdown arm does not consult initialization state.
+#[tokio::test]
+async fn shutdown_ignores_unexpected_params() {
+    let lsp = InProcessLsp::new();
+
+    // Object with unexpected extra fields — bridge must not reject this.
+    let result = lsp.handle_request("shutdown", json!({"foo": 42})).await;
+    assert!(
+        result.is_ok(),
+        "shutdown(params={{\"foo\":42}}) should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown(params={{\"foo\":42}}) should return exactly Ok(Value::Null)"
+    );
+
+    // Wrong JSON type entirely — bridge must not reject this either.
+    let result = lsp.handle_request("shutdown", json!("oops")).await;
+    assert!(
+        result.is_ok(),
+        "shutdown(params=\"oops\") should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown(params=\"oops\") should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
