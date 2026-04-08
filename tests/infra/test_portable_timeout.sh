@@ -323,5 +323,15 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
     '
 
+# -- Test 17: structural: timer subshell has SIGKILL escalation ---------------
+echo ""
+echo "--- Test 17: lib_portable.sh timer subshell has SIGKILL escalation ---"
+
+# After the initial SIGTERM to the command, the timer subshell should escalate
+# to SIGKILL (kill -9) if the process is still running after a grace period.
+# Grep for 'kill -9' or 'kill -KILL' in the timer subshell section of lib_portable.sh.
+assert "lib_portable.sh timer subshell contains SIGKILL escalation (kill -9)" \
+    grep -qE 'kill -9[[:space:]]|kill -KILL[[:space:]]' "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
