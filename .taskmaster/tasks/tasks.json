@@ -22554,15 +22554,16 @@
         "description": "The 3D value constructors in reify-test-support have a `vec3_dimensionless` helper but the 2D counterparts (`vec2_dimensionless`, `point2_dimensionless`) are missing. Add these for API parity so consumers needing dimensionless 2D points/vectors don't have to construct them manually.\n\nLocation: crates/reify-test-support/src/values.rs (near line 477, after the existing `vec2`/`point2` helpers).\n\nMemory hints: search \"vec3_dimensionless\" for the existing pattern to follow.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T17:37:16.034Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:37:15.542Z",
+      "lastModified": "2026-04-08T17:37:16.034Z",
       "taskCount": 1096,
       "completedCount": 762,
       "tags": [
