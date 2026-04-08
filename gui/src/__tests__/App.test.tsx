@@ -2207,4 +2207,45 @@ describe('App serialization-error subscription', () => {
 
     expect(serializationErrorUnsub).toHaveBeenCalled();
   });
+
+  it('shows fallback toast when onSerializationError rejects', async () => {
+    vi.mocked(bridge.onSerializationError).mockRejectedValueOnce(new Error('listen failed'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const errorToast = toasts.find((t) =>
+        t.textContent?.includes('Serialization error monitoring unavailable'),
+      );
+      expect(errorToast).toBeTruthy();
+    });
+  });
+
+  it('does not leak serialization-error listener when unmounted before onSerializationError resolves', async () => {
+    const unlistenSerialization = vi.fn();
+    const { promise, resolve } = deferred<() => void>();
+    vi.mocked(bridge.onSerializationError).mockReturnValue(promise);
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for initApp to reach the onSerializationError await
+    await flushMacrotasks();
+
+    // Unmount while onSerializationError is still pending
+    unmount();
+
+    // Resolve the deferred promise — alive guard should fire
+    resolve(unlistenSerialization);
+
+    // Flush so the alive guard's unlistenSerialization() call executes
+    await flushMacrotasks();
+
+    // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
+    expect(unlistenSerialization).toHaveBeenCalledTimes(1);
+  });
 });
