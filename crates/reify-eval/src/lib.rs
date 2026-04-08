@@ -277,27 +277,26 @@ enum GuardLookup {
 /// Each guard cell is hashed as `"guard:{cell}={value:?}"` to ensure that two
 /// different cells holding the same value still produce distinct hashes.
 ///
-/// `strict = false` (lenient): missing cells are treated as `Value::Undef`.
+/// `GuardLookup::Lenient`: missing cells are treated as `Value::Undef`.
 /// Use this during or immediately after initial evaluation, where a guard cell
 /// might not yet have a value (semantically undetermined).
 ///
-/// `strict = true`: panics if any guard cell is absent from `values`.
+/// `GuardLookup::Strict`: panics if any guard cell is absent from `values`.
 /// Use this after `eval()` has completed, where every guard cell must be
 /// populated; a missing cell would silently produce a wrong fingerprint and
 /// corrupt the incremental cache.
 fn guard_state_fingerprint(
-    groups: &[crate::graph::GuardedGroupInfo],
+    groups: &[GuardedGroupInfo],
     values: &ValueMap,
-    strict: bool,
+    mode: GuardLookup,
 ) -> ContentHash {
     let hashes = groups.iter().map(|g| {
-        let val = if strict {
-            values
+        let val = match mode {
+            GuardLookup::Strict => values
                 .get(&g.guard_cell)
                 .cloned()
-                .expect("guard cell must have a value after initial evaluation")
-        } else {
-            values.get_or_undef(&g.guard_cell)
+                .expect("guard cell must have a value after initial evaluation"),
+            GuardLookup::Lenient => values.get_or_undef(&g.guard_cell),
         };
         ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
     });
@@ -1539,7 +1538,7 @@ impl Engine {
         // logical guard configuration.
         if !snapshot.graph.guarded_groups.is_empty() {
             let guard_state_hash =
-                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, false);
+                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, GuardLookup::Lenient);
             snapshot.topology_fingerprint =
                 snapshot.graph.topology_fingerprint().combine(guard_state_hash);
         }
@@ -1836,7 +1835,7 @@ impl Engine {
 
                 // Recompute topology fingerprint including guard states.
                 let guard_state_hash =
-                    guard_state_fingerprint(&graph.guarded_groups, &values, false);
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Lenient);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
             }
@@ -2116,7 +2115,7 @@ impl Engine {
                 let guard_state_hash = guard_state_fingerprint(
                     &new_snapshot.graph.guarded_groups,
                     &values,
-                    true,
+                    GuardLookup::Strict,
                 );
                 new_snapshot.topology_fingerprint =
                     new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
