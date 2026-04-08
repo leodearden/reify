@@ -770,6 +770,48 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
     result
 }
 
+/// Scans `source` for `#[test]` functions whose body passes `THIS_FILE` as a
+/// call argument — i.e., the body contains the substring `(THIS_FILE)` — and
+/// returns their signatures (e.g. `"fn test_foo()"`).
+///
+/// Uses the same line-by-line state machine as `find_cfg_unix_test_fns`: once
+/// `#[test]` is seen, the flag `saw_test` is set. Intermediate
+/// attribute/comment lines keep the flag alive. When a line starting with
+/// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
+/// check whether the function body contains `(THIS_FILE)`. Only functions that
+/// pass this body check are collected.
+fn find_self_reading_test_fns(source: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut saw_test = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[test]" {
+            saw_test = true;
+        } else if trimmed.starts_with("fn test_") && saw_test {
+            // Extract "fn name()" — everything up to and including the first ')'
+            if let Some(end) = trimmed.find(')') {
+                let sig = trimmed[..=end].to_string();
+                // Only collect if the function body contains (THIS_FILE)
+                if let Some(body) = extract_test_fn_body(source, &sig) {
+                    if body.contains("(THIS_FILE)") {
+                        result.push(sig);
+                    }
+                }
+            }
+            saw_test = false;
+        } else if trimmed.starts_with('#') {
+            // Another attribute — keep flag alive (e.g. #[allow(...)])
+        } else if trimmed.starts_with("//") || trimmed.is_empty() {
+            // Comment or blank line — keep flag alive
+        } else {
+            // Any other line (fn without test, let, etc.) resets the flag
+            saw_test = false;
+        }
+    }
+    result
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: every #[cfg(unix)] test function that
@@ -1064,10 +1106,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "fn test_no_this_file() {\n",
         "    let _ = 1;\n",
         "}\n\n",
-        // Case (d): a test fn that mentions THIS_FILE only in a comment — should be ignored.
+        // Case (d): a test fn that mentions THIS_FILE only in a comment (no call form) — should be ignored.
+        // The comment below contains the bare identifier THIS_FILE but not the
+        // parenthesized form, so the scanner must not collect this function.
         "#[test]\n",
         "fn test_comment_only_mention() {\n",
-        "    // This test does not use (THIS_FILE) as a call argument\n",
+        "    // This test does not call THIS_FILE as an argument\n",
         "    let _ = 2;\n",
         "}\n",
     );
