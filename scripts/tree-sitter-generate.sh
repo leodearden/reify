@@ -140,6 +140,13 @@ if [ "$FORCE" = false ]; then
     fi
 fi
 
+# Helper: remove any partial output files written by a failed/killed
+# tree-sitter generate run.  Called on both error branches so there is a
+# single place to update if new output files are added in the future.
+_cleanup_partial_outputs() {
+    rm -f src/parser.c src/grammar.json src/node-types.json
+}
+
 GEN_EXIT=0
 # Use portable_timeout from lib_portable.sh (sourced via lib.sh above).
 portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
@@ -147,10 +154,11 @@ if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true"
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
     # Remove any partial output files left by the killed process to prevent
     # corrupted parser.c/grammar.json/node-types.json from being used.
-    rm -f src/parser.c src/grammar.json src/node-types.json
+    _cleanup_partial_outputs
     exit 1
 elif [ "$GEN_EXIT" -ne 0 ]; then
     echo "ERROR: tree-sitter generate failed (exit code $GEN_EXIT)" >&2
+    _cleanup_partial_outputs
     exit 1
 fi
 
