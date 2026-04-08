@@ -4928,6 +4928,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_modify_missing_arg_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Fillet with target but 'radius' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                // radius deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The op is still constructed (Some), not aborted
+        assert!(
+            result.is_some(),
+            "compile_geometry_op should return Some even when an arg is missing"
+        );
+
+        // The missing 'radius' arg should produce Value::Undef
+        match result.unwrap() {
+            reify_types::GeometryOp::Fillet { radius, .. } => {
+                assert_eq!(
+                    radius,
+                    reify_types::Value::Undef,
+                    "missing arg should default to Value::Undef"
+                );
+            }
+            other => panic!("expected GeometryOp::Fillet, got {:?}", other),
+        }
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'radius'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Fillet"),
+            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
