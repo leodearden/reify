@@ -1202,14 +1202,16 @@ fn byte_offset_to_line_col_empty_source() {
     assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
 }
 
+#[cfg(debug_assertions)]
 #[test]
+#[should_panic(expected = "offset <= source.len()")]
 fn byte_offset_to_line_col_offset_beyond_len() {
     use crate::engine::byte_offset_to_line_col;
 
-    // Source "ab" (len=2). Offset 100 far exceeds the source length.
-    // The loop exhausts all chars without hitting the break, leaving the
-    // position after the last char: column incremented for 'a' and 'b' → (1, 3).
-    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+    // In debug/test builds, passing an offset beyond source.len() must panic
+    // with a clear message, so stale-span bugs are caught loudly.
+    // Release builds retain silent clamping (debug_assert is a no-op there).
+    let _ = byte_offset_to_line_col("ab", 100);
 }
 
 #[test]
