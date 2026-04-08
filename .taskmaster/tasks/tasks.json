@@ -23401,11 +23401,16 @@
         "description": "Eliminate 3-site duplication of guard fingerprint computation in crates/reify-eval/src/lib.rs: eval() lines ~1508-1517, edit_param() Site 1 lines ~1823-1831, edit_param() Site 2 lines ~2111-2125. All three iterate guarded_groups, hash each guard value with format string 'guard:{}={:?}', call ContentHash::combine_all, then combine with topology_fingerprint(). This format-string drift across sites is exactly what caused the bug task 1112 fixed.\n\nExtract a helper: `fn guard_state_fingerprint(groups: &[GuardedGroup], values: &HashMap<ValueCellId, Value>, strict: bool) -> ContentHash`. Sites 1 and eval() pass strict=false (unwrap_or(Value::Undef)); Site 2 passes strict=true (.expect). Preserve existing comments explaining strict-vs-lenient rationale at the helper level.\n\nAll existing guard tests must continue to pass. Source: review suggestion on task 1112, escalation esc-1112-816.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:31:33.459Z"
+        "updatedAt": "2026-04-08T21:35:45.288Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": "1141",
@@ -23463,7 +23468,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:34:47.494Z",
+      "lastModified": "2026-04-08T21:35:45.288Z",
       "taskCount": 1144,
       "completedCount": 815,
       "tags": [
