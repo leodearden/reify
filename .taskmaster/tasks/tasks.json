@@ -22018,11 +22018,16 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`, apply three related fixture cleanups that arose from the Task 1029 review:\n\n(1) Delete the `describe('test fixtures')` block at lines ~43–84. Its sub-tests assert `BASE_MOUSE_EVENT.ctrlKey === true` and `makeMockView().state.doc.lines === 100` — literal echoes of how the fixtures are defined a few lines above. They exercise no production code and add maintenance friction (any intentional default change requires updating both the fixture and its mirror tests). This also removes the misleading `line(0)` call on line 60 (CodeMirror's `doc.line()` is 1-indexed; `line(0)` would throw `RangeError` on a real view — it only passes because the stub ignores its argument), making the S4 concern moot.\n\n(2) Replace the module-level `BASE_MOUSE_EVENT` constant (lines ~34–39) with a `makeMouseEvent(overrides?: Partial<MouseEvent>): MouseEvent` factory that returns a fresh object per call. Rationale: a shared mutable object can leak state across tests if any future test mutates a field (e.g. `mockEvent.ctrlKey = false` to exercise the non-modifier path). This matches the `makeMockView` factory convention, which was deliberately introduced to give each test a fresh `dispatch` spy. Update all ~7 call sites from `BASE_MOUSE_EVENT` to `makeMouseEvent()`.\n\n(3) Add a short JSDoc comment on `makeMockView` documenting the merge semantics, e.g.: \"Overrides are merged per-leaf: only the fields you pass are replaced; sibling defaults (e.g. `lineAt` when only `line` is overridden) are preserved.\" This makes the non-obvious shallow-per-leaf behavior explicit for future callers.\n\nAll three changes touch the same file and are logically grouped. No production code is affected; run `npm test -- gotoDefinition` (or the project's equivalent vitest invocation) to verify.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:32:32.501Z"
+        "updatedAt": "2026-04-08T11:38:22.094Z",
+        "metadata": {
+          "modules": [
+            "gui/src"
+          ]
+        }
       },
       {
         "id": "1070",
@@ -22051,7 +22056,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:38:09.798Z",
+      "lastModified": "2026-04-08T11:38:22.104Z",
       "taskCount": 1071,
       "completedCount": 752,
       "tags": [
