@@ -263,6 +263,15 @@ pub struct ConcurrentEditResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Controls how `guard_state_fingerprint` handles guard cells absent from the value map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardLookup {
+    /// Missing cells are treated as `Value::Undef` (safe during initial evaluation).
+    Lenient,
+    /// Missing cells cause a panic (required after `eval()` has fully populated all cells).
+    Strict,
+}
+
 /// Compute a content hash over the current guard-cell values in `groups`.
 ///
 /// Each guard cell is hashed as `"guard:{cell}={value:?}"` to ensure that two
