@@ -83,6 +83,7 @@ function isValidLspPosition(
   line: number,
   character: number,
 ): { targetLine: Line } | null {
+  if (!Number.isInteger(line) || !Number.isInteger(character)) return null;
   if (line < 0 || line + 1 > doc.lines) return null;
   const targetLine = doc.line(line + 1);
   if (character < 0 || character > targetLine.to - targetLine.from) return null;
