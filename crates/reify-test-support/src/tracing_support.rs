@@ -336,7 +336,9 @@ pub struct WarnCapture {
 impl WarnCapture {
     /// Return the number of WARN events that have been emitted so far.
     pub fn count(&self) -> usize {
-        self.count.load(Ordering::Relaxed)
+        // Acquire ordering pairs with the Release store in WarnCapturingSubscriber::event(),
+        // ensuring the count is fully visible once observed.
+        self.count.load(Ordering::Acquire)
     }
 
     /// Return a snapshot of all captured WARN event message strings.
@@ -569,7 +571,7 @@ mod tests {
         // The dispatcher rejected the ERROR at enabled(), so event() was never
         // called on either wrapper or inner, and warn_count stays 0.
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "ERROR must not be counted as a WARN event"
         );
@@ -589,7 +591,7 @@ mod tests {
     fn warn_events_increment_counter() {
         let (subscriber, warn_count) = warn_counting_subscriber();
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "counter should start at 0"
         );
@@ -599,7 +601,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             1,
             "one WARN event should produce count=1"
         );
@@ -631,7 +633,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             0,
             "warn counter must remain zero when only non-WARN events are emitted"
         );
@@ -688,7 +690,7 @@ mod tests {
             tracing::warn!("w2");
         });
 
-        assert_eq!(counter_clone.load(Ordering::Relaxed), 2);
+        assert_eq!(counter_clone.load(Ordering::Acquire), 2);
     }
 
     /// `CountingSubscriberBuilder` with a single registered level (WARN) should
@@ -707,7 +709,7 @@ mod tests {
         let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             0,
             "counter should start at 0"
         );
@@ -717,7 +719,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "one WARN event should produce count=1"
         );
@@ -747,7 +749,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "only the matching-target event should be counted"
         );
@@ -777,12 +779,12 @@ mod tests {
         });
 
         assert_eq!(
-            debug_arc.load(Ordering::Relaxed),
+            debug_arc.load(Ordering::Acquire),
             1,
             "one DEBUG event should produce debug count=1"
         );
         assert_eq!(
-            warn_arc.load(Ordering::Relaxed),
+            warn_arc.load(Ordering::Acquire),
             1,
             "one WARN event should produce warn count=1"
         );
@@ -1126,7 +1128,7 @@ mod tests {
         });
 
         assert_eq!(
-            warn_count.load(Ordering::Relaxed),
+            warn_count.load(Ordering::Acquire),
             1,
             "only the WARN event should be counted; ERROR must be rejected at enabled()"
         );
