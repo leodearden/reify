@@ -99,6 +99,7 @@ impl TraitDefBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
+            annotations: Vec::new(),
         }
     }
 }
@@ -210,6 +211,7 @@ impl CompiledTraitBuilder {
             required_members: self.required_members,
             defaults: self.defaults,
             content_hash,
+            annotations: Vec::new(),
         }
     }
 }

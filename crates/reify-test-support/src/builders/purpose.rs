@@ -96,6 +96,7 @@ impl CompiledPurposeBuilder {
             objective: self.objective,
             resolved_queries: self.resolved_queries,
             content_hash,
+            annotations: Vec::new(),
         }
     }
 }

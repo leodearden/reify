@@ -36,6 +36,8 @@ pub struct CompiledTrait {
     /// Members with defaults that are injected if the structure doesn't override.
     pub defaults: Vec<TraitDefault>,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -101,6 +103,8 @@ pub struct CompiledField {
     pub codomain_type: Type,
     pub source: CompiledFieldSource,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled purpose parameter — binds an entity reference.
@@ -132,6 +136,8 @@ pub struct CompiledPurpose {
     /// Reflective schema queries resolved at compile time.
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -199,6 +205,8 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -440,6 +448,9 @@ fn is_geometry_function(name: &str) -> bool {
             | "circular_pattern"
             | "mirror"
             | "loft"
+            | "extrude"
+            | "revolve"
+            | "revolve_full"
             | "shell"
             | "thicken"
             | "draft"
@@ -3291,6 +3302,9 @@ fn compile_trait(
     // Convert parsed type parameters to compiled TypeParam structs
     let type_params = convert_type_params(&trait_decl.type_params);
 
+    let annotations = lower_annotations(&trait_decl.annotations, diagnostics);
+    validate_annotations(&annotations, "trait", diagnostics);
+
     CompiledTrait {
         name: trait_decl.name.clone(),
         is_pub: trait_decl.is_pub,
@@ -3299,6 +3313,7 @@ fn compile_trait(
         required_members,
         defaults,
         content_hash,
+        annotations,
     }
 }
 
@@ -3505,6 +3520,9 @@ fn compile_purpose(
         }
     }
 
+    let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
+    validate_annotations(&annotations, "purpose", diagnostics);
+
     CompiledPurpose {
         name: purpose_def.name.clone(),
         is_pub: purpose_def.is_pub,
@@ -3513,6 +3531,7 @@ fn compile_purpose(
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
+        annotations,
     }
 }
 
@@ -4197,6 +4216,7 @@ struct EntityDefRef<'a> {
     type_params: &'a [reify_syntax::TypeParamDecl],
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
+    annotations: &'a [reify_syntax::Annotation],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -4210,6 +4230,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             type_params: &s.type_params,
             trait_bounds: &s.trait_bounds,
             members: &s.members,
+            annotations: &s.annotations,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -4224,8 +4245,116 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             type_params: &o.type_params,
             trait_bounds: &o.trait_bounds,
             members: &o.members,
+            annotations: &o.annotations,
             span: o.span,
             content_hash: o.content_hash,
+        }
+    }
+}
+
+/// Lower parsed syntax annotations to compiled annotation types.
+fn lower_annotations(
+    parsed: &[reify_syntax::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<reify_types::Annotation> {
+    parsed
+        .iter()
+        .map(|ann| {
+            let args = ann
+                .args
+                .iter()
+                .filter_map(|expr| {
+                    use reify_syntax::ExprKind;
+                    match &expr.kind {
+                        ExprKind::NumberLiteral(value) => {
+                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
+                                Some(reify_types::AnnotationArg::Int(*value as i64))
+                            } else {
+                                Some(reify_types::AnnotationArg::Real(*value))
+                            }
+                        }
+                        ExprKind::StringLiteral(s) => {
+                            Some(reify_types::AnnotationArg::String(s.clone()))
+                        }
+                        ExprKind::BoolLiteral(b) => Some(reify_types::AnnotationArg::Bool(*b)),
+                        ExprKind::Ident(name) => {
+                            Some(reify_types::AnnotationArg::Ident(name.clone()))
+                        }
+                        _ => {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "unsupported expression in annotation @{} argument; only literals and identifiers are allowed",
+                                    ann.name
+                                ))
+                                .with_label(DiagnosticLabel::new(expr.span, "complex expression")),
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+            reify_types::Annotation {
+                name: ann.name.clone(),
+                args,
+                span: ann.span,
+            }
+        })
+        .collect()
+}
+
+/// Validate annotations against known annotation rules and context.
+///
+/// Known annotations and their valid contexts:
+/// - `@test`: valid on structure, occurrence, function
+/// - `@optimized`: valid on structure, occurrence
+/// - `@solver_hint`: valid on structure, occurrence
+/// - `@deprecated`: valid on any context
+fn validate_annotations(
+    annotations: &[reify_types::Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        match ann.name.as_str() {
+            "deprecated" => {
+                // Valid on any context — no warning.
+            }
+            "test" => {
+                if !matches!(context, "structure" | "occurrence" | "function") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @test is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@test")),
+                    );
+                }
+            }
+            "optimized" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @optimized is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
+                    );
+                }
+            }
+            "solver_hint" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @solver_hint is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
+                    );
+                }
+            }
+            other => {
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown annotation @{other}"))
+                        .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
+                );
+            }
         }
     }
 }
@@ -5687,6 +5816,13 @@ fn compile_entity(
         }
     }
 
+    let context = match entity_kind {
+        EntityKind::Structure => "structure",
+        EntityKind::Occurrence => "occurrence",
+    };
+    let annotations = lower_annotations(structure.annotations, diagnostics);
+    validate_annotations(&annotations, context, diagnostics);
+
     TopologyTemplate {
         name: entity_name.to_string(),
         entity_kind,
@@ -5705,6 +5841,7 @@ fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
+        annotations,
     }
 }
 
@@ -7144,6 +7281,9 @@ fn compile_function(
         ContentHash::combine_all(all_hashes)
     };
 
+    let annotations = lower_annotations(&fn_def.annotations, diagnostics);
+    validate_annotations(&annotations, "function", diagnostics);
+
     Some(CompiledFunction {
         name: fn_def.name.clone(),
         is_pub: fn_def.is_pub,
@@ -7154,6 +7294,7 @@ fn compile_function(
             result_expr,
         },
         content_hash,
+        annotations,
     })
 }
 
@@ -7261,6 +7402,9 @@ fn compile_field(
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
 
+    let annotations = lower_annotations(&field_def.annotations, diagnostics);
+    validate_annotations(&annotations, "field", diagnostics);
+
     CompiledField {
         name: field_def.name.clone(),
         is_pub: field_def.is_pub,
@@ -7268,6 +7412,7 @@ fn compile_field(
         codomain_type,
         source,
         content_hash,
+        annotations,
     }
 }
 
@@ -7655,6 +7800,97 @@ fn compile_geometry_call(
                 kind: SweepKind::Loft,
                 profiles,
                 args,
+            }])
+        }
+        // extrude(profile, distance)
+        "extrude" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "extrude() expects exactly 2 arguments (profile, distance), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let distance_expr = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("distance".to_string(), distance_expr),
+                ],
+            }])
+        }
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
+        "revolve" => {
+            if compiled_args.len() != 8 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve() expects exactly 8 arguments (profile, ox, oy, oz, ax, ay, az, angle), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            let angle = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), angle),
+                ],
+            }])
+        }
+        // revolve_full(profile, ox, oy, oz, ax, ay, az) — injects 2π for angle
+        "revolve_full" => {
+            if compiled_args.len() != 7 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve_full() expects exactly 7 arguments (profile, ox, oy, oz, ax, ay, az), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            // Inject literal 2π for the angle
+            let tau_expr = CompiledExpr::literal(
+                Value::Real(std::f64::consts::TAU),
+                reify_types::Type::Real,
+            );
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), tau_expr),
+                ],
             }])
         }
         // sweep(profile, path)

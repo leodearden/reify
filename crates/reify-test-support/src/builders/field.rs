@@ -85,6 +85,7 @@ impl CompiledFieldBuilder {
             codomain_type: self.codomain_type,
             source,
             content_hash,
+            annotations: Vec::new(),
         }
     }
 }
