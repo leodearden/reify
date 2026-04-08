@@ -340,6 +340,11 @@ async fn unsupported_method_returns_error() {
         "unsupported method should return Err, got: {:?}",
         result
     );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("unsupported LSP method:"),
+        "error message should contain 'unsupported LSP method:', got: {err}"
+    );
 }
 
 /// Wrong field type within a valid-looking object should return Err containing
