@@ -21363,11 +21363,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`: (1) Lines 299-301: Remove `expect(onNavigate).not.toHaveBeenCalled()` from the `'line-bounds guard'` test — it is vacuously true because a same-file URI never reaches the `onNavigate` branch. The meaningful assertion is `expect(mockView.dispatch).not.toHaveBeenCalled()`. (2) Add a second test in the `'line-bounds guard'` describe block: `doc.lines=5`, LSP `start.line=4` (1-based = 5, exactly at boundary) — assert `dispatch` IS called (boundary is valid). Also add `start.line=5` (1-based = 6 > 5) confirming the guard fires. (3) Add a test in the `.catch()` describe block where `view.dispatch()` throws, verifying the `.catch()` covers the full `.then()` body, not just `doc.line()`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:12.363Z",
+        "updatedAt": "2026-04-08T10:22:14.964Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21682,7 +21682,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:22:14.476Z",
+      "lastModified": "2026-04-08T10:22:14.965Z",
       "taskCount": 1051,
       "completedCount": 742,
       "tags": [
