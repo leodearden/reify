@@ -4562,6 +4562,33 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_revolve_near_zero_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with a near-zero (1e-15 rad) angle — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(1e-15)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(
+            result.is_none(),
+            "near-zero revolve angle should return None"
+        );
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_produces_revolve_variant() {
         let step_handles = vec![GeometryHandleId(55)];
         let values = ValueMap::new();
