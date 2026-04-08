@@ -24073,6 +24073,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1180,
+        "title": "Use epsilon thresholds for degenerate geometry guards (extrude/revolve)",
+        "description": "In crates/reify-eval/src/lib.rs, the extrude zero-distance guard (line ~3636) uses exact float comparison (*v != 0.0) and the revolve zero-angle guard (line ~3666) uses (angle_rad == 0.0). Near-zero values from floating-point arithmetic (e.g. 1e-300, pi - pi) would pass these checks but produce degenerate geometry. The revolve axis magnitude check already uses a threshold (mag < 1e-12). Change both the extrude distance and revolve angle guards to use v.abs() < 1e-12 / angle_rad.abs() < 1e-12 for consistency.\n\nmemory_hints: search \"extrude revolve compile_geometry_op degenerate\" for implementation context.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24085,7 +24096,7 @@
       ],
       "created": "2026-04-08T23:19:26.392Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T23:19:26.409Z"
+      "updated": "2026-04-08T23:19:32.544Z"
     }
   }
 }
