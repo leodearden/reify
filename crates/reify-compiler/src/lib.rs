@@ -2008,6 +2008,12 @@ struct CompilationScope<'u> {
     /// Reference to the active unit registry.
     /// Set by compile_entity/compile_purpose. None for scopes that don't need it (functions, fields).
     unit_registry: Option<&'u UnitRegistry>,
+    /// Whether this scope is an entity (structure/purpose) scope where `self` is valid.
+    /// False for function scopes, where `self` must produce an "unresolved name" error.
+    is_entity_scope: bool,
+    /// Member types for non-collection sub-components: sub_name → { member_name → Type }.
+    /// Used to resolve self.sub.member chains for non-collection subs.
+    sub_member_types: HashMap<String, HashMap<String, Type>>,
 }
 
 impl<'u> CompilationScope<'u> {
@@ -2023,6 +2029,8 @@ impl<'u> CompilationScope<'u> {
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
             unit_registry: None,
+            is_entity_scope: false,
+            sub_member_types: HashMap::new(),
         }
     }
 
@@ -2157,6 +2165,15 @@ fn compile_expr_guarded(
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
         reify_syntax::ExprKind::Ident(name) => {
+            // Intercept `self` in entity scope — bare `self` resolves to StructureRef(entity_name).
+            // In function scopes (is_entity_scope == false), self falls through to "unresolved name".
+            if name == "self" && scope.is_entity_scope {
+                let self_id = ValueCellId::new(&scope.entity_name, "__self");
+                return CompiledExpr::value_ref(
+                    self_id,
+                    Type::StructureRef(scope.entity_name.clone()),
+                );
+            }
             // Intercept `none` before scope lookup — it's a language-level keyword.
             // Default inner type is Real; contextual override happens at param/let sites.
             if name == "none" {
@@ -2484,6 +2501,16 @@ fn compile_expr_guarded(
             match resolve_function_overload(name, &arg_types, functions) {
                 OverloadResolution::Resolved(matched_fn) => {
                     // Exactly one user fn matches — emit UserFunctionCall
+                    // Deprecation check: warn if the called function is @deprecated.
+                    if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                        emit_deprecation_warning(
+                            "function",
+                            name,
+                            &msg,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
                         let mut h = ContentHash::of(&[6]).combine(ContentHash::of_str(name));
@@ -2641,6 +2668,83 @@ fn compile_expr_guarded(
             }
         }
         reify_syntax::ExprKind::MemberAccess { object, member } => {
+            // Check if this is a `self.member` or `self.sub.member` access in entity scope.
+            if scope.is_entity_scope {
+                // Pattern: self.member
+                if let reify_syntax::ExprKind::Ident(obj_name) = &object.kind
+                    && obj_name == "self"
+                {
+                    // Check for self.sub.member chaining (handled at outer level): skip here
+                    // if member is a sub-component name — return a StructureRef for the sub.
+                    if scope.sub_component_types.contains_key(member.as_str()) {
+                        // self.sub_name — return StructureRef so that chaining works
+                        // (but note: this case is handled by the outer MemberAccess pattern below)
+                        let structure_name = scope.sub_component_types[member.as_str()].clone();
+                        let scoped_entity = format!("{}.{}", scope.entity_name, member);
+                        let sub_id = ValueCellId::new(&scoped_entity, "__self");
+                        return CompiledExpr::value_ref(
+                            sub_id,
+                            Type::StructureRef(structure_name),
+                        );
+                    }
+                    // Resolve member from the entity scope (same as bare identifier).
+                    match scope.resolve(member) {
+                        Some((id, ty)) => {
+                            let id = id.clone();
+                            let ty = ty.clone();
+                            return CompiledExpr::value_ref(id, ty);
+                        }
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on self",
+                                    member
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "unknown member",
+                                )),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    }
+                }
+
+                // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: sub_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.sub_component_types.contains_key(sub_name.as_str())
+                {
+                    // Resolve member type from sub_member_types
+                    let member_type = match scope
+                        .sub_member_types
+                        .get(sub_name.as_str())
+                        .and_then(|m| m.get(member.as_str()))
+                        .cloned()
+                    {
+                        Some(ty) => ty,
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown member '{}' on sub '{}'",
+                                    member, sub_name
+                                ))
+                                .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    };
+                    let scoped_entity =
+                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_id = ValueCellId::new(&scoped_entity, member);
+                    return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+            }
+
             // Check if this is a port member access (port_name.member_name)
             if let reify_syntax::ExprKind::Ident(name) = &object.kind
                 && scope.port_names.contains(name.as_str())
@@ -3536,6 +3640,18 @@ fn compile_purpose(
     // Use StructureRef so member access resolves correctly against the entity type.
     for param in &purpose_def.params {
         scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
+        // Deprecation check: warn if the referenced entity kind is @deprecated.
+        if let Some(template) = template_registry.get(&param.entity_kind)
+            && let Some(msg) = deprecation_message(&template.annotations)
+        {
+            emit_deprecation_warning(
+                &template.entity_kind.to_string().to_lowercase(),
+                &param.entity_kind,
+                &msg,
+                param.span,
+                diagnostics,
+            );
+        }
     }
 
     let mut constraints = Vec::new();
@@ -4056,6 +4172,24 @@ pub fn compile_with_prelude(
         trait_registry.insert(t.name.clone(), t);
     }
 
+    // Deprecation check: warn when a trait refinement references a @deprecated parent trait.
+    // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
+    for trait_decl in &trait_refs {
+        for refinement_name in &trait_decl.refinements {
+            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
+                && let Some(msg) = deprecation_message(&parent_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    refinement_name,
+                    &msg,
+                    trait_decl.span,
+                    &mut diagnostics,
+                );
+            }
+        }
+    }
+
     // 3. Fields (need all resolution_enums + all compiled functions)
     for field_def in &field_refs {
         let compiled = compile_field(
@@ -4557,6 +4691,47 @@ fn validate_annotations(
     }
 }
 
+// ─── Deprecation-on-use helpers ─────────────────────────────────────────────
+
+/// Extract the deprecation message from an annotation list.
+///
+/// Returns `Some(message)` if there is an `@deprecated("message")` annotation with a
+/// `String` first arg, `Some("")` if `@deprecated` has no args, or `None` if there
+/// is no `@deprecated` annotation at all.
+fn deprecation_message(annotations: &[reify_types::Annotation]) -> Option<String> {
+    for ann in annotations {
+        if ann.name == "deprecated" {
+            return Some(match ann.args.first() {
+                Some(reify_types::AnnotationArg::String(s)) => s.clone(),
+                _ => String::new(),
+            });
+        }
+    }
+    None
+}
+
+/// Emit a deprecation warning for a use-site reference to a deprecated entity.
+///
+/// Format: `use of deprecated <kind> '<name>': <message>` (with message)
+///         `use of deprecated <kind> '<name>'` (without message)
+fn emit_deprecation_warning(
+    entity_kind: &str,
+    entity_name: &str,
+    message: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let text = if message.is_empty() {
+        format!("use of deprecated {entity_kind} '{entity_name}'")
+    } else {
+        format!("use of deprecated {entity_kind} '{entity_name}': {message}")
+    };
+    diagnostics.push(
+        Diagnostic::warning(text)
+            .with_label(DiagnosticLabel::new(span, "deprecated")),
+    );
+}
+
 // ─── Recursive termination check (Task 204) ─────────────────────────────────
 
 /// Verify that all recursive sub-component instantiations have a valid termination condition.
@@ -4903,6 +5078,7 @@ fn compile_entity(
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
+    scope.is_entity_scope = true;
 
     // Populate trait member index for qualified access resolution.
     for (trait_name, compiled_trait) in trait_registry {
@@ -5057,9 +5233,33 @@ fn compile_entity(
                     .iter()
                     .find(|t| t.name == sub.structure_name)
                 {
+                    // Deprecation check: warn if the referenced structure is @deprecated.
+                    if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
+                        emit_deprecation_warning(
+                            "structure",
+                            &sub.structure_name,
+                            &msg,
+                            sub.span,
+                            diagnostics,
+                        );
+                    }
                     scope
                         .sub_structure_traits
                         .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                }
+                // Populate sub_member_types for ALL subs (for self.sub.member resolution).
+                if let Some(child_tmpl) = compiled_templates
+                    .iter()
+                    .find(|t| t.name == sub.structure_name)
+                {
+                    let member_types: HashMap<String, Type> = child_tmpl
+                        .value_cells
+                        .iter()
+                        .map(|vc| (vc.id.member.clone(), vc.cell_type.clone()))
+                        .collect();
+                    scope
+                        .sub_member_types
+                        .insert(sub.name.clone(), member_types);
                 }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
@@ -5111,6 +5311,21 @@ fn compile_entity(
             alias_registry,
             diagnostics,
         );
+
+        // Deprecation check: warn for each trait bound that references a @deprecated trait.
+        for trait_bound in structure.trait_bounds {
+            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
+                && let Some(msg) = deprecation_message(&compiled_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    &trait_bound.name,
+                    &msg,
+                    trait_bound.span,
+                    diagnostics,
+                );
+            }
+        }
 
         // Defer type argument checking on parameterized trait bounds (e.g., Container<Bolt>)
         // to the post-compilation pass so forward references are resolved correctly.
@@ -5219,8 +5434,24 @@ fn compile_entity(
                     continue;
                 }
 
-                let compiled_expr =
+                let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                // If the value is `none` and the let has a typed annotation like
+                // `Option<Length>`, override the OptionNone's result_type to match
+                // the declared type — mirroring the param-default fixup at lines
+                // 5179-5185.
+                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
+                    && let Some(type_expr) = &let_decl.type_expr
+                    && let Some(resolved) = resolve_type_expr_with_aliases(
+                        type_expr,
+                        &type_param_names,
+                        alias_registry,
+                        diagnostics,
+                    )
+                    && matches!(&resolved, Type::Option(_))
+                {
+                    compiled_expr = CompiledExpr::option_none(resolved);
+                }
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 

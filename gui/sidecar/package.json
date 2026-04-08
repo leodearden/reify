@@ -7,13 +7,14 @@
   "main": "dist/index.js",
   "packageManager": "npm@10.9.7",
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm --dts",
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts --noExternal @reify/shared-utils",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "^2.1.0"
+    "@anthropic-ai/claude-code": "^2.1.0",
+    "@reify/shared-utils": "file:../packages/shared-utils"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

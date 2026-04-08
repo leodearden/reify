@@ -71,6 +71,17 @@ async function requestDefinition(
 }
 
 /**
+ * Return true if `value` is a non-negative integer — the minimum shape
+ * required for any LSP position component (line or character).
+ *
+ * Rejects NaN, null, Infinity, fractional numbers, and negative values in one
+ * call. Used as a fast pre-filter before any document-aware bound check.
+ */
+function isValidPositionShape(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
+
+/**
  * Validate an LSP (0-based) position against the current document.
  *
  * Returns the resolved CodeMirror `Line` on success, or `null` if the
@@ -83,9 +94,10 @@ function isValidLspPosition(
   line: number,
   character: number,
 ): { targetLine: Line } | null {
-  if (line < 0 || line + 1 > doc.lines) return null;
+  if (!isValidPositionShape(line) || !isValidPositionShape(character)) return null;
+  if (line + 1 > doc.lines) return null;
   const targetLine = doc.line(line + 1);
-  if (character < 0 || character > targetLine.to - targetLine.from) return null;
+  if (character > targetLine.to - targetLine.from) return null;
   return { targetLine };
 }
 
@@ -142,10 +154,13 @@ export function reifyGotoDefinition(
           });
         } else if (onNavigate) {
           // Different file: delegate to the onNavigate callback.
-          // Minimum guard: reject negative positions before delegating. Full
-          // doc-aware validation (character vs. line length) happens in the
+          // Minimum guard: reject non-integer/negative positions before delegating.
+          // Full doc-aware validation (character vs. line length) happens in the
           // consumer (Editor.tsx) against the target file once it is opened.
-          if (location.range.start.line < 0 || location.range.start.character < 0) return;
+          if (
+            !isValidPositionShape(location.range.start.line) ||
+            !isValidPositionShape(location.range.start.character)
+          ) return;
           onNavigate(
             location.uri,
             location.range.start.line,

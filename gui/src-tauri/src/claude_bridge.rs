@@ -139,7 +139,7 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
 /// that previously required `#[allow(clippy::type_complexity)]`.
 pub struct McpConfig<F> {
     pub(crate) engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
-    pub(crate) event_emitter: F,
+    pub(crate) event_emitter: Arc<F>,
     pub(crate) selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 }
 
@@ -214,7 +214,7 @@ impl SidecarHandle {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
         let mcp_config = McpConfig {
             engine,
-            event_emitter,
+            event_emitter: Arc::new(event_emitter),
             selection,
         };
         Self::new_inner(stdin, reader, state, Some(mcp_config))
@@ -266,11 +266,13 @@ impl SidecarHandle {
                             && tool_name.starts_with("reify_")
                         {
                             let id = id.clone();
+                            let err_id = id.clone();
                             let tool_name = tool_name.clone();
                             let tool_input = tool_input.clone();
                             let engine_clone = Arc::clone(&mcp.engine);
                             let selection_clone = Arc::clone(&mcp.selection);
                             let stdin_clone = Arc::clone(&stdin_for_reader);
+                            let emitter_clone = Arc::clone(&mcp.event_emitter);
                             tokio::spawn(async move {
                                 let ctx =
                                     crate::mcp_context::TauriToolContext::builder(engine_clone)
@@ -289,7 +291,20 @@ impl SidecarHandle {
                                     result: result_val,
                                 };
                                 let mut writer = stdin_clone.lock().await;
-                                write_to_sidecar(&mut *writer, &response).await.ok();
+                                if let Err(err) =
+                                    write_to_sidecar(&mut *writer, &response).await
+                                {
+                                    tracing::error!(
+                                        "failed to send tool result to sidecar: {err}"
+                                    );
+                                    emitter_clone(
+                                        "claude-error".to_string(),
+                                        serde_json::json!({
+                                            "id": err_id,
+                                            "message": format!("failed to send tool result to sidecar: {err}"),
+                                        }),
+                                    );
+                                }
                             });
                         }
                     }

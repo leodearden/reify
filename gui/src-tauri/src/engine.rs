@@ -790,6 +790,7 @@ pub(crate) fn offset_to_line_col_fast(
 ///   same offset produces identical `(line, col)` coordinates, as expected for
 ///   zero-length diagnostic spans.
 pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    debug_assert!(offset <= source.len());
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {
