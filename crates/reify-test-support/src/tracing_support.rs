@@ -1001,4 +1001,35 @@ mod tests {
             "only the WARN event should be counted; ERROR must be rejected at enabled()"
         );
     }
+
+    /// `ForwardingSubscriber` correctly delegates `event()` to the closure.
+    ///
+    /// Creates a `ForwardingSubscriber` whose `enabled_fn` always returns `true`
+    /// and whose `event_fn` increments a shared counter without delegating to
+    /// the inner subscriber.  Emits one WARN event; asserts the counter is 1.
+    /// This validates that `event()` is driven by the closure, not hardcoded.
+    #[test]
+    fn forwarding_subscriber_delegates_event_to_closure() {
+        let (inner, _warn_count) = warn_counting_subscriber();
+        let custom_count = Arc::new(AtomicUsize::new(0));
+        let custom_count_clone = Arc::clone(&custom_count);
+
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: move |_s: &_, _event| {
+                custom_count_clone.fetch_add(1, Ordering::Relaxed);
+            },
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("warn event");
+        });
+
+        assert_eq!(
+            custom_count.load(Ordering::Relaxed),
+            1,
+            "custom event_fn must be called exactly once for the WARN event"
+        );
+    }
 }
