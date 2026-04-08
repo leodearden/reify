@@ -22716,10 +22716,11 @@
         "description": "In `crates/reify-types/src/value.rs`, the bit-identity test functions for Scalar, Complex, and Orientation have several coverage gaps identified during Task 913 review:\n\n1. **Missing ordering assertion for Complex `im` neg-zero** (~line 3222): The neg-zero-in-`im` sub-case asserts `assert_ne` and antisymmetry but omits `assert!(neg_im < pos_im)`, unlike every other neg-zero sub-case (Scalar, Complex `re`, Orientation `w`). Add this one-liner.\n\n2. **Both-component edge cases for Complex** (~line 3149-3224): NaN and neg-zero are tested in `re` and `im` independently, but not simultaneously. Add a sub-case like `re: f64::NAN, im: -0.0` vs `re: f64::NAN, im: 0.0` to verify lexicographic chaining when the first component compares Equal.\n\n3. **Orientation neg-zero in non-`w` component** (~line 3577-3643): The `nan_z` spot-check covers NaN in a non-w component, but neg-zero is only tested in `w`. Add a spot-check with neg-zero in `z` (or `x`/`y`) where `w` is identical, to exercise the lexicographic fallthrough path.\n\n4. **Distinct NaN bit patterns** (~line 2258-2303): All NaN tests use `f64::NAN` for both values (identical bit patterns). Add a sub-case with two distinct NaN payloads (e.g., `f64::from_bits(0x7ff8000000000001)` vs `f64::NAN`) and verify `assert_ne` for both PartialEq and Ord, strengthening the to_bits() contract.\n\nMemory hints: search \"Value bit-identity to_bits PartialEq Ord edge cases\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:39:54.701Z"
       },
       {
         "id": "1106",
@@ -22735,7 +22736,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:39:54.076Z",
+      "lastModified": "2026-04-08T20:39:54.701Z",
       "taskCount": 1106,
       "completedCount": 775,
       "tags": [
