@@ -23413,10 +23413,11 @@
         "description": "Two related test improvements in crates/reify-eval/tests/guard_eval.rs from review of task 1112:\n\n1. **Multi-guarded-group test for ID disambiguation.** The Site 1 comment in crates/reify-eval/src/lib.rs (around line 1822) explicitly calls out \"two guards holding the same value produce different hashes\" as a critical correctness property, but no existing test exercises 2+ guarded groups. Add a regression test: build a template with two guarded groups whose guard cells both evaluate to Bool(true), capture fingerprint F_tt; then edit one guard to false (F_tf) and the other to false (F_ft). Assert F_tt != F_tf, F_tt != F_ft, F_tf != F_ft — proving the fingerprint is sensitive to which specific guard cell holds which value, not just the multiset of guard values. This protects the guard_cell ID disambiguation property across future refactors.\n\n2. **Rationale comment on cross-path test.** The test eval_edit_param_guard_fingerprint_cross_path_consistency (around line 1387) overlaps significantly with the updated edit_param_guard_fingerprint_round_trips (lines 1258-1374), which now asserts F1==F3 cross-path equality at line 1347. Add a brief doc comment explaining why both tests exist: round_trips covers F2==F4 and value assertions; this focused test is a minimal regression reproducer for the cross-path bug fixed in task 1112.\n\nSource: review suggestions on task 1112, escalation esc-1112-816.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:31:34.079Z"
       },
       {
         "id": "1142",
@@ -23432,7 +23433,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:31:33.460Z",
+      "lastModified": "2026-04-08T21:31:34.080Z",
       "taskCount": 1142,
       "completedCount": 812,
       "tags": [
