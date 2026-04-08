@@ -1292,6 +1292,10 @@ fn byte_offset_to_line_col_multibyte_chars() {
 
     // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
     assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 1 → mid-codepoint inside α (byte 0xB1 of the 2-byte UTF-8 sequence CE B1).
+    // char_indices only yields valid codepoint boundaries: (0,'α'),(2,'β'),(4,'\n'),(5,'γ').
+    // Offset 1 is not a boundary; the loop processes α (col→2) then sees i=2 ≥ 1 and breaks.
+    assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
     // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
     assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
     // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
