@@ -24189,11 +24189,11 @@
         "description": "In crates/reify-eval/src/lib.rs `compile_geometry_op` (lines ~3346-3700), the new \"missing required geometry argument\" diagnostic only fires for Primitive and Modify branches (Box/Cylinder/Sphere/Fillet/Chamfer/Shell/Draft/Thicken). The Transform, Pattern, and Sweep branches still silently `?`-short-circuit on a missing arg via `eval_arg_f64` closures (lines ~3490, 3548-3563, 3659), so users only get the generic `failed to compile geometry operation` error for Translate/Rotate/Scale/RotateAround/LinearPattern/CircularPattern/Mirror/Loft/Extrude/Revolve. Same root cause, inconsistent UX.\n\n**Fix:** Extract a single shared helper, e.g.\n\n```rust\nfn eval_named_arg(\n    name: &str,\n    kind_label: &str,\n    args: &[(String, CompiledExpr)],\n    values: &ValueMap,\n    functions: &[CompiledFunction],\n    meta_map: &HashMap<String, HashMap<String, String>>,\n    diagnostics: &mut Vec<Diagnostic>,\n) -> Option<reify_types::Value>\n```\n\n(or a similar `_f64` variant) that performs the lookup, emits the warning on miss, and returns `None`/`Value::Undef` consistently. Use it in all five match arms (Primitive, Modify, Transform, Pattern, Sweep) so the warning text and behavior are uniform across op kinds. This also dedupes the two near-identical closure bodies created in Task 1167.\n\n**Source review suggestions:** S1 (design_inconsistency) + S7 (code_duplication) from Task 1167 review.\n\nmemory_hints: search \"compile_geometry_op eval_arg\" \"missing geometry argument diagnostic\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:46:52.066Z",
+        "updatedAt": "2026-04-08T23:51:29.256Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -24406,7 +24406,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:51:27.963Z",
+      "lastModified": "2026-04-08T23:51:29.256Z",
       "taskCount": 1199,
       "completedCount": 876,
       "tags": [
