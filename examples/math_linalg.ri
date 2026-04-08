@@ -1,0 +1,50 @@
+// Math and linear algebra stdlib integration fixture.
+//
+// Exercises vec3, dot, cross, magnitude, normalize, acos, clamp, lerp
+// through the full parse → compile → eval pipeline.
+
+structure def MathLinalg {
+    // --- Force (Newton) unit helpers ---
+    // 1 Newton = 1 kg·m/s²  (no N literal in the language)
+    let n_unit = 1kg * 1m / (1s * 1s)
+    let zero_n = 0.0 * n_unit
+
+    // --- Length zero helper ---
+    let zero_m = 0.0 * 1m
+
+    // --- Velocity unit helpers ---
+    // 1 m/s
+    let v_unit = 1m / 1s
+    let zero_v = 0.0 * v_unit
+
+    // --- Dot product: work = force · displacement ---
+    // force = (10 N, 0, 0),  displacement = (5 m, 0, 0)
+    // expected work = 50 J  (si_value = 50.0, dimension = FORCE*LENGTH)
+    let force       = vec3(10.0 * n_unit, zero_n, zero_n)
+    let displacement = vec3(5.0 * 1m, zero_m, zero_m)
+    let work        = dot(force, displacement)
+
+    // --- Cross product: torque = r_arm × f_applied ---
+    // r_arm = (0, 2m, 0),  f_applied = (3 N, 0, 0)
+    // torque = (0, 0, -6)  N·m   (cz = r_x*f_y - r_y*f_x = 0 - 6 = -6)
+    let r_arm     = vec3(zero_m, 2.0 * 1m, zero_m)
+    let f_applied = vec3(3.0 * n_unit, zero_n, zero_n)
+    let torque    = cross(r_arm, f_applied)
+
+    // --- Magnitude and normalize: speed and direction ---
+    // velocity = (3 m/s, 4 m/s, 0)
+    // speed = |velocity| = 5 m/s,  direction ≈ (0.6, 0.8, 0.0)
+    let velocity  = vec3(3.0 * v_unit, 4.0 * v_unit, zero_v)
+    let speed     = magnitude(velocity)
+    let direction = normalize(velocity)
+
+    // --- Angle between orthogonal unit vectors ---
+    // dot(unit_x_norm, unit_y_norm) = 0  →  acos(0) = π/2
+    let unit_x        = vec3(1.0, 0.0, 0.0)
+    let unit_y        = vec3(0.0, 1.0, 0.0)
+    let angle_between = acos(dot(normalize(unit_x), normalize(unit_y)))
+
+    // --- Clamp + lerp chain ---
+    // lerp(1mm, 10mm, 0.3) = 3.7mm  →  clamp(3.7mm, 2mm, 8mm) = 3.7mm
+    let chained = clamp(lerp(1mm, 10mm, 0.3), 2mm, 8mm)
+}

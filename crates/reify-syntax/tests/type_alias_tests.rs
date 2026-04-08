@@ -328,10 +328,6 @@ fn parse_type_alias_empty_rhs_no_panic() {
         "expected no parse errors for empty-RHS recovery, got: {errors:?}"
     );
 
-    // NOTE: Tree-sitter silently recovers `type Foo =` without emitting parse errors.
-    // The `errors` vector is empty — this is expected Tree-sitter behavior, not a bug.
-    // The test verifies recovery shape, not error detection.
-
     // Tree-sitter recovery produces a TypeAlias — extract it.
     // This .expect() depends on the current Tree-sitter grammar/error-recovery behavior;
     // if a grammar change stops producing a TypeAlias node here, this will need updating.

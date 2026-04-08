@@ -336,6 +336,7 @@ impl TopologyTemplateBuilder {
             meta: self.meta,
             content_hash,
             is_recursive: self.is_recursive,
+            annotations: Vec::new(),
         }
     }
 }
