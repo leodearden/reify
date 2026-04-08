@@ -3615,6 +3615,7 @@ fn compile_trait(
 
     let annotations = lower_annotations(&trait_decl.annotations, diagnostics);
     validate_annotations(&annotations, "trait", diagnostics);
+    validate_pragmas(&trait_decl.pragmas, "trait", diagnostics);
 
     CompiledTrait {
         name: trait_decl.name.clone(),
@@ -3846,6 +3847,7 @@ fn compile_purpose(
 
     let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
     validate_annotations(&annotations, "purpose", diagnostics);
+    validate_pragmas(&purpose_def.pragmas, "purpose", diagnostics);
 
     CompiledPurpose {
         name: purpose_def.name.clone(),
@@ -4719,6 +4721,26 @@ fn validate_annotations(
                         .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
                 );
             }
+        }
+    }
+}
+
+/// Validate block-level pragmas on a compiled declaration, emitting warnings for unknown names.
+///
+/// Known block-level pragmas: `#precision`, `#solver`, `#kernel`.
+/// Unknown pragmas emit a `Severity::Warning` diagnostic.
+fn validate_pragmas(
+    pragmas: &[reify_syntax::Pragma],
+    _context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    const KNOWN_BLOCK_PRAGMAS: &[&str] = &["precision", "solver", "kernel"];
+    for pragma in pragmas {
+        if !KNOWN_BLOCK_PRAGMAS.contains(&pragma.name.as_str()) {
+            diagnostics.push(
+                Diagnostic::warning(format!("unknown pragma #{}", pragma.name))
+                    .with_label(DiagnosticLabel::new(pragma.span, "unknown pragma")),
+            );
         }
     }
 }
@@ -6319,6 +6341,7 @@ fn compile_entity(
     };
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
+    validate_pragmas(structure.pragmas, context, diagnostics);
 
     TopologyTemplate {
         name: entity_name.to_string(),
