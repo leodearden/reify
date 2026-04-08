@@ -22536,14 +22536,14 @@
         "description": "Fix the content hash tag-byte collision between Value::Point and Value::Matrix in reify-types.",
         "details": "To resolve the collision, change the tag byte for `Value::Matrix` from `[18]` to a unique value, such as `[25]`. Audit all `ContentHash::of(&[N])` calls in `content_hash()` to ensure no other collisions exist. Update the inline comment on the Matrix branch to reflect the new tag. Implement a regression test `content_hash_tags_are_unique_across_variants` in the test module of `crates/reify-types/src/value.rs`. This test should construct instances of each `Value` variant, collect their `content_hash()` values, and assert their uniqueness using a `HashSet`. Additionally, check for persistence implications by searching for `content_hash()` usage in caching or storage contexts. If persistence is affected, coordinate a cache-busting release or consider changing the Point tag instead, based on which variant is less critical in storage.",
         "testStrategy": "Run `cargo test -p reify-types` to ensure all tests pass, including the new regression test. Verify that the regression test correctly asserts the uniqueness of content hashes across variants. Use `rg 'content_hash\\(\\)' crates/ --type rust | grep -iE 'cache|store|persist|db|disk'` to identify any persistence-related code that may be affected by the tag change.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "8",
           "914"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:40:07.893Z",
+        "updatedAt": "2026-04-08T20:54:31.344Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -22944,9 +22944,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:54:24.654Z",
+      "lastModified": "2026-04-08T20:54:31.344Z",
       "taskCount": 1117,
-      "completedCount": 789,
+      "completedCount": 790,
       "tags": [
         "master"
       ]
