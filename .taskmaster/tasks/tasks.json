@@ -23790,7 +23790,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": 1163,
@@ -23801,7 +23809,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": 1164,
@@ -23812,7 +23828,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/src"
+          ]
+        }
       },
       {
         "id": 1165,
