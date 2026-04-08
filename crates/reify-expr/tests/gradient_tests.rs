@@ -3140,7 +3140,10 @@ fn gradient_tensor_point_returns_undef() {
         grad_result
     );
 
-    // Sample with a Tensor instead of a Point — must return Undef
+    // Sample with a Tensor instead of a Point — must return Undef.
+    // The type annotation is intentionally point3(Real) to match the field's domain,
+    // so the Value variant (Tensor vs Point) is the sole distinguishing factor.
+    // Undef is expected from the value-kind dispatch, not a type error.
     let tensor_point = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
     let grad_field_type = Type::Field {
@@ -3152,7 +3155,7 @@ fn gradient_tensor_point_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(tensor_point, Type::vec3(Type::Real)),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
         ],
         Type::vec3(Type::Real),
     );
