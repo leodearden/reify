@@ -24195,10 +24195,11 @@
         "description": "In crates/reify-eval/src/lib.rs `compile_geometry_op`, the Primitive and Modify branches (lines ~3357-3388, 3413-3484) emit a `Severity::Warning` for a missing required arg, then still build a `GeometryOp { ..., field: Value::Undef }` and return `Some(...)`. The op then flows to `kernel.execute(...)`, which (almost certainly) fails with `Err`, and the caller pushes a second diagnostic (`geometry error: ...`). The user gets a Warning + a downstream Error for the same root cause with no obvious linkage between them. The other branches (Transform/Pattern/Sweep) sidestep this by short-circuiting via `?` so only one error appears.\n\n**Two viable fixes — pick one, document rationale in commit:**\n\n1. Make the missing-arg helper `Option`-returning so the closure call short-circuits the whole match arm (`compile_geometry_op` returns `None`). Aligns with the existing Transform/Pattern/Sweep convention. The caller will then emit the single generic `failed to compile geometry operation` error — consider whether the warning text alone is enough context.\n\n2. Raise the warning's severity to `Severity::Error` and have the caller suppress the now-redundant generic error message when this specific diagnostic has already been emitted for the op.\n\nOption (1) is consistent with existing convention; option (2) gives the user a more specific error message but requires de-duplication logic in the caller.\n\n**Source review suggestion:** S2 (robustness) from Task 1167 review.\n\n**Cross-task note:** This change should be coordinated with the shared-helper extraction task (S1+S7 follow-up). Doing them together is cleaner — the helper API determines whether short-circuit semantics are baked in.\n\nmemory_hints: search \"compile_geometry_op diagnostic short-circuit\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:38:55.627Z"
       },
       {
         "id": "1188",
@@ -24253,7 +24254,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:38:55.271Z",
+      "lastModified": "2026-04-08T23:38:55.627Z",
       "taskCount": 1191,
       "completedCount": 873,
       "tags": [
