@@ -23928,7 +23928,7 @@
         "description": "The `shutdown_returns_ok_null` and `shutdown_before_initialize` tests in `crates/reify-lsp/tests/in_process_bridge.rs` both pass `json!({})` as the shutdown request param. The LSP spec defines shutdown as taking no parameters (i.e. null/void), so `json!({})` is technically incorrect. Add a companion assertion (or a small separate test) that passes `json!(null)` instead of `json!({})` to cover the canonical LSP parameterless call. This guards against both tests failing for the wrong reason if the bridge ever adds param validation on shutdown.\n\nmemory_hints:\n- search: \"Task 1116 shutdown_before_initialize test\"\n- entity: \"InProcessLsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23936,7 +23936,8 @@
           "modules": [
             "crates/reify-lsp"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T23:33:52.120Z"
       },
       {
         "id": "1170",
@@ -24155,7 +24156,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:33:51.338Z",
+      "lastModified": "2026-04-08T23:33:52.120Z",
       "taskCount": 1183,
       "completedCount": 871,
       "tags": [
