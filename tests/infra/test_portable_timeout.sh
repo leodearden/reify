@@ -433,5 +433,89 @@ echo "--- Test 20: portable_timeout header documents SIGTERM-only termination --
 assert "portable_timeout header documents SIGTERM-only termination" \
     grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
 
+# -- Test 18: behavioral: SIGKILL escalation — exit 124 and no orphan --------
+echo ""
+echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
+
+# This test exercises the full SIGKILL escalation path in the POSIX fallback:
+#   1. Timer fires after 1s, sends SIGTERM to the command (bash wrapper).
+#   2. Command ignores SIGTERM (trap "" TERM).
+#   3. Timer escalates after 2s grace: sends SIGKILL to the command (bash).
+#   4. Bash wrapper is killed; its child 'sleep 31339' is an orphan candidate.
+#
+# Asserts: (a) exit code is 124 (genuine timeout recognized despite SIGKILL),
+#          (b) no 'sleep 31339' process remains after portable_timeout returns.
+#
+# This test FAILS against unpatched lib_portable.sh:
+#   - Exit code is 137 (128+9) because flag-file check only accepts 143 (SIGTERM).
+#   - 'sleep 31339' survives because kill -9 $cmd_pid kills only the bash
+#     wrapper, not its child sleep.
+# These failures confirm the test catches real SIGKILL path regressions.
+#
+# Sentinel duration 31339 is distinct from 31337 (Test 16) to avoid ps conflicts.
+# Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
+
+assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+        _abs_bash=$(command -v bash)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
+        rc=0
+        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+        _abs_bash=$(command -v bash)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
+        # would clean up the rescue dir on exit, causing false-positive passes.
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Command ignores SIGTERM; timer escalates to SIGKILL.
+        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
+
+        # Brief wait then verify no orphan sleep 31339.
+        "$_abs_sleep" 0.5
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$"
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
