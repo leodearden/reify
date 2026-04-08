@@ -21172,7 +21172,7 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Add a doc-comment to `initialized_lsp()` noting: (a) `initialized` is technically a one-way LSP notification and `Ok(Value::Null)` is the expected sentinel, so the `.expect()` documents protocol contract rather than guarding against a server-level error; (b) tests exercising pre-init error paths (param deserialization) should use `InProcessLsp::new()` directly to avoid the two-round-trip overhead. (2) Add inline comments to `err.contains(\"didOpen params error\")` and `err.contains(\"unsupported LSP method:\")` assertions noting these strings are load-bearing and must be updated if bridge.rs changes the error format — or alternatively export them as constants from crates/reify-lsp/src/bridge.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21186,7 +21186,7 @@
             "crates/reify-lsp/src"
           ]
         },
-        "updatedAt": "2026-04-08T21:12:49.473Z"
+        "updatedAt": "2026-04-08T21:33:56.512Z"
       },
       {
         "id": "1021",
@@ -23434,9 +23434,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:31:34.935Z",
+      "lastModified": "2026-04-08T21:33:56.512Z",
       "taskCount": 1142,
-      "completedCount": 812,
+      "completedCount": 813,
       "tags": [
         "master"
       ]
