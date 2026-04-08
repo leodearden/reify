@@ -3405,6 +3405,8 @@ mod tests {
         assert_ne!(pos_im, neg_im);
         assert_ne!(pos_im.cmp(&neg_im), std::cmp::Ordering::Equal);
         assert_eq!(pos_im.cmp(&neg_im), neg_im.cmp(&pos_im).reverse());
+        // IEEE 754 totalOrder: -0.0 < +0.0.
+        assert!(neg_im < pos_im);
     }
 
     #[test]
