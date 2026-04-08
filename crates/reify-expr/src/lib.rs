@@ -848,22 +848,25 @@ fn compute_numerical_gradient_at_point(
         // mutate work_args; we pushed exactly one Value::Point, so pop() always
         // succeeds and always yields Value::Point.  The if-let is just destructuring.
 
-        // On the first axis, verify that the lambda's runtime return dimension
-        // matches the declared codomain (via codomain_type). This catches callers
-        // who pass a mismatched codomain_type (e.g., declared MASS but returns Real).
+        // On the first axis, validate the lambda's runtime return dimension against the
+        // declared codomain (via codomain_type). Two-tier strategy:
         //
-        // result_dim is the gradient's per-component dimension (codomain/domain),
-        // but f_plus comes from the original lambda, so its dimension is the
-        // ORIGINAL codomain's dimension. Reconstruct it: for dimensioned domains,
-        // original_codomain = result_dim * domain_dim; for dimensionless domains
-        // (domain_dim = None), original_codomain = result_dim.
-        // Only validate the lambda's runtime return type for dimensionless domains.
-        // When domain_dim is Some, make_arg passes Scalar<domain_dim> to the lambda,
-        // and operations like `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH>
-        // regardless of the declared codomain — the codomain_type is metadata, not a
-        // constraint on the lambda's output type in dimensioned contexts.
-        // For dimensionless domains, make_arg passes Real, so the lambda's return
-        // dimension is unambiguous and can be validated against the declaration.
+        //   Tier 1 — hard assertion (dimensionless domains, domain_dim = None):
+        //     make_arg passes Real to the lambda, so the return type is unambiguous.
+        //     assert_eq! panics on mismatch — a clear misconfiguration.
+        //
+        //   Tier 2 — soft warning (dimensioned domains, domain_dim = Some):
+        //     make_arg passes Scalar<domain_dim>. Operations like
+        //     `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH> regardless of
+        //     the declared codomain — the codomain_type is metadata, not a runtime
+        //     constraint. Hard assertions here produce false positives. A soft
+        //     eprintln! warns for genuine mismatches without blocking execution.
+        //
+        // result_dim is the gradient's per-component dimension (codomain/domain).
+        // f_plus comes from the original lambda, so its dimension is the ORIGINAL
+        // codomain's dimension. Reconstruct:
+        //   dimensionless domain: original_codomain = result_dim
+        //   dimensioned domain:   original_codomain = result_dim * domain_dim
         #[cfg(debug_assertions)]
         if i == 0 && domain_dim.is_none() {
             let runtime_dim = f_plus.dimension();
@@ -876,6 +879,21 @@ fn compute_numerical_gradient_at_point(
                 expected_codomain_dim,
                 runtime_dim,
             );
+        }
+        // Tier 2: soft warning for dimensioned-domain mismatches.
+        // original_codomain = result_dim * domain_dim; compare with f_plus dimension.
+        #[cfg(debug_assertions)]
+        if i == 0 && let Some(dom_dim) = domain_dim {
+            let expected_original_codomain = result_dim.mul(&dom_dim);
+            let runtime_dim = f_plus.dimension();
+            if runtime_dim != expected_original_codomain {
+                eprintln!(
+                    "[reify-expr] gradient: codomain_type mismatch (non-fatal): \
+                     declared original codomain dimension {:?} but lambda returned {:?}",
+                    expected_original_codomain,
+                    runtime_dim,
+                );
+            }
         }
 
         // Swing to backward (−h from original = −2h from current), evaluate
