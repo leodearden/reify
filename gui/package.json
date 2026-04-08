@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "npm@10.9.4",
   "type": "module",
+  "workspaces": ["packages/*"],
   "packageManager": "npm@10.9.7",
   "scripts": {
     "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
@@ -15,6 +16,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@reify/shared-utils": "^0.1.0",
     "@codemirror/autocomplete": "^6.18.0",
     "@codemirror/commands": "^6.3.0",
     "@codemirror/language": "^6.10.0",
