@@ -103,6 +103,32 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).not.toHaveBeenCalled();
   });
 
+  it('forces a flush at maxWaitMs ceiling when errors arrive faster than windowMs', () => {
+    const showToast = vi.fn();
+    // windowMs=100ms, maxWaitMs=500ms: errors every 80ms keep resetting the debounce
+    const coalescer = createSerializationErrorCoalescer(showToast, 100, 500);
+
+    // Add an error every 80ms for 6 iterations (t=0..480ms total after 6 advances)
+    for (let i = 0; i < 6; i++) {
+      coalescer.add({ item_type: 'mesh', item_id: `item-${i}`, error: 'err' });
+      vi.advanceTimersByTime(80);
+      expect(showToast).not.toHaveBeenCalled();
+    }
+
+    // At t=480ms: add the 7th error.
+    // remaining = 500 - 480 = 20ms → timer should be min(100, 20) = 20ms, firing at t=500.
+    // Without maxWaitMs the timer fires 100ms later at t=580.
+    coalescer.add({ item_type: 'mesh', item_id: 'item-6', error: 'err' });
+
+    vi.advanceTimersByTime(19);
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Cross the 500ms ceiling — flush must fire now
+    vi.advanceTimersByTime(1);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('7 items failed to serialize', 'error');
+  });
+
   it('resets after a flush — can accumulate and emit a second batch', () => {
     const showToast = vi.fn();
     const coalescer = createSerializationErrorCoalescer(showToast);
