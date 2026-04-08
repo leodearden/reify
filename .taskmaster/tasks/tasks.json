@@ -23056,7 +23056,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solvespace.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": 1123,
@@ -23067,7 +23075,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "scripts/tree-sitter-generate.sh"
+          ],
+          "modules": [
+            "scripts"
+          ]
+        }
       },
       {
         "id": 1124,
@@ -23078,7 +23094,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/__tests__/gotoDefinition.test.ts",
+            "gui/src/__tests__/test-utils.ts"
+          ],
+          "modules": [
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 1125,
