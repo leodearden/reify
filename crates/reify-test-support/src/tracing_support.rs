@@ -319,6 +319,15 @@ struct WarnCapturingSubscriber {
 struct MessageVisitor(String);
 
 impl tracing::field::Visit for MessageVisitor {
+    /// Intercept `&str` message values and store them directly, bypassing
+    /// `record_debug`'s `{value:?}` formatting which would add surrounding
+    /// double-quotes around string literals.
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.0 = value.to_owned();
+        }
+    }
+
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.0 = format!("{value:?}");
@@ -918,6 +927,61 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
+    }
+
+    /// `tracing::warn!("msg")` sends `message` as `fmt::Arguments` through
+    /// `record_debug`.  Because `fmt::Arguments`'s `Debug` impl delegates to
+    /// `Display`, the captured text must equal the raw format string exactly —
+    /// without any extra quotes or decorations — even after the `record_str`
+    /// override was added.
+    ///
+    /// This is the regression guard for the `fmt::Arguments` path: the addition
+    /// of `record_str` must not change the behaviour of the `record_debug` path.
+    #[test]
+    fn warn_capturing_format_args_message_unchanged() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("format_args path");
+        });
+
+        let msgs = capture.messages();
+        assert_eq!(msgs.len(), 1, "should capture exactly one message");
+        assert_eq!(
+            msgs[0], "format_args path",
+            "fmt::Arguments message must be captured without extra formatting; got: {:?}",
+            msgs[0]
+        );
+    }
+
+    /// When the `message` field is a `&str` (e.g. `tracing::warn!(message =
+    /// "literal")`), the captured text must equal the raw string exactly —
+    /// without the surrounding double-quotes that `{value:?}` (Debug) would
+    /// add for a `&str`.
+    ///
+    /// This is the failing test for the `record_str` fix: before the override
+    /// is added, `record_str`'s default falls back to `record_debug`, which
+    /// formats `&str` with `{:?}` and produces `"literal"` (with quotes) rather
+    /// than `literal`.
+    #[test]
+    fn warn_capturing_str_field_has_no_debug_quotes() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(message = "direct string value");
+        });
+
+        let msgs = capture.messages();
+        assert_eq!(msgs.len(), 1, "should capture exactly one message");
+        assert_eq!(
+            msgs[0], "direct string value",
+            "captured message must be the raw string without Debug quotes; got: {:?}",
+            msgs[0]
+        );
     }
 
     // ── ForwardingSubscriber tests ────────────────────────────────────────────
