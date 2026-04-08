@@ -61,7 +61,7 @@ describe('createSerializationErrorCoalescer', () => {
     // Only one unique item → detailed toast, not a summary
     expect(showToast).toHaveBeenCalledOnce();
     expect(showToast).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to serialize mesh 'Bracket.body'"),
+      "Failed to serialize mesh 'Bracket.body': error variant 4",
       'error',
     );
   });
