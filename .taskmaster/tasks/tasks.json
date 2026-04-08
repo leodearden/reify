@@ -22636,11 +22636,16 @@
         "description": "crates/reify-expr/src/lib.rs naming + defensive-assertion + DRY fixes from esc-1006-778 review triage.",
         "details": "In compute_numerical_gradient_at_point (~line 788-836):\n(1) Rename point_scratch to work_point to match the work_ prefix convention used by work_coords and work_args in the same function.\n(2) Extract the push / std::mem::take / apply_lambda / if-let-pop recover sequence (duplicated verbatim for the f_plus and f_minus evaluations) into a local closure or private helper.\n(3) Inside the helper (or after each recovery site), add debug_assert_eq!(work_point.len(), n) to catch silent empty-vec recovery if apply_lambda's signature ever changes away from &[Value]. This fragile load-bearing invariant was independently flagged by 5 of 6 reviewers.\n\nSource: review triage of esc-1006-778 (19 suggestions). Flagged across reviewer_architect_reviewer, reviewer_comprehensive, reviewer_performance, reviewer_reuse_auditor, reviewer_test_analyst, reviewer_robustness.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:32:28.839Z"
+        "updatedAt": "2026-04-08T20:38:35.862Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1101",
@@ -22698,7 +22703,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:38:28.504Z",
+      "lastModified": "2026-04-08T20:38:35.862Z",
       "taskCount": 1104,
       "completedCount": 774,
       "tags": [
