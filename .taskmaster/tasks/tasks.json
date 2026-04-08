@@ -24282,10 +24282,11 @@
         "description": "Two related follow-ups from the Task 899 review covering the new `resolve_source` precondition contract.\n\n**Background:** Task 899 changed `resolve_source` from `Option<(String, &str)>` (graceful) to `(&str, &str)` with `debug_assert!(self.compiled.is_some())` and inner `expect()`s. `get_diagnostics` and `get_source_location` previously returned empty/None on failure; they now panic in release if the invariant breaks (compiled set without matching `module_name` / `source_map` entry). The invariant is currently airtight inside `load_from_source`/`update_source` (atomic mutation), but worth pinning explicitly.\n\n**Item A — Document the invariant (gui/src-tauri/src/engine.rs ~lines 22-29 / 300-345):**\nAdd a doc comment on `EngineSession` (or its fields) noting that `compiled`, `module_name`, and the matching `source_map` entry **must always be mutated together** — any future code path that touches one without the others is a crash hazard for `get_diagnostics`/`get_source_location`. Current safe sites: `load_from_source`, `update_source`. If a future caller acquires partial state through serialization, snapshotting, or test injection, the invariant must be re-established before the next `get_*` call.\n\n**Item B — Positive test for resolve_source (gui/src-tauri/src/tests/engine_tests.rs ~line 1648):**\nAdd a `#[cfg(test)]` test that:\n1. Constructs `EngineSession::new(Box::new(SimpleConstraintChecker), None)`,\n2. Calls `load_from_source(bracket_source(), \"bracket\")`,\n3. Asserts `session.resolve_source_for_test() == (\"bracket.ri\", bracket_source())`.\n\nThis locks in the borrowing contract (no allocation on the return path) and the key derivation jointly. Currently exercised only indirectly via `get_source_location`/`get_diagnostics`.\n\n**Optional Item C — Invariant regression test:** A `#[cfg(test)]` test that mutates only one of the three fields (e.g. via a test-only setter, or by `mem::take`-ing `module_name` after a load) and confirms `get_diagnostics()` panics — pinning that the panic is intentional and expected.\n\nmemory_hints: search(\"Task 899 resolve_source EngineSession invariant compiled module_name source_map\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:42:08.637Z"
       },
       {
         "id": "1195",
@@ -24301,7 +24302,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:42:06.917Z",
+      "lastModified": "2026-04-08T23:42:08.643Z",
       "taskCount": 1195,
       "completedCount": 875,
       "tags": [
