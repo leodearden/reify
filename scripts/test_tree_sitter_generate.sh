@@ -237,8 +237,8 @@ assert "timeout error path removes all three partial output files (rm -f parser.
 # Both error paths (timeout AND non-timeout failure) must call cleanup.
 # With the helper-function approach, _cleanup_partial_outputs must be called
 # at least twice — once per error branch.
-assert "cleanup is called on both error paths (_cleanup_partial_outputs called >= 2 times)" \
-    bash -c '[ "$(grep -c "_cleanup_partial_outputs" "$1")" -ge 2 ]' _ "$GENERATE_SCRIPT"
+assert "cleanup is called on both error paths (_cleanup_partial_outputs called >= 3 times)" \
+    bash -c '[ "$(grep -c "_cleanup_partial_outputs" "$1")" -ge 3 ]' _ "$GENERATE_SCRIPT"
 
 # ── Test 17: non-timeout failure removes partial output files ─────
 echo ""
