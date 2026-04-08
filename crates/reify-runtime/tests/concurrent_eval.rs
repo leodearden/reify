@@ -2009,9 +2009,10 @@ mod poison_recovery_extended {
             Some(&Value::Real(10.0)),
             "T.b should be Real(10.0) after build_result_shared values poison recovery"
         );
-        assert!(
-            edit_result.values.len() >= 2,
-            "values should have at least T.a and T.b entries"
+        assert_eq!(
+            edit_result.values.len(),
+            2,
+            "values should have exactly T.a and T.b entries"
         );
     }
 
