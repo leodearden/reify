@@ -713,22 +713,39 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 ///
 /// Returns `true` if every param value in `solved_values` and
 /// `perturbed_values` matches within the project tolerance constants.
-/// Currently uses `unwrap_or(0.0)` for missing/non-numeric values —
-/// this is intentionally preserved here and fixed in a subsequent step.
+///
+/// If either map is missing a param or contains a non-numeric value
+/// (e.g. `Value::Undef`, `Value::Bool`), emits a `tracing::warn!` and
+/// returns `false` — the caller treats false as non-unique → Infeasible,
+/// producing a noisy user-facing error rather than silently masking the bug.
 fn solutions_agree(
     auto_params: &[AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
     perturbed_values: &HashMap<ValueCellId, Value>,
 ) -> bool {
     for param in auto_params {
-        let s1 = solved_values
-            .get(&param.id)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let s2 = perturbed_values
-            .get(&param.id)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let s1 = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    param = %param.id,
+                    "uniqueness check: original solution has missing or non-numeric value; \
+                     cannot verify uniqueness"
+                );
+                return false;
+            }
+        };
+        let s2 = match perturbed_values.get(&param.id).and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    param = %param.id,
+                    "uniqueness check: perturbed solution has missing or non-numeric value; \
+                     cannot verify uniqueness"
+                );
+                return false;
+            }
+        };
         let diff = (s1 - s2).abs();
         let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
         if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
