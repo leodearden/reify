@@ -3998,20 +3998,21 @@ mod tests {
         };
         // Sign-insensitive: accepts ±quaternion within explicit tolerance.
         ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr, sign_insensitive = $tol:expr) => {
+            let tol = $tol;
             match $expr {
                 Value::Orientation { w, x, y, z } => {
-                    let pos_ok = (w - $ew).abs() < $tol
-                        && (x - $ex).abs() < $tol
-                        && (y - $ey).abs() < $tol
-                        && (z - $ez).abs() < $tol;
-                    let neg_ok = (w + $ew).abs() < $tol
-                        && (x + $ex).abs() < $tol
-                        && (y + $ey).abs() < $tol
-                        && (z + $ez).abs() < $tol;
+                    let pos_ok = (w - $ew).abs() < tol
+                        && (x - $ex).abs() < tol
+                        && (y - $ey).abs() < tol
+                        && (z - $ez).abs() < tol;
+                    let neg_ok = (w + $ew).abs() < tol
+                        && (x + $ex).abs() < tol
+                        && (y + $ey).abs() < tol
+                        && (z + $ez).abs() < tol;
                     assert!(
                         pos_ok || neg_ok,
                         "expected Orientation(\u{b1}{}, \u{b1}{}, \u{b1}{}, \u{b1}{}) within {}, got ({}, {}, {}, {})",
-                        $ew, $ex, $ey, $ez, $tol, w, x, y, z
+                        $ew, $ex, $ey, $ez, tol, w, x, y, z
                     );
                 }
                 other => panic!(
