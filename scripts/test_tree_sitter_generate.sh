@@ -252,6 +252,7 @@ cat > "$_test17_tmpdir/tree-sitter" << 'STUB'
 # Simulate a partial write: create output files before failing.
 touch src/parser.c
 touch src/grammar.json
+touch src/node-types.json
 exit 1
 STUB
 chmod +x "$_test17_tmpdir/tree-sitter"
@@ -272,6 +273,9 @@ assert "non-timeout failure: partial parser.c is cleaned up" \
 
 assert "non-timeout failure: partial grammar.json is cleaned up" \
     test '!' -f "$TS_DIR/src/grammar.json"
+
+assert "non-timeout failure: partial node-types.json is cleaned up" \
+    test '!' -f "$TS_DIR/src/node-types.json"
 
 # Clean up stub.
 rm -rf "$_test17_tmpdir"
