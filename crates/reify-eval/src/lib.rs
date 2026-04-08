@@ -4864,7 +4864,7 @@ mod tests {
     #[test]
     fn guard_state_fingerprint_empty_groups_returns_combine_all_empty() {
         let values = ValueMap::new();
-        let result = guard_state_fingerprint(&[], &values, false);
+        let result = guard_state_fingerprint(&[], &values, GuardLookup::Lenient);
         let expected = ContentHash::combine_all(std::iter::empty());
         assert_eq!(result, expected);
     }
@@ -4882,7 +4882,7 @@ mod tests {
             else_members: vec![],
             else_constraints: vec![],
         }];
-        let result = guard_state_fingerprint(&groups, &values, false);
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
         let expected = ContentHash::combine_all(std::iter::once(
             ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
         ));
@@ -4894,7 +4894,7 @@ mod tests {
         let cell = ValueCellId::new("E", "g");
         let values = ValueMap::new(); // cell absent
         let groups = vec![make_guard_group("E", "g")];
-        let result = guard_state_fingerprint(&groups, &values, false);
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
         let expected = ContentHash::combine_all(std::iter::once(
             ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
         ));
@@ -4908,8 +4908,8 @@ mod tests {
         let mut values = ValueMap::new();
         values.insert(cell.clone(), val.clone());
         let groups = vec![make_guard_group("E", "g")];
-        let strict = guard_state_fingerprint(&groups, &values, true);
-        let lenient = guard_state_fingerprint(&groups, &values, false);
+        let strict = guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
+        let lenient = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
         assert_eq!(strict, lenient);
     }
 
@@ -4918,6 +4918,6 @@ mod tests {
     fn guard_state_fingerprint_strict_missing_panics() {
         let values = ValueMap::new(); // cell absent
         let groups = vec![make_guard_group("E", "g")];
-        guard_state_fingerprint(&groups, &values, true);
+        guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
     }
 }
