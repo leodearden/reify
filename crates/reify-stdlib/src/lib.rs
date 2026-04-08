@@ -3983,12 +3983,13 @@ mod tests {
         };
         // Explicit tolerance, sign-sensitive, per-component diagnostics.
         ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr, tol = $tol:expr) => {
+            let tol = $tol;
             match $expr {
                 Value::Orientation { w, x, y, z } => {
-                    assert!((w - $ew).abs() < $tol, "w: expected {}, got {}", $ew, w);
-                    assert!((x - $ex).abs() < $tol, "x: expected {}, got {}", $ex, x);
-                    assert!((y - $ey).abs() < $tol, "y: expected {}, got {}", $ey, y);
-                    assert!((z - $ez).abs() < $tol, "z: expected {}, got {}", $ez, z);
+                    assert!((w - $ew).abs() < tol, "w: expected {}, got {}", $ew, w);
+                    assert!((x - $ex).abs() < tol, "x: expected {}, got {}", $ex, x);
+                    assert!((y - $ey).abs() < tol, "y: expected {}, got {}", $ey, y);
+                    assert!((z - $ez).abs() < tol, "z: expected {}, got {}", $ez, z);
                 }
                 other => panic!(
                     "expected Orientation({}, {}, {}, {}), got {:?}",
