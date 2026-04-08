@@ -24440,11 +24440,16 @@
         "description": "Follow-up to task 903 (NaN/Inf guard for conjugate in reify-expr). Review surfaced four small polish items in `crates/reify-expr/src/lib.rs`, all in the conjugate method (~line 1444) and its tests (~lines 4459-4609). Apply all four:\n\n1. **Duplicate test (lines 4574-4608, `conjugate_finite_dimensioned_correct`)** — The test asserts `Complex{re:3.0, im:4.0, LENGTH}.conjugate == Complex{re:3.0, im:-4.0, LENGTH}`, which is byte-identical to the existing `tests/complex_eval_tests.rs::method_conjugate` (lines 418-426). The justification comment claims it adds coverage \"beyond the dimensionless path\" but the existing test ALSO uses LENGTH dimension — the comment is factually wrong. Either delete this test as redundant, or repurpose it with genuinely new coverage (dimensionless Complex, pure-imaginary `re=0.0`, or negative `re`) and update the comment to match.\n\n2. **+Inf im coverage gap (lines 4459-4570)** — The five Inf/NaN tests cover {NaN re, NaN im, +Inf re, -Inf re, -Inf im} but not +Inf im. Since conjugate flips the sign of im, +Inf→-Inf is the most natural input to demonstrate the guard. Add `conjugate_pos_inf_im_returns_undef` using `Complex{re:1.0, im:+Inf, DIMENSIONLESS}`.\n\n3. **Comment overstates benefit (lines 1450-1456)** — The current comment says the pre-guard is \"more robust than sanitize_value\". For conjugate (unlike phase, where atan2 transforms Inf→finite), sanitize_value's Complex arm fully detects the poisoning, so the two approaches are equivalent. Update the comment to acknowledge this and explain the pre-guard is chosen for stylistic mirroring with phase / forward-compat with potential future removal of the Complex arm in sanitize_value (see task 860 history). Do NOT switch to sanitize_value wrapping — the pre-guard remains preferable for forward-compatibility.\n\n4. **Hardcoded line number (line 1451)** — Drop the `(line ~1423)` parenthetical from the comment; reference the phase method by name only (\"mirroring the phase-method pattern above\"). Line numbers drift.\n\nAfter the changes run `cargo test -p reify-expr --lib conjugate` and `cargo test -p reify-expr --test complex_eval_tests method_conjugate` to verify.\n\nMemory hints: search \"task 903 conjugate sanitization\", search \"task 860 sanitize_value Complex arm\", entities: conjugate, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:54:11.297Z"
+        "updatedAt": "2026-04-08T23:57:09.377Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1202",
@@ -24461,7 +24466,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:57:05.115Z",
+      "lastModified": "2026-04-08T23:57:09.378Z",
       "taskCount": 1202,
       "completedCount": 879,
       "tags": [
