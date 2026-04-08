@@ -478,8 +478,8 @@ impl Value {
                 h
             }
             Value::Matrix(rows) => {
-                // tag=18; hash row count, then per-row col count + element hashes
-                let mut h = ContentHash::of(&[18]);
+                // tag=25; hash row count, then per-row col count + element hashes
+                let mut h = ContentHash::of(&[25]);
                 h = h.combine(ContentHash::of(&(rows.len() as u64).to_le_bytes()));
                 for row in rows {
                     h = h.combine(ContentHash::of(&(row.len() as u64).to_le_bytes()));
@@ -5711,5 +5711,145 @@ mod tests {
             .content_hash(),
             "Orientation z: non-canonical NaN must hash equal to canonical NaN"
         );
+    }
+
+    /// Regression test: every `Value` variant must have a unique tag byte in
+    /// `content_hash()`.  In particular, `Value::Point` and `Value::Matrix`
+    /// previously both used tag `[18]`, which caused silent cache collisions.
+    #[test]
+    fn content_hash_tags_are_unique_across_variants() {
+        use std::collections::HashSet;
+
+        // Build one representative of every Value variant.
+        let dim = DimensionVector::LENGTH;
+        let variants: Vec<(&str, Value)> = vec![
+            ("Bool", Value::Bool(true)),
+            ("Int", Value::Int(42)),
+            ("Real", Value::Real(1.0)),
+            ("String", Value::String("x".into())),
+            (
+                "Scalar",
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: dim.clone(),
+                },
+            ),
+            (
+                "Enum",
+                Value::Enum {
+                    type_name: "T".into(),
+                    variant: "V".into(),
+                },
+            ),
+            ("List", Value::List(vec![])),
+            ("Set", Value::Set(std::collections::BTreeSet::new())),
+            ("Map", Value::Map(std::collections::BTreeMap::new())),
+            ("Option_None", Value::Option(None)),
+            (
+                "Option_Some",
+                Value::Option(Some(Box::new(Value::Int(0)))),
+            ),
+            (
+                "Field",
+                Value::Field {
+                    domain_type: crate::ty::Type::Real,
+                    codomain_type: crate::ty::Type::Real,
+                    source: FieldSourceKind::Analytical,
+                    lambda: Box::new(Value::Undef),
+                },
+            ),
+            (
+                "Lambda",
+                Value::Lambda {
+                    params: vec![],
+                    body: Box::new(CompiledExpr {
+                        kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
+                        result_type: crate::ty::Type::Real,
+                        content_hash: ContentHash::of(&[0]),
+                    }),
+                    captures: ValueMap::new(),
+                },
+            ),
+            ("Tensor", Value::Tensor(vec![])),
+            ("Point", Value::Point(vec![])),
+            ("Vector", Value::Vector(vec![])),
+            (
+                "Complex",
+                Value::Complex {
+                    re: 0.0,
+                    im: 0.0,
+                    dimension: dim.clone(),
+                },
+            ),
+            (
+                "Orientation",
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "Frame",
+                Value::Frame {
+                    origin: Box::new(Value::Point(vec![])),
+                    basis: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                },
+            ),
+            (
+                "Transform",
+                Value::Transform {
+                    rotation: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                    translation: Box::new(Value::Vector(vec![])),
+                },
+            ),
+            (
+                "Plane",
+                Value::Plane {
+                    origin: Box::new(Value::Point(vec![])),
+                    normal: Box::new(Value::Vector(vec![])),
+                },
+            ),
+            (
+                "Axis",
+                Value::Axis {
+                    origin: Box::new(Value::Point(vec![])),
+                    direction: Box::new(Value::Vector(vec![])),
+                },
+            ),
+            (
+                "BoundingBox",
+                Value::BoundingBox {
+                    min: Box::new(Value::Point(vec![])),
+                    max: Box::new(Value::Point(vec![])),
+                },
+            ),
+            (
+                "Range",
+                Value::range(None, None, false, false),
+            ),
+            ("Matrix", Value::Matrix(vec![])),
+            ("Undef", Value::Undef),
+        ];
+
+        let mut seen = HashSet::new();
+        for (name, val) in &variants {
+            let hash = val.content_hash();
+            assert!(
+                seen.insert(hash),
+                "content_hash collision detected for Value::{name}"
+            );
+        }
     }
 }
