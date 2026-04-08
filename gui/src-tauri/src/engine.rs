@@ -227,35 +227,35 @@ impl EngineSession {
 
     /// Resolve the canonical source key and text for the currently loaded module.
     ///
-    /// Returns `Some((key, source_text))` where `key` is `"{module_name}.ri"` and
-    /// `source_text` is the stored source for that key.  Returns `None` when the
-    /// key is not present in `source_map` (should not happen in practice once a
-    /// module is loaded, but guards against any inconsistency).
+    /// Returns `(key, source_text)` where `key` is `"{module_name}.ri"` (a
+    /// reference into the map's owned key) and `source_text` is the stored
+    /// source for that key (a reference into the map's owned value).  Both
+    /// references borrow from `self` and require no allocation on the return path.
     ///
-    /// # Caller precondition
+    /// # Precondition
     ///
-    /// Callers **must** verify `self.compiled.is_some()` before calling this
-    /// method.  `load_from_source` and `update_source` always set `module_name`
-    /// atomically with `compiled` (they fail before mutating state on parse/compile
-    /// errors), so `compiled.is_some()` implies `module_name.is_some()`.  The
-    /// `None` arm of the `match` below is therefore unreachable under that
-    /// precondition.
-    fn resolve_source(&self) -> Option<(String, &str)> {
-        match self.module_name {
-            Some(ref name) => {
-                let key = module_key(name);
-                let src = self.source_map.get(&key)?;
-                Some((key, src.as_str()))
-            }
-            None => {
-                // compiled.is_some() implies module_name.is_some() — this branch
-                // is dead whenever callers gate on compiled being present.
-                unreachable!(
-                    "resolve_source called with module_name = None; \
-                     callers must verify compiled.is_some() first"
-                )
-            }
-        }
+    /// Callers **must** verify `self.compiled.is_some()` before calling.
+    /// `load_from_source` and `update_source` set `module_name`, `source_map`,
+    /// and `compiled` atomically (they fail before mutating state on
+    /// parse/compile errors), so `compiled.is_some()` implies
+    /// `module_name.is_some()` AND `source_map` contains the derived key.
+    /// Violation of this precondition is a programming error caught by
+    /// `debug_assert` in debug/test builds.
+    fn resolve_source(&self) -> (&str, &str) {
+        debug_assert!(
+            self.compiled.is_some(),
+            "resolve_source: compiled must be Some — callers must verify compiled.is_some() first"
+        );
+        let name = self
+            .module_name
+            .as_deref()
+            .expect("resolve_source: module_name is None but compiled is Some — invariant violated");
+        let key = module_key(name);
+        let (k, v) = self
+            .source_map
+            .get_key_value(&key)
+            .expect("resolve_source: source_map missing key — load/update_source invariant violated");
+        (k.as_str(), v.as_str())
     }
 
     /// Look up source location for an entity path (e.g., "Bracket.width").
@@ -274,13 +274,13 @@ impl EngineSession {
         // Resolve the source file key and text via the shared helper.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
-        let (file, source) = self.resolve_source()?;
+        let (file, source) = self.resolve_source();
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
 
         Some(SourceLocationInfo {
-            file_path: file.clone(),
+            file_path: file.to_owned(),
             line: line as u32,
             column: col as u32,
             end_line: end_line as u32,
@@ -306,15 +306,13 @@ impl EngineSession {
         // Resolve file_path and source text via the shared helper.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
-        let (file_path, source) = match self.resolve_source() {
-            Some(pair) => pair,
-            None => return Vec::new(),
-        };
+        let (file_path, source) = self.resolve_source();
 
         // Build the newline table once (O(M)) so each span lookup is O(log M).
         let line_offsets = build_line_offsets(source);
-        // Clone file_path once; move it into the closure to avoid re-cloning the source String.
-        let file_path = file_path.to_string();
+        // Allocate an owned String once; move it into the closure to avoid
+        // re-allocating per diagnostic.
+        let file_path = file_path.to_owned();
 
         compiled
             .diagnostics
