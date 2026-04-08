@@ -280,6 +280,13 @@ else
     check "head -1 pipeline has single-reference documentation comment" "false"
 fi
 
+# (d) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
+if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_FILE" 2>/dev/null; then
+    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "true"
+else
+    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "false"
+fi
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
