@@ -43,4 +43,19 @@ assert_sync_ref_exists() {
 assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
+# Helper: extract the body of a named function (signature through closing brace at
+# column 0) from a file.  Excludes doc comments and SYNC markers, which may
+# legitimately differ between the two copies.
+extract_fn() {
+    local fn_name="$1" file="$2"
+    awk '/^fn '"$fn_name"'/,/^}/' "$file"
+}
+
+# Both copies of sanitize_value must have identical function bodies.
+assert \
+    "sanitize_value body is identical in reify-expr and reify-stdlib" \
+    diff \
+        <(extract_fn sanitize_value "$EXPR_FILE") \
+        <(extract_fn sanitize_value "$STDLIB_FILE")
+
 test_summary
