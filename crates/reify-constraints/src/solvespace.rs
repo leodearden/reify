@@ -1630,9 +1630,7 @@ mod tests {
     /// independently to ensure no site swallows errors.
     #[test]
     fn add_line_pair_propagates_error_from_each_position() {
-        let cell_id = ValueCellId::new("Test", "bad");
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
+        let (_, cell_id, auto_params, current_values) = missing_coord_setup("Test", "bad");
 
         // Helper: a Fixed point that always succeeds
         let good = || PointRef::Fixed {
