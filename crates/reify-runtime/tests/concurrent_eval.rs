@@ -1983,6 +1983,25 @@ async fn five_parent_fan_in_one_changed() {
 mod poison_recovery_extended {
     use super::*;
 
+    /// Parameterized helper for the three `tracing_warn_emitted_on_poison_into_result*`
+    /// tests.  Calls `poison_fn` on a freshly-built adapter, then asserts that
+    /// `into_result()` recovers without panic and emits exactly one WARN whose
+    /// message contains `message_substring`.
+    fn assert_into_result_poison_warn(
+        poison_fn: fn(&ConcurrentEvalAdapter),
+        message_substring: &str,
+    ) {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+        poison_fn(&adapter);
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            message_substring,
+        );
+    }
+
     /// build_result_shared() recovers from poisoned values RwLock.
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
