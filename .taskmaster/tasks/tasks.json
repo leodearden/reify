@@ -22913,11 +22913,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`, the two tests inside `describe('error recovery', ...)` (around line 621 — \"logs a warning when doc.line() throws RangeError\" and \"logs a warning when view.dispatch() throws\") rely implicitly on the production `.catch()` at `gui/src/gotoDefinition.ts:130` consuming the rejected promise. The `withSuppressedRejectionsAndWarnSpy` wrapper was removed, so a regression (e.g. accidental removal of the `.catch()`) would surface as noisy Vitest unhandled-rejection output rather than a clean assertion failure.\n\nTwo improvements were recommended by reviewers during task 1027 but not applied because they are changes to test code that has already been on main for a while (pre-task-1027 commits `6f6f41958`, `8981c98b9`, `e72ae01dd`) and are out of scope for a 1-line describe-rename task:\n\n1. **S1 (test_analyst)** — Add an explicit `unhandledrejection` guard: attach a one-shot listener, assert it was NOT called, remove the listener in `finally`. This makes the \"no unhandled rejection\" contract (still named in the test titles) a load-bearing assertion.\n\n2. **S3 (robustness)** — Add a brief comment near the `mousedownHandler` call explaining why no suppression wrapper is needed: \"No unhandledrejection suppression needed: the production .catch() fully consumes this rejection.\" This prevents a future maintainer from re-adding the suppression if the `.catch()` is ever shortened.\n\nSuggested pattern for both tests:\n```ts\nconst unhandledSpy = vi.fn();\nwindow.addEventListener('unhandledrejection', unhandledSpy, { once: true });\nconst warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});\ntry {\n  // No unhandledrejection suppression needed: the production .catch() at\n  // gotoDefinition.ts:130 fully consumes this rejection.\n  mousedownHandler(mockEvent, mockView);\n  await flushMacrotasks();\n  expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);\n  expect(mockView.dispatch).not.toHaveBeenCalled();\n  expect(unhandledSpy).not.toHaveBeenCalled();\n} finally {\n  window.removeEventListener('unhandledrejection', unhandledSpy);\n  warnSpy.mockRestore();\n}\n```\n\nApply to both tests in the `error recovery` describe block.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:58:20.573Z",
+        "updatedAt": "2026-04-08T21:12:07.863Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -23320,9 +23320,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:05.652Z",
+      "lastModified": "2026-04-08T21:12:07.864Z",
       "taskCount": 1135,
-      "completedCount": 802,
+      "completedCount": 803,
       "tags": [
         "master"
       ]
