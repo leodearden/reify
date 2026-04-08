@@ -21778,15 +21778,16 @@
         "description": "Follow-up from task 1017 review. Two related improvements to `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n**1. Extract didOpen payload helper (reduce duplication)**\nThe didOpen JSON payload in `did_open_returns_ok_null` (lines 369-398) is an exact duplicate of the payload in `did_open_and_completion_returns_items` (lines 81-91): same URI, same source, same fields. Extract into a test-local helper such as `fn open_bracket_doc_params() -> serde_json::Value` and reuse from both tests so future URI/schema changes live in one place.\n\n**2. Fill Ok(Value::Null) coverage gap for didChange/didClose**\nTask 1017 split the old `valid_notification_returns_ok_null` test into `initialized_returns_ok_null` and `did_open_returns_ok_null`, but the original docstring claimed to document the `Ok(Value::Null)` contract for all four notification arms. The refactor leaves `textDocument/didChange` and `textDocument/didClose` with no positive-path return-shape assertion (malformed-params tests exist, but not return-shape). Both arms also return `Ok(Value::Null)` after strict deserialization (see `crates/reify-lsp/src/bridge.rs:129-140`).\n\nAdd `did_change_returns_ok_null` and `did_close_returns_ok_null` that perform the minimal handshake + didOpen, then assert each arm returns exactly `Ok(Value::Null)`. Use the extracted didOpen helper from (1).\n\nSource: review suggestions S1 + S2 from reviewer_comprehensive on task 1017 (esc-1017-10).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:00:13.428Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:00:11.980Z",
+      "lastModified": "2026-04-08T11:00:13.428Z",
       "taskCount": 1056,
       "completedCount": 743,
       "tags": [
