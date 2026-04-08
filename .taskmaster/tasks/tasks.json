@@ -21919,13 +21919,13 @@
         "description": "Follow-up review suggestions from task 960 (add_line_pair doc/test improvements). All changes in crates/reify-constraints/src/solvespace.rs.\n\n1. **Delete add_line_pair_returns_named_line_pair_entities_struct** (S2). It asserts `pair.line_a != pair.line_b` with identical geometry to the pre-existing `add_line_pair_returns_two_line_entities`. The struct's named-field guarantee is enforced at compile time (the test wouldn't compile if the return type became a tuple), so this test adds no runtime coverage. Deleting it also resolves S1 (its stale docstring still references \"step 6\" and \"will FAIL against the current tuple-returning implementation\", which is now historical).\n\n2. **Delete add_line_pair_propagates_point_error** (S4). It only exercises `line_a.start`; the new `add_line_pair_propagates_error_from_each_position` subsumes it by testing all four `?` sites.\n\n3. **Add test-fixture helpers near missing_coord_setup** (S3): `fn fixed_point(x: f64, y: f64, z: f64) -> PointRef { PointRef::Fixed { x, y, z } }` and `fn line(start: PointRef, end: PointRef) -> LineRef { LineRef { start, end } }`. Use them in all add_line_pair tests to cut the ~6 repeated 8-field literal blocks.\n\n4. **Rename or weaken add_line_pair_err_leaves_prior_points_registered** (S6). The current test hard-asserts `entities.len() == initial + 1`, encoding \"no rollback\" as an invariant. If a future refactor adds rollback (which the docstring acknowledges as a defensible improvement), this test would look like a regression rather than an expected inversion. Rename to `add_line_pair_currently_does_not_rollback_on_err` and add a comment that it documents observed behavior, not a requirement; or weaken to `assert!(builder.entities.len() <= initial_entity_count + 1)`.\n\n5. **Tighten add_line_pair docstring dedup paragraph** (S5). Current wording says \"if two of the four points have identical coordinates (or the same Auto cell IDs)\" — but `PointKey::Auto` hashes the full `(x_id, y_id, z_id)` triple, so two Auto points dedupe only when **all three** cell IDs match. Dedup also applies when more than two points coincide. Rewrite to: \"Endpoints with byte-identical Fixed coordinates, or with all three Auto cell IDs equal, are deduplicated through add_point's point_entities cache. The actual point-entity count is therefore between 1 and 4.\"\n\nAfter changes: `cargo test -p reify-constraints` and `cargo clippy -p reify-constraints --all-targets -- -D warnings` must be clean.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "960"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:06:48.237Z",
+        "updatedAt": "2026-04-08T20:41:36.756Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -22748,7 +22748,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:41:34.484Z",
+      "lastModified": "2026-04-08T20:41:36.757Z",
       "taskCount": 1107,
       "completedCount": 779,
       "tags": [
