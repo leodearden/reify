@@ -1214,6 +1214,18 @@ fn byte_offset_to_line_col_offset_beyond_len() {
     let _ = byte_offset_to_line_col("ab", 100);
 }
 
+#[cfg(not(debug_assertions))]
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len_release() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In release builds, debug_assert is a no-op, so passing an offset beyond
+    // source.len() silently clamps: the loop exhausts all characters and returns
+    // the position after the last character.
+    // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
+    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+}
+
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
     use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
