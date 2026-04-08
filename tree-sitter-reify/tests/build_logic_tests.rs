@@ -1198,3 +1198,36 @@ fn test_self_read_paths_use_manifest_dir() {
         );
     }
 }
+
+#[test]
+fn test_drop_logs_error_check_is_form_agnostic() {
+    // Meta-test / regression guard: `test_readonly_guard_drop_logs_error` must enforce
+    // *semantic* invariants only (no silent discard + must log), not *syntactic* ones.
+    // A future contributor must not add assertions like `contains("if let Err"` or
+    // `contains("match "` that enforce a specific error-handling form — any equivalent
+    // form that logs the error is acceptable.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let drop_logs_body =
+        extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
+            .expect("source should contain test_readonly_guard_drop_logs_error");
+
+    assert!(
+        !drop_logs_body.contains("contains(\"if let Err\""),
+        "test_readonly_guard_drop_logs_error must NOT assert a specific syntactic form \
+         via contains(\"if let Err\"). The assertion pair must remain semantic (not syntactic): \
+         (1) errors must not be silently discarded, (2) errors must be logged via eprintln!. \
+         Any equivalent error-handling form is acceptable. Function body:\n{}",
+        drop_logs_body
+    );
+
+    assert!(
+        !drop_logs_body.contains("contains(\"match \""),
+        "test_readonly_guard_drop_logs_error must NOT assert a specific syntactic form \
+         via contains(\"match \"). The assertion pair must remain semantic (not syntactic): \
+         (1) errors must not be silently discarded, (2) errors must be logged via eprintln!. \
+         Any equivalent error-handling form is acceptable. Function body:\n{}",
+        drop_logs_body
+    );
+}
