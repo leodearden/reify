@@ -194,8 +194,8 @@ async fn lsp_request_impl_rejects_malformed_json_params() {
     // Table-driven: each entry is a string that is not valid JSON.
     // serde_json::from_str rejects all of them, so `lsp_request_impl` must
     // return Err with the "invalid JSON params" prefix (from lsp_bridge.rs).
+    let bridge = LspBridge::new();
     for case in ["not json", "", "{", "\"unterminated"] {
-        let bridge = LspBridge::new();
         let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
         assert!(
             result.is_err(),
@@ -231,4 +231,32 @@ async fn lsp_request_impl_null_literal_passes_json_parse_step() {
         !err.contains("invalid JSON params"),
         "null literal should not trigger a JSON parse error, got: {err}"
     );
+    assert!(
+        err.contains("initialize params error"),
+        "expected handler-side rejection, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn lsp_request_impl_rejects_wrong_shape_params() {
+    // Table-driven: each entry is valid JSON that is NOT a valid InitializeParams object.
+    // serde_json::from_str accepts them (they are valid JSON), but
+    // serde_json::from_value::<InitializeParams> rejects them at the handler level.
+    let bridge = LspBridge::new();
+    for case in ["[]", "42", "true"] {
+        let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
+        assert!(
+            result.is_err(),
+            "wrong-shape JSON case {case:?} should return Err"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("invalid JSON params"),
+            "case {case:?}: valid JSON should not trigger a JSON parse error, got: {err}"
+        );
+        assert!(
+            err.contains("initialize params error"),
+            "case {case:?}: expected handler-side rejection, got: {err}"
+        );
+    }
 }
