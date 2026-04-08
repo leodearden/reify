@@ -1644,3 +1644,26 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
     assert_eq!(l, 1);
     assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
 }
+
+// --- Task 899: module_key unit tests ---
+
+/// module_key("bracket") == "bracket.ri" — normal identifier.
+#[test]
+fn module_key_normal_name() {
+    use crate::engine::module_key;
+    assert_eq!(module_key("bracket"), "bracket.ri");
+}
+
+/// module_key("some_module") == "some_module.ri" — underscored name.
+#[test]
+fn module_key_underscored_name() {
+    use crate::engine::module_key;
+    assert_eq!(module_key("some_module"), "some_module.ri");
+}
+
+/// module_key("") == ".ri" — edge case: empty module name.
+#[test]
+fn module_key_empty_name() {
+    use crate::engine::module_key;
+    assert_eq!(module_key(""), ".ri");
+}
