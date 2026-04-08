@@ -1491,6 +1491,32 @@ impl Engine {
             }
         }
 
+        // ── Guard-state fingerprinting ──────────────────────────────
+        // Include guard-cell boolean states in the topology fingerprint so that
+        // eval() and edit_param() produce identical fingerprints for the same
+        // logical guard configuration.
+        //
+        // Without this, eval()'s fingerprint is the pure structural hash from
+        // graph.topology_fingerprint(), while edit_param()'s fingerprint (Site 2)
+        // combines the structural hash with guard-state hashes. That mismatch
+        // means F1 (from eval) ≠ F3 (from edit_param returning to the same state).
+        //
+        // Uses unwrap_or(Value::Undef) — same defensive style as Site 1 in
+        // edit_param()'s has_dirty_guards branch. Guard cells should always be
+        // present (the third pass above inserts them), but Undef is the correct
+        // semantic fallback for an undetermined guard during initial evaluation.
+        if !snapshot.graph.guarded_groups.is_empty() {
+            let guard_state_hash = {
+                let hashes = snapshot.graph.guarded_groups.iter().map(|g| {
+                    let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
+                    ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, gv))
+                });
+                ContentHash::combine_all(hashes)
+            };
+            snapshot.topology_fingerprint =
+                snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+        }
+
         // Store internal state for incremental evaluation
         self.eval_state = Some(EvaluationState {
             snapshot,
