@@ -450,20 +450,8 @@ async fn did_change_with_malformed_params_returns_error() {
 #[tokio::test]
 async fn did_close_with_malformed_params_returns_error() {
     let lsp = initialized_lsp().await;
-
-    // json!(42) is clearly malformed for DidCloseTextDocumentParams (expects an object)
-    let result = lsp.handle_request("textDocument/didClose", json!(42)).await;
-
-    assert!(
-        result.is_err(),
-        "didClose with malformed params should return Err, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("didClose params error"),
-        "error message should contain 'didClose params error', got: {err}"
-    );
+    assert_malformed_params_returns_error(&lsp, "textDocument/didClose", "didClose params error")
+        .await;
 }
 
 /// The `shutdown` request should return exactly `Ok(Value::Null)`.
