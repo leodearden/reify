@@ -24376,10 +24376,11 @@
         "description": "In crates/reify-eval/src/lib.rs (compile_geometry_op around lines 3636/3662/3666), the literal `1e-12` is hardcoded at three sites: Extrude distance, Revolve axis-magnitude, and the new Revolve angle guard. Introduce module-level constants `const DEGENERATE_LENGTH_M: f64 = 1e-12;` and `const DEGENERATE_ANGLE_RAD: f64 = 1e-12;` with doc comments stating units (meters of length / radians of angle), and reference them at all three call sites. This both eliminates magic numbers and prevents accidental coupling of two physically distinct quantities. Also clean up the unused `_distance_f64` binding to `_` and consider line-wrapping the chain so it stays under rustfmt's 100-col max_width.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:51:31.201Z"
       },
       {
         "id": "1198",
@@ -24408,7 +24409,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:51:30.702Z",
+      "lastModified": "2026-04-08T23:51:31.201Z",
       "taskCount": 1199,
       "completedCount": 876,
       "tags": [
