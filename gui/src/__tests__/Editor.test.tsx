@@ -265,6 +265,8 @@ describe('Editor active file switching', () => {
 });
 
 describe('Editor scrollToLocation', () => {
+  const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
+
   it('setting scrollToLocation signal moves cursor to target line/column', () => {
     const store = setupStore();
     const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
@@ -318,7 +320,7 @@ describe('Editor scrollToLocation', () => {
     // end_column 10 -> head = 9 (0-indexed), column 5 -> anchor = 4 (0-indexed)
     setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
     expect(view.state.selection.main.anchor).toBe(4);
-    expect(view.state.selection.main.head).toBe(9);
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
   });
 
   it('scrollToLocation with mismatched file does not move cursor', () => {
@@ -329,13 +331,13 @@ describe('Editor scrollToLocation', () => {
     const container = screen.getByTestId('editor-container');
     const view = getEditorView(container);
 
-    // Establish baseline: target active file2 and confirm cursor moved to head=9
+    // Establish baseline: target active file2 and confirm cursor moved to head=BASELINE_HEAD
     setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
-    expect(view.state.selection.main.head).toBe(9);
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
 
     // Now target mismatched file1 — effect must not move cursor
     setScrollTo({ file_path: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
-    expect(view.state.selection.main.head).toBe(9);
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
   });
 
   it('scrollToLocation with no active file does not crash', () => {
