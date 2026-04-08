@@ -2004,20 +2004,32 @@ async fn five_parent_fan_in_one_changed() {
 mod poison_recovery_extended {
     use super::*;
 
+    /// Poisons a lock via `$poison_method` (sole-owner path — no Arc guard held),
+    /// then delegates to [`assert_poison_recovers`] calling `$action_method` on
+    /// `into_result` / `build_result_shared`.  Returns the [`ConcurrentEditResult`]
+    /// for optional downstream data assertions.
+    macro_rules! poison_and_recover {
+        ($poison_method:ident, $action_method:ident, $msg:expr) => {{
+            let setup = simple_setup();
+            let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+            let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+            adapter.$poison_method();
+            assert_poison_recovers(
+                || adapter.$action_method(&eval_set, HashSet::new()),
+                1,
+                $msg,
+            )
+        }};
+    }
+
     /// build_result_shared() recovers from poisoned values RwLock.
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn build_result_shared_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.build_result_shared(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned",
+        let edit_result = poison_and_recover!(
+            poison_values,
+            build_result_shared,
+            "values RwLock poisoned"
         );
         // Verify both T.a and T.b are present with exact values from simple_setup
         assert_eq!(
@@ -2040,16 +2052,10 @@ mod poison_recovery_extended {
     /// Verifies exact (Value, DeterminacyState) tuples for T.a and T.b.
     #[test]
     fn build_result_shared_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.build_result_shared(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned",
+        let edit_result = poison_and_recover!(
+            poison_snapshot_values,
+            build_result_shared,
+            "snapshot_values RwLock poisoned"
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -2068,17 +2074,8 @@ mod poison_recovery_extended {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.build_result_shared(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned",
-        );
+        let edit_result =
+            poison_and_recover!(poison_results, build_result_shared, "results Mutex poisoned");
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2089,17 +2086,8 @@ mod poison_recovery_extended {
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned",
-        );
+        let edit_result =
+            poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
             Some(&Value::Real(10.0)),
@@ -2116,16 +2104,10 @@ mod poison_recovery_extended {
     /// Verifies exact (Value, DeterminacyState) tuples for T.a.
     #[test]
     fn into_result_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned",
+        let edit_result = poison_and_recover!(
+            poison_snapshot_values,
+            into_result,
+            "snapshot_values RwLock poisoned"
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2138,17 +2120,8 @@ mod poison_recovery_extended {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn into_result_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned",
-        );
+        let edit_result =
+            poison_and_recover!(poison_results, into_result, "results Mutex poisoned");
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2160,17 +2133,7 @@ mod poison_recovery_extended {
     /// Message must contain "values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned",
-        );
+        poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2178,16 +2141,10 @@ mod poison_recovery_extended {
     /// Message must contain "snapshot_values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned",
+        poison_and_recover!(
+            poison_snapshot_values,
+            into_result,
+            "snapshot_values RwLock poisoned"
         );
     }
 
@@ -2196,17 +2153,7 @@ mod poison_recovery_extended {
     /// Message must contain "results Mutex poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned",
-        );
+        poison_and_recover!(poison_results, into_result, "results Mutex poisoned");
     }
 }
 
