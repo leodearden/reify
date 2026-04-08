@@ -210,15 +210,14 @@ async fn lsp_request_impl_rejects_malformed_json_params() {
 }
 
 #[tokio::test]
-async fn lsp_request_impl_accepts_valid_json_null_literal() {
+async fn lsp_request_impl_null_literal_passes_json_parse_step() {
     let bridge = LspBridge::new();
-    // "null" is valid JSON — parsing must succeed; the error (if any) must NOT
-    // come from the JSON parse step itself.
+    // Invariant under test: the JSON parse step in `lsp_request_impl` accepts the
+    // `null` literal (since null IS valid JSON per RFC 8259), even though the
+    // downstream `initialize` handler subsequently rejects it. The error, if any,
+    // must NOT carry the "invalid JSON params" prefix — that prefix is emitted only
+    // by the JSON parse step, not by the handler.
     let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
-    // The LSP initialize handler rejects null params (initialize requires a structured
-    // params object), so result must be Err. But the error must not say "invalid JSON
-    // params" — that would mean the JSON parse step itself rejected it, which is wrong
-    // because null IS valid JSON.
     let err = result.unwrap_err();
     assert!(
         !err.contains("invalid JSON params"),
