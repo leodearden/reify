@@ -23585,15 +23585,16 @@
         "description": "TraitDecl.refinements is currently `Vec<String>` without individual spans. The deprecation warning for trait refinements (L4177-4191 in lib.rs) uses `trait_decl.span` (the entire child trait declaration) rather than pointing at the specific `: Base` refinement reference. This makes the warning highlight too much code.\n\nChange `refinements: Vec<String>` to `refinements: Vec<SpannedIdent>` (or similar span-bearing type) in reify-types, update the parser in reify-syntax to capture per-refinement spans, and update the compiler to use the precise span in the deprecation warning.\n\nmemory_hints: search \"TraitDecl refinements Vec<String>\" in reify-types; get_entity \"TraitDecl\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:46:28.241Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:46:27.445Z",
+      "lastModified": "2026-04-08T21:46:28.241Z",
       "taskCount": 1151,
       "completedCount": 821,
       "tags": [
