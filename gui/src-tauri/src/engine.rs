@@ -28,6 +28,15 @@ pub struct EngineSession {
     module_name: Option<String>,
 }
 
+/// Build the normalized source-map key for a module name: `"{name}.ri"`.
+///
+/// This is the single authoritative point for key derivation, replacing three
+/// formerly-identical `format!("{}.ri", ...)` call sites in
+/// `load_from_source`, `update_source`, and `resolve_source`.
+pub(crate) fn module_key(name: &str) -> String {
+    format!("{}.ri", name)
+}
+
 impl EngineSession {
     /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
     pub fn new(
@@ -79,7 +88,7 @@ impl EngineSession {
         // Store source with normalized key; clear stale entries
         self.source_map.clear();
         self.source_map
-            .insert(format!("{}.ri", module_name), source.to_string());
+            .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
 
         // Evaluate + check constraints
@@ -178,7 +187,7 @@ impl EngineSession {
         }
 
         // Parse+compile succeeded — now atomically update all state
-        let normalized_key = format!("{}.ri", module_name);
+        let normalized_key = module_key(module_name);
         self.source_map.clear();
         self.source_map.insert(normalized_key, content.to_string());
         self.module_name = Some(module_name.to_string());
@@ -234,7 +243,7 @@ impl EngineSession {
     fn resolve_source(&self) -> Option<(String, &str)> {
         match self.module_name {
             Some(ref name) => {
-                let key = format!("{}.ri", name);
+                let key = module_key(name);
                 let src = self.source_map.get(&key)?;
                 Some((key, src.as_str()))
             }
