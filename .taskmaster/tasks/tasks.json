@@ -21718,11 +21718,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: The `valid_notification_returns_ok_null` test now sends `initialized` twice (once inside `initialized_lsp()`, once explicitly in the test body). The test name and doc comment still describe the general Ok(Value::Null) contract for notifications, but it actually verifies re-entrant/duplicate `initialized` tolerance.\n\nEither: (a) rename and re-document the test (e.g., `duplicate_initialized_notification_returns_ok_null`) to reflect what it actually tests, or (b) restructure the test to use a partial setup (only `handle_request(\"initialize\", ...)` without `initialized`) so the explicit `initialized` call is the first one — preserving original semantics. If choosing (a), consider adding a separate test that verifies a different notification (e.g., `textDocument/didOpen`) for the general Ok(Null) contract.\n\nMemory hints: search for \"initialized_lsp helper\" and \"LSP bridge test initialization pattern\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:12.516Z",
+        "updatedAt": "2026-04-08T21:58:25.411Z",
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs"
@@ -23693,7 +23693,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:58:24.975Z",
+      "lastModified": "2026-04-08T21:58:25.412Z",
       "taskCount": 1156,
       "completedCount": 830,
       "tags": [
