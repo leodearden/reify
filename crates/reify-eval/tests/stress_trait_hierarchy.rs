@@ -294,3 +294,104 @@ fn diamond_inheritance_merges_correctly() {
         );
     }
 }
+
+// ── step-9/10: Multi-trait implementation (3 independent traits) ──────────────
+
+/// Verify TripleImpl : Weighable + Sizeable + Countable has all trait params and
+/// constraints from all three independent traits.
+///
+/// Expected values:
+///   - mass = 2kg = 2.0 SI (from Weighable)
+///   - width = 100mm = 0.1 SI (from Sizeable)
+///   - count = 5.0 (Real, from Countable)
+///
+/// Expected constraints: mass>0kg, width>0mm, count>=0, count<1000 — all Satisfied.
+#[test]
+fn multi_trait_impl_three_independent() {
+    let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
+        .expect("trait_hierarchy.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // mass = 2kg = 2.0 SI
+    let mass_id = ValueCellId::new("TripleImpl", "mass");
+    let mass_val = result.values.get(&mass_id)
+        .unwrap_or_else(|| panic!("TripleImpl.mass not found"));
+    match mass_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 2.0).abs() < 1e-12,
+                "TripleImpl.mass should be 2.0 kg SI, got {}",
+                si_value
+            );
+        }
+        other => panic!("TripleImpl.mass should be Scalar, got {:?}", other),
+    }
+
+    // width = 100mm = 0.1 SI
+    let width_id = ValueCellId::new("TripleImpl", "width");
+    let width_val = result.values.get(&width_id)
+        .unwrap_or_else(|| panic!("TripleImpl.width not found"));
+    match width_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.1).abs() < 1e-12,
+                "TripleImpl.width should be 0.1 m (100mm) SI, got {}",
+                si_value
+            );
+        }
+        other => panic!("TripleImpl.width should be Scalar, got {:?}", other),
+    }
+
+    // count = 5.0 (Real)
+    let count_id = ValueCellId::new("TripleImpl", "count");
+    let count_val = result.values.get(&count_id)
+        .unwrap_or_else(|| panic!("TripleImpl.count not found"));
+    match count_val {
+        reify_types::Value::Real(v) => {
+            assert!(
+                (v - 5.0).abs() < 1e-12,
+                "TripleImpl.count should be 5.0, got {}",
+                v
+            );
+        }
+        reify_types::Value::Scalar { si_value, .. } => {
+            // dimensionless scalar also acceptable
+            assert!(
+                (si_value - 5.0).abs() < 1e-12,
+                "TripleImpl.count should be 5.0, got {}",
+                si_value
+            );
+        }
+        other => panic!("TripleImpl.count should be Real or dimensionless Scalar, got {:?}", other),
+    }
+
+    // All constraints from all 3 traits + structure should be satisfied
+    let check_result = engine.check(&compiled);
+    let triple_constraints: Vec<_> = check_result.constraint_results.iter()
+        .filter(|e| e.id.entity == "TripleImpl")
+        .collect();
+
+    assert!(
+        triple_constraints.len() >= 4,
+        "expected >= 4 constraints for TripleImpl (mass>0kg, width>0mm, count>=0, count<1000), got {}",
+        triple_constraints.len()
+    );
+    for entry in &triple_constraints {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "TripleImpl constraint {} should be Satisfied",
+            entry.id
+        );
+    }
+}
