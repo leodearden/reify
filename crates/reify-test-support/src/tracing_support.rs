@@ -4,6 +4,54 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+/// Assert that `counter` has advanced by exactly `expected_delta` since the
+/// `before` snapshot.
+///
+/// Computes the actual delta as `counter.load(Ordering::Acquire).saturating_sub(before)`
+/// and asserts it equals `expected_delta`.  Uses `Acquire` ordering so that all
+/// WARN event stores (which use `Release`) are visible to this load.
+///
+/// # Parameters
+///
+/// - `counter` — the warn counter returned by [`warn_counting_subscriber`] or
+///   [`warn_counting_guard`].
+/// - `before` — a snapshot of the counter taken before the code under test
+///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.
+/// - `expected_delta` — how many WARN events you expect since the snapshot.
+/// - `context` — included in the panic message for diagnostics.
+///
+/// # Panics
+///
+/// Panics if the actual delta differs from `expected_delta`.
+pub fn assert_warn_count_delta(
+    counter: &AtomicUsize,
+    before: usize,
+    expected_delta: usize,
+    context: &str,
+) {
+    let after = counter.load(Ordering::Acquire);
+    let actual_delta = after.saturating_sub(before);
+    assert_eq!(
+        actual_delta,
+        expected_delta,
+        "expected warn delta of {expected_delta} (before={before}, after={after}): {context}"
+    );
+}
+
+/// Assert that `counter` equals `expected` (convenience wrapper for
+/// [`assert_warn_count_delta`] with `before=0`).
+///
+/// Equivalent to `assert_warn_count_delta(counter, 0, expected, context)`.
+/// Suited for tests where the subscriber is freshly installed and the counter
+/// starts at zero.
+///
+/// # Panics
+///
+/// Panics if `counter.load(Acquire)` does not equal `expected`.
+pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) {
+    assert_warn_count_delta(counter, 0, expected, context);
+}
+
 /// Build a minimal [`tracing::Subscriber`] that counts WARN-level events.
 ///
 /// Returns a `(subscriber, counter)` pair.  The `counter` is shared via
