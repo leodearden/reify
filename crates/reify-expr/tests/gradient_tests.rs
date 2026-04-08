@@ -3072,6 +3072,7 @@ fn gradient_decomposed_n3_dimensionless() {
 ///
 /// The mismatch: declared says dimension=MASS, but f_plus.dimension() = DIMENSIONLESS.
 /// The assertion should fire with message containing "codomain_type does not match".
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "codomain_type does not match")]
 fn gradient_runtime_codomain_dim_mismatch_panics() {
@@ -3208,6 +3209,7 @@ fn gradient_codomain_type_vs_runtime_mismatch_field_structure() {
 /// The debug assertion fires after the first f_plus evaluation when
 /// f_plus.dimension() (DIMENSIONLESS) != expected_codomain_dim (MASS).
 /// This test fails initially (no assertion exists yet).
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "codomain_type does not match")]
 fn gradient_codomain_type_vs_runtime_mismatch() {
