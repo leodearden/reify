@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event, try_serialize_event};
+use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
@@ -484,26 +484,26 @@ fn delta_to_events_multiple_failures_warn_for_each() {
     );
 }
 
-/// try_serialize_event: on Ok, a single (event_name, val) tuple is pushed.
+/// push_serialized_event: on Ok, a single (event_name, val) tuple is pushed.
 #[test]
-fn try_serialize_event_pushes_update_on_ok() {
+fn push_serialized_event_pushes_update_on_ok() {
     let mut events: Vec<(String, serde_json::Value)> = Vec::new();
     let val = serde_json::json!({"x": 1});
-    try_serialize_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
+    push_serialized_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
     assert_eq!(events.len(), 1, "expected exactly one event");
     assert_eq!(events[0].0, "mesh-update");
     assert_eq!(events[0].1, val);
 }
 
-/// try_serialize_event: on Err, emits exactly one warn! and pushes a
+/// push_serialized_event: on Err, emits exactly one warn! and pushes a
 /// serialization-error event with the correct item_type, item_id, and error fields.
 #[test]
-fn try_serialize_event_pushes_error_and_warns_on_err() {
+fn push_serialized_event_pushes_error_and_warns_on_err() {
     let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
     let err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
     let mut events: Vec<(String, serde_json::Value)> = Vec::new();
     tracing::subscriber::with_default(subscriber, || {
-        try_serialize_event(&mut events, "value-update", "value", "V.x", Err(err));
+        push_serialized_event(&mut events, "value-update", "value", "V.x", Err(err));
     });
     assert_eq!(
         warn_count.load(Ordering::Relaxed),
@@ -521,13 +521,3 @@ fn try_serialize_event_pushes_error_and_warns_on_err() {
     );
 }
 
-/// push_serialized_event: on Ok, a single (event_name, val) tuple is pushed.
-#[test]
-fn push_serialized_event_exists() {
-    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
-    let val = serde_json::json!({"x": 42});
-    push_serialized_event(&mut events, "mesh-update", "mesh", "B.body", Ok(val.clone()));
-    assert_eq!(events.len(), 1, "expected exactly one event");
-    assert_eq!(events[0].0, "mesh-update");
-    assert_eq!(events[0].1, val);
-}
