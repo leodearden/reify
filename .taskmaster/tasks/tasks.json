@@ -21358,11 +21358,11 @@
         "description": "Two related cleanup items in gui/src/__tests__/Editor.test.tsx (around lines 309-339):\n\n1. Extract the repeated 6-line setup (setupStore, setActiveFile, createSignal, render, getEditorView) shared by 'scrollToLocation targets active file with deterministic selection' and 'scrollToLocation with mismatched file does not move cursor' into a shared helper or beforeEach (suggestion [5]).\n\n2. Define `const BASELINE_HEAD = 9;` near the top of the describe block and reference it in both tests, replacing the magic number 9 in both the positive assertion and the mismatch baseline re-assertion (suggestion [8]).\n\nMemory hints: search for \"scrollToLocation test\" and \"Editor.test structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:11:44.863Z",
+        "updatedAt": "2026-04-08T10:56:46.739Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21766,7 +21766,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:56:46.023Z",
+      "lastModified": "2026-04-08T10:56:46.744Z",
       "taskCount": 1055,
       "completedCount": 743,
       "tags": [
