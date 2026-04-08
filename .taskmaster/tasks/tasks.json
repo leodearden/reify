@@ -23957,10 +23957,11 @@
         "description": "The serialization error handler in App.tsx calls showToast for every error event with no deduplication or rate-limiting. If a model triggers many non-finite values in a single evaluation cycle, the backend emits one serialization-error per failed mesh/value/constraint, potentially flooding the UI with dozens of identical or near-identical error toasts.\n\nSuggested fix: Debounce or coalesce serialization error toasts — accumulate errors over a short window (e.g. 500ms) and show a single summary toast like \"N items failed to serialize\", or deduplicate by (item_type, item_id) so repeated errors for the same item don't stack.\n\nMemory hints: search \"serialization-error event\" \"showToast toast flooding\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T22:51:22.128Z"
       },
       {
         "id": "1172",
@@ -23976,7 +23977,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:51:21.434Z",
+      "lastModified": "2026-04-08T22:51:22.129Z",
       "taskCount": 1172,
       "completedCount": 852,
       "tags": [
