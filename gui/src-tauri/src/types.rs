@@ -17,15 +17,13 @@ where
     S: serde::Serializer,
 {
     use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(values.len()))?;
     for &v in values {
         if !v.is_finite() {
             return Err(S::Error::custom(format!(
                 "non-finite f32 value ({v}) in mesh geometry"
             )));
         }
-    }
-    let mut seq = serializer.serialize_seq(Some(values.len()))?;
-    for &v in values {
         seq.serialize_element(&v)?;
     }
     seq.end()
