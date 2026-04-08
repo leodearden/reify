@@ -224,7 +224,6 @@ fn bare_self_as_entity_reference() {
 // ─── step-6: self in guarded block (TreeBracket pattern) ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_guarded_block() {
     // The TreeBracket pattern from spec section 8.9: `self.depth` in a guarded
     // `where` block should resolve to the enclosing entity's params.
