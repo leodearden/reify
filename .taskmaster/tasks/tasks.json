@@ -23375,15 +23375,16 @@
         "description": "In crates/reify-test-support/src/tracing_support.rs, `MessageVisitor::record_debug` (line 293-296) formats the message value using `format!(\"{value:?}\")` (Debug formatting). For string messages like `tracing::warn!(\"foo\")`, this includes surrounding quotes in the captured text (e.g., `\"foo\"` instead of `foo`).\n\nThe current tests use `.contains(substring)` matching which works despite the quotes, but the Debug-formatted output is a minor fidelity issue that could confuse future test authors.\n\nFix: Add a `record_str` implementation for string fields, or change `record_debug` to use `format!(\"{value}\")` (Display). Alternatively, document that messages are Debug-formatted if the current behavior is intentional.\n\nmemory_hints: search \"WarnCapture MessageVisitor tracing_support\" for context; search \"Task 963\" for original implementation",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:15:48.280Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:15:47.720Z",
+      "lastModified": "2026-04-08T21:15:48.281Z",
       "taskCount": 1139,
       "completedCount": 805,
       "tags": [
