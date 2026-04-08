@@ -19398,7 +19398,13 @@
         "metadata": {
           "modules": [
             "crates/reify-test-support"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve WarnCountingSubscriber test accuracy and invariant coverage"
+            ]
+          }
         }
       },
       {
@@ -21392,11 +21398,11 @@
         "description": "In `gui/src/editor/gotoDefinition.ts` same-file branch (around line 115): (1) Before the existing line-bounds check, add `if (location.range.start.line < 0) return;` to explicitly reject malformed LSP responses with negative line numbers (currently they pass the guard and fall through to `doc.line(0)` throwing, producing a confusing warning). The two guards can be combined: `if (location.range.start.line < 0 || location.range.start.line + 1 > view.state.doc.lines) return;`. (2) After `doc.line()` succeeds (line 116), add a character bounds check before computing `targetPos`: `if (location.range.start.character > targetLine.length) return;` (where `targetLine.length = targetLine.to - targetLine.from`) to prevent a stale character offset from silently placing the cursor in the wrong position.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:15.451Z",
+        "updatedAt": "2026-04-08T10:44:56.447Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -21729,9 +21735,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:43:57.136Z",
+      "lastModified": "2026-04-08T10:44:56.450Z",
       "taskCount": 1054,
-      "completedCount": 742,
+      "completedCount": 743,
       "tags": [
         "master"
       ]
