@@ -22765,15 +22765,16 @@
         "description": "The existing test `let_none_with_typed_annotation_gets_correct_type` covers `let y : Option<Length> = none`. Consider adding tests for these edge cases to strengthen confidence in the guard conditions:\n\n1. `let y : SomeAlias = none` where SomeAlias resolves to an Option type (exercises alias resolution path)\n2. `let y : Length = none` (non-Option annotation — should NOT apply the fixup)\n3. `let y = none` (no annotation — should retain the default Option<Real>)\n\nFile: `crates/reify-compiler/tests/qualified_access_compile_tests.rs`\n\n## Memory hints\n- Search: \"OptionNone typed annotation let binding\" for prior context on the fixup\n- Related symbol: `compile_entity` `MemberDecl::Let` arm in `crates/reify-compiler/src/lib.rs`",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:42:02.596Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:42:02.256Z",
+      "lastModified": "2026-04-08T20:42:02.596Z",
       "taskCount": 1109,
       "completedCount": 780,
       "tags": [
