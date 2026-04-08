@@ -157,17 +157,31 @@ impl tracing::Subscriber for CountingSubscriber {
 /// Canonical substring embedded in `debug_assert_eq!` panic messages when a
 /// non-WARN event reaches `event()` in violation of the dispatcher contract.
 ///
+/// # Release-mode asymmetry
+///
+/// Both `WarnCountingSubscriber` and `WarnCapturingSubscriber` rely entirely on
+/// the dispatcher's `enabled()` contract: their `event()` implementations
+/// perform no defensive level re-check.  In debug builds the `debug_assert_eq!`
+/// that embeds this marker catches contract violations loudly.  In release
+/// builds `debug_assert_eq!` is compiled out, so a violation would silently
+/// miscount or miscapture — this is deliberate per the silent-defaults
+/// alignment established by task 972, which favours minimal branches in the
+/// hot path over defensive double-checks.
+///
 /// # Sync requirement
 ///
 /// `#[should_panic(expected = ...)]` in
-/// `tests::event_panics_on_non_warn_when_dispatcher_contract_violated` uses the
-/// literal `"enabled() contract violated"` — the same text as this const.
-/// Because Rust requires a **string literal** (not a const expression) in the
-/// `expected` parameter of `#[should_panic]`, the sync cannot be enforced by
-/// the type system.  Instead it is enforced by the
-/// `tests::contract_violation_marker_matches_panic_expected` test, which
-/// asserts `CONTRACT_VIOLATION_MARKER == "enabled() contract violated"` at
-/// runtime.  **Do not change this const without updating that attribute.**
+/// `tests::event_panics_on_non_warn_when_dispatcher_contract_violated`
+/// (`WarnCountingSubscriber`) and
+/// `tests::capturing_event_panics_on_non_warn_when_dispatcher_contract_violated`
+/// (`WarnCapturingSubscriber`) both use the literal `"enabled() contract
+/// violated"` — the same text as this const.  Because Rust requires a **string
+/// literal** (not a const expression) in the `expected` parameter of
+/// `#[should_panic]`, the sync cannot be enforced by the type system.  Instead
+/// it is enforced by the `tests::contract_violation_marker_matches_panic_expected`
+/// test, which asserts `CONTRACT_VIOLATION_MARKER == "enabled() contract
+/// violated"` at runtime.  **Do not change this const without updating those
+/// attributes.**
 const CONTRACT_VIOLATION_MARKER: &str = "enabled() contract violated";
 
 // ── private implementation ────────────────────────────────────────────────────
@@ -208,20 +222,9 @@ impl tracing::Subscriber for WarnCountingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
-        // The tracing dispatcher only calls event() when enabled() returned
-        // true; our enabled() accepts only WARN, so only WARN events reach
-        // here. The debug_assert catches direct misuse (called outside the
-        // dispatcher) loudly in debug builds.
-        //
-        // Release-mode asymmetry (intentional): unlike `CountingSubscriber::event()`
-        // which defensively filters via `counters.get()`, this subscriber relies
-        // entirely on the dispatcher contract enforced by `enabled()`.  In release
-        // builds `debug_assert_eq!` is compiled out, so a contract violation would
-        // silently miscount.  This is deliberate: `enabled()` is the sole runtime
-        // gate in all build profiles, and the silent-defaults alignment established
-        // by task 972 favours minimal branches in the hot path over defensive
-        // double-checks.  The `debug_assert_eq!` backstop catches violations during
-        // development and testing.
+        // The tracing dispatcher only calls event() when enabled() returned true;
+        // our enabled() accepts only WARN, so only WARN events should reach here.
+        // See release-mode asymmetry note on `CONTRACT_VIOLATION_MARKER`.
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
@@ -351,16 +354,8 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
 
     fn event(&self, event: &tracing::Event<'_>) {
         // The tracing dispatcher only calls event() when enabled() returned true;
-        // our enabled() accepts only WARN, so only WARN events reach here.
-        //
-        // Release-mode asymmetry (intentional): unlike `CountingSubscriber::event()`
-        // which defensively filters via `counters.get()`, `WarnCapturingSubscriber`
-        // relies entirely on the dispatcher contract enforced by `enabled()`.  In
-        // release builds `debug_assert_eq!` is compiled out, so a contract violation
-        // would silently capture a non-WARN event.  This is deliberate per the
-        // silent-defaults alignment from task 972: `enabled()` is the sole runtime
-        // gate in all build profiles, and the `debug_assert_eq!` backstop is
-        // sufficient for catching violations during development and testing.
+        // our enabled() accepts only WARN, so only WARN events should reach here.
+        // See release-mode asymmetry note on `CONTRACT_VIOLATION_MARKER`.
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
