@@ -1383,6 +1383,14 @@ fn edit_param_guard_fingerprint_round_trips() {
 ///
 /// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3.
 /// Asserts: F1 == F3 (eval and edit_param produce identical fingerprints for same state).
+///
+/// **Why this test exists alongside `edit_param_guard_fingerprint_round_trips`:**
+/// `edit_param_guard_fingerprint_round_trips` comprehensively covers the round-trip
+/// property (F2==F4) and validates member values at each phase, but its cross-path
+/// assertion (F1==F3) is one of many assertions. This focused test is a minimal
+/// regression reproducer for the specific cross-path hash-format bug fixed in task 1112,
+/// where `eval()` and `edit_param()` used different format strings for guard-state
+/// hashing, causing identical logical states to produce different fingerprints.
 #[test]
 fn eval_edit_param_guard_fingerprint_cross_path_consistency() {
     let active_id = ValueCellId::new("S", "active");
@@ -1437,5 +1445,119 @@ fn eval_edit_param_guard_fingerprint_cross_path_consistency() {
         f1, f3,
         "topology_fingerprint from eval(guard=true) must equal edit_param(guard=true): \
          eval() and edit_param() must use the same guard-state hash format"
+    );
+}
+
+/// Multi-guarded-group fingerprint disambiguation.
+///
+/// Verifies that two guard cells with the same *value* but different *identities*
+/// produce different topology fingerprints. The hash format `"guard:{}={:?}"` includes
+/// the guard cell ID, so `__guard_0=Bool(true), __guard_1=Bool(false)` must hash
+/// differently from `__guard_0=Bool(false), __guard_1=Bool(true)` even though both
+/// represent "one true, one false" guard states.
+///
+/// This property prevents spurious cache hits when two guards have swapped values —
+/// if the fingerprint only captured the *multiset* of guard values, a swapped-guard
+/// topology would incorrectly reuse an incompatible cached evaluation.
+///
+/// Template: two boolean params `active_a` (controls `__guard_0`) and `active_b`
+/// (controls `__guard_1`), each with its own set of members.
+///
+/// Sequence: eval(a=T, b=T) → F_tt, edit_param(b=F) → F_tf, edit_param(a=F) +
+/// edit_param(b=T) → F_ft.
+/// Asserts: F_tt ≠ F_tf, F_tt ≠ F_ft, F_tf ≠ F_ft (all three pairwise distinct).
+#[test]
+fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
+    let active_a_id = ValueCellId::new("S", "active_a");
+    let active_b_id = ValueCellId::new("S", "active_b");
+    let guard_a_id = ValueCellId::new("S", "__guard_0");
+    let guard_b_id = ValueCellId::new("S", "__guard_1");
+
+    let guard_a_expr = value_ref_typed("S", "active_a", Type::Bool);
+    let guard_b_expr = value_ref_typed("S", "active_b", Type::Bool);
+
+    // Members for guard_0 (controlled by active_a)
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    // Members for guard_1 (controlled by active_b)
+    let z_decl = make_param_decl("S", "z", Type::length(), Value::length(0.015));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active_a",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .param(
+            "S",
+            "active_b",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_a_expr,
+            guard_a_id.clone(),
+            vec![x_decl], // members: active when guard_0 is true
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .guarded_group(
+            guard_b_expr,
+            guard_b_id.clone(),
+            vec![z_decl], // members: active when guard_1 is true
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // F_tt: initial eval with both guards true (active_a=T, active_b=T)
+    engine.eval(&module);
+    let f_tt = engine.snapshot().unwrap().topology_fingerprint;
+
+    // F_tf: active_a=T, active_b=F
+    engine
+        .edit_param(active_b_id.clone(), Value::Bool(false))
+        .expect("edit_param(active_b=false) should succeed");
+    let f_tf = engine.snapshot().unwrap().topology_fingerprint;
+
+    // Transition to active_a=F, active_b=T: first set a=false (gives FF), then b=true (gives FT)
+    engine
+        .edit_param(active_a_id.clone(), Value::Bool(false))
+        .expect("edit_param(active_a=false) should succeed");
+    engine
+        .edit_param(active_b_id.clone(), Value::Bool(true))
+        .expect("edit_param(active_b=true) should succeed");
+    let f_ft = engine.snapshot().unwrap().topology_fingerprint;
+
+    // All three states must produce distinct fingerprints.
+    // F_tt vs F_tf: different because guard_1 changed (true → false)
+    assert_ne!(
+        f_tt, f_tf,
+        "F_tt must differ from F_tf: guard_1 changed from true to false"
+    );
+    // F_tt vs F_ft: different because guard_0 changed (true → false) and guard_1 changed (true → true, no wait...)
+    // Actually F_tt: g0=T g1=T; F_ft: g0=F g1=T — guard_0 changed
+    assert_ne!(
+        f_tt, f_ft,
+        "F_tt must differ from F_ft: guard_0 changed from true to false"
+    );
+    // KEY: F_tf vs F_ft — both have one true and one false guard, but WHICH guard holds WHICH value differs.
+    // F_tf: guard_0=Bool(true),  guard_1=Bool(false)
+    // F_ft: guard_0=Bool(false), guard_1=Bool(true)
+    // The "guard:{}={:?}" format includes guard cell ID, so these hash differently.
+    assert_ne!(
+        f_tf, f_ft,
+        "F_tf must differ from F_ft: guard_0 and guard_1 have swapped values; \
+         fingerprint must distinguish which specific guard cell holds which value, \
+         not just the multiset of guard values"
     );
 }

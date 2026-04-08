@@ -12,7 +12,7 @@ use serde_json::json;
 ///
 /// All five "malformed params" tests share this identical assertion triple.
 /// The caller is responsible for constructing `lsp` (uninitialized via
-/// `InProcessLsp::new()` or fully handshook via `initialized_lsp()`).
+/// `InProcessLsp::new()` or fully handshook via `init_lsp()` / `initialized_lsp()`).
 async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str) {
     let result = lsp.handle_request(method, json!(42)).await;
     assert!(
@@ -26,21 +26,30 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
     );
 }
 
-/// Create a fully initialized [`InProcessLsp`] server, ready to receive document
-/// requests and notifications.
-///
-/// Performs the standard two-step LSP handshake:
+/// Perform the standard two-step LSP handshake on an existing [`InProcessLsp`] instance.
 ///
 /// 1. `initialize` — the client advertises its capabilities and receives the
 ///    server's [`InitializeResult`].
 /// 2. `initialized` — the client sends a one-way notification confirming it
-///    has processed the result.  `initialized` is a **notification**, not a
-///    request: the LSP spec does not define a response payload for it.
-///    `handle_request` therefore returns `Ok(Value::Null)` — the sentinel for
-///    a successfully processed notification — rather than a meaningful JSON
-///    object.  The `.expect()` on that call documents the protocol contract
-///    (the notification must not fail), not a guard against a server-level
-///    error.
+///    has processed the result.
+///
+/// Panics if the handshake fails.  Prefer [`initialized_lsp()`] for tests that
+/// only need a ready server; use this helper directly when you need to configure
+/// the instance before or after initialization.
+async fn init_lsp(lsp: &InProcessLsp) {
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("init_lsp: initialize should succeed");
+    lsp.handle_request("initialized", json!({}))
+        .await
+        .expect("init_lsp: initialized should succeed");
+}
+
+/// Create a fully initialized [`InProcessLsp`] server, ready to receive document
+/// requests and notifications.
+///
+/// Delegates to [`init_lsp()`] for the two-step LSP handshake, then returns the
+/// ready server instance.
 ///
 /// Panics if the handshake fails — all tests that need a ready server should
 /// use this helper rather than repeating the setup inline.
@@ -51,13 +60,25 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
 /// handshake overhead when the server state after handshake is irrelevant.
 async fn initialized_lsp() -> InProcessLsp {
     let lsp = InProcessLsp::new();
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialized_lsp: initialize should succeed");
-    lsp.handle_request("initialized", json!({}))
-        .await
-        .expect("initialized_lsp: initialized should succeed");
+    init_lsp(&lsp).await;
     lsp
+}
+
+/// Return the canonical `textDocument/didOpen` params JSON for the bracket
+/// document fixture.
+///
+/// Centralizes the `textDocument` payload used in tests that open
+/// `file:///test.ri` with the bracket source so the URI, languageId,
+/// version, and text never drift across call sites.
+fn open_bracket_doc_params() -> serde_json::Value {
+    json!({
+        "textDocument": {
+            "uri": "file:///test.ri",
+            "languageId": "reify",
+            "version": 1,
+            "text": reify_test_support::bracket_source()
+        }
+    })
 }
 
 /// Regression guard: the set_default guard pattern must capture WARN events when
@@ -114,20 +135,9 @@ async fn did_open_and_completion_returns_items() {
     let lsp = initialized_lsp().await;
 
     // Open a document with bracket source
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    lsp.handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .expect("didOpen should succeed");
 
     // Request completions
     let result = lsp
@@ -155,20 +165,9 @@ async fn did_open_and_completion_returns_items() {
 async fn hover_returns_info_for_known_symbol() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .unwrap();
+    lsp.handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .unwrap();
 
     let result = lsp
         .handle_request(
@@ -243,20 +242,9 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
 async fn goto_definition_returns_location() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .unwrap();
+    lsp.handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .unwrap();
 
     // Position on 'thickness' in a constraint line (line 9, col 15)
     let result = lsp
@@ -396,23 +384,45 @@ async fn initialize_with_invalid_field_type_returns_error() {
 ///
 /// This documents the `Ok(Value::Null)` contract for successfully processed
 /// one-way LSP messages (initialized, didOpen, didChange, didClose).
+///
+/// Uses initialize-only setup (no prior `initialized`) so the `initialized`
+/// notification in the body is the first and only one, directly testing the
+/// first-time Ok(Value::Null) contract.
 #[tokio::test]
 async fn valid_notification_returns_ok_null() {
-    let lsp = initialized_lsp().await;
+    let lsp = InProcessLsp::new();
+    lsp.handle_request("initialize", json!({"capabilities": {}}))
+        .await
+        .expect("initialize should succeed before testing notification");
 
-    // Sending `initialized` again is valid — the server accepts multiple
-    // notifications and returns Ok(Value::Null) each time.
     let result = lsp.handle_request("initialized", json!({})).await;
 
-    assert!(
-        result.is_ok(),
-        "valid notification should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("valid notification should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "valid notification should return exactly Ok(Value::Null)"
+    );
+}
+
+/// A valid `textDocument/didOpen` notification should return exactly `Ok(Value::Null)`.
+///
+/// Documents the `Ok(Value::Null)` contract for the didOpen arm of `handle_request`.
+/// Uses a fully initialized server to match the realistic call-site where
+/// didOpen is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn did_open_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let result = lsp
+        .handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .expect("didOpen should return Ok");
+
+    assert_eq!(
+        result,
+        serde_json::Value::Null,
+        "didOpen should return exactly Ok(Value::Null)"
     );
 }
 
@@ -445,16 +455,30 @@ async fn initialized_with_null_params_returns_ok() {
         .handle_request("initialized", serde_json::Value::Null)
         .await;
 
-    assert!(
-        result.is_ok(),
-        "initialized with null params should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("initialized with null params should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "initialized with null params should return exactly Ok(Value::Null)"
     );
+}
+
+/// Malformed params for `textDocument/didOpen` should return an Err
+/// containing "didOpen params error".
+///
+/// Documents that the didOpen arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// didOpen is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn did_open_with_malformed_params_returns_error() {
+    let lsp = initialized_lsp().await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didOpen",
+        error_prefix::DID_OPEN_PARAMS,
+    )
+    .await;
 }
 
 /// Malformed params for `textDocument/didChange` should return an Err
@@ -482,20 +506,9 @@ async fn did_change_with_malformed_params_returns_error() {
 async fn did_change_returns_ok_null() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    lsp.handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .expect("didOpen should succeed");
 
     let result = lsp
         .handle_request(
@@ -505,7 +518,7 @@ async fn did_change_returns_ok_null() {
                     "uri": "file:///test.ri",
                     "version": 2
                 },
-                "contentChanges": [{ "text": source }]
+                "contentChanges": [{ "text": reify_test_support::bracket_source() }]
             }),
         )
         .await
@@ -543,20 +556,9 @@ async fn did_close_with_malformed_params_returns_error() {
 async fn did_close_returns_ok_null() {
     let lsp = initialized_lsp().await;
 
-    let source = reify_test_support::bracket_source();
-    lsp.handle_request(
-        "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
-    )
-    .await
-    .expect("didOpen should succeed");
+    lsp.handle_request("textDocument/didOpen", open_bracket_doc_params())
+        .await
+        .expect("didOpen should succeed");
 
     let result = lsp
         .handle_request(
@@ -588,13 +590,9 @@ async fn shutdown_returns_ok_null() {
 
     let result = lsp.handle_request("shutdown", json!({})).await;
 
-    assert!(
-        result.is_ok(),
-        "shutdown should return Ok, got: {:?}",
-        result
-    );
+    let val = result.expect("shutdown should return Ok");
     assert_eq!(
-        result.unwrap(),
+        val,
         serde_json::Value::Null,
         "shutdown should return exactly Ok(Value::Null)"
     );

@@ -1613,10 +1613,10 @@ fn assert_poison_recovers<T: Send + 'static>(
     expected_warns: usize,
     message_substring: &str,
 ) -> T {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::catch_unwind;
     let (subscriber, capture) = warn_capturing_subscriber();
     let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(AssertUnwindSafe(action))
+        catch_unwind(action)
     });
     assert!(
         result.is_ok(),
@@ -1626,27 +1626,6 @@ fn assert_poison_recovers<T: Send + 'static>(
     result.unwrap()
 }
 
-/// Simpler variant of [`assert_poison_recovers`] that only checks the WARN
-/// count, without a message-substring assertion.  Use this when multiple locks
-/// may fire (e.g. evaluate() touching both read and write paths) or when the
-/// exact message content is not the focus of the test.
-#[cfg(feature = "test-utils")]
-fn assert_poison_recovers_checked<T: Send + 'static>(
-    action: impl FnOnce() -> T + std::panic::UnwindSafe,
-    expected_warns: usize,
-) -> T {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-    let (subscriber, capture) = warn_capturing_subscriber();
-    let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(AssertUnwindSafe(action))
-    });
-    assert!(
-        result.is_ok(),
-        "action panicked when poison recovery was expected — catch_unwind returned Err"
-    );
-    capture.assert_count(expected_warns);
-    result.unwrap()
-}
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
@@ -2004,6 +1983,25 @@ async fn five_parent_fan_in_one_changed() {
 mod poison_recovery_extended {
     use super::*;
 
+    /// Parameterized helper for the three `tracing_warn_emitted_on_poison_into_result*`
+    /// tests.  Calls `poison_fn` on a freshly-built adapter, then asserts that
+    /// `into_result()` recovers without panic and emits exactly one WARN whose
+    /// message contains `message_substring`.
+    fn assert_into_result_poison_warn(
+        poison_fn: fn(&ConcurrentEvalAdapter),
+        message_substring: &str,
+    ) {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+        poison_fn(&adapter);
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            message_substring,
+        );
+    }
+
     /// Poisons a lock via `$poison_method` (sole-owner path — no Arc guard held),
     /// then delegates to [`assert_poison_recovers`] calling `$action_method` on
     /// `into_result` / `build_result_shared`.  Returns the [`ConcurrentEditResult`]
@@ -2042,9 +2040,10 @@ mod poison_recovery_extended {
             Some(&Value::Real(10.0)),
             "T.b should be Real(10.0) after build_result_shared values poison recovery"
         );
-        assert!(
-            edit_result.values.len() >= 2,
-            "values should have at least T.a and T.b entries"
+        assert_eq!(
+            edit_result.values.len(),
+            2,
+            "values should have exactly T.a and T.b entries"
         );
     }
 
@@ -2133,7 +2132,7 @@ mod poison_recovery_extended {
     /// Message must contain "values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_values, "values RwLock poisoned");
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2141,11 +2140,7 @@ mod poison_recovery_extended {
     /// Message must contain "snapshot_values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        poison_and_recover!(
-            poison_snapshot_values,
-            into_result,
-            "snapshot_values RwLock poisoned"
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_snapshot_values, "snapshot_values RwLock poisoned");
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2153,7 +2148,7 @@ mod poison_recovery_extended {
     /// Message must contain "results Mutex poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_results() {
-        poison_and_recover!(poison_results, into_result, "results Mutex poisoned");
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_results, "results Mutex poisoned");
     }
 }
 

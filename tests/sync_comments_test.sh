@@ -36,7 +36,7 @@ assert_sync_ref_exists() {
     local display_fn="${ref_fn:-<none>}"
     assert \
         "fn ${display_fn} exists in ${tgt_crate}/src/lib.rs (as referenced by SYNC in ${src_crate})" \
-        grep -qE "^(pub )?(fn|async fn) ${ref_fn}\b" "$tgt_file"
+        grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](]' "$tgt_file"
 }
 
 # Verify each SYNC cross-reference points to a real function in the peer crate

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyError, errorMessage } from '../utils/errorClassifier';
+import { errorMessage as canonical } from '@reify/shared-utils';
 
 describe('errorClassifier', () => {
   describe('auth errors', () => {
@@ -95,6 +96,10 @@ describe('errorClassifier', () => {
 
     it('delegates to @reify/shared-utils implementation', () => {
       expect(errorMessage(new Error('x'))).toBe('x');
+    });
+
+    it('is the exact same function reference as @reify/shared-utils', () => {
+      expect(errorMessage).toBe(canonical);
     });
   });
 

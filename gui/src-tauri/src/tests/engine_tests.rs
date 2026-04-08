@@ -1214,6 +1214,18 @@ fn byte_offset_to_line_col_offset_beyond_len() {
     let _ = byte_offset_to_line_col("ab", 100);
 }
 
+#[cfg(not(debug_assertions))]
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len_release() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In release builds, debug_assert is a no-op, so passing an offset beyond
+    // source.len() silently clamps: the loop exhausts all characters and returns
+    // the position after the last character.
+    // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
+    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+}
+
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
     use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
@@ -1262,6 +1274,14 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
     assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
     assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+
+    // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
+    // bracket_source() starts "structure Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 30 (manually verified):
+    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    //   + 10 bytes "    param " → col 11 when 'w' is reached.
+    assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
+    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
 }
 
 #[test]
@@ -1280,6 +1300,10 @@ fn byte_offset_to_line_col_multibyte_chars() {
 
     // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
     assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 1 → mid-codepoint inside α (byte 0xB1 of the 2-byte UTF-8 sequence CE B1).
+    // char_indices only yields valid codepoint boundaries: (0,'α'),(2,'β'),(4,'\n'),(5,'γ').
+    // Offset 1 is not a boundary; the loop processes α (col→2) then sees i=2 ≥ 1 and breaks.
+    assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
     // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
     assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
     // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)

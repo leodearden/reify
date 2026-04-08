@@ -318,6 +318,7 @@ mod tests {
             content_hash: ContentHash(0),
             is_recursive: false,
             annotations: vec![],
+            pragmas: vec![],
         }
     }
 
