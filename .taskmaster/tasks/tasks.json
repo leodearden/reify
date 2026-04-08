@@ -24219,10 +24219,11 @@
         "description": "In crates/reify-eval/src/lib.rs (lines ~3365-3368, 3425-3428), the new `Diagnostic::warning(...)` for a missing required geometry argument has no `SourceSpan` or `DiagnosticLabel` attached. As a result IDEs/CLI surfaces show the warning text but cannot point at the offending op site, making it hard to find which template/realization is producing the warning when many ops are present.\n\n**Fix:** Plumb the op's source span (verify presence on `CompiledGeometryOp` variants in `reify_compiler` — earlier passes attached spans for several other diagnostic kinds) through `compile_geometry_op` and attach via:\n\n```rust\nDiagnostic::warning(format!(...))\n    .with_label(DiagnosticLabel::new(span, \"missing argument\"))\n```\n\nIf no per-op span is available today, add a TODO referencing this task and note what would need to land in `reify_compiler` first.\n\nAdd a regression test that asserts the emitted warning has a non-empty `labels` (or whatever the shape is in `Diagnostic`) when a span is available.\n\n**Source review suggestion:** S4 (diagnostic_quality) from Task 1167 review.\n\nmemory_hints: search \"DiagnosticLabel SourceSpan with_label compile_geometry_op\" entity \"Diagnostic\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:38:57.124Z"
       },
       {
         "id": "1190",
@@ -24256,7 +24257,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:38:56.625Z",
+      "lastModified": "2026-04-08T23:38:57.124Z",
       "taskCount": 1191,
       "completedCount": 873,
       "tags": [
