@@ -21013,11 +21013,11 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs:\n1. Change CompiledExpr::literal(tensor_point, Type::vec3(Type::Real)) to use Type::point3(Type::Real) so the only difference from the valid case is the Value variant, not the type annotation. Add a comment explaining that Undef is expected from the value-kind dispatch, not a type error.\n2. Add gradient_tensor_single_point_param_returns_undef test that calls make_3d_dot_product_gradient_field() (single_point_param=true) and samples with Value::Tensor, asserting Value::Undef — pins the single_point_param path explicitly.\n\nMemory hints: search for \"gradient_tensor_point_returns_undef\" and \"make_3d_dot_product_gradient_field\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:39:49.525Z",
+        "updatedAt": "2026-04-08T21:12:03.788Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -23314,7 +23314,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:12:03.550Z",
+      "lastModified": "2026-04-08T21:12:03.788Z",
       "taskCount": 1135,
       "completedCount": 802,
       "tags": [
