@@ -518,3 +518,28 @@ async fn shutdown_returns_ok_null() {
         "shutdown should return exactly Ok(Value::Null)"
     );
 }
+
+/// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
+/// handshake should not panic and should return `Ok(Value::Null)`.
+///
+/// The `shutdown` match arm in the bridge calls `server.shutdown().await` without
+/// any initialization-state guard, so the pre-handshake path must be safe to call.
+/// This test documents that contract and guards against future regressions such as
+/// a panic or an unexpected error being introduced on this path.
+#[tokio::test]
+async fn shutdown_before_initialize() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp.handle_request("shutdown", json!({})).await;
+
+    assert!(
+        result.is_ok(),
+        "shutdown before initialize should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown before initialize should return exactly Ok(Value::Null)"
+    );
+}
