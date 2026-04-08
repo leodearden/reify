@@ -23069,6 +23069,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1127,
+        "title": "Self keyword test coverage: lambda scope and missing steps",
+        "description": "self_keyword_tests.rs jumps from step-8 to step-11 (steps 9-10 missing). Additionally, there is no test for `self` inside a lambda/closure defined within an entity body. Since `is_entity_scope` is inherited through the scope reference, `self` would resolve inside lambdas — a test should verify whether this is intended behavior or should be rejected.\n\nFix: Add tests for (a) `self` inside inline closures/lambdas within entity scope, and (b) whatever steps 9-10 were meant to cover (or renumber if intentionally skipped).\n\nmemory_hints: search \"self keyword lambda closure scope\" in reify project",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23081,7 +23092,7 @@
       ],
       "created": "2026-04-08T21:06:55.719Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:07:00.902Z"
+      "updated": "2026-04-08T21:07:05.778Z"
     }
   }
 }
