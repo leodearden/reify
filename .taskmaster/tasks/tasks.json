@@ -23363,10 +23363,11 @@
         "description": "Address 4 review suggestions from Task 963's code review, all in concurrent_eval.rs:\n\n1. **Remove dead `assert_poison_recovers_checked` (line 1634):** This helper is defined but never called. Either remove it, or wire it into `tracing_warn_emitted_on_poison_evaluate` (line 2524) which does manual warn capture instead of using a helper. The `_checked` variant (count-only, no message substring) is a natural fit for that test since it uses `>= 2` count semantics.\n\n2. **Remove redundant `AssertUnwindSafe` wrapper (lines 1619, 1641):** Both `assert_poison_recovers` and `assert_poison_recovers_checked` wrap the user-supplied `action` in `AssertUnwindSafe` even though the function signature already requires `UnwindSafe`. The wrapper is redundant — pass `action` directly to `catch_unwind`.\n\n3. **Remove or strengthen redundant assertion (lines 2033-2035):** In `build_result_shared_recovers_from_poisoned_values_lock`, after asserting T.a and T.b have exact values, `assert!(edit_result.values.len() >= 2)` is redundant. Either remove it or strengthen to `assert_eq!(edit_result.values.len(), 2)`.\n\n4. **Reduce duplication in `tracing_warn_emitted_on_poison_into_result*` tests (lines 2162-2210):** The three tests (values, snapshot_values, results) are nearly identical — each creates simple_setup, from_setup, eval_set, poisons one lock, and calls `assert_poison_recovers`. Extract a parameterized helper taking the poison function and expected message as arguments.\n\nmemory_hints: search \"assert_poison_recovers concurrent_eval\" for helper context; get_entity \"Task 963\" for original implementation",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:15:47.718Z"
       },
       {
         "id": "1139",
@@ -23382,7 +23383,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:15:45.229Z",
+      "lastModified": "2026-04-08T21:15:47.720Z",
       "taskCount": 1139,
       "completedCount": 805,
       "tags": [
