@@ -576,6 +576,63 @@ mod tests {
         );
     }
 
+    /// Calling `event()` directly on `WarnCountingSubscriber` with a non-WARN
+    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
+    /// loudly in debug builds rather than silently swallowing the event.
+    ///
+    /// We simulate this by wrapping the subscriber in a `ForcedEventDispatcher`
+    /// whose `enabled()` always returns `true`, causing the tracing framework to
+    /// deliver an ERROR event directly into the inner subscriber's `event()`.
+    /// The `debug_assert_eq!` inside `event()` detects the contract violation
+    /// and panics with a message containing `"enabled() contract violated"`.
+    #[test]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
+        struct ForcedEventDispatcher<S> {
+            inner: S,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for ForcedEventDispatcher<S> {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                // Unconditionally true — bypasses the inner subscriber's filter,
+                // forcing non-WARN events through to inner.event().
+                true
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Forward unconditionally, even for non-WARN events.
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        let (inner, _warn_count) = warn_counting_subscriber();
+        let subscriber = ForcedEventDispatcher { inner };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("non-WARN event delivered directly");
+        });
+    }
+
     /// Two consecutive `new_span` calls on a `CountingSubscriber` must produce
     /// distinct span IDs (regression guard for the Id::from_u64(1) bug).
     #[test]
