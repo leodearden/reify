@@ -22740,15 +22740,16 @@
         "description": "Follow-up from task 961 review (esc-961-773). Four improvements in crates/reify-constraints/src/solvespace.rs:\n\n1. **Fix doc comment entity count** (L638-640): The comment says \"between 3 (one shared endpoint: 3 points + 2 lines)\" but 3 points + 2 lines = 5, not 3. Either change to \"between 3 (all four corners identical: 1 point + 2 lines) and 6 (all distinct: 4 points + 2 lines)\" or \"between 5 (one shared endpoint: 3 points + 2 lines) and 6 (...)\".\n\n2. **Extract test helper** (L1567-1905): The six new tests share ~15 lines of LineRef/PointRef::Fixed boilerplate. Add a `fixed_line(x0, y0, z0, x1, y1, z1) -> LineRef` helper to reduce duplication and clarify test intent.\n\n3. **Remove redundant test** (L1838-1848, `add_line_pair_returns_named_struct`): This test is redundant with `add_line_pair_creates_distinct_line_entities` (L1284) which already exercises named field access (`entities.line_a` / `entities.line_b`). Remove it or add a comment explaining why it exists.\n\n4. **Tighten partial-mutation assert** (L1731): Change `assert!(builder.point_entities.len() >= 2, ...)` to `assert_eq!(builder.point_entities.len(), 2, ...)` since exactly 2 line_a points should exist (no rollback, no line_b points).\n\nmemory_hints: search \"add_line_pair dedup PointKey solvespace\" for implementation context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:41:37.402Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:41:36.757Z",
+      "lastModified": "2026-04-08T20:41:37.406Z",
       "taskCount": 1107,
       "completedCount": 779,
       "tags": [
