@@ -189,7 +189,6 @@ fn self_in_constraint_compiles() {
 // ─── step-5: bare self as entity reference ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn bare_self_as_entity_reference() {
     // Bare `self` (without `.member`) should resolve to the enclosing entity
     // as a StructureRef type. `let me = self` captures the entity itself.
