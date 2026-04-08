@@ -108,7 +108,6 @@ impl CompiledFieldBuilder {
 mod annotation_tests {
     use super::*;
     use crate::builders::{annotation, annotation_with_args, ann_str};
-    use reify_types::Value;
 
     #[test]
     fn compiled_field_builder_single_annotation() {
@@ -141,7 +140,6 @@ mod annotation_tests {
 
     #[test]
     fn compiled_field_builder_annotation_does_not_affect_content_hash() {
-        use reify_types::ContentHash;
         let f1 = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
             .imported()
             .build();

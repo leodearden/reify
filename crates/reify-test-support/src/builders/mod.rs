@@ -112,7 +112,7 @@ mod reexport_contract_tests {
         // Annotation helpers
         let _ = ann_str("hello");
         let _ = ann_int(42);
-        let _ = ann_real(3.14);
+        let _ = ann_real(2.5);
         let _ = ann_bool(true);
         let _ = ann_ident("foo");
         let ann = annotation("test");

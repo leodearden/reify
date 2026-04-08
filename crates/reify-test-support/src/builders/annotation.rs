@@ -61,8 +61,8 @@ mod tests {
 
     #[test]
     fn ann_real_produces_real_arg() {
-        let arg = ann_real(3.14);
-        assert_eq!(arg, AnnotationArg::Real(3.14));
+        let arg = ann_real(2.5);
+        assert_eq!(arg, AnnotationArg::Real(2.5));
     }
 
     #[test]
