@@ -854,6 +854,14 @@ fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
     // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
+    //
+    // Design decision: the two assertions below enforce a semantic (not syntactic) invariant:
+    //   (1) errors must not be silently discarded (no `let _ = set_permissions`)
+    //   (2) errors must be logged via eprintln!
+    // Any equivalent error-handling form is acceptable — `if let Err(e) = ...`,
+    // `match { Err(e) => eprintln!(...), ... }`, `.map_err(|e| eprintln!(...))`, etc.
+    // Do NOT add assertions that enforce a specific syntactic form; see
+    // `test_drop_logs_error_check_is_form_agnostic` for the enforcement of this rule.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file");
 
@@ -871,7 +879,8 @@ fn test_readonly_guard_drop_logs_error() {
     assert!(
         !drop_impl.contains("let _ = std::fs::set_permissions"),
         "ReadonlyGuard::drop must NOT silently discard set_permissions errors with `let _ =`. \
-         Use `if let Err(e) = ... {{ eprintln!(...) }}` instead. \
+         Use `if let Err(e) = ... {{ eprintln!(...) }}` or an equivalent `match` form \
+         that logs the error instead. \
          Found in Drop impl:\n{}",
         drop_impl
     );
