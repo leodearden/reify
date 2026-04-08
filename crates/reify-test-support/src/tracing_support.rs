@@ -262,10 +262,9 @@ mod tests {
         }
 
         // ── test body ───────────────────────────────────────────────────────
-        let warn_count = Arc::new(AtomicUsize::new(0));
+        let (inner, warn_count) = warn_counting_subscriber();
         let dispatch_count = Arc::new(AtomicUsize::new(0));
 
-        let inner = super::WarnCountingSubscriber::new(Arc::clone(&warn_count));
         let subscriber = EventDispatchCounter {
             inner,
             dispatch_count: Arc::clone(&dispatch_count),
