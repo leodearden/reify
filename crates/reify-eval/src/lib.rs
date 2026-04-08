@@ -4492,6 +4492,25 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_extrude_near_zero_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with a near-zero (1e-15 m) distance — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(1e-15))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        assert!(
+            result.is_none(),
+            "near-zero extrude distance should return None"
+        );
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_zero_axis_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
