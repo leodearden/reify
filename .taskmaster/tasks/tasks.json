@@ -22480,6 +22480,20 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1094,
+        "title": "Resolve Content Hash Collision Between Value::Point and Value::Matrix",
+        "description": "Fix the content hash tag-byte collision between Value::Point and Value::Matrix in reify-types.",
+        "details": "To resolve the collision, change the tag byte for `Value::Matrix` from `[18]` to a unique value, such as `[25]`. Audit all `ContentHash::of(&[N])` calls in `content_hash()` to ensure no other collisions exist. Update the inline comment on the Matrix branch to reflect the new tag. Implement a regression test `content_hash_tags_are_unique_across_variants` in the test module of `crates/reify-types/src/value.rs`. This test should construct instances of each `Value` variant, collect their `content_hash()` values, and assert their uniqueness using a `HashSet`. Additionally, check for persistence implications by searching for `content_hash()` usage in caching or storage contexts. If persistence is affected, coordinate a cache-busting release or consider changing the Point tag instead, based on which variant is less critical in storage.",
+        "testStrategy": "Run `cargo test -p reify-types` to ensure all tests pass, including the new regression test. Verify that the regression test correctly asserts the uniqueness of content hashes across variants. Use `rg 'content_hash\\(\\)' crates/ --type rust | grep -iE 'cache|store|persist|db|disk'` to identify any persistence-related code that may be affected by the tag change.",
+        "status": "pending",
+        "dependencies": [
+          8,
+          914
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22492,7 +22506,7 @@
       ],
       "created": "2026-04-08T17:20:40.111Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T17:21:35.871Z"
+      "updated": "2026-04-08T17:21:56.782Z"
     }
   }
 }
