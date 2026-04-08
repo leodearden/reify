@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 
-use crate::diff::{StateDelta, delta_to_events, diff_gui_state};
+use crate::diff::{StateDelta, delta_to_events, diff_gui_state, try_serialize_event};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
@@ -481,5 +481,42 @@ fn delta_to_events_multiple_failures_warn_for_each() {
     assert!(
         events.iter().all(|(n, _)| n != "mesh-update"),
         "no mesh-update events should be emitted when all meshes failed serialization"
+    );
+}
+
+/// try_serialize_event: on Ok, a single (event_name, val) tuple is pushed.
+#[test]
+fn try_serialize_event_pushes_update_on_ok() {
+    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
+    let val = serde_json::json!({"x": 1});
+    try_serialize_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
+    assert_eq!(events.len(), 1, "expected exactly one event");
+    assert_eq!(events[0].0, "mesh-update");
+    assert_eq!(events[0].1, val);
+}
+
+/// try_serialize_event: on Err, emits exactly one warn! and pushes a
+/// serialization-error event with the correct item_type, item_id, and error fields.
+#[test]
+fn try_serialize_event_pushes_error_and_warns_on_err() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+    let err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
+    tracing::subscriber::with_default(subscriber, || {
+        try_serialize_event(&mut events, "value-update", "value", "V.x", Err(err));
+    });
+    assert_eq!(
+        warn_count.load(Ordering::Relaxed),
+        1,
+        "expected exactly 1 warn"
+    );
+    assert_eq!(events.len(), 1, "expected exactly one serialization-error event");
+    let (name, payload) = &events[0];
+    assert_eq!(name, "serialization-error");
+    assert_eq!(payload["item_type"], "value", "item_type must be \"value\"");
+    assert_eq!(payload["item_id"], "V.x", "item_id must be \"V.x\"");
+    assert!(
+        payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
+        "error must be a non-empty string"
     );
 }

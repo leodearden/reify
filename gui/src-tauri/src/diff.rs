@@ -218,6 +218,36 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
     events
 }
 
+/// Push a serialized event onto `events`, or a structured error event on failure.
+///
+/// On `Ok(val)`: pushes `(event_name, val)`.
+/// On `Err(err)`: emits a `warn!` and pushes a `"serialization-error"` event
+/// with `item_type`, `item_id`, and `error` fields.
+///
+/// `pub(crate)` so the test module in `src/tests/` can unit-test it directly.
+pub(crate) fn try_serialize_event(
+    events: &mut Vec<(String, serde_json::Value)>,
+    event_name: &str,
+    item_type: &str,
+    item_id: &str,
+    result: Result<serde_json::Value, serde_json::Error>,
+) {
+    match result {
+        Ok(val) => events.push((event_name.to_string(), val)),
+        Err(err) => {
+            warn!("failed to serialize {item_type} {item_id}: {err}");
+            events.push((
+                "serialization-error".to_string(),
+                serde_json::json!({
+                    "item_type": item_type,
+                    "item_id": item_id,
+                    "error": err.to_string(),
+                }),
+            ));
+        }
+    }
+}
+
 /// Compute a delta against the last known state, then store the new state.
 ///
 /// If `last_state` is `None` (first call), returns a full delta.
