@@ -2207,4 +2207,22 @@ describe('App serialization-error subscription', () => {
 
     expect(serializationErrorUnsub).toHaveBeenCalled();
   });
+
+  it('shows fallback toast when onSerializationError rejects', async () => {
+    vi.mocked(bridge.onSerializationError).mockRejectedValueOnce(new Error('listen failed'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const errorToast = toasts.find((t) =>
+        t.textContent?.includes('Serialization error monitoring unavailable'),
+      );
+      expect(errorToast).toBeTruthy();
+    });
+  });
 });
