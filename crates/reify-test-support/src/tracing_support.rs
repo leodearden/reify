@@ -52,6 +52,36 @@ pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) 
     assert_warn_count_delta(counter, 0, expected, context);
 }
 
+/// Install a WARN-counting subscriber as the thread-default and return a RAII
+/// guard alongside the shared counter.
+///
+/// This is a convenience wrapper around [`warn_counting_subscriber`] and
+/// [`tracing::subscriber::set_default`] for tests that need a persistent
+/// thread-default rather than a scoped `with_default` block — in particular
+/// async tests on a `current_thread` runtime, where the entire test body
+/// runs on one thread but cannot be wrapped by `with_default`.
+///
+/// # Returns
+///
+/// A `(guard, counter)` pair where:
+/// - `guard` is a [`tracing::subscriber::DefaultGuard`].  When it drops, the
+///   subscriber is removed and the previous default (if any) is restored.
+/// - `counter` is the `Arc<AtomicUsize>` shared with the subscriber; loads
+///   with `Ordering::Acquire` observe all WARN increments.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (_guard, counter) = warn_counting_guard();
+/// tracing::warn!("oops");
+/// assert_warn_count(&counter, 1, "must count the warning");
+/// ```
+pub fn warn_counting_guard() -> (tracing::subscriber::DefaultGuard, Arc<AtomicUsize>) {
+    let (subscriber, counter) = warn_counting_subscriber();
+    let guard = tracing::subscriber::set_default(subscriber);
+    (guard, counter)
+}
+
 /// Build a minimal [`tracing::Subscriber`] that counts WARN-level events.
 ///
 /// Returns a `(subscriber, counter)` pair.  The `counter` is shared via
