@@ -1167,7 +1167,7 @@ fn test_self_read_paths_use_manifest_dir() {
         extract_test_fn_body(&source, "fn test_unix_permission_tests_have_root_guard()")
             .expect("source should contain test_unix_permission_tests_have_root_guard");
     assert!(
-        root_guard_body.contains("THIS_FILE"),
+        root_guard_body.contains("(THIS_FILE)"),
         "test_unix_permission_tests_have_root_guard must read the test file via \
          THIS_FILE rather than a bare relative path. Function body:\n{}",
         root_guard_body
@@ -1178,7 +1178,7 @@ fn test_self_read_paths_use_manifest_dir() {
         extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
             .expect("source should contain test_readonly_guard_drop_logs_error");
     assert!(
-        drop_logs_body.contains("THIS_FILE"),
+        drop_logs_body.contains("(THIS_FILE)"),
         "test_readonly_guard_drop_logs_error must read the test file via \
          THIS_FILE rather than a bare relative path. Function body:\n{}",
         drop_logs_body
@@ -1189,7 +1189,7 @@ fn test_self_read_paths_use_manifest_dir() {
         extract_test_fn_body(&source, "fn test_is_root_uses_libc_not_raw_ffi()")
             .expect("source should contain test_is_root_uses_libc_not_raw_ffi");
     assert!(
-        is_root_body.contains("THIS_FILE"),
+        is_root_body.contains("(THIS_FILE)"),
         "test_is_root_uses_libc_not_raw_ffi must read the test file via \
          THIS_FILE rather than a bare relative path. Function body:\n{}",
         is_root_body
