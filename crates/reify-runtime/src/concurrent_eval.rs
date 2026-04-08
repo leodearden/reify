@@ -18,6 +18,14 @@
 //! graceful recovery, one panicking task would cascade to every concurrent task
 //! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
 //! just the faulting node.
+//!
+//! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
+//! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
+//! `write_snapshot_values()`, and `lock_results()` — which encapsulate the `unwrap_or_else` +
+//! `tracing::warn!` + `into_inner()` recovery pattern. The exception is methods that consume
+//! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
+//! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
+//! the receiver; see `into_result()`'s doc comment for the full rationale.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
