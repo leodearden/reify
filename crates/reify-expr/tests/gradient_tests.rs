@@ -3248,15 +3248,18 @@ fn gradient_tensor_single_point_param_returns_undef() {
 
 // ── Step-7: Decomposed calling convention ─────────────────────────────
 
-/// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
+/// Helper to build a gradient field for a 3D decomposed-param lambda |x,y,z| x + 2*y + 3*z.
 ///
-/// Uses the decomposed calling convention (single_point_param=false, params.len()==3==n)
-/// with work_coords reuse. Samples at Point3(5,7,11); since the function is linear
-/// the gradient is constant: [1.0, 2.0, 3.0].
+/// Returns:
+/// - `grad_result`: the `Value::Field` returned by `eval_expr(gradient(...))`.
+/// - `domain_type`: `Type::point3(Type::Real)`
+/// - `grad_codomain_type`: `Type::vec3(Type::Real)`
 ///
-/// Complements gradient_3d_field_single_point_param (which uses single_point_param=true).
-#[test]
-fn gradient_decomposed_n3_dimensionless() {
+/// Used by tests that share this decomposed-lambda setup:
+/// `gradient_decomposed_n3_dimensionless`,
+/// `gradient_decomposed_nan_returns_undef`,
+/// `gradient_decomposed_inf_returns_undef`.
+fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -3322,16 +3325,31 @@ fn gradient_decomposed_n3_dimensionless() {
 
     assert!(
         matches!(&grad_result, Value::Field { .. }),
-        "gradient of 3D decomposed field should return a Field, got {:?}",
+        "make_decomposed_n3_gradient_field: gradient should return a Field, got {:?}",
         grad_result
     );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
+/// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
+///
+/// Uses the decomposed calling convention (single_point_param=false, params.len()==3==n)
+/// with work_coords reuse. Samples at Point3(5,7,11); since the function is linear
+/// the gradient is constant: [1.0, 2.0, 3.0].
+///
+/// Complements gradient_3d_field_single_point_param (which uses single_point_param=true).
+#[test]
+fn gradient_decomposed_n3_dimensionless() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
 
     // Sample at Point3(5.0, 7.0, 11.0) — linear function so gradient is constant
     let point = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(grad_codomain_type),
     };
 
     let sample_expr = make_function_call(
