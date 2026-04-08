@@ -2257,6 +2257,50 @@ mod tests {
         assert!(mass_neg < length_neg);
     }
 
+    #[test]
+    fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
+        // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
+        // for the Scalar variant's bit-identity edge cases.
+
+        // --- neg-zero vs pos-zero ---
+        let pos_zero = Value::Scalar {
+            si_value: 0.0_f64,
+            dimension: DimensionVector::LENGTH,
+        };
+        let neg_zero = Value::Scalar {
+            si_value: -0.0_f64,
+            dimension: DimensionVector::LENGTH,
+        };
+        // PartialEq uses to_bits(): -0.0 and +0.0 have different bit patterns → not equal.
+        assert_ne!(pos_zero, neg_zero);
+        // Ord must agree: since they're not equal, cmp must not be Equal.
+        assert_ne!(pos_zero.cmp(&neg_zero), std::cmp::Ordering::Equal);
+        // Antisymmetry check (mirrors value_ord_real_negative_zero pattern).
+        assert_eq!(pos_zero.cmp(&neg_zero), neg_zero.cmp(&pos_zero).reverse());
+        // IEEE 754 totalOrder: -0.0 < +0.0.
+        assert!(neg_zero < pos_zero);
+
+        // --- NaN self-equality ---
+        let nan_a = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let nan_b = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        // PartialEq uses to_bits(): identical NaN bit patterns → equal.
+        assert_eq!(nan_a, nan_b);
+        // Ord must agree: cmp returns Equal for equal values.
+        assert_eq!(nan_a.cmp(&nan_b), std::cmp::Ordering::Equal);
+        // IEEE 754 totalOrder: NaN sorts strictly after +Infinity.
+        let inf = Value::Scalar {
+            si_value: f64::INFINITY,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert!(nan_a > inf);
+    }
+
     // --- Option tests (step-11) ---
 
     #[test]
