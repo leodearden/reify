@@ -683,13 +683,16 @@ describe('.catch() error handler', () => {
       dispatch: vi.fn().mockImplementation(() => { throw dispatchError; }),
     });
 
-    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
       // .catch() should log a warning — proving it covers dispatch(), not just doc.line()
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', dispatchError);
       // dispatch WAS called (it just threw)
       expect(mockView.dispatch).toHaveBeenCalled();
-    });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
