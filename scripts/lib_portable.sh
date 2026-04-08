@@ -76,6 +76,13 @@ portable_timeout() {
         "$@" &
         local cmd_pid=$!
 
+        # Save caller's monitor-mode state so we can restore it after temporarily
+        # enabling job control (set -m) to place the timer subshell in its own
+        # process group.  Without this save/restore, portable_timeout silently
+        # disables the caller's job control when they had set -m active.
+        local _pt_had_monitor=0
+        case $- in *m*) _pt_had_monitor=1 ;; esac
+
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
             rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
@@ -95,7 +102,7 @@ portable_timeout() {
                 sleep 2
                 kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
               } ) &
-            set +m 2>/dev/null || true
+            [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
@@ -105,7 +112,7 @@ portable_timeout() {
                 sleep 2
                 kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
               } ) &
-            set +m 2>/dev/null || true
+            [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         fi
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
