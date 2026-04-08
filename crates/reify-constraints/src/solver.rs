@@ -709,6 +709,43 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     }
 }
 
+/// Compare two solution maps across the given auto params.
+///
+/// Returns `true` if every param value in `solved_values` and
+/// `perturbed_values` matches within the project tolerance constants.
+/// Currently uses `unwrap_or(0.0)` for missing/non-numeric values —
+/// this is intentionally preserved here and fixed in a subsequent step.
+fn solutions_agree(
+    auto_params: &[AutoParam],
+    solved_values: &HashMap<ValueCellId, Value>,
+    perturbed_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    for param in auto_params {
+        let s1 = solved_values
+            .get(&param.id)
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let s2 = perturbed_values
+            .get(&param.id)
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let diff = (s1 - s2).abs();
+        let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
+        if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
+            tracing::debug!(
+                param = %param.id,
+                s1,
+                s2,
+                diff,
+                "uniqueness check failed: solutions differ"
+            );
+            return false;
+        }
+    }
+    tracing::debug!("uniqueness check passed: perturbed solution matches");
+    true
+}
+
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
 ///
 /// Creates a perturbed initial point by reflecting each parameter to the
@@ -756,30 +793,7 @@ fn verify_uniqueness(
             ..
         } => {
             // Compare solutions: all params must match within tolerance
-            for param in &problem.auto_params {
-                let s1 = solved_values
-                    .get(&param.id)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let s2 = perturbed_values
-                    .get(&param.id)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let diff = (s1 - s2).abs();
-                let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
-                if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
-                    tracing::debug!(
-                        param = %param.id,
-                        s1,
-                        s2,
-                        diff,
-                        "uniqueness check failed: solutions differ"
-                    );
-                    return false;
-                }
-            }
-            tracing::debug!("uniqueness check passed: perturbed solution matches");
-            true
+            solutions_agree(&problem.auto_params, solved_values, &perturbed_values)
         }
         _ => {
             // If the perturbed solve fails (Infeasible/NoProgress), we can't
