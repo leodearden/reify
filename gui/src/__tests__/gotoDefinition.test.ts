@@ -200,8 +200,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
     const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -211,9 +210,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
       // Guard fires before doc.line(); no warn should be logged
       expect(lineSpy).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('does not call onNavigate when LSP character is negative (malformed response)', async () => {
@@ -239,8 +236,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
     const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -250,9 +246,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
       // Guard fires before doc.line(); no warn should be logged
       expect(lineSpy).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('does not call onNavigate when LSP line is NaN (non-integer cross-file)', async () => {
@@ -277,8 +271,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
     const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -286,9 +279,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
       expect(onNavigate).not.toHaveBeenCalled();
       expect(lineSpy).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('does not call onNavigate when LSP character is NaN (non-integer cross-file)', async () => {
@@ -311,8 +302,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
     const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -320,9 +310,7 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
       expect(onNavigate).not.toHaveBeenCalled();
       expect(lineSpy).not.toHaveBeenCalled();
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it.each([
@@ -503,8 +491,7 @@ describe('line-bounds guard', () => {
       state: { doc: { line: () => { throw new RangeError('line out of range'); } } },
     });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -512,9 +499,7 @@ describe('line-bounds guard', () => {
       expect(mockView.dispatch).not.toHaveBeenCalled();
       // The guard fires before doc.line(), so no warning should be logged
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('does not dispatch when LSP line is NaN (non-integer)', async () => {
@@ -540,8 +525,7 @@ describe('line-bounds guard', () => {
       state: { doc: { line: () => { throw new RangeError('line out of range'); } } },
     });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -549,9 +533,7 @@ describe('line-bounds guard', () => {
       expect(mockView.dispatch).not.toHaveBeenCalled();
       // The guard fires before doc.line(), so no warning should be logged
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('dispatches when LSP line is exactly at document boundary (start.line=4, doc.lines=5)', async () => {
