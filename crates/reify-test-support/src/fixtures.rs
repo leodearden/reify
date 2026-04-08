@@ -4,7 +4,8 @@ use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, T
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-    TopologyTemplateBuilder, TraitDefBuilder, range_constraint,
+    TopologyTemplateBuilder, TraitDefBuilder, ann_str, annotation, annotation_with_args,
+    range_constraint,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -827,6 +828,39 @@ pub fn mutual_recursion_module() -> CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("mutual_recursion"))
         .template(node_a)
         .template(node_b)
+        .build()
+}
+
+/// Return a `CompiledModule` covering all four annotation-capable entity kinds.
+///
+/// - Trait `"Rigid"` with `@deprecated("use Rigid2")` annotation
+/// - Template `"Bolt"` with `@test` and `@optimized` annotations (no args)
+/// - Field `"temp"` (Geometry → Real, imported) with `@deprecated` annotation
+/// - Purpose `"mfg_ready"` with `@solver_hint` annotation
+pub fn annotated_module() -> CompiledModule {
+    let rigid_trait = CompiledTraitBuilder::new("Rigid")
+        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .build();
+
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .annotation(annotation("test"))
+        .annotation(annotation("optimized"))
+        .build();
+
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        .imported()
+        .annotation(annotation("deprecated"))
+        .build();
+
+    let purpose = CompiledPurposeBuilder::new("mfg_ready")
+        .annotation(annotation("solver_hint"))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
+        .trait_def(rigid_trait)
+        .template(bolt_template)
+        .field(temp_field)
+        .compiled_purpose(purpose)
         .build()
 }
 

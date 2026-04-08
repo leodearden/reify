@@ -100,4 +100,51 @@ mod reexport_contract_tests {
         let _ = CompiledPurposeBuilder::new("p").build();
         let _ = CompiledModuleBuilder::new(reify_types::ModulePath::new(vec!["t".into()])).build();
     }
+
+    #[test]
+    fn annotation_and_pragma_helpers_accessible_via_module_path() {
+        use crate::builders::{
+            ann_bool, ann_ident, ann_int, ann_real, ann_str, annotation, annotation_with_args,
+            field_literal_expr, laplacian_call, pragma, pragma_bare, pragma_bool, pragma_ident,
+            pragma_kv, pragma_number, pragma_string, pragma_with_args,
+        };
+
+        // Annotation helpers
+        let _ = ann_str("hello");
+        let _ = ann_int(42);
+        let _ = ann_real(3.14);
+        let _ = ann_bool(true);
+        let _ = ann_ident("foo");
+        let ann = annotation("test");
+        let _ = annotation_with_args("deprecated", vec![ann_str("use Foo")]);
+
+        // Pragma helpers
+        let _ = pragma_ident("opt_level");
+        let _ = pragma_number(2.0);
+        let _ = pragma_string("hello");
+        let _ = pragma_bool(true);
+        let _ = pragma_kv("level", pragma_number(2.0));
+        let _ = pragma_bare(pragma_ident("opt"));
+        let _ = pragma("inline");
+        let _ = pragma_with_args("cfg", vec![pragma_bare(pragma_ident("test"))]);
+
+        // Annotation methods on builders (compile-time check)
+        let _ = TopologyTemplateBuilder::new("T").annotation(ann.clone()).build();
+        let _ = TraitDefBuilder::new("T").annotation(ann.clone()).build();
+        let _ = CompiledTraitBuilder::new("T").annotation(ann.clone()).build();
+        let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::Real)
+            .imported()
+            .annotation(ann.clone())
+            .build();
+        let _ = CompiledPurposeBuilder::new("p").annotation(ann.clone()).build();
+
+        // Field expr helpers
+        let field_expr = field_literal_expr(
+            Type::Geometry,
+            Type::Real,
+            reify_types::FieldSourceKind::Analytical,
+            Value::Bool(false),
+        );
+        let _ = laplacian_call(field_expr, Type::Real);
+    }
 }
