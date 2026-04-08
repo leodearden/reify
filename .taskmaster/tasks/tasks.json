@@ -21152,7 +21152,7 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: Extract an async helper `assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str, fragment: &str)` that encapsulates the triple `assert!(result.is_err()) / result.unwrap_err() / assert!(err.contains(fragment))`. Five tests (`initialize_with_malformed_params_returns_error`, `notification_with_malformed_params_returns_error`, `initialized_with_malformed_params_returns_error`, `did_change_with_malformed_params_returns_error`, `did_close_with_malformed_params_returns_error`) all repeat this identical structure — a single format-string change in bridge.rs currently requires 5 edits.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21163,7 +21163,8 @@
           "modules": [
             "crates/reify-lsp/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T20:54:24.653Z"
       },
       {
         "id": "1020",
@@ -22943,7 +22944,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:54:24.282Z",
+      "lastModified": "2026-04-08T20:54:24.654Z",
       "taskCount": 1117,
       "completedCount": 789,
       "tags": [
