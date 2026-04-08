@@ -6080,7 +6080,7 @@
           "301",
           "302"
         ],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
@@ -6088,7 +6088,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-25T01:25:44.834Z"
+        "updatedAt": "2026-04-08T13:55:38.532Z"
       },
       {
         "id": "314",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:37.819Z",
+      "lastModified": "2026-04-08T13:55:38.532Z",
       "taskCount": 1082,
-      "completedCount": 749,
+      "completedCount": 748,
       "tags": [
         "master"
       ]
