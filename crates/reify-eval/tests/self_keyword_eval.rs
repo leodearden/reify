@@ -123,14 +123,14 @@ fn self_in_let_arithmetic_eval() {
         .expect("sum should be in eval result");
 
     match sum_val {
-        Value::Real(v) => {
+        Value::Scalar { si_value: v, .. } => {
             assert!(
                 (v - 0.010).abs() < 1e-9,
                 "sum should be 0.010 (10mm SI), got {}",
                 v
             );
         }
-        _ => panic!("expected Real value for sum, got {:?}", sum_val),
+        _ => panic!("expected Scalar value for sum, got {:?}", sum_val),
     }
 }
 
@@ -170,14 +170,14 @@ fn self_in_constraint_eval_satisfied() {
         .get(&x_id)
         .expect("x should be in check result");
     match x_val {
-        Value::Real(v) => {
+        Value::Scalar { si_value: v, .. } => {
             assert!(
                 (v - 0.005).abs() < 1e-9,
                 "x should be 0.005 (5mm SI), got {}",
                 v
             );
         }
-        _ => panic!("expected Real value for x, got {:?}", x_val),
+        _ => panic!("expected Scalar value for x, got {:?}", x_val),
     }
 }
 
