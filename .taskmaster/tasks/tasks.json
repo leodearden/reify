@@ -21336,13 +21336,13 @@
         "description": "Three targeted fixes in gui/sidecar/src/__tests__/utils.test.ts:\n\n1. Split the 'falls through to String() for plain object with non-string .message' test (currently lines 46-49) into separate it-blocks for null and numeric values, each with a comment explaining that the entire err object — not the .message value — is passed to String() (suggestion [2]).\n\n2. Add an `{ message: undefined }` assertion to the non-string .message coverage (suggestion [6]).\n\n3. Remove the standalone 'falls through to String() for bare object' test at lines 55-57 — it duplicates the '{ key: \"val\" }' case at line 22 (suggestion [7]).\n\nNote: if the behavior fix task (suggestion [9] — return 'Unknown error' for non-string .message) is implemented first, update the expected values from '[object Object]' to 'Unknown error' in the split tests.\n\nMemory hints: search for \"errorMessage test coverage\" and \"sidecar test structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1028"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:12.302Z",
+        "updatedAt": "2026-04-08T10:56:46.023Z",
         "metadata": {
           "files": [
             "gui/sidecar/src/__tests__/utils.test.ts"
@@ -21766,7 +21766,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:56:44.599Z",
+      "lastModified": "2026-04-08T10:56:46.023Z",
       "taskCount": 1055,
       "completedCount": 743,
       "tags": [
