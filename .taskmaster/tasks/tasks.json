@@ -7328,11 +7328,11 @@
         "description": "All pragma-lowering methods take &self not &mut self; failures return None silently with no diagnostic. Change to &mut self and push ParseError on failure. Fix f64 parse failure silently dropping entire pragma arg (ts_parser.rs:757-759). Fix malformed string literal falling back to raw text including quote char (ts_parser.rs:762-768). Add PartialEq to Pragma and PragmaArg (enables duplicate-pragma checking).\n\nMissing tests:\n- Bare(Number), Bare(String), Bare(Bool) pragma arg variants\n- Multiple pragmas in a single block\n- Pragma placed after other members (interleaved ordering)\n\nMemory hints: search \"lower_pragma ParseError pragma arg parse\", entities: lower_pragma, PragmaValue, PragmaArg",
         "details": "<info added on 2026-03-27T14:08:51.686Z>\nRECONCILIATION NOTE: This task has bounced between pending and in-progress 11+ times. Root cause identified: worktree corruption — the task-216 plan was loaded into the task-369 worktree in a prior session, causing the agent to work on the wrong task. Each subsequent orchestrator attempt picks it up, discovers the mismatch, and resets it. The worktree needs to be cleaned/recreated before this task can make progress.\n</info added on 2026-03-27T14:08:51.686Z>\n<info added on 2026-03-27T14:21:27.249Z>\nBLOCKED: Worktree corruption prevents progress. The task-216 plan was loaded into the task-369 worktree in a prior session, causing agents to work on the wrong task. Each orchestrator attempt picks it up, discovers the mismatch, and resets (11+ bounces). Human action needed: delete/recreate the worktree for task 369, then set status back to pending.\n</info added on 2026-03-27T14:21:27.249Z>\n<info added on 2026-04-07T13:54:18.483Z>\nCorrection: The prior worktree-corruption diagnosis was incorrect. Independent investigation by the architect (esc-369-8) and re-verified by the steward on 2026-04-07 confirms that the worktree is clean and matches base_commit 0932637fe. The actual root cause is that the entire Pragma framework (Pragma struct, PragmaArg/PragmaValue enums, lower_pragma method, grammar.js pragma rule, tests/pragma_tests.rs) was deleted from the codebase in commit c88ca9635 (2026-03-25) and was never restored. Pragma is also absent from main. Therefore, the file/line references in this task description (ts_parser.rs:757-759, :762-768) point at unrelated code (lower_unit/lower_type_alias). Task is blocked pending human decision: (a) cancel as obsolete, (b) re-scope to re-implement Pragma framework, or (c) restore Pragma framework first. See esc-369-11 (steward→human).\n</info added on 2026-04-07T13:54:18.483Z>",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:40.944Z",
+        "updatedAt": "2026-04-08T17:19:02.339Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -22403,7 +22403,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:19:01.638Z",
+      "lastModified": "2026-04-08T17:19:02.342Z",
       "taskCount": 1087,
       "completedCount": 752,
       "tags": [
