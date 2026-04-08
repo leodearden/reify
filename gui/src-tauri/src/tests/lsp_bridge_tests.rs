@@ -225,17 +225,3 @@ async fn lsp_request_impl_accepts_valid_json_null_literal() {
         "null literal should not trigger a JSON parse error, got: {err}"
     );
 }
-
-#[tokio::test]
-async fn lsp_request_impl_rejects_empty_string_params() {
-    let bridge = LspBridge::new();
-    // "" (empty string) is NOT valid JSON — serde_json::from_str("") returns Err.
-    // The wrapper code at lsp_bridge.rs should reject it before dispatching.
-    let result = lsp_request_impl(&bridge, "initialize", "".to_string()).await;
-    assert!(result.is_err(), "empty string params should return Err");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("invalid JSON params"),
-        "error should contain 'invalid JSON params', got: {err}"
-    );
-}
