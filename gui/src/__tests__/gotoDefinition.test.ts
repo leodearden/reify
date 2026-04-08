@@ -618,7 +618,7 @@ describe('character-bounds guard', () => {
   });
 });
 
-describe('.catch() error handler', () => {
+describe('error recovery', () => {
   it('logs a warning when doc.line() throws RangeError (no unhandled rejection)', async () => {
     const currentUri = 'file:///current.ri';
     // Same-file response so the code reaches doc.line()
