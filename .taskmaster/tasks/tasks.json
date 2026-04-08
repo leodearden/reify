@@ -21798,11 +21798,11 @@
         "description": "Follow-up from Task 1034 review triage (esc-1034-4, suggestions S1, S2, S4). The bounds-check work done in Task 1034 left three gaps in `gui/src/editor/gotoDefinition.ts`:\n\n1. **S1 — Negative character guard (same-file branch, line 117):** The character guard rejects `character > lineLength` but not negative values. A malformed LSP response with `character: -1` passes the guard and yields `targetPos = targetLine.from - 1`, placing the cursor one code unit before the target line. Extend the guard symmetrically with the negative-line guard added on line 115:\n\n   ```ts\n   if (location.range.start.character < 0 || location.range.start.character > targetLine.to - targetLine.from) return;\n   ```\n\n   Add a corresponding test case with `character: -1` in `gui/src/__tests__/gotoDefinition.test.ts` under the `character-bounds guard` describe block.\n\n2. **S2 — Cross-file branch validation (lines 123-130):** The `else if (onNavigate)` branch forwards `location.range.start.line` and `character` directly to the callback with no sanity checks. A malformed LSP response (negative line, negative character, NaN) is passed through to the Editor.tsx consumer, which does not re-validate. At minimum, reject negatives before invoking the callback:\n\n   ```ts\n   } else if (onNavigate) {\n     if (location.range.start.line < 0 || location.range.start.character < 0) return;\n     onNavigate(location.uri, location.range.start.line, location.range.start.character);\n   }\n   ```\n\n   Add a cross-file test case asserting that `onNavigate` is not called for a response with `line: -1` or `character: -1`.\n\n3. **S4 — Consolidate boundary checks (design clarity):** After adding the negative-character guard, the same-file branch will have three related boundary checks spread across separate lines (combined line guard on line 115, character guard on line 117, negative-character check to be added). Extract a small helper to group all invariants in one place and make the validation surface auditable:\n\n   ```ts\n   function isValidLspPosition(doc: Text, line: number, character: number): { targetLine: Line } | null {\n     if (line < 0 || line + 1 > doc.lines) return null;\n     const targetLine = doc.line(line + 1);\n     if (character < 0 || character > targetLine.to - targetLine.from) return null;\n     return { targetLine };\n   }\n   ```\n\n   Or alternatively group the three checks in a single block with a shared comment. Pick whichever reads cleaner — the helper is preferred if it can be reused by the cross-file branch.\n\nVerify with `npm test -- src/__tests__/gotoDefinition.test.ts` and confirm all existing guard tests still pass.\n\nNot blocking — Task 1034 landed the initial bounds-check work; these are incremental hardenings.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:00:12.300Z",
+        "updatedAt": "2026-04-08T17:27:06.896Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22521,9 +22521,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:27:00.676Z",
+      "lastModified": "2026-04-08T17:27:06.897Z",
       "taskCount": 1095,
-      "completedCount": 757,
+      "completedCount": 758,
       "tags": [
         "master"
       ]
