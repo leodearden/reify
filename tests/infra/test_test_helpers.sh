@@ -294,6 +294,29 @@ else
     check "assert_sync_ref_exists uses display_fn fallback variable" "false"
 fi
 
+# (f) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
+echo ""
+echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
+
+_beh_out=$(bash -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
+    echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
+    source '${HELPER_FILE}'
+    test_summary() { :; }
+    source '${SYNC_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
+    rm -f \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1)
+
+if echo "$_beh_out" | grep -q 'FAIL'; then
+    check "guard fires and records FAIL when ref_fn extraction yields nothing" "true"
+else
+    check "guard fires and records FAIL when ref_fn extraction yields nothing (got: $_beh_out)" "false"
+fi
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
