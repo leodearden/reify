@@ -20136,11 +20136,11 @@
         "description": "Three related improvements in `crates/reify-test-support/src/tracing_support.rs`, all from post-merge review of task 924:\n\n1. **Add debug_assert in `event()`** (line 67): The defensive level guard was removed in task 924. Restore it as `debug_assert_eq!(event.metadata().level(), &tracing::Level::WARN, \"event() reached with non-WARN — enabled() contract violated\")` to catch misuse when `WarnCountingSubscriber` is called directly (not through the dispatcher). Aligns with project \"silent defaults\" convention.\n\n2. **Use `warn_counting_subscriber()` factory in `error_events_rejected_by_enabled_filter` test** (lines 147-154): Replace direct `super::WarnCountingSubscriber::new(Arc::clone(&warn_count))` with `warn_counting_subscriber()` to match the pattern in `non_warn_events_are_not_counted`. The factory returns the shared Arc, making the direct construction unnecessary and removing the only remaining call-site that reaches into the private constructor.\n\n3. **Clarify dispatcher-contract comments** (lines 67, 85-90): Attribute the `event()`-only-called-when-`enabled()`-returns-true guarantee to the tracing dispatcher contract, not to `enabled()` itself. E.g.: \"The tracing dispatcher only calls `event()` when `enabled()` returned `true`; our `enabled()` accepts only WARN, so only WARN events reach here.\"\n\nmemory_hints: search(\"WarnCountingSubscriber enabled filter dispatcher contract\", project_id=\"reify\"), get_entity(\"WarnCountingSubscriber\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:40:23.339Z",
+        "updatedAt": "2026-04-08T12:33:08.621Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -22251,9 +22251,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T12:18:49.601Z",
+      "lastModified": "2026-04-08T12:33:08.621Z",
       "taskCount": 1081,
-      "completedCount": 755,
+      "completedCount": 756,
       "tags": [
         "master"
       ]
