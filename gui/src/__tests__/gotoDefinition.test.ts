@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks } from './test-utils';
+import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
