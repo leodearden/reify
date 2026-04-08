@@ -540,6 +540,36 @@ describe('character-bounds guard', () => {
     });
     expect(onNavigate).not.toHaveBeenCalled();
   });
+
+  it('does not dispatch when character offset is negative (malformed response)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Line has from=100, to=110 → length=10. Character offset -1 is negative (malformed).
+    // Without a negative check: -1 > (110-100) is false, so the guard passes,
+    // and dispatch is called with anchor = 100 + (-1) = 99 (before the target line).
+    const location = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 5, character: -1 }, end: { line: 5, character: -1 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    // line 6 (1-based): from=100, to=110 → length 10; character -1 is invalid
+    const mockView = makeMockView({
+      state: { doc: { line: () => ({ from: 100, to: 110 }) } },
+    });
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Negative character must be rejected; neither dispatch nor onNavigate should be called
+    expect(mockView.dispatch).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
 });
 
 describe('.catch() error handler', () => {
