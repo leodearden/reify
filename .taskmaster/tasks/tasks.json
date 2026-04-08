@@ -5530,7 +5530,7 @@
         "testStrategy": "Builders produce expected outputs.",
         "priority": "high",
         "dependencies": [],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -5538,7 +5538,7 @@
           "milestone": "M11"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-08T13:55:37.819Z"
+        "updatedAt": "2026-04-08T17:00:11.221Z"
       },
       {
         "id": "290",
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:11.084Z",
+      "lastModified": "2026-04-08T17:00:11.221Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
