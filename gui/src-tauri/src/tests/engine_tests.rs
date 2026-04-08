@@ -1254,6 +1254,20 @@ fn byte_offset_to_line_col_multibyte_chars() {
     assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
 }
 
+#[test]
+fn byte_offset_to_line_col_at_source_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "abc\ndef" has byte length 7.
+    // offset == source.len() is the EOF position, one past the last char 'f'.
+    // The loop iterates all chars (indices 0-6, all < 7) exhausting them,
+    // so: 'a'→col2, 'b'→col3, 'c'→col4, '\n'→line2,col1, 'd'→col2, 'e'→col3, 'f'→col4
+    // Then the loop ends and we return (2, 4).
+    let source = "abc\ndef";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+    assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
+}
+
 // --- Task 837: offset_to_line_col_fast unit tests ---
 
 /// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
