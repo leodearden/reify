@@ -97,26 +97,18 @@ echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
-# This assertion is RED before the impl step (sync_comments_test.sh still uses
-# the old pattern) and GREEN after.
 assert "sync_comments_test.sh uses POSIX-portable [[:space:](] post-name class" \
     grep -qF '[[:space:](]' "$SYNC_TEST"
 
-# This assertion is RED before the impl step (\b is still present) and GREEN after.
-assert "sync_comments_test.sh does not use \b word-boundary anchor" \
-    bash -c "! grep -qF '\b' '$SYNC_TEST'"
-
-assert "sync_comments_test.sh does not use grep -P (non-POSIX flag)" \
-    bash -c "! grep -qF 'grep -P' '$SYNC_TEST'"
-
-# Scoped consistency assertions: check only non-comment grep invocation lines.
-# Rationale: the file-wide searches above would false-positive on documentation
-# comments like '# POSIX: do not use \b here', breaking CI without a real
-# regression.  ^[^#]*grep matches lines where 'grep' appears before any '#'.
-assert "no \\b in grep invocations, non-comment lines only (scoped)" \
+# Scoped assertions check only non-comment grep invocation lines
+# (^[^#]*grep matches lines where 'grep' appears before any '#').
+# File-wide fixed-string searches were replaced because a documentation comment
+# like '# POSIX: do not use \b here' would trigger them as false positives,
+# breaking CI without any real regression.
+assert "no \\b in grep invocations (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_TEST'"
 
-assert "no grep -P in grep invocations, non-comment lines only (scoped)" \
+assert "no grep -P in grep invocations (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
 
 test_summary
