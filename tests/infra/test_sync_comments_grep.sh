@@ -45,6 +45,15 @@ assert "accepts: async fn sanitize_value(" \
 assert "accepts: pub async fn sanitize_value(" \
     bash -c "printf '%s\n' 'pub async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: tab-indented fn sanitize_value( (inside mod block)" \
+    bash -c "printf '\tfn sanitize_value(v: Value) -> Value {\n' | grep -qE '$PATTERN'"
+
+assert "accepts: multi-space between fn and name (fn   sanitize_value()" \
+    bash -c "printf '%s\n' 'fn   sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: trailing space before paren (fn sanitize_value ()" \
+    bash -c "printf '%s\n' 'fn sanitize_value (v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
@@ -58,6 +67,12 @@ assert "rejects: // SYNC: reify-stdlib::sanitize_value (cross-ref line)" \
 
 assert "rejects: let sanitize_value = ... (non-fn binding)" \
     bash -c "! printf '%s\n' 'let sanitize_value = value;' | grep -qE '$PATTERN'"
+
+assert "rejects: fnsanitize_value( (no space between fn keyword and name)" \
+    bash -c "! printf '%s\n' 'fnsanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
+    bash -c "! printf '%s\n' 'my_fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
