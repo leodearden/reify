@@ -19866,11 +19866,11 @@
         "description": "12 reviewer suggestions from tasks 854/889 review. All in crates/reify-types/src/value.rs:\n\n1. Fix 3 stale to_bits() comments (lines ~2068, ~3419, ~4483) — now uses total_cmp()\n2. value_ord_neg_zero: replace no-op `let _ = pos.cmp(&neg)` with actual assert!(neg < pos)\n3. NaN self-comparison: add second independent NaN binding for honest regression guard\n4. Add value_ord_range_negative_bounds test (Range delegates to Value::cmp but has no negative test)\n5. Add BTreeSet test with -0.0, 0.0, NEG_INFINITY, INFINITY boundary cases\n6. Add Orientation Ord comment: w→x→y→z component priority chain\n7. Extract orient() helper to reduce Orientation test from 70 to ~30 lines\n8. Consolidate redundant value_ord_real_negative_vs_positive and value_ord_real_negative_magnitude into BTreeSet test\n9. Deduplicate to_bits() explanation comment (repeated 3x) into single module-level doc comment\n10. Separate PartialEq assertion from Ord test in value_ord_real_nan_and_neg_zero_still_consistent\n\nReviewers: architect_reviewer, test_analyst, robustness, reuse_auditor",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.326Z",
+        "updatedAt": "2026-04-08T20:54:33.909Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -22944,7 +22944,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:54:31.344Z",
+      "lastModified": "2026-04-08T20:54:33.913Z",
       "taskCount": 1117,
       "completedCount": 790,
       "tags": [
