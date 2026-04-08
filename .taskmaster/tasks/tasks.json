@@ -23847,7 +23847,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-compiler/tests/pragma_compile_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": 1166,
@@ -23858,7 +23866,19 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src/bridge.ts",
+            "gui/src/App.tsx",
+            "gui/src/__tests__/bridge.test.ts",
+            "gui/src/__tests__/App.test.tsx"
+          ],
+          "modules": [
+            "gui/src",
+            "gui/src/__tests__"
+          ]
+        }
       },
       {
         "id": 1167,
@@ -23869,7 +23889,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       }
     ],
     "metadata": {
