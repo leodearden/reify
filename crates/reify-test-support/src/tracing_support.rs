@@ -913,6 +913,33 @@ mod tests {
         capture.assert_count_and_any_message_contains(2, "values RwLock poisoned");
     }
 
+    /// `tracing::warn!("msg")` sends `message` as `fmt::Arguments` through
+    /// `record_debug`.  Because `fmt::Arguments`'s `Debug` impl delegates to
+    /// `Display`, the captured text must equal the raw format string exactly —
+    /// without any extra quotes or decorations — even after the `record_str`
+    /// override was added.
+    ///
+    /// This is the regression guard for the `fmt::Arguments` path: the addition
+    /// of `record_str` must not change the behaviour of the `record_debug` path.
+    #[test]
+    fn warn_capturing_format_args_message_unchanged() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("format_args path");
+        });
+
+        let msgs = capture.messages();
+        assert_eq!(msgs.len(), 1, "should capture exactly one message");
+        assert_eq!(
+            msgs[0], "format_args path",
+            "fmt::Arguments message must be captured without extra formatting; got: {:?}",
+            msgs[0]
+        );
+    }
+
     /// When the `message` field is a `&str` (e.g. `tracing::warn!(message =
     /// "literal")`), the captured text must equal the raw string exactly —
     /// without the surrounding double-quotes that `{value:?}` (Debug) would
