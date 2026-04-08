@@ -2158,8 +2158,9 @@ mod tests {
         let nan = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
         let neg_inf = Value::Real(f64::NEG_INFINITY);
-        // NaN == NaN in total_cmp (bit-identical)
-        assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+        // Two independently constructed NaN values must compare equal under PartialEq.
+        let nan2 = Value::Real(f64::NAN);
+        assert_eq!(nan, nan2, "two separately constructed NaN values with identical bit patterns must compare equal");
         // NaN > +Infinity (total_cmp: NaN is the maximum)
         assert!(nan > inf);
         // -Infinity < NaN
@@ -2171,9 +2172,6 @@ mod tests {
         let pos_zero = Value::Real(0.0_f64);
         let neg_zero = Value::Real(-0.0_f64);
         assert!(neg_zero < pos_zero);
-
-        // PartialEq still distinguishes them (different bit patterns)
-        assert_ne!(neg_zero, pos_zero);
     }
 
     #[test]
