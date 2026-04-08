@@ -1038,11 +1038,6 @@ fn compute_numerical_gradient_at_point(
 /// if callers evolve to pass orientation values, sanitization is already in
 /// place).
 ///
-/// **Divergence from stdlib:** the `Value::Complex` arm present in
-/// `reify-stdlib::sanitize_value` is intentionally absent here — it was
-/// removed as unreachable by task 860.  Restoring it for full SYNC parity
-/// is tracked as a separate follow-up.
-///
 /// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
 /// duplication is intentional (making stdlib's version public would widen its
 /// API surface; moving it to reify-types would add evaluation semantics to a
@@ -1052,6 +1047,11 @@ fn sanitize_value(v: Value) -> Value {
     match &v {
         Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
+            Value::Undef
+        }
+        Value::Complex { re, im, .. }
+            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
+        {
             Value::Undef
         }
         Value::Orientation { w, x, y, z }
