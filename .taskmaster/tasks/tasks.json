@@ -24171,10 +24171,11 @@
         "description": "Pre-existing slow/hanging test in tests/infra/test_portable_timeout.sh: \"Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan\" was added in commit e46cb8cc2 and blocks for >90s when run in a subshell (observed during task 1068 work that wired run_all.sh into orchestrator.yaml's test_command).\n\nAdditionally, \"Test 18: POSIX fallback: monitor mode (set -m) preserved\" has a pre-existing FAIL.\n\nBoth predate task 1068 and are unrelated to its changes, but now that run_all.sh is in the test_command path, these slow/failing tests can cause CI timeouts.\n\n**Investigation steps:**\n1. Run test_portable_timeout.sh standalone vs via run_all.sh — confirm the hang only occurs in subshell context.\n2. Identify why SIGKILL escalation Test 18 hangs in subshell (likely a missed signal-forwarding or pgid issue specific to the way run_all.sh invokes child shells).\n3. Either fix the underlying test or add a per-test timeout guard within run_all.sh.\n4. Investigate the separate \"monitor mode (set -m) preserved\" pre-existing failure as a follow-up.\n\nSource: escalation esc-1068-914 (task 1068 infra_issue, steward re-escalation).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:38:54.999Z"
       },
       {
         "id": "1186",
@@ -24251,7 +24252,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:38:53.902Z",
+      "lastModified": "2026-04-08T23:38:54.999Z",
       "taskCount": 1191,
       "completedCount": 873,
       "tags": [
