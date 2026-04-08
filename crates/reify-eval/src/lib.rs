@@ -3675,7 +3675,7 @@ fn compile_geometry_op(
                         return None;
                     }
                     let angle_rad = eval_arg_f64("angle")?;
-                    if angle_rad == 0.0 {
+                    if angle_rad.abs() < 1e-12 {
                         return None;
                     }
                     Some(reify_types::GeometryOp::Revolve {
