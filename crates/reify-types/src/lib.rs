@@ -1,3 +1,4 @@
+pub mod annotation;
 pub mod constraint;
 pub mod diagnostics;
 pub mod dimension;
@@ -12,6 +13,7 @@ pub mod ty;
 pub mod value;
 pub mod warm;
 
+pub use annotation::{Annotation, AnnotationArg};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
     ConstraintResult, ConstraintSolver, OptimizationObjective, ResolutionProblem, SolveResult,

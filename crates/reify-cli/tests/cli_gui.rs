@@ -57,9 +57,9 @@ fn gui_nonexistent_file_shows_error() {
 
 #[test]
 fn gui_non_ri_file_shows_error() {
-    // Create a temporary .txt file
-    let tmp_dir = std::env::temp_dir();
-    let txt_file = tmp_dir.join("test_reify_gui.txt");
+    // Create a temporary .txt file inside a unique temp directory
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let txt_file = tmp_dir.path().join("test_reify_gui.txt");
     std::fs::write(&txt_file, "not a reify file").expect("failed to create temp file");
 
     let output = reify_cmd()
@@ -69,9 +69,6 @@ fn gui_non_ri_file_shows_error() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Cleanup
-    let _ = std::fs::remove_file(&txt_file);
-
     assert!(
         !output.status.success(),
         "reify gui with non-.ri file should exit non-zero"
@@ -79,6 +76,42 @@ fn gui_non_ri_file_shows_error() {
     assert!(
         stderr.contains(".ri"),
         "should mention .ri extension requirement, got: {stderr}"
+    );
+}
+
+#[test]
+fn gui_extension_validation_fires_before_existence_check() {
+    // A path that is BOTH non-existent AND has a non-.ri extension.
+    // When extension check fires first, stderr should mention '.ri' and NOT 'does not exist'.
+    // This test FAILS against the current cmd_gui order (existence checked before extension).
+    let tmp_dir = std::env::temp_dir();
+    let nonexistent_txt = tmp_dir.join("definitely_nonexistent_971.txt");
+    // Do NOT create the file — it must not exist on disk.
+    assert!(
+        !nonexistent_txt.exists(),
+        "test file must not exist for this test to be meaningful"
+    );
+
+    let output = reify_cmd()
+        .args(["gui", nonexistent_txt.to_str().unwrap()])
+        .output()
+        .expect("failed to execute reify binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "reify gui with non-.ri non-existent file should exit non-zero"
+    );
+    assert!(
+        stderr.contains(".ri"),
+        "should mention .ri extension requirement (not existence), got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("does not exist")
+            && !stderr.contains("not found")
+            && !stderr.contains("No such file"),
+        "should NOT report file-not-found (extension check fires first), got: {stderr}"
     );
 }
 

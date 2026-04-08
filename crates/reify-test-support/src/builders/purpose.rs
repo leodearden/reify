@@ -13,6 +13,7 @@ pub struct CompiledPurposeBuilder {
     constraints: Vec<CompiledConstraint>,
     objective: Option<reify_types::OptimizationObjective>,
     resolved_queries: Vec<ResolvedSchemaQuery>,
+    annotations: Vec<reify_types::Annotation>,
 }
 
 impl CompiledPurposeBuilder {
@@ -24,7 +25,20 @@ impl CompiledPurposeBuilder {
             constraints: Vec::new(),
             objective: None,
             resolved_queries: Vec::new(),
+            annotations: Vec::new(),
         }
+    }
+
+    /// Push a single annotation onto this builder.
+    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+        self.annotations.push(ann);
+        self
+    }
+
+    /// Replace all annotations with the given vec.
+    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+        self.annotations = anns;
+        self
     }
 
     pub fn public(mut self) -> Self {
@@ -96,7 +110,49 @@ impl CompiledPurposeBuilder {
             objective: self.objective,
             resolved_queries: self.resolved_queries,
             content_hash,
+            annotations: self.annotations,
         }
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::*;
+    use crate::builders::{annotation, annotation_with_args, ann_str};
+
+    #[test]
+    fn compiled_purpose_builder_single_annotation() {
+        let p = CompiledPurposeBuilder::new("p")
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(p.annotations.len(), 1);
+        assert_eq!(p.annotations[0].name, "test");
+    }
+
+    #[test]
+    fn compiled_purpose_builder_annotation_with_args() {
+        let p = CompiledPurposeBuilder::new("p")
+            .annotation(annotation_with_args("deprecated", vec![ann_str("use q")]))
+            .build();
+        assert_eq!(p.annotations.len(), 1);
+        assert_eq!(p.annotations[0].args.len(), 1);
+    }
+
+    #[test]
+    fn compiled_purpose_builder_annotations_replace_all() {
+        let p = CompiledPurposeBuilder::new("p")
+            .annotations(vec![annotation("a"), annotation("b")])
+            .build();
+        assert_eq!(p.annotations.len(), 2);
+    }
+
+    #[test]
+    fn compiled_purpose_builder_annotation_does_not_affect_content_hash() {
+        let p1 = CompiledPurposeBuilder::new("p").build();
+        let p2 = CompiledPurposeBuilder::new("p")
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(p1.content_hash, p2.content_hash);
     }
 }
 

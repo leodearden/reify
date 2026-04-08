@@ -11,7 +11,7 @@ use reify_test_support::{
     lt, mm, value_ref,
 };
 use reify_types::{
-    DeterminacyState, Diagnostic, ModulePath, OptimizationObjective, SnapshotId,
+    DeterminacyState, ModulePath, OptimizationObjective, SnapshotId,
     SnapshotProvenance, Type, Value, ValueCellId,
 };
 

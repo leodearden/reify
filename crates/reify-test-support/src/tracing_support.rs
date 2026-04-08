@@ -1,5 +1,6 @@
 //! Shared tracing test utilities for reify crates.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -19,6 +20,137 @@ pub fn warn_counting_subscriber() -> (impl tracing::Subscriber + Send + Sync, Ar
     let warn_count_clone = Arc::clone(&warn_count);
     (WarnCountingSubscriber::new(warn_count_clone), warn_count)
 }
+
+// ── CountingSubscriberBuilder ─────────────────────────────────────────────────
+
+/// Builder for a minimal [`tracing::Subscriber`] that counts events at
+/// registered levels and optionally filters by target prefix.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let (subscriber, counters) = CountingSubscriberBuilder::new()
+///     .count_level(tracing::Level::WARN)
+///     .count_level(tracing::Level::DEBUG)
+///     .target_prefix("reify_constraints")
+///     .build();
+/// ```
+pub struct CountingSubscriberBuilder {
+    levels: Vec<tracing::Level>,
+    target_prefix: Option<String>,
+}
+
+impl CountingSubscriberBuilder {
+    /// Create a new builder with no registered levels and no target filter.
+    pub fn new() -> Self {
+        Self {
+            levels: Vec::new(),
+            target_prefix: None,
+        }
+    }
+
+    /// Register a level to count.  May be called multiple times for different
+    /// levels; each call adds an independent counter for that level.
+    pub fn count_level(mut self, level: tracing::Level) -> Self {
+        self.levels.push(level);
+        self
+    }
+
+    /// Set an optional target-prefix filter.  When set, only events whose
+    /// target starts with `prefix` are counted; all others are ignored inside
+    /// `event()`.
+    pub fn target_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.target_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Build the subscriber and return it alongside a map of counters keyed by
+    /// level.  The returned `Arc<AtomicUsize>` values are shared with the
+    /// subscriber so external reads observe internal increments.
+    pub fn build(
+        self,
+    ) -> (
+        impl tracing::Subscriber + Send + Sync,
+        HashMap<tracing::Level, Arc<AtomicUsize>>,
+    ) {
+        let counters: HashMap<tracing::Level, Arc<AtomicUsize>> = self
+            .levels
+            .into_iter()
+            .map(|level| (level, Arc::new(AtomicUsize::new(0))))
+            .collect();
+
+        let subscriber = CountingSubscriber {
+            counters: counters.clone(),
+            target_prefix: self.target_prefix,
+            span_counter: AtomicU64::new(1),
+        };
+
+        (subscriber, counters)
+    }
+}
+
+impl Default for CountingSubscriberBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── CountingSubscriber (private) ──────────────────────────────────────────────
+
+struct CountingSubscriber {
+    counters: HashMap<tracing::Level, Arc<AtomicUsize>>,
+    target_prefix: Option<String>,
+    /// Monotonically increasing counter used to generate unique span IDs.
+    ///
+    /// # Span ID uniqueness
+    ///
+    /// Unlike a naïve implementation that returns `Id::from_u64(1)` for every
+    /// span, this subscriber uses an [`AtomicU64`] to issue monotonically
+    /// increasing IDs, avoiding the "all spans share the same ID" bug.
+    span_counter: AtomicU64,
+}
+
+impl tracing::Subscriber for CountingSubscriber {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        // Accept only events at registered levels; reject everything else
+        // at the gate so no unregistered events reach event().
+        self.counters.contains_key(metadata.level())
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        // Relaxed ordering is correct: the only invariant is uniqueness, which
+        // fetch_add guarantees atomically regardless of memory ordering.
+        let id = self.span_counter.fetch_add(1, Ordering::Relaxed);
+        // Safety: Id::from_u64 requires a non-zero value; our counter starts at 1.
+        tracing::span::Id::from_u64(id)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(
+        &self,
+        _span: &tracing::span::Id,
+        _follows: &tracing::span::Id,
+    ) {
+    }
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        // Apply optional target-prefix filter before counting.
+        if let Some(prefix) = &self.target_prefix
+            && !event.metadata().target().starts_with(prefix.as_str())
+        {
+            return;
+        }
+        if let Some(counter) = self.counters.get(event.metadata().level()) {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 
 // ── private implementation ────────────────────────────────────────────────────
 
@@ -58,9 +190,16 @@ impl tracing::Subscriber for WarnCountingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
-        if event.metadata().level() == &tracing::Level::WARN {
-            self.warn_count.fetch_add(1, Ordering::Relaxed);
-        }
+        // The tracing dispatcher only calls event() when enabled() returned
+        // true; our enabled() accepts only WARN, so only WARN events reach
+        // here. The debug_assert catches direct misuse (called outside the
+        // dispatcher) loudly in debug builds.
+        debug_assert_eq!(
+            event.metadata().level(),
+            &tracing::Level::WARN,
+            "event() reached with non-WARN — enabled() contract violated"
+        );
+        self.warn_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -81,13 +220,10 @@ mod tests {
     /// We verify this by wrapping the real `WarnCountingSubscriber` in a thin
     /// `EventDispatchCounter` that increments `dispatch_count` each time the
     /// tracing framework calls `event()` on us.  Because the wrapper delegates
-    /// `enabled()` to the inner subscriber, `event()` is only reached when the
-    /// inner subscriber's `enabled()` returns `true`.
-    ///
-    /// Under the current `<=` filter ERROR passes `enabled()`, so
-    /// `dispatch_count` ends up as 1 and this test **fails**.
-    /// After the fix (`==`), ERROR is rejected at `enabled()` and
-    /// `dispatch_count` stays 0.
+    /// `enabled()` to the inner subscriber, the tracing dispatcher only calls
+    /// `event()` on the wrapper — and therefore on the inner — when the inner's
+    /// `enabled()` returns `true`.  Our `enabled()` accepts only WARN, so an
+    /// ERROR event is rejected at the gate and `dispatch_count` stays 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
         // ── thin wrapper ────────────────────────────────────────────────────
@@ -130,10 +266,9 @@ mod tests {
         }
 
         // ── test body ───────────────────────────────────────────────────────
-        let warn_count = Arc::new(AtomicUsize::new(0));
+        let (inner, warn_count) = warn_counting_subscriber();
         let dispatch_count = Arc::new(AtomicUsize::new(0));
 
-        let inner = super::WarnCountingSubscriber::new(Arc::clone(&warn_count));
         let subscriber = EventDispatchCounter {
             inner,
             dispatch_count: Arc::clone(&dispatch_count),
@@ -143,18 +278,16 @@ mod tests {
             tracing::error!("error message");
         });
 
-        // warn_count is 0 even under the current code because event() checks
-        // level == WARN before incrementing.  This assertion passes both before
-        // and after the fix.
+        // The dispatcher rejected the ERROR at enabled(), so event() was never
+        // called on either wrapper or inner, and warn_count stays 0.
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
             "ERROR must not be counted as a WARN event"
         );
 
-        // dispatch_count is 0 only when enabled() rejected the ERROR event.
-        // Under the current `<=` filter dispatch_count == 1 → this FAILS.
-        // After the fix (`==` filter) dispatch_count == 0 → this PASSES.
+        // dispatch_count is 0 because the tracing dispatcher honoured the
+        // enabled() rejection and never forwarded the ERROR event to event().
         assert_eq!(
             dispatch_count.load(Ordering::Relaxed),
             0,
@@ -184,7 +317,21 @@ mod tests {
         );
     }
 
-    /// Non-WARN events (DEBUG, INFO, ERROR) are rejected at the `enabled()` gate.
+    /// Non-WARN events (DEBUG, INFO, ERROR) do not affect the warn counter.
+    ///
+    /// Filtering is handled entirely at `enabled()`: it rejects non-WARN events
+    /// before the tracing dispatcher ever calls `event()` on this subscriber,
+    /// so the counter is never incremented for them.  `event()` itself no
+    /// longer carries a runtime level check (see task 972); it relies on the
+    /// dispatcher contract and a `debug_assert_eq!` backstop that panics in
+    /// debug builds if the contract is violated.  This test validates
+    /// end-to-end counting correctness — that the counter stays zero when only
+    /// non-WARN events are emitted.
+    ///
+    /// See `error_events_rejected_by_enabled_filter` for the test that
+    /// specifically validates the `enabled()` gate, and
+    /// `event_panics_on_non_warn_when_dispatcher_contract_violated` for the
+    /// debug-assert backstop.
     #[test]
     fn non_warn_events_are_not_counted() {
         let (subscriber, warn_count) = warn_counting_subscriber();
@@ -198,11 +345,23 @@ mod tests {
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
-            "DEBUG/INFO/ERROR events are rejected at the enabled() gate and never reach event()"
+            "warn counter must remain zero when only non-WARN events are emitted"
         );
     }
 
-    /// Two calls to new_span must produce distinct span IDs (AtomicU64 uniqueness).
+    /// Two calls to new_span must produce distinct span IDs, and the non-zero
+    /// invariant required by `tracing::span::Id::from_u64` must hold.
+    ///
+    /// # Invariants
+    ///
+    /// - **Non-zero**: `Id::from_u64` panics if passed zero, so the subscriber
+    ///   must never issue an ID with underlying value 0.  The counter is
+    ///   initialised to 1 to guarantee this; a regression that started the
+    ///   counter at 0 would panic inside `new_span()` → `Id::from_u64(0)`
+    ///   before control returns to this test, so the non-zero invariant is
+    ///   enforced by construction rather than by a runtime assertion here.
+    /// - **Uniqueness**: successive calls return distinct IDs.  This is
+    ///   guaranteed by `AtomicU64::fetch_add` and asserted below.
     #[test]
     fn new_span_ids_are_unique() {
         // Each subscriber issues IDs starting from 1; what matters is that
@@ -223,6 +382,7 @@ mod tests {
             (a, b)
         });
 
+        // Uniqueness invariant: successive new_span calls must not collide.
         assert_ne!(
             id_a, id_b,
             "successive new_span calls must return distinct IDs"
@@ -241,5 +401,277 @@ mod tests {
         });
 
         assert_eq!(counter_clone.load(Ordering::Relaxed), 2);
+    }
+
+    /// `CountingSubscriberBuilder` with a single registered level (WARN) should
+    /// count exactly one WARN event and leave the counter at 1.
+    /// No target_prefix is set, exercising the no-filter path.
+    #[test]
+    fn counting_subscriber_counts_warn_events() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .build();
+
+        let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            0,
+            "counter should start at 0"
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("test warning");
+        });
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            1,
+            "one WARN event should produce count=1"
+        );
+    }
+
+    /// `CountingSubscriberBuilder` with `target_prefix` should only count events
+    /// whose target starts with the given prefix.
+    ///
+    /// Emits one matching-target WARN event and one non-matching WARN event;
+    /// asserts the counter reads exactly 1.
+    #[test]
+    fn counting_subscriber_filters_by_target_prefix() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(target: "reify_constraints::solver", "matching target");
+            tracing::warn!(target: "argmin::core", "non-matching target");
+        });
+
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            1,
+            "only the matching-target event should be counted"
+        );
+    }
+
+    /// Two registered levels each maintain independent counters.
+    ///
+    /// Registers both DEBUG and WARN with no target prefix; emits one event at
+    /// each level and asserts both counters read exactly 1.
+    #[test]
+    fn counting_subscriber_supports_multiple_levels() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::DEBUG)
+            .count_level(Level::WARN)
+            .build();
+
+        let debug_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::DEBUG]);
+        let warn_arc: Arc<AtomicUsize> = Arc::clone(&counters[&Level::WARN]);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!("debug event");
+            tracing::warn!("warn event");
+        });
+
+        assert_eq!(
+            debug_arc.load(Ordering::Relaxed),
+            1,
+            "one DEBUG event should produce debug count=1"
+        );
+        assert_eq!(
+            warn_arc.load(Ordering::Relaxed),
+            1,
+            "one WARN event should produce warn count=1"
+        );
+    }
+
+    /// Unregistered levels are rejected at the `enabled()` gate — they never
+    /// reach `event()`.
+    ///
+    /// Wraps a `CountingSubscriber` registered only for WARN in a thin
+    /// `EventDispatchCounter` that increments a shared counter on each call to
+    /// `event()`.  Emits ERROR and INFO events; asserts `dispatch_count` stays 0.
+    #[test]
+    fn counting_subscriber_enabled_rejects_unregistered_levels() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        struct EventDispatchCounter<S> {
+            inner: S,
+            dispatch_count: Arc<AtomicUsize>,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for EventDispatchCounter<S> {
+            fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+                self.inner.enabled(metadata)
+            }
+
+            fn new_span(
+                &self,
+                span: &tracing::span::Attributes<'_>,
+            ) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(
+                &self,
+                span: &tracing::span::Id,
+                values: &tracing::span::Record<'_>,
+            ) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Reached only when enabled() returned true.
+                self.dispatch_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        let dispatch_count = Arc::new(AtomicUsize::new(0));
+
+        let (inner, _counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .build();
+
+        let subscriber = EventDispatchCounter {
+            inner,
+            dispatch_count: Arc::clone(&dispatch_count),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("error event — should be rejected at enabled()");
+            tracing::info!("info event — should be rejected at enabled()");
+        });
+
+        assert_eq!(
+            dispatch_count.load(Ordering::Relaxed),
+            0,
+            "ERROR and INFO events must be rejected at enabled(), never reaching event()"
+        );
+    }
+
+    /// Calling `event()` directly on `WarnCountingSubscriber` with a non-WARN
+    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
+    /// loudly in debug builds rather than silently swallowing the event.
+    ///
+    /// We simulate this by wrapping the subscriber in a `ForcedEventDispatcher`
+    /// whose `enabled()` always returns `true`, causing the tracing framework to
+    /// deliver an ERROR event directly into the inner subscriber's `event()`.
+    /// The `debug_assert_eq!` inside `event()` detects the contract violation
+    /// and panics with a message containing `"enabled() contract violated"`.
+    // debug_assert_eq! is compiled out in release builds, so this test would
+    // incorrectly fail under #[should_panic] without the cfg gate.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
+        struct ForcedEventDispatcher<S> {
+            inner: S,
+        }
+
+        impl<S: tracing::Subscriber> tracing::Subscriber for ForcedEventDispatcher<S> {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+                // Unconditionally true — bypasses the inner subscriber's filter,
+                // forcing non-WARN events through to inner.event().
+                true
+            }
+
+            fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                self.inner.new_span(span)
+            }
+
+            fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+                self.inner.record(span, values)
+            }
+
+            fn record_follows_from(
+                &self,
+                span: &tracing::span::Id,
+                follows: &tracing::span::Id,
+            ) {
+                self.inner.record_follows_from(span, follows)
+            }
+
+            fn event(&self, event: &tracing::Event<'_>) {
+                // Forward unconditionally, even for non-WARN events.
+                self.inner.event(event)
+            }
+
+            fn enter(&self, span: &tracing::span::Id) {
+                self.inner.enter(span)
+            }
+
+            fn exit(&self, span: &tracing::span::Id) {
+                self.inner.exit(span)
+            }
+        }
+
+        let (inner, _warn_count) = warn_counting_subscriber();
+        let subscriber = ForcedEventDispatcher { inner };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("non-WARN event delivered directly");
+        });
+    }
+
+    /// Two consecutive `new_span` calls on a `CountingSubscriber` must produce
+    /// distinct span IDs (regression guard for the Id::from_u64(1) bug).
+    #[test]
+    fn counting_subscriber_produces_unique_span_ids() {
+        use tracing::Level;
+
+        use crate::CountingSubscriberBuilder;
+
+        let (sub, _counters) = CountingSubscriberBuilder::new()
+            .count_level(Level::WARN)
+            .build();
+
+        let (id_a, id_b) = tracing::subscriber::with_default(sub, || {
+            let a = tracing::span!(Level::WARN, "span_a")
+                .id()
+                .expect("WARN span should be enabled by CountingSubscriber");
+            let b = tracing::span!(Level::WARN, "span_b")
+                .id()
+                .expect("WARN span should be enabled by CountingSubscriber");
+            (a, b)
+        });
+
+        assert_ne!(
+            id_a, id_b,
+            "successive new_span calls must return distinct IDs"
+        );
     }
 }

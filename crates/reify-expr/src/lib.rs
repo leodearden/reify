@@ -744,7 +744,8 @@ fn compute_numerical_gradient_at_point(
     // the warning surfaces the root cause during development.
     #[cfg(debug_assertions)]
     if let Value::Lambda { params, .. } = lambda
-        && !single_point_param && params.len() != n
+        && !single_point_param
+        && params.len() != n
     {
         eprintln!(
             "[reify-expr] gradient: lambda has {} params but point has {} coords",
@@ -779,39 +780,59 @@ fn compute_numerical_gradient_at_point(
         }
     };
 
-    // Populate work_args from a coordinate slice.
-    // Takes args and coords as explicit parameters to avoid borrow conflicts:
-    // work_coords is mutated between the two calls (perturb +h then −h), so
-    // capturing it by reference would conflict with the mutation. Taking both
-    // as parameters sidesteps the borrow checker while eliminating duplication.
-    // Captures only single_point_param (Copy) and make_arg (shared ref).
-    let populate = |args: &mut Vec<Value>, c: &[f64]| {
-        args.clear();
-        if single_point_param {
-            args.push(Value::Point(c.iter().map(|&v| make_arg(v)).collect()));
-        } else {
-            args.extend(c.iter().map(|&v| make_arg(v)));
-        }
-    };
-
-    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
-    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
-    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
-    let mut work_coords = coords.clone();
+    // Take ownership of coords — no clone needed.
+    // work_coords[i] equals the original coords[i] bit-for-bit at the start of
+    // every axis iteration: at the bottom of the loop, work_coords[i] is restored
+    // via direct assignment (`work_coords[i] = coord_i`), which is an exact
+    // bit-identical restore of the value captured at the top of the iteration.
+    let mut work_coords = coords;
     // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
 
+    // point_scratch: reusable inner Vec for the single_point_param path.
+    // Pre-allocated once; only the perturbed element is updated each axis,
+    // eliminating the per-axis .collect() allocation on the caller side.
+    // (apply_lambda still clones the Vec once per eval when populating its
+    // eval_map, so the savings are roughly halving inner-Vec allocations,
+    // not reducing to O(1) overall.)
+    // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
+    let mut point_scratch: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
-        let coord_i = coords[i];
+        // Read from work_coords — the original coords Vec was taken by ownership
+        // above and is no longer accessible.  work_coords[i] holds the original
+        // value bit-for-bit at this point: on the first iteration it comes
+        // directly from the caller; on subsequent iterations the bottom of the
+        // loop restores it via `work_coords[i] = coord_i` (direct assignment,
+        // not arithmetic, so no ULP drift).
+        let coord_i = work_coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
         // Perturb forward (+h), evaluate
         work_coords[i] += h;
-        populate(&mut work_args, &work_coords);
+        work_args.clear();
+        if single_point_param {
+            // Update only the perturbed element; transfer ownership via take.
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
+        } else {
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+        }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
+        // Recovery above is infallible: apply_lambda borrows &[Value] and cannot
+        // mutate work_args; we pushed exactly one Value::Point, so pop() always
+        // succeeds and always yields Value::Point.  The if-let is just destructuring.
 
         // On the first axis, verify that the lambda's runtime return dimension
         // matches the declared codomain (via codomain_type). This catches callers
@@ -845,11 +866,31 @@ fn compute_numerical_gradient_at_point(
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
-        populate(&mut work_args, &work_coords);
+        work_args.clear();
+        if single_point_param {
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
+        } else {
+            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+        }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
+        // Recovery above is infallible for the same reason as the f_plus recovery:
+        // apply_lambda cannot mutate work_args, and exactly one Value::Point was
+        // pushed before the call.
 
-        // Restore coord[i] to original value
-        work_coords[i] += h;
+        // Restore coord[i] to original value.
+        // Use exact restore (direct assignment) instead of arithmetic
+        // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
+        // drift from x + h - 2h + h ≠ x in floating-point).
+        work_coords[i] = coord_i;
+        // Keep point_scratch in sync with the invariant.
+        if single_point_param {
+            point_scratch[i] = make_arg(coord_i);
+        }
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
@@ -889,7 +930,10 @@ fn compute_numerical_gradient_at_point(
         "gradient loop must push exactly one component for n==1"
     );
     if n == 1 {
-        gradient_components.into_iter().next().unwrap_or(Value::Undef)
+        gradient_components
+            .into_iter()
+            .next()
+            .unwrap_or(Value::Undef)
     } else {
         Value::Vector(gradient_components)
     }
@@ -3239,6 +3283,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"double"),
+            annotations: vec![],
         }
     }
 
@@ -3267,6 +3312,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
+            annotations: vec![],
         }
     }
 
@@ -3335,6 +3381,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"factorial"),
+            annotations: vec![],
         }
     }
 
@@ -3357,6 +3404,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"infinite"),
+            annotations: vec![],
         }
     }
 
@@ -3476,6 +3524,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"area"),
+            annotations: vec![],
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -3540,6 +3589,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
+            annotations: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let process2 = CompiledFunction {
@@ -3557,6 +3607,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
+            annotations: vec![],
         };
 
         let functions = [process1, process2];

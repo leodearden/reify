@@ -263,6 +263,8 @@ impl EngineSession {
         })?;
 
         // Resolve the source file key and text via the shared helper.
+        // NOTE: Assumes all diagnostic spans refer to the single loaded source
+        // file — file_path from multi-file diagnostics would need threading here.
         let (file, source) = self.resolve_source()?;
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
@@ -293,10 +295,17 @@ impl EngineSession {
         };
 
         // Resolve file_path and source text via the shared helper.
+        // NOTE: Assumes all diagnostic spans refer to the single loaded source
+        // file — file_path from multi-file diagnostics would need threading here.
         let (file_path, source) = match self.resolve_source() {
             Some(pair) => pair,
             None => return Vec::new(),
         };
+
+        // Build the newline table once (O(M)) so each span lookup is O(log M).
+        let line_offsets = build_line_offsets(source);
+        // Clone file_path once; move it into the closure to avoid re-cloning the source String.
+        let file_path = file_path.to_string();
 
         compiled
             .diagnostics
@@ -305,8 +314,10 @@ impl EngineSession {
                 // Use the first label's span if available; otherwise default to (1,1,1,1).
                 let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
                 {
-                    let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
-                    let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
+                    let (l, c) =
+                        offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
+                    let (el, ec) =
+                        offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
                     (l as u32, c as u32, el as u32, ec as u32)
                 } else {
                     (1, 1, 1, 1)
@@ -318,7 +329,7 @@ impl EngineSession {
                     column,
                     end_line,
                     end_column,
-                    severity: format!("{}", diag.severity),
+                    severity: diag.severity.to_string(),
                     message: diag.message.clone(),
                     code: None,
                 }
@@ -710,8 +721,76 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs
 }
 
-/// Convert a byte offset in source text to (line, column), both 1-based.
-fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
+///
+/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
+/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
+/// in O(log M) instead of the O(M) scan done by [`byte_offset_to_line_col`].
+pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
+    source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+        .collect()
+}
+
+/// Binary-search for the (line, column) of `offset` using a pre-built newline table.
+///
+/// `source` is the original source string; `line_offsets` must be the result of
+/// [`build_line_offsets`] for the same `source`.  Both line and column are 1-based
+/// and count **Unicode codepoints**, matching the semantics of [`byte_offset_to_line_col`].
+///
+/// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
+/// counting — far cheaper than the O(M) full-source scan of the naive implementation.
+pub(crate) fn offset_to_line_col_fast(
+    source: &str,
+    line_offsets: &[usize],
+    offset: usize,
+) -> (usize, usize) {
+    // Count newlines that appear *strictly before* `offset`.
+    let line_idx = line_offsets.partition_point(|&nl| nl < offset);
+    let line = line_idx + 1;
+    // Byte offset of the first character on this line.
+    let line_start = if line_idx == 0 {
+        0
+    } else {
+        line_offsets[line_idx - 1] + 1
+    };
+    // Clamp offset to source length, then snap to the nearest char boundary
+    // (walking backward at most 3 bytes). This guards against non-boundary
+    // byte offsets from buggy span generation without panicking.
+    let clamped = offset.min(source.len());
+    let effective = if source.is_char_boundary(clamped) {
+        clamped
+    } else {
+        (0..clamped)
+            .rev()
+            .find(|&i| source.is_char_boundary(i))
+            .unwrap_or(0)
+    };
+    // Count codepoints from line_start to effective offset for 1-based column.
+    let col = source[line_start..effective].chars().count() + 1;
+    (line, col)
+}
+
+/// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
+///
+/// The function iterates over Unicode scalar values and increments the column
+/// counter for each character, resetting to column 1 and advancing the line
+/// counter whenever a `'\n'` is encountered.
+///
+/// # Edge cases
+///
+/// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
+///   body never executes.
+/// - **Offset beyond `source.len()`**: the loop exhausts all characters
+///   without reaching the break condition and returns the position *after* the
+///   last character (silent clamping — no panic or error).
+/// - **Empty spans** (`start == end`): calling this function twice with the
+///   same offset produces identical `(line, col)` coordinates, as expected for
+///   zero-length diagnostic spans.
+pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    debug_assert!(offset <= source.len());
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {

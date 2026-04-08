@@ -1085,6 +1085,58 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+// --- Task 837: build_line_offsets unit tests ---
+
+/// build_line_offsets returns empty vec for empty string.
+#[test]
+fn build_line_offsets_empty_string() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns empty vec for a single-line string (no '\n').
+#[test]
+fn build_line_offsets_single_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("hello world");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns correct byte positions of '\n' for a multi-line string.
+///
+/// "abc\ndef\nghi"
+///  0123 4567 8910
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_multi_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\nghi");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a trailing newline (last char is '\n').
+///
+/// "abc\ndef\n"
+///  0123 4567 8
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_trailing_newline() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\n");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a string that is only newlines.
+///
+/// "\n\n\n" → '\n' at bytes 0, 1, 2.
+#[test]
+fn build_line_offsets_only_newlines() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("\n\n\n");
+    assert_eq!(offsets, vec![0, 1, 2]);
+}
+
 /// Step-4: After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
@@ -1123,4 +1175,448 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
         "expected empty diagnostics after updating to clean source, got: {:?}",
         diags_after
     );
+}
+
+// --- byte_offset_to_line_col edge-case tests ---
+
+#[test]
+fn byte_offset_to_line_col_basic_conversion() {
+    use crate::engine::byte_offset_to_line_col;
+
+    let source = "abc\ndef";
+    // offset 0 → start of first line → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 3 → just before the '\n' → (1, 4) (col after 'a','b','c')
+    assert_eq!(byte_offset_to_line_col(source, 3), (1, 4));
+    // offset 4 → first char of second line → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 4), (2, 1));
+    // offset 6 → last char 'f' → (2, 3)
+    assert_eq!(byte_offset_to_line_col(source, 6), (2, 3));
+}
+
+#[test]
+fn byte_offset_to_line_col_empty_source() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Empty source: offset 0 → initial position (1, 1)
+    assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "offset <= source.len()")]
+fn byte_offset_to_line_col_offset_beyond_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In debug/test builds, passing an offset beyond source.len() must panic
+    // with a clear message, so stale-span bugs are caught loudly.
+    // Release builds retain silent clamping (debug_assert is a no-op there).
+    let _ = byte_offset_to_line_col("ab", 100);
+}
+
+#[test]
+fn get_diagnostics_empty_span_has_identical_start_end() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+    use crate::engine::byte_offset_to_line_col;
+
+    // Verify that a zero-length span (start == end) produces identical
+    // start and end coordinates through the full get_diagnostics pipeline,
+    // including the optimised offset_to_line_col_fast path.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let offset = source.find("width").expect("'width' not in bracket_source") as u32;
+
+    let diag = Diagnostic::warning("empty-span-test")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset, offset), // zero-length span
+            "zero-length label",
+        ));
+    session.inject_diagnostic_for_test(diag);
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "empty-span-test")
+        .expect("injected empty-span diagnostic not found");
+
+    // The real concern: start and end coords must be identical for an empty span.
+    assert_eq!(
+        d.line, d.end_line,
+        "empty span: line ({}) != end_line ({})",
+        d.line, d.end_line
+    );
+    assert_eq!(
+        d.column, d.end_column,
+        "empty span: column ({}) != end_column ({})",
+        d.column, d.end_column
+    );
+
+    // Cross-validate against the reference implementation.
+    let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
+    assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
+    assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+}
+
+#[test]
+fn byte_offset_to_line_col_multibyte_chars() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source: "αβ\nγ"
+    // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
+    // β = U+03B2, 2 bytes (UTF-8: 0xCE 0xB2), byte offset 2
+    // \n              ,  byte offset 4
+    // γ = U+03B3, 2 bytes (UTF-8: 0xCE 0xB3), byte offset 5
+    //
+    // Columns must be codepoint-based (1, 2, 3), not byte-based (1, 3, 5).
+    let source = "αβ\nγ";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+
+    // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
+    assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
+    // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
+    assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
+    // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+}
+
+#[test]
+fn byte_offset_to_line_col_at_source_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "abc\ndef" has byte length 7.
+    // offset == source.len() is the EOF position, one past the last char 'f'.
+    // The loop iterates all chars (indices 0-6, all < 7) exhausting them,
+    // so: 'a'→col2, 'b'→col3, 'c'→col4, '\n'→line2,col1, 'd'→col2, 'e'→col3, 'f'→col4
+    // Then the loop ends and we return (2, 4).
+    let source = "abc\ndef";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+    assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
+}
+
+// --- Task 837: offset_to_line_col_fast unit tests ---
+
+/// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
+#[test]
+fn offset_to_line_col_fast_offset_zero() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast cross-validates with byte_offset_to_line_col
+/// for every byte offset in a multi-line string.
+#[test]
+fn offset_to_line_col_fast_matches_original_every_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let line_offsets = build_line_offsets(source);
+    for offset in 0..source.len() {
+        let expected = byte_offset_to_line_col(source, offset);
+        let actual = offset_to_line_col_fast(source, &line_offsets, offset);
+        assert_eq!(
+            actual, expected,
+            "mismatch at offset {}: fast={:?} original={:?}",
+            offset, actual, expected
+        );
+    }
+}
+
+/// offset_to_line_col_fast returns correct values at specific key offsets.
+///
+/// "abc\ndef\nghi" — '\n' at bytes 3 and 7.
+/// offset 3  → (1,4) — the '\n' itself is still on line 1
+/// offset 4  → (2,1) — first char of line 2
+/// offset 7  → (2,4) — the second '\n'
+/// offset 8  → (3,1) — first char of line 3
+/// offset 10 → (3,3) — last char 'i'
+#[test]
+fn offset_to_line_col_fast_key_positions() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 3), (1, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (2, 1)); // 'd'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 7), (2, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 8), (3, 1)); // 'g'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 10), (3, 3)); // 'i'
+}
+
+/// offset_to_line_col_fast works on empty source (no newlines).
+#[test]
+fn offset_to_line_col_fast_empty_source() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast works on single-line source (no newlines).
+#[test]
+fn offset_to_line_col_fast_single_line() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "hello";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (1, 5));
+}
+
+/// offset_to_line_col_fast agrees with byte_offset_to_line_col at source.len()
+/// (one-past-end / EOF position, the highest offset a compiler span can produce).
+///
+/// For offsets strictly beyond source.len() the two implementations diverge —
+/// the original stops iterating at the last source char while the fast version
+/// extrapolates the column — but that case never occurs in production because
+/// diagnostic spans are always within source bounds.
+#[test]
+fn offset_to_line_col_fast_at_eof_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef";
+    let line_offsets = build_line_offsets(source);
+    // source.len() is the EOF position — both implementations must agree here.
+    let eof = source.len();
+    let expected = byte_offset_to_line_col(source, eof);
+    let actual = offset_to_line_col_fast(source, &line_offsets, eof);
+    assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
+}
+
+// --- Task 837: step-7 stress / multi-diagnostic tests ---
+
+/// get_diagnostics with multiple injected diagnostics at various byte offsets
+/// produces line/col values matching byte_offset_to_line_col for each span.
+///
+/// This is the primary end-to-end regression for the optimized path: we inject
+/// three warnings with labels at byte positions we compute from bracket_source,
+/// then verify get_diagnostics returns the same line/col as the O(M) reference.
+#[test]
+fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+    use crate::engine::byte_offset_to_line_col;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Pick three byte offsets that land at recognisable tokens across
+    // different lines, using `find` so the test stays robust to whitespace.
+    let offset_a = source.find("width").expect("'width' not in bracket_source") as u32;
+    let offset_b = source.find("height").expect("'height' not in bracket_source") as u32;
+    let offset_c = source.find("thickness").expect("'thickness' not in bracket_source") as u32;
+
+    let diag_a = Diagnostic::warning("stress-a")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_a, offset_a + 5),
+            "label a",
+        ));
+    let diag_b = Diagnostic::warning("stress-b")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_b, offset_b + 6),
+            "label b",
+        ));
+    let diag_c = Diagnostic::warning("stress-c")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset_c, offset_c + 9),
+            "label c",
+        ));
+
+    session.inject_diagnostic_for_test(diag_a);
+    session.inject_diagnostic_for_test(diag_b);
+    session.inject_diagnostic_for_test(diag_c);
+
+    let diags = session.get_diagnostics();
+
+    // Find each injected diagnostic and verify its span against the reference.
+    for (msg, start, end) in [
+        ("stress-a", offset_a as usize, (offset_a + 5) as usize),
+        ("stress-b", offset_b as usize, (offset_b + 6) as usize),
+        ("stress-c", offset_c as usize, (offset_c + 9) as usize),
+    ] {
+        let d = diags
+            .iter()
+            .find(|d| d.message == msg)
+            .unwrap_or_else(|| panic!("diagnostic '{}' not found", msg));
+
+        let (exp_line, exp_col) = byte_offset_to_line_col(source, start);
+        let (exp_end_line, exp_end_col) = byte_offset_to_line_col(source, end);
+
+        assert_eq!(
+            d.line, exp_line as u32,
+            "{}: line mismatch (got {}, expected {})",
+            msg, d.line, exp_line
+        );
+        assert_eq!(
+            d.column, exp_col as u32,
+            "{}: column mismatch (got {}, expected {})",
+            msg, d.column, exp_col
+        );
+        assert_eq!(
+            d.end_line, exp_end_line as u32,
+            "{}: end_line mismatch (got {}, expected {})",
+            msg, d.end_line, exp_end_line
+        );
+        assert_eq!(
+            d.end_column, exp_end_col as u32,
+            "{}: end_column mismatch (got {}, expected {})",
+            msg, d.end_column, exp_end_col
+        );
+    }
+}
+
+/// The labelless (1,1,1,1) fallback is unaffected by the optimization.
+/// Delegates to the existing test — this is just a marker asserting step-7
+/// coverage of the labelless path specifically.
+#[test]
+fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    session.inject_diagnostic_for_test(Diagnostic::warning("no-label-stress"));
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "no-label-stress")
+        .expect("injected 'no-label-stress' not found");
+
+    assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+}
+
+// --- Task 837 step-9: multibyte UTF-8 cross-validation tests ---
+
+/// offset_to_line_col_fast must match byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 2-byte UTF-8 sequences.
+///
+/// "héllo\nwörld": 'é' (U+00E9) = 2 bytes; 'ö' (U+00F6) = 2 bytes.
+/// The old byte-arithmetic implementation computes `offset - newline_pos` which
+/// gives byte distance, not codepoint count.  The new implementation must
+/// compute `source[line_start..offset].chars().count() + 1`.
+///
+/// Specific regression anchor:
+///   byte offset 3 = the first 'l' after 'é'.
+///   codepoint column = 3 (h=1, é=2, l=3) — NOT 4 (which byte distance gives).
+#[test]
+fn offset_to_line_col_fast_matches_original_multibyte_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    let line_offsets = build_line_offsets(source);
+    // Iterate only char-boundary offsets.
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "2-byte UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // Also check the EOF position (one past last byte).
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "2-byte UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+}
+
+/// Targeted assertion: byte offset 3 in "héllo\nwörld" must give column 3
+/// (codepoints h=1, é=2, l=3), NOT column 4 (byte distance from start).
+#[test]
+fn offset_to_line_col_fast_two_byte_char_column_is_codepoint_not_byte() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    // 'é' occupies bytes 1..=2; the 'l' following it starts at byte 3.
+    let line_offsets = build_line_offsets(source);
+    // col should be 3 (h,é,l = 3 codepoints), not 4 (byte distance 3 → +1=4).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 3),
+        (1, 3),
+        "byte 3 ('l' after 'é') should have codepoint column 3, not byte-based 4"
+    );
+    // 'r' on line 2: 'ö' at bytes 8..=9, so 'r' at byte 10.
+    // Codepoints on line 2 before 'r': w=1, ö=2  → 'r' = col 3.
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 10),
+        (2, 3),
+        "byte 10 ('r' after 'ö') should have codepoint column 3, not byte-based 4"
+    );
+}
+
+/// offset_to_line_col_fast matches byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 3-byte CJK UTF-8 sequences.
+///
+/// "ab\n你好world": '你' (U+4F60) = 3 bytes; '好' (U+597D) = 3 bytes.
+/// 'w' is the 3rd codepoint on line 2 (you=1, hao=2, w=3).
+/// Old byte arithmetic would give col = (9 - 2) = 7, which is wrong.
+#[test]
+fn offset_to_line_col_fast_matches_original_cjk_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "ab\n\u{4F60}\u{597D}world";
+    let line_offsets = build_line_offsets(source);
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "CJK UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // EOF check.
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "CJK UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+    // Targeted: 'w' at byte 9 should be (2, 3), not byte-arithmetic (2, 7).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 9),
+        (2, 3),
+        "byte 9 ('w' after two 3-byte CJK chars) should have codepoint column 3"
+    );
+}
+
+/// offset_to_line_col_fast does not panic on non-char-boundary byte offsets;
+/// it snaps backward to the nearest valid boundary instead.
+#[test]
+fn offset_to_line_col_fast_non_char_boundary_no_panic() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+
+    // "é" is 2 bytes (0xC3 0xA9), so byte 1 is mid-char.
+    let source = "é";
+    let line_offsets = build_line_offsets(source);
+    // Byte 1 is not a char boundary — should not panic, should snap back to 0.
+    let (line, col) = offset_to_line_col_fast(source, &line_offsets, 1);
+    assert_eq!(line, 1);
+    assert_eq!(col, 1, "non-boundary offset should snap back to start");
+
+    // Multi-line with CJK: "日\nA" — '日' is 3 bytes; byte 2 is mid-char.
+    let source2 = "日\nA";
+    let offsets2 = build_line_offsets(source2);
+    let (l, c) = offset_to_line_col_fast(source2, &offsets2, 2);
+    assert_eq!(l, 1);
+    assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
 }

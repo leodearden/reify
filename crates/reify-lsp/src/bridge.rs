@@ -115,6 +115,15 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "initialized" => {
+                // Some LSP clients (e.g. Neovim, certain VS Code extensions) send
+                // `params: null` for notifications with no meaningful payload.
+                // `InitializedParams` is an empty struct (`{}` in the LSP spec),
+                // so null is semantically equivalent to an empty object.
+                let params = if params.is_null() {
+                    serde_json::json!({})
+                } else {
+                    params
+                };
                 let p: InitializedParams = serde_json::from_value(params)
                     .map_err(|e| format!("initialized params error: {e}"))?;
                 server.initialized(p).await;

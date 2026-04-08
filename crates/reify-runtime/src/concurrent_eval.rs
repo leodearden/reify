@@ -8,15 +8,24 @@
 //! tracking, not by the adapter. The adapter is purely computational — it evaluates
 //! expressions, computes content hashes, and records results.
 //!
-//! **Lock poisoning recovery:** All lock acquisitions recover gracefully from poisoned
-//! locks via private helper methods (`read_values()`, `write_values()`,
-//! `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) that emit
-//! `tracing::warn!` on recovery. A poisoned lock means a previous evaluation task
-//! panicked while holding the lock — the data may be partially updated, but recovering
-//! prevents cascading panics that would take down all concurrent tasks sharing the
-//! adapter. The `into_result()` method uses inline recovery with `tracing::warn!`
-//! because `self` is consumed by `Arc::try_unwrap`. This matches the pattern used in
-//! `SharedPriorityPromoter`.
+//! **Lock poisoning recovery contract:** The public operations `values()`,
+//! `snapshot_values()`, `take_results()`, `build_result_shared()`, `into_result()`,
+//! and the `AsyncNodeEvaluator::evaluate()` implementation all guarantee that they
+//! will not panic when an internal lock is poisoned by a prior evaluation task that
+//! panicked while holding it. Each recovery emits a `tracing::warn!` so that
+//! cascading panics in a concurrent batch can be detected and diagnosed. Recovered
+//! data may reflect a partially-completed write from the panicking task. Without this
+//! graceful recovery, one panicking task would cascade to every concurrent task
+//! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
+//! just the faulting node.
+//!
+//! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
+//! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
+//! `write_snapshot_values()`, and `lock_results()` — which encapsulate the `unwrap_or_else` +
+//! `tracing::warn!` + `into_inner()` recovery pattern. The exception is methods that consume
+//! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
+//! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
+//! the receiver; see `into_result()`'s doc comment for the full rationale.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -47,9 +56,9 @@ use crate::concurrent::{
 /// hashes for Changed/Unchanged determination, and records results. Skip decisions
 /// are made by the scheduler via pre-computed `changed_vcids` tracking.
 ///
-/// All lock acquisitions recover gracefully from poisoning — if an evaluation task
-/// panics mid-computation, subsequent lock acquisitions on the same adapter will
-/// extract the inner data from the `PoisonError` rather than propagating the panic.
+/// This adapter upholds the module-level poison-recovery contract: all public operations
+/// remain panic-safe against prior task panics, so a single faulting node cannot take
+/// down the entire evaluation batch sharing this adapter via `Arc`.
 pub struct ConcurrentEvalAdapter {
     /// The evaluation graph (immutable during evaluation).
     graph: Arc<EvaluationGraph>,

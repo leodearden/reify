@@ -2,8 +2,9 @@
   "name": "@reify/gui",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10.9.4",
   "type": "module",
+  "packageManager": "npm@10.9.7",
+  "workspaces": ["packages/*"],
   "scripts": {
     "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
     "dev": "vite",
@@ -14,6 +15,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@reify/shared-utils": "^0.1.0",
     "@codemirror/autocomplete": "^6.18.0",
     "@codemirror/commands": "^6.3.0",
     "@codemirror/language": "^6.10.0",

@@ -1,36 +1,32 @@
 import { describe, it, expect } from 'vitest';
 import { errorMessage } from '../utils.js';
 
-describe('errorMessage', () => {
-  it('returns .message for Error instances', () => {
-    expect(errorMessage(new Error('something broke'))).toBe('something broke');
+describe('errorMessage re-export smoke test', () => {
+  it('is exported from utils', () => {
+    expect(typeof errorMessage).toBe('function');
   });
 
-  it('returns .message for Error subclass instances', () => {
-    expect(errorMessage(new TypeError('bad type'))).toBe('bad type');
-    expect(errorMessage(new RangeError('out of range'))).toBe('out of range');
+  it('delegates to @reify/shared-utils implementation', () => {
+    expect(errorMessage(new Error('x'))).toBe('x');
   });
 
-  it('returns the string itself for string inputs', () => {
-    expect(errorMessage('plain string error')).toBe('plain string error');
+  it('returns "Unknown error" for plain object with throwing .message getter', () => {
+    const hostile = { get message() { throw new Error('boom'); } };
+    expect(errorMessage(hostile)).toBe('Unknown error');
   });
 
-  it('coerces non-Error, non-string values via String()', () => {
-    expect(errorMessage(42)).toBe('42');
-    expect(errorMessage(null)).toBe('null');
-    expect(errorMessage(undefined)).toBe('undefined');
-    expect(errorMessage({ key: 'val' })).toBe('[object Object]');
+  it('returns "Unknown error" for Error subclass with throwing message getter', () => {
+    class ThrowingError extends Error {
+      get message(): string { throw new Error('boom'); }
+    }
+    expect(errorMessage(new ThrowingError())).toBe('Unknown error');
   });
 
-  it('returns "Unknown error" for Error with empty message', () => {
-    expect(errorMessage(new Error(''))).toBe('Unknown error');
-  });
-
-  it('returns "Unknown error" for Error with whitespace-only message', () => {
-    expect(errorMessage(new Error('   '))).toBe('Unknown error');
-  });
-
-  it('returns "Unknown error" for whitespace-only string input', () => {
-    expect(errorMessage('   ')).toBe('Unknown error');
+  it('returns "Unknown error" when valueOf() and toString() both throw', () => {
+    const hostile = {
+      valueOf() { throw new Error('boom'); },
+      toString() { throw new Error('boom'); },
+    };
+    expect(errorMessage(hostile)).toBe('Unknown error');
   });
 });

@@ -51,6 +51,10 @@ fn test_content_hash_changes_on_modification() {
 /// The expected output files that tree-sitter generate produces.
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
 
+/// Absolute path to this test file, resolved at compile time via CARGO_MANIFEST_DIR.
+/// Used by source-level regression tests that read this file's own contents.
+const THIS_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/build_logic_tests.rs");
+
 /// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
 /// and returns the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
@@ -766,6 +770,48 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
     result
 }
 
+/// Scans `source` for `#[test]` functions whose body passes `THIS_FILE` as a
+/// call argument — i.e., the body contains the substring `(THIS_FILE)` — and
+/// returns their signatures (e.g. `"fn test_foo()"`).
+///
+/// Uses the same line-by-line state machine as `find_cfg_unix_test_fns`: once
+/// `#[test]` is seen, the flag `saw_test` is set. Intermediate
+/// attribute/comment lines keep the flag alive. When a line starting with
+/// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
+/// check whether the function body contains `(THIS_FILE)`. Only functions that
+/// pass this body check are collected.
+fn find_self_reading_test_fns(source: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut saw_test = false;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[test]" {
+            saw_test = true;
+        } else if trimmed.starts_with("fn test_") && saw_test {
+            // Extract "fn name()" — everything up to and including the first ')'
+            if let Some(end) = trimmed.find(')') {
+                let sig = trimmed[..=end].to_string();
+                // Only collect if the function body contains (THIS_FILE)
+                if let Some(body) = extract_test_fn_body(source, &sig) {
+                    if body.contains("(THIS_FILE)") {
+                        result.push(sig);
+                    }
+                }
+            }
+            saw_test = false;
+        } else if trimmed.starts_with('#') {
+            // Another attribute — keep flag alive (e.g. #[allow(...)])
+        } else if trimmed.starts_with("//") || trimmed.is_empty() {
+            // Comment or blank line — keep flag alive
+        } else {
+            // Any other line (fn without test, let, etc.) resets the flag
+            saw_test = false;
+        }
+    }
+    result
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: every #[cfg(unix)] test function that
@@ -775,7 +821,7 @@ fn test_unix_permission_tests_have_root_guard() {
     // The set of unix test functions is discovered dynamically by
     // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
     // automatically checked without updating a hardcoded list.
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+    let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file");
 
     let unix_test_fns = find_cfg_unix_test_fns(&source);
@@ -808,7 +854,7 @@ fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
     // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
+    let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file");
 
     // Extract the Drop impl for ReadonlyGuard
@@ -875,8 +921,8 @@ fn test_is_root_uses_libc_not_raw_ffi() {
     // a raw `unsafe extern "C" { fn getuid() -> u32; }` declaration.
     // Raw FFI declarations are fragile (no type-checked header), whereas libc provides
     // a well-audited, platform-tested binding.
-    let source = std::fs::read_to_string("tests/build_logic_tests.rs")
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
 
     let fn_start = source
         .find("fn is_root()")
@@ -1032,4 +1078,123 @@ fn test_find_cfg_unix_test_fns_discovers_dynamically() {
         "should NOT include not_a_test_fn (not a #[test]); got: {:?}",
         fns
     );
+}
+
+#[test]
+fn test_find_self_reading_test_fns_discovers_dynamically() {
+    // Tests for the find_self_reading_test_fns() helper.
+    // The helper should find all #[test] functions whose body calls a function
+    // with THIS_FILE as an argument (i.e., body contains the substring "(THIS_FILE)").
+
+    let synthetic_source = concat!(
+        // Case (a): a test fn whose body contains read_to_string(THIS_FILE) — should be collected.
+        "#[test]\n",
+        "fn test_reads_this_file() {\n",
+        "    let source = std::fs::read_to_string(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (a2): a test fn whose body contains File::open(THIS_FILE) — should be collected.
+        "#[test]\n",
+        "fn test_opens_this_file() {\n",
+        "    let f = File::open(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (b): a non-test fn with (THIS_FILE) in body — should be ignored.
+        "fn helper_with_this_file() {\n",
+        "    let _ = fs::read(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (c): a test fn without (THIS_FILE) in body — should be ignored.
+        "#[test]\n",
+        "fn test_no_this_file() {\n",
+        "    let _ = 1;\n",
+        "}\n\n",
+        // Case (d): a test fn that mentions THIS_FILE only in a comment (no call form) — should be ignored.
+        // The comment below contains the bare identifier THIS_FILE but not the
+        // parenthesized form, so the scanner must not collect this function.
+        "#[test]\n",
+        "fn test_comment_only_mention() {\n",
+        "    // This test does not call THIS_FILE as an argument\n",
+        "    let _ = 2;\n",
+        "}\n",
+    );
+
+    let fns = find_self_reading_test_fns(synthetic_source);
+
+    assert!(
+        fns.contains(&"fn test_reads_this_file()".to_string()),
+        "should discover test_reads_this_file; got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_opens_this_file()".to_string()),
+        "should discover test_opens_this_file; got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.iter().any(|s| s.contains("helper_with_this_file")),
+        "should NOT include helper_with_this_file (not a #[test]); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_no_this_file()".to_string()),
+        "should NOT include test_no_this_file (no (THIS_FILE) in body); got: {:?}",
+        fns
+    );
+    assert!(
+        !fns.contains(&"fn test_comment_only_mention()".to_string()),
+        "should NOT include test_comment_only_mention (THIS_FILE only in comment); got: {:?}",
+        fns
+    );
+}
+
+#[test]
+fn test_self_read_paths_use_manifest_dir() {
+    // Meta-test / regression guard: each source-self-inspection test that reads
+    // this file must use the `THIS_FILE` constant rather than the bare relative path
+    // `"tests/build_logic_tests.rs"`.
+    // (The bare path above is backtick-quoted so that a future blanket-guard
+    // assertion scanning for the literal path string does not false-match
+    // this describing comment.)
+    // A bare relative path is fragile — it depends on the working directory from which
+    // `cargo test` is invoked, causing failures when tests are run from outside the
+    // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
+    //
+    // THIS_FILE resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
+    // so it is safe regardless of invocation directory.
+    //
+    // The set of self-reading test functions is discovered dynamically by
+    // find_self_reading_test_fns so that newly added self-reading tests are
+    // automatically checked without updating a hardcoded list.
+    // This test excludes itself from the discovered set to avoid circularity
+    // (its body contains (THIS_FILE) in both the read call and assertion code).
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let self_reading_fns = find_self_reading_test_fns(&source);
+
+    // Exclude this meta-test itself to avoid circularity.
+    let self_reading_fns: Vec<String> = self_reading_fns
+        .into_iter()
+        .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
+        .collect();
+
+    // Sanity-check: the scanner must find at least 3 self-reading tests (the ones
+    // we know about). This catches a broken scanner that silently returns empty.
+    assert!(
+        self_reading_fns.len() >= 3,
+        "find_self_reading_test_fns should discover at least 3 self-reading test functions, \
+         but found {:?}",
+        self_reading_fns
+    );
+
+    for fn_sig in &self_reading_fns {
+        let fn_body = extract_test_fn_body(&source, fn_sig)
+            .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
+
+        assert!(
+            fn_body.contains("(THIS_FILE)"),
+            "{} must read the test file via THIS_FILE rather than a bare relative path. \
+             Function body:\n{}",
+            fn_sig,
+            fn_body
+        );
+    }
 }

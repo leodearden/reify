@@ -1,5 +1,5 @@
 {
-  "packageManager": "npm@10.9.4",
+  "packageManager": "npm@10.9.7",
   "dependencies": {
     "tree-sitter-cli": "^0.26.7"
   }

@@ -32,15 +32,7 @@ const rules: ErrorRule[] = [
   },
 ];
 
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) {
-    return err.message.trim() || 'Unknown error';
-  }
-  if (err !== null && typeof err === 'object' && typeof (err as Record<string, unknown>).message === 'string') {
-    return ((err as Record<string, unknown>).message as string).trim() || 'Unknown error';
-  }
-  return String(err).trim() || 'Unknown error';
-}
+export { errorMessage } from '@reify/shared-utils';
 
 export function classifyError(message: string): ClassifiedError {
   for (const rule of rules) {

@@ -1,6 +1,6 @@
 use reify_types::{
-    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, ResolvedFunction, Type,
-    UnOp, Value, ValueCellId,
+    BinOp, CompiledExpr, CompiledExprKind, ContentHash, DimensionVector, FieldSourceKind,
+    ResolvedFunction, Type, UnOp, Value, ValueCellId,
 };
 
 // --- Expression builders ---
@@ -251,6 +251,34 @@ pub fn divergence_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
 /// Create a field `curl` call: `std::field::curl(field) -> result_type`.
 pub fn curl_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
     fn_call("curl", "std::field::curl", vec![field], result_type)
+}
+
+/// Create a `Value::Field` literal expression with explicit domain, codomain, source, and lambda.
+///
+/// Use this instead of [`literal`] for Field values — the type cannot be inferred from the
+/// value alone; domain and codomain must be provided explicitly.
+pub fn field_literal_expr(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> CompiledExpr {
+    let value = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source,
+        lambda: Box::new(lambda),
+    };
+    let result_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    CompiledExpr::literal(value, result_type)
+}
+
+/// Create a field `laplacian` call: `std::field::laplacian(field) -> result_type`.
+pub fn laplacian_call(field: CompiledExpr, result_type: Type) -> CompiledExpr {
+    fn_call("laplacian", "std::field::laplacian", vec![field], result_type)
 }
 
 /// Create a lambda expression with named parameters.
@@ -537,6 +565,59 @@ mod tests {
             assert_eq!(function.qualified_name, "std::field::curl");
         } else {
             panic!("expected FunctionCall kind for curl_call");
+        }
+    }
+
+    // --- laplacian_call tests (step 17) ---
+
+    #[test]
+    fn laplacian_call_produces_function_call_with_std_field_laplacian() {
+        let field_e = literal(Value::Real(0.0));
+        let expr = laplacian_call(field_e, Type::Real);
+        assert_eq!(expr.result_type, Type::Real);
+        if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
+            assert_eq!(function.name, "laplacian");
+            assert_eq!(function.qualified_name, "std::field::laplacian");
+            assert_eq!(args.len(), 1);
+        } else {
+            panic!("expected FunctionCall kind for laplacian_call");
+        }
+    }
+
+    // --- field_literal_expr tests (step 15) ---
+
+    #[test]
+    fn field_literal_expr_produces_literal_with_field_type() {
+        use reify_types::FieldSourceKind;
+        let domain = Type::Geometry;
+        let codomain = Type::Real;
+        let lambda = Value::Undef;
+        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Analytical, lambda);
+        assert_eq!(
+            expr.result_type,
+            Type::Field {
+                domain: Box::new(domain),
+                codomain: Box::new(codomain),
+            }
+        );
+        assert!(matches!(
+            expr.kind,
+            CompiledExprKind::Literal(Value::Field { .. })
+        ));
+    }
+
+    #[test]
+    fn field_literal_expr_wraps_lambda() {
+        use reify_types::FieldSourceKind;
+        let domain = Type::Geometry;
+        let codomain = Type::Real;
+        let lambda = Value::Int(42);
+        let expr = field_literal_expr(domain.clone(), codomain.clone(), FieldSourceKind::Sampled, lambda.clone());
+        if let CompiledExprKind::Literal(Value::Field { source, lambda: lam, .. }) = &expr.kind {
+            assert_eq!(*source, FieldSourceKind::Sampled);
+            assert_eq!(**lam, lambda);
+        } else {
+            panic!("expected Literal(Value::Field)");
         }
     }
 
