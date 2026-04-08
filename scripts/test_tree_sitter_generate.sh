@@ -189,6 +189,10 @@ echo "--- Test 12: .generate.lock in .gitignore ---"
 assert ".generate.lock pattern appears in root .gitignore" \
     grep -q '\.generate\.lock' "$ROOT/.gitignore"
 
+# The mkdir-based lock directory is also a runtime artifact.
+assert ".generate.lock.d appears in root .gitignore" \
+    grep -q '\.generate\.lock\.d' "$ROOT/.gitignore"
+
 # ── Test 13: uses portable_timeout from lib_portable.sh ──────────
 echo ""
 echo "--- Test 13: uses portable_timeout instead of inline block ---"
