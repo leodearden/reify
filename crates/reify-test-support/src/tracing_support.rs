@@ -220,7 +220,10 @@ impl tracing::Subscriber for CountingSubscriber {
             return;
         }
         if let Some(counter) = self.counters.get(event.metadata().level()) {
-            counter.fetch_add(1, Ordering::Relaxed);
+            // Release ordering pairs with Acquire loads in assertion helpers,
+            // ensuring all memory written before the store is visible to threads
+            // that observe the counter increment.
+            counter.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -309,7 +312,11 @@ impl tracing::Subscriber for WarnCountingSubscriber {
             "event() reached with non-WARN — {}",
             CONTRACT_VIOLATION_MARKER
         );
-        self.warn_count.fetch_add(1, Ordering::Relaxed);
+        // Release ordering pairs with Acquire loads in assertion helpers and
+        // WarnCapture::count(), ensuring all prior memory writes are visible to
+        // threads that observe the counter — especially important for async
+        // tests on a current_thread runtime.
+        self.warn_count.fetch_add(1, Ordering::Release);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -440,7 +447,9 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
             "WarnCapturingSubscriber: event() reached with non-WARN — {}",
             CONTRACT_VIOLATION_MARKER
         );
-        self.count.fetch_add(1, Ordering::Relaxed);
+        // Release ordering pairs with Acquire loads in assertion helpers and
+        // WarnCapture::count(), ensuring all prior memory writes are visible.
+        self.count.fetch_add(1, Ordering::Release);
         let mut visitor = MessageVisitor(String::new());
         event.record(&mut visitor);
         self.messages.lock().unwrap().push(visitor.0);
