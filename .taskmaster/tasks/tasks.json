@@ -21819,17 +21819,18 @@
         "description": "Three related fixes on errorMessage test files, all stemming from review triage of task 1031:\n\n1. **Sync mirror file (gui/src/__tests__/errorClassifier.test.ts lines 141-147)** — apply the same improvements just landed in gui/sidecar/src/__tests__/utils.test.ts so the \"kept in sync\" convention (declared in gui/sidecar/src/utils.ts:1 and gui/src/utils/errorClassifier.ts:35) is respected:\n   - Split the combined `{ message: 42 }` case into separate `null` and numeric it-blocks, each with a comment explaining that the `'message' in err` guard catches them (the object is never passed to `String()`).\n   - Add a new `it('returns \"Unknown error\" for plain object with undefined .message', ...)` case exercising `errorMessage({ message: undefined })` with a comment explaining that JS `in` returns true for properties set to undefined.\n   - The existing `'falls through to String() for plain object without .message'` test at line 145-147 already covers the no-message-key contrast — leave it in place (see item 2 below for the sidecar companion).\n\n2. **Re-add companion no-message-key test in gui/sidecar/src/__tests__/utils.test.ts** — add `it('returns \"[object Object]\" for plain object with no .message property', () => { expect(errorMessage({})).toBe('[object Object]'); })` adjacent to the new `{ message: undefined }` test (currently lines 58-62). This makes the `'message' in err` vs `err.message === undefined` distinction visible in one place, which is the whole point of the undefined test. The no-key case is currently only covered indirectly by the `{ key: 'val' }` line in the grouped `coerces non-Error, non-string values` test (line 22), which is in a separate describe context.\n\n3. **Remove trailing blank line on gui/sidecar/src/__tests__/utils.test.ts line 67** — stray blank line introduced when the bare-object test was deleted in task 1031. Minor style fix.\n\nReviewer: reviewer_comprehensive on task 1031.\nNote: both mirror files carry `errorMessage` byte-identically; any future change to one must be applied to the other.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1031"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:10:38.524Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:10:26.394Z",
+      "lastModified": "2026-04-08T11:10:38.539Z",
       "taskCount": 1058,
       "completedCount": 745,
       "tags": [
