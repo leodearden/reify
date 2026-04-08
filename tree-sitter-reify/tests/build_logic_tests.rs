@@ -1159,39 +1159,42 @@ fn test_self_read_paths_use_manifest_dir() {
     //
     // THIS_FILE resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
     // so it is safe regardless of invocation directory.
+    //
+    // The set of self-reading test functions is discovered dynamically by
+    // find_self_reading_test_fns so that newly added self-reading tests are
+    // automatically checked without updating a hardcoded list.
+    // This test excludes itself from the discovered set to avoid circularity
+    // (its body contains (THIS_FILE) in both the read call and assertion code).
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    // Check test_unix_permission_tests_have_root_guard uses THIS_FILE.
-    let root_guard_body =
-        extract_test_fn_body(&source, "fn test_unix_permission_tests_have_root_guard()")
-            .expect("source should contain test_unix_permission_tests_have_root_guard");
+    let self_reading_fns = find_self_reading_test_fns(&source);
+
+    // Exclude this meta-test itself to avoid circularity.
+    let self_reading_fns: Vec<String> = self_reading_fns
+        .into_iter()
+        .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
+        .collect();
+
+    // Sanity-check: the scanner must find at least 3 self-reading tests (the ones
+    // we know about). This catches a broken scanner that silently returns empty.
     assert!(
-        root_guard_body.contains("(THIS_FILE)"),
-        "test_unix_permission_tests_have_root_guard must read the test file via \
-         THIS_FILE rather than a bare relative path. Function body:\n{}",
-        root_guard_body
+        self_reading_fns.len() >= 3,
+        "find_self_reading_test_fns should discover at least 3 self-reading test functions, \
+         but found {:?}",
+        self_reading_fns
     );
 
-    // Check test_readonly_guard_drop_logs_error uses THIS_FILE.
-    let drop_logs_body =
-        extract_test_fn_body(&source, "fn test_readonly_guard_drop_logs_error()")
-            .expect("source should contain test_readonly_guard_drop_logs_error");
-    assert!(
-        drop_logs_body.contains("(THIS_FILE)"),
-        "test_readonly_guard_drop_logs_error must read the test file via \
-         THIS_FILE rather than a bare relative path. Function body:\n{}",
-        drop_logs_body
-    );
+    for fn_sig in &self_reading_fns {
+        let fn_body = extract_test_fn_body(&source, fn_sig)
+            .unwrap_or_else(|| panic!("source should contain {}", fn_sig));
 
-    // Check test_is_root_uses_libc_not_raw_ffi uses THIS_FILE.
-    let is_root_body =
-        extract_test_fn_body(&source, "fn test_is_root_uses_libc_not_raw_ffi()")
-            .expect("source should contain test_is_root_uses_libc_not_raw_ffi");
-    assert!(
-        is_root_body.contains("(THIS_FILE)"),
-        "test_is_root_uses_libc_not_raw_ffi must read the test file via \
-         THIS_FILE rather than a bare relative path. Function body:\n{}",
-        is_root_body
-    );
+        assert!(
+            fn_body.contains("(THIS_FILE)"),
+            "{} must read the test file via THIS_FILE rather than a bare relative path. \
+             Function body:\n{}",
+            fn_sig,
+            fn_body
+        );
+    }
 }
