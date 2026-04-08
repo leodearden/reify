@@ -534,6 +534,49 @@ async fn did_close_with_malformed_params_returns_error() {
     .await;
 }
 
+/// A valid `textDocument/didClose` notification should return exactly `Ok(Value::Null)`.
+///
+/// Documents the `Ok(Value::Null)` contract for the didClose arm of `handle_request`.
+/// The document is opened first so the close applies to a live entry, exercising the
+/// realistic open → close lifecycle rather than coupling to lenient missing-URI behavior.
+#[tokio::test]
+async fn did_close_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let source = reify_test_support::bracket_source();
+    lsp.handle_request(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": "file:///test.ri",
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        }),
+    )
+    .await
+    .expect("didOpen should succeed");
+
+    let result = lsp
+        .handle_request(
+            "textDocument/didClose",
+            json!({
+                "textDocument": {
+                    "uri": "file:///test.ri"
+                }
+            }),
+        )
+        .await
+        .expect("didClose should return Ok");
+
+    assert_eq!(
+        result,
+        serde_json::Value::Null,
+        "didClose should return exactly Ok(Value::Null)"
+    );
+}
+
 /// The `shutdown` request should return exactly `Ok(Value::Null)`.
 ///
 /// This documents that the shutdown arm follows the same `Ok(Value::Null)` contract
