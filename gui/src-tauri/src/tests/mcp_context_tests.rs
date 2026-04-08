@@ -486,9 +486,9 @@ fn mcp_config_struct_stores_fields() {
 
     let config = McpConfig {
         engine: engine.clone(),
-        event_emitter: move |_name: String, _payload: serde_json::Value| {
+        event_emitter: Arc::new(move |_name: String, _payload: serde_json::Value| {
             *sink_clone.lock().unwrap() = true;
-        },
+        }),
         selection: selection.clone(),
     };
 

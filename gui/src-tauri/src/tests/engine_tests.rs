@@ -1202,32 +1202,128 @@ fn byte_offset_to_line_col_empty_source() {
     assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
 }
 
+#[cfg(debug_assertions)]
 #[test]
+#[should_panic(expected = "offset <= source.len()")]
 fn byte_offset_to_line_col_offset_beyond_len() {
     use crate::engine::byte_offset_to_line_col;
 
-    // Source "ab" (len=2). Offset 100 far exceeds the source length.
-    // The loop exhausts all chars without hitting the break, leaving the
-    // position after the last char: column incremented for 'a' and 'b' → (1, 3).
+    // In debug/test builds, passing an offset beyond source.len() must panic
+    // with a clear message, so stale-span bugs are caught loudly.
+    // Release builds retain silent clamping (debug_assert is a no-op there).
+    let _ = byte_offset_to_line_col("ab", 100);
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len_release() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In release builds, debug_assert is a no-op, so passing an offset beyond
+    // source.len() silently clamps: the loop exhausts all characters and returns
+    // the position after the last character.
+    // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
     assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
 }
 
 #[test]
-fn byte_offset_to_line_col_empty_span_identical_coords() {
+fn get_diagnostics_empty_span_has_identical_start_end() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
 
-    // When a diagnostic span has start == end (empty span), both calls to
-    // byte_offset_to_line_col with the same offset must return identical coords.
-    // offset 6 in "hello\nworld" (after '\n') → start of second line → (2, 1).
-    let source = "hello\nworld";
-    let offset = 6; // 'w' is the first char of "world"
-    let start_coord = byte_offset_to_line_col(source, offset);
-    let end_coord = byte_offset_to_line_col(source, offset);
+    // Verify that a zero-length span (start == end) produces identical
+    // start and end coordinates through the full get_diagnostics pipeline,
+    // including the optimised offset_to_line_col_fast path.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let offset = source.find("width").expect("'width' not in bracket_source") as u32;
+
+    let diag = Diagnostic::warning("empty-span-test")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset, offset), // zero-length span
+            "zero-length label",
+        ));
+    session.inject_diagnostic_for_test(diag);
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "empty-span-test")
+        .expect("injected empty-span diagnostic not found");
+
+    // The real concern: start and end coords must be identical for an empty span.
     assert_eq!(
-        start_coord, end_coord,
-        "empty span: identical offsets must produce identical coords"
+        d.line, d.end_line,
+        "empty span: line ({}) != end_line ({})",
+        d.line, d.end_line
     );
-    assert_eq!(start_coord, (2, 1));
+    assert_eq!(
+        d.column, d.end_column,
+        "empty span: column ({}) != end_column ({})",
+        d.column, d.end_column
+    );
+
+    // Cross-validate against the reference implementation.
+    let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
+    assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
+    assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+
+    // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
+    // bracket_source() starts "structure Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 30 (manually verified):
+    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    //   + 10 bytes "    param " → col 11 when 'w' is reached.
+    assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
+    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
+}
+
+#[test]
+fn byte_offset_to_line_col_multibyte_chars() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source: "αβ\nγ"
+    // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
+    // β = U+03B2, 2 bytes (UTF-8: 0xCE 0xB2), byte offset 2
+    // \n              ,  byte offset 4
+    // γ = U+03B3, 2 bytes (UTF-8: 0xCE 0xB3), byte offset 5
+    //
+    // Columns must be codepoint-based (1, 2, 3), not byte-based (1, 3, 5).
+    let source = "αβ\nγ";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+
+    // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 1 → mid-codepoint inside α (byte 0xB1 of the 2-byte UTF-8 sequence CE B1).
+    // char_indices only yields valid codepoint boundaries: (0,'α'),(2,'β'),(4,'\n'),(5,'γ').
+    // Offset 1 is not a boundary; the loop processes α (col→2) then sees i=2 ≥ 1 and breaks.
+    assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
+    // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
+    assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
+    // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
+    assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
+    // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+}
+
+#[test]
+fn byte_offset_to_line_col_at_source_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "abc\ndef" has byte length 7.
+    // offset == source.len() is the EOF position, one past the last char 'f'.
+    // The loop iterates all chars (indices 0-6, all < 7) exhausting them,
+    // so: 'a'→col2, 'b'→col3, 'c'→col4, '\n'→line2,col1, 'd'→col2, 'e'→col3, 'f'→col4
+    // Then the loop ends and we return (2, 4).
+    let source = "abc\ndef";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+    assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
 }
 
 // --- Task 837: offset_to_line_col_fast unit tests ---

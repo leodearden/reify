@@ -38,6 +38,7 @@ tauri-plugin-shell = { version = "2", optional = true }
 tokio = { workspace = true, features = ["process", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+tracing.workspace = true
 notify.workspace = true
 
 [build-dependencies]

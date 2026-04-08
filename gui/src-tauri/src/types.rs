@@ -1,8 +1,50 @@
 // IPC types for GUI ↔ Engine communication
 
 use serde::{Deserialize, Serialize};
+use serde::ser::Error as SerError;
 
 use reify_types::{DeterminacyState, Value};
+
+/// Custom serializer for `Vec<f32>` that rejects non-finite values.
+///
+/// `serde_json::to_value` silently converts `f32::NAN` and `f32::INFINITY` to
+/// `null` by default.  This serializer makes degenerate geometry an explicit
+/// error so that `delta_to_events` can log a warning and emit a
+/// `"serialization-error"` event instead of silently producing null vertices
+/// on the frontend.
+fn serialize_finite_f32_vec<S>(values: &[f32], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(values.len()))?;
+    for &v in values {
+        if !v.is_finite() {
+            return Err(S::Error::custom(format!(
+                "non-finite f32 value ({v}) in mesh geometry"
+            )));
+        }
+        seq.serialize_element(&v)?;
+    }
+    seq.end()
+}
+
+/// Custom serializer for `Option<Vec<f32>>` that rejects non-finite values.
+///
+/// Mirrors [`serialize_finite_f32_vec`] but handles the `None` case
+/// (serializes as JSON `null`).
+fn serialize_finite_f32_vec_opt<S>(
+    values: &Option<Vec<f32>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match values {
+        None => serializer.serialize_none(),
+        Some(v) => serialize_finite_f32_vec(v, serializer),
+    }
+}
 
 /// Full GUI state snapshot sent to the frontend after each operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -17,8 +59,10 @@ pub struct GuiState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshData {
     pub entity_path: String,
+    #[serde(serialize_with = "serialize_finite_f32_vec")]
     pub vertices: Vec<f32>,
     pub indices: Vec<u32>,
+    #[serde(serialize_with = "serialize_finite_f32_vec_opt")]
     pub normals: Option<Vec<f32>>,
 }
 

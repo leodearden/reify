@@ -25,6 +25,7 @@ use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
 use crate::dirty::topological_sort;
+use crate::graph::GuardedGroupInfo;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
@@ -260,6 +261,46 @@ pub struct ConcurrentEditResult {
     pub resolved_params: HashMap<ValueCellId, Value>,
     /// Diagnostics from constraint resolution (e.g., infeasibility messages).
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Controls how `guard_state_fingerprint` handles guard cells absent from the value map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardLookup {
+    /// Missing cells are treated as `Value::Undef` (safe during initial evaluation).
+    Lenient,
+    /// Missing cells cause a panic (required after `eval()` has fully populated all cells).
+    Strict,
+}
+
+/// Compute a content hash over the current guard-cell values in `groups`.
+///
+/// Each guard cell is hashed as `"guard:{cell}={value:?}"` to ensure that two
+/// different cells holding the same value still produce distinct hashes.
+///
+/// `GuardLookup::Lenient`: missing cells are treated as `Value::Undef`.
+/// Use this during or immediately after initial evaluation, where a guard cell
+/// might not yet have a value (semantically undetermined).
+///
+/// `GuardLookup::Strict`: panics if any guard cell is absent from `values`.
+/// Use this after `eval()` has completed, where every guard cell must be
+/// populated; a missing cell would silently produce a wrong fingerprint and
+/// corrupt the incremental cache.
+fn guard_state_fingerprint(
+    groups: &[GuardedGroupInfo],
+    values: &ValueMap,
+    mode: GuardLookup,
+) -> ContentHash {
+    let hashes = groups.iter().map(|g| {
+        let val = match mode {
+            GuardLookup::Strict => values
+                .get(&g.guard_cell)
+                .cloned()
+                .expect("guard cell must have a value after initial evaluation"),
+            GuardLookup::Lenient => values.get_or_undef(&g.guard_cell),
+        };
+        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
+    });
+    ContentHash::combine_all(hashes)
 }
 
 impl Engine {
@@ -1491,6 +1532,17 @@ impl Engine {
             }
         }
 
+        // ── Guard-state fingerprinting ──────────────────────────────
+        // Include guard-cell boolean states in the topology fingerprint so that
+        // eval() and edit_param() produce identical fingerprints for the same
+        // logical guard configuration.
+        if !snapshot.graph.guarded_groups.is_empty() {
+            let guard_state_hash =
+                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, GuardLookup::Lenient);
+            snapshot.topology_fingerprint =
+                snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+        }
+
         // Store internal state for incremental evaluation
         self.eval_state = Some(EvaluationState {
             snapshot,
@@ -1781,14 +1833,9 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint including guard states
-                let guard_state_hash = {
-                    let hashes = graph.guarded_groups.iter().map(|g| {
-                        let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("{:?}", gv))
-                    });
-                    ContentHash::combine_all(hashes)
-                };
+                // Recompute topology fingerprint including guard states.
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Lenient);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
             }
@@ -1984,10 +2031,12 @@ impl Engine {
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
                 for group in new_snapshot.graph.guarded_groups.clone() {
+                    // Site 3: guard cell must be present — eval() has completed and populated all
+                    // guard cells into the values map. A missing guard cell here is a logic error.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
-                        .unwrap_or(Value::Undef);
+                        .expect("guard cell must have a value after initial evaluation");
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
@@ -2062,19 +2111,14 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint to include guard states
-                let base_fingerprint = new_snapshot.graph.topology_fingerprint();
-                let guard_state_hashes: Vec<ContentHash> = new_snapshot
-                    .graph
-                    .guarded_groups
-                    .iter()
-                    .map(|g| {
-                        let val = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
-                    })
-                    .collect();
-                let guard_states_hash = ContentHash::combine_all(guard_state_hashes);
-                new_snapshot.topology_fingerprint = base_fingerprint.combine(guard_states_hash);
+                // Recompute topology fingerprint to include guard states.
+                let guard_state_hash = guard_state_fingerprint(
+                    &new_snapshot.graph.guarded_groups,
+                    &values,
+                    GuardLookup::Strict,
+                );
+                new_snapshot.topology_fingerprint =
+                    new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
             }
         }
 
@@ -4801,5 +4845,77 @@ mod tests {
             }
             other => panic!("expected Some(Mirror), got {:?}", other),
         }
+    }
+
+    // ── guard_state_fingerprint unit tests ────────────────────────────────────
+
+    fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
+        GuardedGroupInfo {
+            guard_cell: ValueCellId::new(entity, member),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }
+    }
+
+    #[test]
+    fn guard_state_fingerprint_empty_groups_returns_combine_all_empty() {
+        let values = ValueMap::new();
+        let result = guard_state_fingerprint(&[], &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::empty());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_single_group_present_value() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(true);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![GuardedGroupInfo {
+            guard_cell: cell.clone(),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }];
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_lenient_missing_value_uses_undef() {
+        let cell = ValueCellId::new("E", "g");
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_strict_present_matches_lenient() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(false);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![make_guard_group("E", "g")];
+        let strict = guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
+        let lenient = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        assert_eq!(strict, lenient);
+    }
+
+    #[test]
+    #[should_panic(expected = "guard cell must have a value")]
+    fn guard_state_fingerprint_strict_missing_panics() {
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
     }
 }
