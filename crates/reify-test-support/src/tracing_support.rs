@@ -341,6 +341,17 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
+        // The tracing dispatcher only calls event() when enabled() returned true;
+        // our enabled() accepts only WARN, so only WARN events reach here.
+        //
+        // Release-mode asymmetry (intentional): unlike `CountingSubscriber::event()`
+        // which defensively filters via `counters.get()`, `WarnCapturingSubscriber`
+        // relies entirely on the dispatcher contract enforced by `enabled()`.  In
+        // release builds `debug_assert_eq!` is compiled out, so a contract violation
+        // would silently capture a non-WARN event.  This is deliberate per the
+        // silent-defaults alignment from task 972: `enabled()` is the sole runtime
+        // gate in all build profiles, and the `debug_assert_eq!` backstop is
+        // sufficient for catching violations during development and testing.
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
