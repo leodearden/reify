@@ -21867,11 +21867,11 @@
         "description": "Follow-up from task 911 review triage. Two review suggestions about the NaN assertions added in `crates/reify-types/src/value.rs`:\n\n**S1 (test_organization)** — `value_ord_real_nan_and_neg_zero_still_consistent` (~line 2156) mixes a PartialEq bit-identity assertion (`assert_eq!(nan, nan2, ...)`) into a test whose name/comments focus on Ord/total_cmp. The natural home for a \"NaN PartialEq equality\" assertion is next to `nan_normalized` (line 1889), which already constructs two independent `f64::NAN` values for a content_hash check.\n\n**S2 (test_coverage)** — After task 911, `value_ord_real_nan_total_order` (~line 2122) still only asserts `nan.cmp(&nan) == Equal` against the *same* binding. There is no assertion that two *independently constructed* NaN values compare Equal under `Ord`. Per the Eq/Ord contract documented at value.rs:983-986 (`a == b` iff `a.cmp(&b) == Ordering::Equal`), this is a coverage gap.\n\nSuggested fix (addresses both):\n1. In `value_ord_real_nan_total_order`, add `let nan2 = Value::Real(f64::NAN); assert_eq!(nan.cmp(&nan2), std::cmp::Ordering::Equal);` to lock in the cross-construction Ord invariant.\n2. Move the PartialEq assertion out of `value_ord_real_nan_and_neg_zero_still_consistent` into either (a) an extension of `nan_normalized`, or (b) a new sibling test `nan_partialeq_bit_identity` adjacent to `nan_normalized`.\n\nNet effect: Ord checks live with Ord checks, PartialEq checks live with PartialEq checks, and both now cover the cross-construction case.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:04:21.555Z",
+        "updatedAt": "2026-04-08T21:14:32.934Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -23353,7 +23353,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:14:31.774Z",
+      "lastModified": "2026-04-08T21:14:32.934Z",
       "taskCount": 1137,
       "completedCount": 805,
       "tags": [
