@@ -4313,6 +4313,20 @@ mod tests {
     // ── tol eval-once tests (steps 2 & 4) ───────────────────────────────────
 
     #[test]
+    fn strict_macro_evaluates_tol_once() {
+        // $tol is referenced 4 times in the strict tol arm today, so a
+        // side-effecting expression would be evaluated 4 times before the
+        // fix in step-5.  After the fix this test asserts exactly 1 evaluation.
+        let counter = std::cell::Cell::new(0usize);
+        assert_orientation_approx!(
+            Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 },
+            1.0, 0.0, 0.0, 0.0,
+            tol = { counter.set(counter.get() + 1); 1e-12 }
+        );
+        assert_eq!(counter.get(), 1, "tol expression must be evaluated exactly once");
+    }
+
+    #[test]
     fn sign_insensitive_macro_evaluates_tol_once() {
         // $tol is referenced 9 times in the sign_insensitive arm today, so
         // a side-effecting expression would be evaluated 9 times before the
