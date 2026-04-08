@@ -287,6 +287,36 @@ impl Value {
     }
 
     /// Compute a content hash for incremental caching.
+    ///
+    /// # NaN canonicalization and hash-equality invariant exception
+    ///
+    /// All float-bearing variants (`Real`, `Scalar`, `Complex`, `Orientation`)
+    /// canonicalize every NaN bit pattern to `f64::NAN.to_bits()` before hashing.
+    /// This means two NaN values that carry different IEEE 754 payloads — and are
+    /// therefore **not equal** under `PartialEq` (which uses `to_bits()`) — will
+    /// produce **identical** content hashes.  In short:
+    ///
+    /// ```text
+    /// a != b  (PartialEq)   yet   content_hash(a) == content_hash(b)   (NaN payloads)
+    /// ```
+    ///
+    /// This is a **deliberate exception** to the usual hash-equality invariant
+    /// (`a == b  ⟹  content_hash(a) == content_hash(b)`).  The rationale is
+    /// content-addressed deduplication: NaN values that differ only in payload
+    /// are semantically equivalent for caching purposes, so collapsing them avoids
+    /// spurious cache misses.
+    ///
+    /// **Contrast with `-0.0`/`+0.0`**: those *do* maintain the invariant.
+    /// `-0.0 != +0.0` under `PartialEq` AND their hashes differ (the `-0.0` bit
+    /// pattern is preserved).  See `real_neg_zero_hash_differs_from_pos_zero`,
+    /// `scalar_neg_zero_hash_differs_from_pos_zero`, and
+    /// `hash_equality_invariant_real` for those tests.
+    ///
+    /// **Caller guidance**: when performing a content-addressed lookup for a
+    /// NaN-bearing `Value`, treat a hash-hit as "possibly equal" and re-check
+    /// `PartialEq` if exact bit-pattern identity of the NaN payload matters.
+    /// See `nan_payload_hash_equality_invariant_exception` for the invariant
+    /// exception test.
     pub fn content_hash(&self) -> ContentHash {
         match self {
             Value::Bool(b) => ContentHash::of(&[0, *b as u8]),
