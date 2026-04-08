@@ -22076,11 +22076,11 @@
         "description": "The test `event_panics_on_non_warn_when_dispatcher_contract_violated` in `crates/reify-test-support/src/tracing_support.rs` (line ~568) relies on `debug_assert_eq!` to fire a panic, validated via `#[should_panic(expected = \"enabled() contract violated\")]`. In release builds, `debug_assert_eq!` is compiled out, no panic occurs, and the `#[should_panic]` attribute causes the test to fail.\n\nFix: Add `#[cfg_attr(not(debug_assertions), ignore)]` (or `#[cfg(debug_assertions)]` above `#[test]`) so the test is skipped in release mode rather than failing. Add a brief inline comment explaining why.\n\nThis was identified during review of task 972.\n\nmemory_hints: search(\"WarnCountingSubscriber debug_assert release build\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:45:44.365Z",
+        "updatedAt": "2026-04-08T11:50:45.800Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -22140,7 +22140,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:50:31.596Z",
+      "lastModified": "2026-04-08T11:50:45.808Z",
       "taskCount": 1076,
       "completedCount": 753,
       "tags": [
