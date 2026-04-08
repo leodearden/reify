@@ -6113,6 +6113,20 @@ mod tests {
         ];
 
         let mut seen: HashMap<ContentHash, &str> = HashMap::new();
+        // Pre-seed with Satisfaction variants (tag 10) so any Value that
+        // accidentally reuses tag 10 is caught in this single-universe check.
+        seen.insert(
+            Satisfaction::Satisfied.content_hash(),
+            "Satisfaction::Satisfied",
+        );
+        seen.insert(
+            Satisfaction::Violated.content_hash(),
+            "Satisfaction::Violated",
+        );
+        seen.insert(
+            Satisfaction::Indeterminate.content_hash(),
+            "Satisfaction::Indeterminate",
+        );
         for (name, val) in &variants {
             let hash = val.content_hash();
             if let Some(previous_name) = seen.insert(hash, name) {
