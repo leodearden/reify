@@ -5219,8 +5219,26 @@ fn compile_entity(
                     continue;
                 }
 
-                let compiled_expr =
+                let mut compiled_expr =
                     compile_expr(&let_decl.value, &scope, enum_defs, functions, diagnostics);
+                // If the value is `none` and the let has a typed annotation like
+                // `Option<Length>`, override the OptionNone's result_type to match
+                // the declared type — mirroring the param-default fixup at lines
+                // 5179-5185.
+                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone) {
+                    if let Some(type_expr) = &let_decl.type_expr {
+                        if let Some(resolved) = resolve_type_expr_with_aliases(
+                            type_expr,
+                            &type_param_names,
+                            alias_registry,
+                            diagnostics,
+                        ) {
+                            if matches!(&resolved, Type::Option(_)) {
+                                compiled_expr = CompiledExpr::option_none(resolved);
+                            }
+                        }
+                    }
+                }
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
 
