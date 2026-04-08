@@ -450,6 +450,17 @@ struct SystemBuilder {
 const FIXED_GROUP: Slvs_hGroup = Slvs_hGroup(1);
 const SOLVE_GROUP: Slvs_hGroup = Slvs_hGroup(2);
 
+/// Return type of [`SystemBuilder::add_line_pair`].
+///
+/// Uses named fields rather than a bare tuple so callers cannot
+/// accidentally swap the two handles (which are the same type and
+/// therefore indistinguishable positionally).
+#[derive(Debug, Clone, Copy)]
+struct LinePairEntities {
+    line_a: Slvs_hEntity,
+    line_b: Slvs_hEntity,
+}
+
 /// Key to deduplicate point entities.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 enum PointKey {
@@ -607,30 +618,46 @@ impl SystemBuilder {
         eh
     }
 
-    /// Add 4 point entities and 2 line segment entities for a pair of lines.
+    /// Add up to 4 point entities and 2 line segment entities for a pair of lines.
     ///
     /// Extracts the start/end points of `line_a` and `line_b`, creates point
     /// entities for each, then creates two line segment entities from those
-    /// points. Returns the two line segment handles as `(line_a_e, line_b_e)`.
+    /// points. Returns a [`LinePairEntities`] struct whose `line_a` and `line_b`
+    /// fields hold the respective line segment handles.
+    ///
+    /// Shared endpoints are deduplicated: if two of the four points have
+    /// identical coordinates (or the same `Auto` cell IDs), `add_point`'s
+    /// `point_entities` cache returns the existing handle rather than
+    /// allocating a new entity. The actual point count is therefore between 2
+    /// and 4 depending on how many endpoints coincide.
     ///
     /// # Errors
     ///
     /// Returns `Err` if any point entity cannot be created (e.g. a non-auto
     /// parameter is missing from `current_values`).
+    ///
+    /// On `Err`, any point entities that were successfully created before the
+    /// failure remain registered in the builder (there is no rollback). This
+    /// is acceptable because callers (e.g. `add_pattern_to_builder`) abort the
+    /// entire solve via `SolveResult::NoProgress` on any builder error, so the
+    /// partially-mutated builder is discarded.
     fn add_line_pair(
         &mut self,
         line_a: &LineRef,
         line_b: &LineRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<(Slvs_hEntity, Slvs_hEntity), BuilderError> {
+    ) -> Result<LinePairEntities, BuilderError> {
         let la_start = self.add_point(&line_a.start, auto_params, current_values)?;
         let la_end = self.add_point(&line_a.end, auto_params, current_values)?;
         let lb_start = self.add_point(&line_b.start, auto_params, current_values)?;
         let lb_end = self.add_point(&line_b.end, auto_params, current_values)?;
         let line_a_e = self.add_line_segment(la_start, la_end);
         let line_b_e = self.add_line_segment(lb_start, lb_end);
-        Ok((line_a_e, line_b_e))
+        Ok(LinePairEntities {
+            line_a: line_a_e,
+            line_b: line_b_e,
+        })
     }
 
     /// Get or create the default XY workplane.
@@ -981,8 +1008,10 @@ fn add_pattern_to_builder(
             line_b,
             angle_deg,
         } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Angle constraints require a workplane in SolveSpace.
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -996,8 +1025,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Parallel { line_a, line_b } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Parallel/perpendicular require a workplane in SolveSpace
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -1011,8 +1042,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
                 SLVS_C_PERPENDICULAR,
@@ -1236,9 +1269,9 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
+        let pair = result.expect("add_line_pair should return Ok");
         assert_ne!(
-            line_a_e, line_b_e,
+            pair.line_a, pair.line_b,
             "line entities should be distinct handles"
         );
         // 4 Fixed points (each creates 1 entity) + 2 line segments = 6 entities
@@ -1608,7 +1641,7 @@ mod tests {
             },
         };
 
-        let (line_a_e, line_b_e) = builder
+        let pair = builder
             .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
             .expect("add_line_pair should return Ok");
 
@@ -1616,13 +1649,13 @@ mod tests {
         let entity_a = builder
             .entities
             .iter()
-            .find(|e| e.h == line_a_e)
-            .expect("line_a_e handle not found in builder.entities");
+            .find(|e| e.h == pair.line_a)
+            .expect("pair.line_a handle not found in builder.entities");
         let entity_b = builder
             .entities
             .iter()
-            .find(|e| e.h == line_b_e)
-            .expect("line_b_e handle not found in builder.entities");
+            .find(|e| e.h == pair.line_b)
+            .expect("pair.line_b handle not found in builder.entities");
 
         assert_eq!(
             entity_a.type_,
