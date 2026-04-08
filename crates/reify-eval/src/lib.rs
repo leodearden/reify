@@ -3415,16 +3415,20 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> reify_types::Value {
+                match args.iter().find(|(n, _)| n == name) {
+                    Some((_, expr)) => reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                    ),
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "missing required geometry argument '{}' for {:?}",
+                            name, kind
+                        )));
+                        reify_types::Value::Undef
+                    }
+                }
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
