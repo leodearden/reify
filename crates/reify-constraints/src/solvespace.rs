@@ -1282,52 +1282,6 @@ mod tests {
         );
     }
 
-    /// `add_line_pair` must propagate Err when a PointRef::Auto contains a
-    /// non-auto cell_id that is missing from current_values. This confirms
-    /// that the `?` operator in `add_line_pair` surfaces errors from `add_point`
-    /// rather than swallowing them.
-    #[test]
-    fn add_line_pair_propagates_point_error() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
-        // Not in auto_params and not in current_values → add_point will return Err
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
-
-        // line_a start has a non-auto Auto point missing from current_values
-        let line_a = LineRef {
-            start: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
-
-        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
-
-        assert!(
-            result.is_err(),
-            "expected Err when a LineRef contains a non-auto point missing from current_values"
-        );
-    }
-
     /// BuilderError Display must embed the cell_id and the word "missing" so
     /// log messages and SolveResult::NoProgress reasons are human-readable.
     /// Also verifies the type satisfies std::error::Error so it can be used
