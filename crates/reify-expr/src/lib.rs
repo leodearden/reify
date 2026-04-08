@@ -704,6 +704,7 @@ fn compute_gradient(field_val: &Value) -> Value {
 ///
 /// After the call (when `single_point_param` is true), `work_point.len() == n`.
 /// A `debug_assert_eq!` enforces this in debug builds.
+#[allow(clippy::too_many_arguments)]
 fn eval_perturbed_point<F: Fn(f64) -> Value>(
     lambda: &Value,
     work_coords: &[f64],
