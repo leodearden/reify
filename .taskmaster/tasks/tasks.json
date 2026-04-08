@@ -21948,10 +21948,11 @@
         "description": "Follow-up from task 1025 review (esc-1025-24). Three issues in tests/infra/test_sync_comments_grep.sh:\n\nS1 (line 29): Section 1 hardcodes its own PATTERN literal rather than exercising the actual regex in tests/sync_comments_test.sh. If the regex drifts, Section 1 keeps passing while the real test silently breaks — exactly what a meta-test should prevent. Fix: extract the literal regex from sync_comments_test.sh at runtime (e.g. `grep -oE '\\\\^\\\\[\\\\[:space:\\\\]\\\\]\\\\*.*\\\\[\\\\[:space:\\\\(\\\\]' tests/sync_comments_test.sh | head -1`), substitute `${_expr_ref_fn}` with `sanitize_value`, then run the fixture assertions against the extracted pattern.\n\nS3 (lines 71-77): The consistency assertions `! grep -qF '\\\\b' \"$SYNC_TEST\"` and `! grep -qF 'grep -P' \"$SYNC_TEST\"` are file-wide fixed-string searches. A comment like `# POSIX: do not use \\\\b here` in sync_comments_test.sh would break CI without a real regression. Fix: scope the search to grep invocation lines only, e.g. `! grep -E \"^[^#]*grep[[:space:]]+.*\\\\\\\\\\\\\\\\b\" \"$SYNC_TEST\"`, or positively assert that all `grep -E` patterns in the file contain `[[:space:](]`.\n\nS5 (lines 30-58): Fixture coverage gaps. Add accept case for tab-indented `\\\\tfn sanitize_value(`, accept case for multi-space `fn   sanitize_value(` and trailing-space `fn sanitize_value (`, and reject cases for `fnsanitize_value(` (no space) and `my_fn sanitize_value(` — to pin the anchoring behavior.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:32:28.130Z"
       },
       {
         "id": "1066",
@@ -22000,7 +22001,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:32:26.797Z",
+      "lastModified": "2026-04-08T11:32:28.139Z",
       "taskCount": 1069,
       "completedCount": 749,
       "tags": [
