@@ -210,6 +210,8 @@ pub struct TopologyTemplate {
     pub is_recursive: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -4570,6 +4572,7 @@ struct EntityDefRef<'a> {
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
     annotations: &'a [reify_syntax::Annotation],
+    pragmas: &'a [reify_syntax::Pragma],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -4584,6 +4587,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             trait_bounds: &s.trait_bounds,
             members: &s.members,
             annotations: &s.annotations,
+            pragmas: &s.pragmas,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -4599,6 +4603,7 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             trait_bounds: &o.trait_bounds,
             members: &o.members,
             annotations: &o.annotations,
+            pragmas: &o.pragmas,
             span: o.span,
             content_hash: o.content_hash,
         }
@@ -6328,6 +6333,7 @@ fn compile_entity(
         content_hash,
         is_recursive: false,
         annotations,
+        pragmas: structure.pragmas.to_vec(),
     }
 }
 
