@@ -881,6 +881,41 @@ mod tests {
         );
     }
 
+    /// Calling `event()` directly on `WarnCapturingSubscriber` with a non-WARN
+    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
+    /// loudly in debug builds rather than silently capturing the event.
+    ///
+    /// Mirrors `event_panics_on_non_warn_when_dispatcher_contract_violated` but
+    /// exercises `WarnCapturingSubscriber::event()`'s `debug_assert_eq!`.
+    /// The `#[should_panic(expected = "enabled() contract violated")]` attribute
+    /// uses [`CONTRACT_VIOLATION_MARKER`] as the canonical anchor substring.
+    ///
+    /// # Release-build note
+    ///
+    /// `debug_assert_eq!` is compiled out in release builds, so no panic would
+    /// occur there.  The `#[cfg(debug_assertions)]` gate prevents this test from
+    /// incorrectly failing under `#[should_panic]` in release mode.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "enabled() contract violated")]
+    fn capturing_event_panics_on_non_warn_when_dispatcher_contract_violated() {
+        use crate::warn_capturing_subscriber;
+
+        let (inner, _capture) = warn_capturing_subscriber();
+
+        // enabled_fn ignores the inner subscriber and always returns true,
+        // bypassing its WARN-only filter so non-WARN events reach inner.event().
+        let subscriber = ForwardingSubscriber {
+            inner,
+            enabled_fn: |_s: &_, _meta| true,
+            event_fn: |s: &_, event| s.event(event),
+        };
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("non-WARN event delivered directly");
+        });
+    }
+
     /// `WarnCapture::assert_count_and_any_message_contains` passes when the
     /// count matches and at least one message contains the given substring.
     #[test]
