@@ -5116,7 +5116,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "done",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler"
@@ -5125,7 +5125,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-02T22:30:28.720Z"
+        "updatedAt": "2026-04-08T13:55:09.836Z"
       },
       {
         "id": "272",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:09.533Z",
+      "lastModified": "2026-04-08T13:55:09.836Z",
       "taskCount": 1082,
-      "completedCount": 754,
+      "completedCount": 753,
       "tags": [
         "master"
       ]
