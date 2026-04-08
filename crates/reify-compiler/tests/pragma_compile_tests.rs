@@ -106,28 +106,29 @@ fn no_prelude_simple_structure_compiles_clean() {
     );
 }
 
-/// With #no_prelude, stdlib units like `mm` should NOT be resolved — expect errors.
-/// (Currently fails because #no_prelude has no effect.)
+/// With #no_prelude, stdlib-only units like `km` should NOT be resolved — expect errors.
+/// `km` is only in the stdlib prelude (not in the hardcoded unit_to_scalar fallback),
+/// so suppressing the prelude must cause an "unknown unit" error.
 #[test]
 fn no_prelude_suppresses_stdlib_units() {
     let module = compile_module_with_stdlib(
-        "#no_prelude\nstructure S { param x : Length = 10mm }",
+        "#no_prelude\nstructure S { param x : Length = 10km }",
     );
     let errs = errors_only(&module);
     assert!(
         !errs.is_empty(),
-        "expected errors when using stdlib unit `mm` with #no_prelude, but got none"
+        "expected errors when using stdlib-only unit `km` with #no_prelude, but got none"
     );
 }
 
-/// Without #no_prelude, stdlib units like `mm` should resolve cleanly.
+/// Without #no_prelude, stdlib-only units like `km` should resolve cleanly.
 #[test]
 fn without_no_prelude_stdlib_units_resolve() {
-    let module = compile_module_with_stdlib("structure S { param x : Length = 10mm }");
+    let module = compile_module_with_stdlib("structure S { param x : Length = 10km }");
     let errs = errors_only(&module);
     assert!(
         errs.is_empty(),
-        "expected no errors when using stdlib unit `mm` without #no_prelude, got: {:?}",
+        "expected no errors when using stdlib unit `km` without #no_prelude, got: {:?}",
         errs
     );
 }
