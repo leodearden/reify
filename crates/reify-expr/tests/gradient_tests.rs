@@ -2882,12 +2882,13 @@ fn gradient_single_point_param_quadratic() {
 ///
 /// For a linear function the centered finite-difference is exact in real
 /// arithmetic; any FP rounding shows up directly on the asserted values.
-/// The tolerance is 1e-9.  Irrational coords introduce ~1e-10 FP rounding
-/// through the dot product cancellation in (f_plus - f_minus), so 1e-9
-/// is tight enough to catch meaningful regressions while remaining
-/// practically achievable.  It is a 6-order-of-magnitude improvement over
-/// the original 1e-3 bound and validates the exact-restore guarantee
-/// (work_coords[i] = coord_i) on inputs susceptible to round-trip ULP drift.
+/// Regression smoke test for the allocation refactor and single_point_param
+/// path at irrational inputs.  The tolerance is 1e-8 (5× margin over the
+/// theoretical worst-case ~1.8e-9 from ε·|f|/2h), which is 5 orders of
+/// magnitude tighter than the original 1e-3 bound.  Note: a linear function
+/// produces correct gradients with both exact and arithmetic restore, so this
+/// test cannot distinguish the two restore strategies — it primarily guards
+/// against gross regressions in the allocation-reuse refactor.
 #[test]
 fn gradient_single_point_param_irrational_coords() {
     let p_id = ValueCellId::new("$lambda0.S", "p");
@@ -2973,7 +2974,7 @@ fn gradient_single_point_param_irrational_coords() {
                     .as_f64()
                     .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
                 assert!(
-                    (val - exp).abs() < 1e-9,
+                    (val - exp).abs() < 1e-8,
                     "gradient component {} of dot(p,[1,2,3]) at irrational coords should be ~{}, got {}",
                     i,
                     exp,
@@ -3300,9 +3301,11 @@ fn gradient_decomposed_n3_dimensionless() {
 /// `gradient_single_point_param_irrational_coords` covers single_point_param=true;
 /// this test covers single_point_param=false at the same irrational inputs.
 ///
-/// For a linear function centered finite difference is exact in real arithmetic;
-/// any measurable FP error reflects rounding in the decomposed-path eval.  The
-/// tolerance 1e-9 provides a strong regression signal while remaining achievable.
+/// Regression smoke test for the allocation refactor and decomposed path at
+/// irrational inputs.  The tolerance is 1e-8 (5× margin over the theoretical
+/// worst-case ~1.8e-9 from ε·|f|/2h).  Note: a linear function produces correct
+/// gradients regardless of restore strategy, so this test primarily guards against
+/// gross regressions in the decomposed-path refactor rather than FP-restore drift.
 #[test]
 fn gradient_decomposed_n3_irrational_coords() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -3409,7 +3412,7 @@ fn gradient_decomposed_n3_irrational_coords() {
                     .as_f64()
                     .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
                 assert!(
-                    (val - exp).abs() < 1e-9,
+                    (val - exp).abs() < 1e-8,
                     "gradient component {} of x+2y+3z at irrational coords should be ~{}, got {}",
                     i,
                     exp,
