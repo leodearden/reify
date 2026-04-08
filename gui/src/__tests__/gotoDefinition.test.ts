@@ -226,24 +226,11 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
+    const mockEvent = makeMouseEvent();
 
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView({
+      state: { doc: { line: (n: number) => ({ from: (n - 1) * 20 }) } },
+    });
 
     mousedownHandler(mockEvent, mockView);
     await flushMacrotasks();
