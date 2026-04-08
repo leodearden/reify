@@ -705,6 +705,11 @@ async fn tool_result_write_failure_emits_claude_error_event() {
         "Expected error message to contain 'failed to send tool result to sidecar', got: {:?}",
         msg
     );
+    assert_eq!(
+        payload["id"].as_str().unwrap(),
+        "msg-fail",
+        "error event should carry the original tool_call id"
+    );
 
     drop(stdout_writer);
 }
