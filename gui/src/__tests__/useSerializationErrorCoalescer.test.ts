@@ -342,6 +342,7 @@ describe('createSerializationErrorCoalescer', () => {
 
     // (c) add a second error: elapsed = (t0+400) - t0 = 400 > maxWaitMs(300)
     //     remaining = 300 - 400 = -100 ≤ 0 → sync flush fires inline, no timer needed
+    expect(vi.getTimerCount()).toBe(1);
     coalescer.add({ item_type: 'mesh', item_id: 'bg2', error: 'err' });
 
     // Assert the flush happened synchronously — no vi.advanceTimersByTime() call required
