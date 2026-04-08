@@ -77,29 +77,10 @@ describe('reifyGotoDefinition', () => {
 
     const ext = reifyGotoDefinition(() => currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
-
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0, to: 10 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView();
 
     // First call uses first URI
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     // Wait for the async requestDefinition to complete
     await flushMacrotasks();
     let params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
@@ -116,7 +97,7 @@ describe('reifyGotoDefinition', () => {
     );
 
     // Second call uses updated URI
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
     params = JSON.parse((mockInvoke.mock.calls[0][1] as { params: string }).params);
     expect(params.textDocument.uri).toBe('file:///second.ri');
@@ -135,28 +116,9 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView();
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => ({ from: 0, to: 10 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // onNavigate should be called with the cross-file URI, line, character
@@ -176,28 +138,9 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView();
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // onNavigate should NOT be called (same file)
@@ -223,27 +166,9 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView({ line: (n: number) => ({ from: (n - 1) * 20 }) });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // onNavigate should NOT be called — it is the same file after URI normalization
@@ -271,27 +196,9 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView();
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // onNavigate SHOULD be called — different files despite the suffix overlap
@@ -312,28 +219,9 @@ describe('isConnected guard', () => {
 
     const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView({ connected: false });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: false },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // view.dispatch must NOT be called — editor was destroyed before response arrived
@@ -351,28 +239,9 @@ describe('isConnected guard', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView({ connected: false });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: false },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // Neither onNavigate nor dispatch should be called — editor was destroyed
@@ -393,28 +262,9 @@ describe('line-bounds guard', () => {
 
     const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    const mockView = makeMockView({ lines: 5 });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 5,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // Stale LSP line (11 > 5) should be rejected before reaching doc.line()
@@ -435,32 +285,14 @@ describe('line-bounds guard', () => {
     const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
     // doc.line() throws to prove the guard fires BEFORE it is reached.
     // If the guard fires, doc.line() is never called and no console.warn is emitted.
     // If the guard is absent, doc.line() throws, .catch() logs a warning — a false pass.
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          line: () => { throw new RangeError('line out of range'); },
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    const mockView = makeMockView({ line: () => { throw new RangeError('line out of range'); } });
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      mousedownHandler(mockEvent, mockView);
+      mousedownHandler(baseMockEvent, mockView);
       await flushMacrotasks();
 
       // Negative line should be rejected by the guard; dispatch must never be called
@@ -532,29 +364,10 @@ describe('character-bounds guard', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    // line 6 (1-based): from=100, to=110 → length 10; character 15 > 10
+    const mockView = makeMockView({ line: () => ({ from: 100, to: 110 }) });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          // line 6 (1-based): from=100, to=110 → length 10; character 15 > 10
-          line: () => ({ from: 100, to: 110 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // Character offset exceeds line length; neither dispatch nor onNavigate should be called
@@ -575,29 +388,10 @@ describe('character-bounds guard', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    // line 6 (1-based): from=100, to=110 → length 10; character 10 == length (valid)
+    const mockView = makeMockView({ line: () => ({ from: 100, to: 110 }) });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          // line 6 (1-based): from=100, to=110 → length 10; character 10 == length (valid)
-          line: () => ({ from: 100, to: 110 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // character == line length is valid (end-of-line); dispatch must be called
@@ -621,29 +415,10 @@ describe('character-bounds guard', () => {
     const onNavigate = vi.fn();
     const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
     const mousedownHandler = ext.handlers.mousedown;
+    // line 3 (1-based): from=50, to=50 → empty line; character 0 == length 0 (valid)
+    const mockView = makeMockView({ line: () => ({ from: 50, to: 50 }) });
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          // line 3 (1-based): from=50, to=50 → empty line; character 0 == length 0 (valid)
-          line: () => ({ from: 50, to: 50 }),
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
-
-    mousedownHandler(mockEvent, mockView);
+    mousedownHandler(baseMockEvent, mockView);
     await flushMacrotasks();
 
     // character 0 on an empty line is valid; dispatch must be called with anchor 50
@@ -668,30 +443,12 @@ describe('.catch() error handler', () => {
     const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
-    const mockEvent = {
-      ctrlKey: true,
-      metaKey: false,
-      clientX: 100,
-      clientY: 50,
-    } as MouseEvent;
-
     const rangeError = new RangeError('line out of range');
-    const mockView = {
-      posAtCoords: () => 5,
-      state: {
-        doc: {
-          lines: 100,
-          lineAt: () => ({ number: 1, from: 0, to: 10 }),
-          // Simulate doc.line() throwing a RangeError
-          line: () => { throw rangeError; },
-        },
-      },
-      dispatch: vi.fn(),
-      dom: { isConnected: true },
-    };
+    // Simulate doc.line() throwing a RangeError
+    const mockView = makeMockView({ line: () => { throw rangeError; } });
 
     await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
-      mousedownHandler(mockEvent, mockView);
+      mousedownHandler(baseMockEvent, mockView);
       await flushMacrotasks();
       // .catch() should log a warning with the expected prefix and the error
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
