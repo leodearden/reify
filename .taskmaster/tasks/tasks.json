@@ -18995,11 +18995,11 @@
         "description": "In `crates/reify-types/src/value.rs`, add a new test (or extend `value_ord_real_nan_and_neg_zero_still_consistent`) to cover the three other float-bearing variants listed in the doc comment:\n- `Value::Scalar`: assert `Value::Scalar { si_value: -0.0, dimension: DimensionVector::LENGTH } != Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH }` (to_bits PartialEq) and that their cmp is not Equal.\n- `Value::Complex`: assert that two Complex values differing only in a NaN component or negative-zero compare as expected under bit-identity.\n- `Value::Orientation`: same spot-check for a NaN or negative-zero quaternion component.\nThis ensures regressions in each variant's independent to_bits() call site are caught.\n\nMemory hints: search \"Value Scalar Complex Orientation to_bits PartialEq bit-identity\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:54:43.469Z",
+        "updatedAt": "2026-04-08T17:00:09.860Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -19271,11 +19271,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:00:11.980Z",
+        "updatedAt": "2026-04-08T17:00:09.919Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:09.815Z",
+      "lastModified": "2026-04-08T17:00:09.920Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
