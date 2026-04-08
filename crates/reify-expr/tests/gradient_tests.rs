@@ -2858,12 +2858,20 @@ fn gradient_single_point_param_quadratic() {
     }
 }
 
-/// Gradient of a 3D field with 1-param lambda at irrational coordinates.
+/// Regression smoke test for the single_point_param path at irrational inputs.
 ///
-/// Lambda: |p| dot(p, [1,2,3]) = x + 2y + 3z. Gradient is constant (1,2,3).
-/// Sample at Point3(1/3, π/7, √2) — coordinates not exactly representable
-/// in IEEE 754. Verifies that the exact-restore and buffer-reuse paths handle
-/// irrational input coordinates without FP drift. Tolerance 1e-3.
+/// Lambda: |p| dot(p, [1,2,3]) = x + 2y + 3z. Gradient is the constant vector
+/// (1,2,3). Sample at Point3(1/3, π/7, √2) — coordinates not exactly
+/// representable in IEEE 754.
+///
+/// For a linear function the centered finite-difference is exact in real
+/// arithmetic; any FP rounding shows up directly on the asserted values.
+/// The tolerance is 1e-9.  Irrational coords introduce ~1e-10 FP rounding
+/// through the dot product cancellation in (f_plus - f_minus), so 1e-9
+/// is tight enough to catch meaningful regressions while remaining
+/// practically achievable.  It is a 6-order-of-magnitude improvement over
+/// the original 1e-3 bound and validates the exact-restore guarantee
+/// (work_coords[i] = coord_i) on inputs susceptible to round-trip ULP drift.
 #[test]
 fn gradient_single_point_param_irrational_coords() {
     let p_id = ValueCellId::new("$lambda0.S", "p");
@@ -2945,7 +2953,7 @@ fn gradient_single_point_param_irrational_coords() {
                     panic!("component {} should be numeric, got {:?}", i, comp)
                 });
                 assert!(
-                    (val - exp).abs() < 1e-3,
+                    (val - exp).abs() < 1e-9,
                     "gradient component {} of dot(p,[1,2,3]) at irrational coords should be ~{}, got {}",
                     i,
                     exp,
