@@ -767,7 +767,9 @@ describe('error recovery', () => {
       state: { doc: { line: () => { throw rangeError; } } },
     });
 
-    // .catch() handles errors synchronously — a plain warn spy is sufficient (no unhandled rejection possible).
+    const unhandledSpy = vi.fn();
+    window.addEventListener('unhandledrejection', unhandledSpy, { once: true });
+    // No unhandledrejection suppression needed: the production .catch() at gotoDefinition.ts:155 fully consumes this rejection.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       mousedownHandler(mockEvent, mockView);
@@ -776,7 +778,9 @@ describe('error recovery', () => {
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
       // dispatch should not have been called (line() threw before it could be called)
       expect(mockView.dispatch).not.toHaveBeenCalled();
+      expect(unhandledSpy).not.toHaveBeenCalled();
     } finally {
+      window.removeEventListener('unhandledrejection', unhandledSpy);
       warnSpy.mockRestore();
     }
   });
