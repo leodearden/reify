@@ -24375,11 +24375,11 @@
         "description": "Two related cleanup/coverage improvements for the shutdown tests in `crates/reify-lsp/tests/in_process_bridge.rs` (around lines 580-670) — both flagged in the Task 1169 review.\n\n1. Extract a helper to deduplicate the four shutdown tests (`shutdown_returns_ok_null`, `shutdown_with_null_params_returns_ok_null`, `shutdown_before_initialize`, `shutdown_before_initialize_with_null_params`). They are near-identical copies differing only in `initialized_lsp().await` vs `InProcessLsp::new()` and the params value. Suggested signature: `async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: serde_json::Value)`. Keep the four named test functions as thin wrappers so failure output remains readable.\n\n2. Add a new test `shutdown_ignores_unexpected_params` that passes `json!({\"foo\": 42})` (and optionally `json!(\"oops\")`) and asserts `Ok(Value::Null)`. The bridge.rs `shutdown` arm (lines 177-183) deliberately never deserializes params, so this test documents and locks in that permissive contract — guarding against an accidental future change to add strict validation.\n\nContext: the bridge.rs shutdown arm currently calls `server.shutdown().await` unconditionally without inspecting params. This is intentional permissiveness; any future shift to strict validation should be a deliberate API change with its own tests.\n\nmemory_hints:\n- search: \"Task 1169 shutdown bridge json null params\"\n- entity: \"InProcessLsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:47:33.496Z",
+        "updatedAt": "2026-04-08T23:57:45.288Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -24483,9 +24483,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:57:37.594Z",
+      "lastModified": "2026-04-08T23:57:45.288Z",
       "taskCount": 1203,
-      "completedCount": 879,
+      "completedCount": 880,
       "tags": [
         "master"
       ]
