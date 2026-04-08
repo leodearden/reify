@@ -5987,7 +5987,7 @@ mod tests {
     /// previously both used tag `[18]`, which caused silent cache collisions.
     #[test]
     fn content_hash_tags_are_unique_across_variants() {
-        use std::collections::HashSet;
+        use std::collections::HashMap;
 
         // Build one representative of every Value variant.
         let dim = DimensionVector::LENGTH;
@@ -6112,13 +6112,14 @@ mod tests {
             ("Undef", Value::Undef),
         ];
 
-        let mut seen = HashSet::new();
+        let mut seen: HashMap<ContentHash, &str> = HashMap::new();
         for (name, val) in &variants {
             let hash = val.content_hash();
-            assert!(
-                seen.insert(hash),
-                "content_hash collision detected for Value::{name}"
-            );
+            if let Some(previous_name) = seen.insert(hash, name) {
+                panic!(
+                    "content_hash collision: Value::{name} collides with {previous_name}"
+                );
+            }
         }
     }
 }
