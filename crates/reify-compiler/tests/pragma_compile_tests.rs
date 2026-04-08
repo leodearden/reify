@@ -266,3 +266,108 @@ fn structure_pragma_propagated_to_topology_template() {
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
     }
 }
+
+// ── Step 11: block-level unknown pragma warnings ──────────────────────────────
+
+/// Unknown pragma `#turbo` inside a structure body should emit a warning.
+#[test]
+fn unknown_structure_pragma_emits_warning() {
+    let module = compile_module(r#"structure S { #turbo param x : Real }"#);
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        !warns.is_empty(),
+        "expected an 'unknown pragma' warning for #turbo on structure, got none; all warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("turbo")),
+        "warning should mention 'turbo', got: {:?}",
+        warns
+    );
+}
+
+/// Unknown pragma `#fast` inside a trait body should emit a warning.
+#[test]
+fn unknown_trait_pragma_emits_warning() {
+    let module = compile_module(r#"trait T { #fast param x : Real }"#);
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        !warns.is_empty(),
+        "expected an 'unknown pragma' warning for #fast on trait, got none; all warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("fast")),
+        "warning should mention 'fast', got: {:?}",
+        warns
+    );
+}
+
+/// Unknown pragma `#accel` inside a purpose body should emit a warning.
+#[test]
+fn unknown_purpose_pragma_emits_warning() {
+    let module = compile_module(
+        r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #accel
+            constraint 1 > 0
+        }
+        "#,
+    );
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        !warns.is_empty(),
+        "expected an 'unknown pragma' warning for #accel on purpose, got none; all warnings: {:?}",
+        warnings_only(&module)
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("accel")),
+        "warning should mention 'accel', got: {:?}",
+        warns
+    );
+}
+
+/// Known block pragma `#precision` on a structure should NOT emit an unknown-pragma warning.
+#[test]
+fn known_block_pragma_precision_no_warning_on_structure() {
+    let module = compile_module(r#"structure S { #precision(bits=64) param x : Real }"#);
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        warns.is_empty(),
+        "expected no 'unknown pragma' warning for #precision on structure, got: {:?}",
+        warns
+    );
+}
+
+/// Known block pragma `#solver` on a trait should NOT emit an unknown-pragma warning.
+#[test]
+fn known_block_pragma_solver_no_warning_on_trait() {
+    let module = compile_module(r#"trait T { #solver(backend="ipopt") param x : Real }"#);
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        warns.is_empty(),
+        "expected no 'unknown pragma' warning for #solver on trait, got: {:?}",
+        warns
+    );
+}
+
+/// Known block pragma `#kernel` on a purpose should NOT emit an unknown-pragma warning.
+#[test]
+fn known_block_pragma_kernel_no_warning_on_purpose() {
+    let module = compile_module(
+        r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #kernel(name="my_kernel")
+            constraint 1 > 0
+        }
+        "#,
+    );
+    let warns = pragma_warnings(&module, "unknown pragma");
+    assert!(
+        warns.is_empty(),
+        "expected no 'unknown pragma' warning for #kernel on purpose, got: {:?}",
+        warns
+    );
+}
