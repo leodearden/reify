@@ -2122,16 +2122,24 @@ mod tests {
     fn value_ord_real_nan_total_order() {
         // Normal ordering still holds
         assert!(Value::Real(1.0) < Value::Real(2.0));
-        // Under to_bits() total order, NaN's canonical bits (0x7FF8_0000_0000_0000)
-        // are numerically greater than +Infinity's bits (0x7FF0_0000_0000_0000),
-        // so NaN sorts after +Infinity in this order.
-        let nan = Value::Real(f64::NAN);
+        // Under total_cmp() (IEEE 754 totalOrder), NaN's canonical bits
+        // (0x7FF8_0000_0000_0000) are numerically greater than +Infinity's bits
+        // (0x7FF0_0000_0000_0000), so NaN sorts after +Infinity.
+        let nan1 = Value::Real(f64::NAN);
+        let nan2 = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
-        // NaN equals itself under Ord (same bits → Equal)
-        assert_eq!(nan.cmp(&nan), std::cmp::Ordering::Equal);
+        // Two independently constructed NaN values compare Equal under Ord
+        // (same canonical bit pattern → total_cmp returns Equal).
+        assert_eq!(nan1.cmp(&nan2), std::cmp::Ordering::Equal);
+        // PartialEq: two separately constructed NaN values with identical bit patterns
+        // must compare equal (bit-identity equality, not IEEE 754 NaN != NaN).
+        assert_eq!(
+            nan1, nan2,
+            "two separately constructed NaN values with identical bit patterns must compare equal"
+        );
         // NaN sorts strictly after +Infinity
-        assert_eq!(nan.cmp(&inf), std::cmp::Ordering::Greater);
-        assert_eq!(inf.cmp(&nan), std::cmp::Ordering::Less);
+        assert_eq!(nan1.cmp(&inf), std::cmp::Ordering::Greater);
+        assert_eq!(inf.cmp(&nan1), std::cmp::Ordering::Less);
     }
 
     #[test]
@@ -2150,20 +2158,19 @@ mod tests {
         assert_eq!(pos_cmp_neg, neg_cmp_pos.reverse());
         // Ord+PartialEq consistency: since pos != neg, their ordering must not be Equal.
         assert_ne!(pos_cmp_neg, std::cmp::Ordering::Equal);
+        // Assert the actual direction: IEEE 754 totalOrder puts -0.0 before +0.0.
+        assert!(neg < pos, "-0.0 must be Less than +0.0 under total_cmp()");
     }
 
     #[test]
     fn value_ord_real_nan_and_neg_zero_still_consistent() {
+        // Ord-only consistency checks for NaN and negative zero.
+        // PartialEq NaN coverage lives in value_ord_real_nan_total_order.
+
         // NaN: total_cmp() places NaN after +Infinity, giving it a defined position.
         let nan = Value::Real(f64::NAN);
         let inf = Value::Real(f64::INFINITY);
         let neg_inf = Value::Real(f64::NEG_INFINITY);
-        // Two independently constructed NaN values must compare equal under PartialEq.
-        let nan2 = Value::Real(f64::NAN);
-        assert_eq!(
-            nan, nan2,
-            "two separately constructed NaN values with identical bit patterns must compare equal"
-        );
         // NaN > +Infinity (total_cmp: NaN is the maximum)
         assert!(nan > inf);
         // -Infinity < NaN
