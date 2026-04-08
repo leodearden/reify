@@ -190,9 +190,16 @@ impl tracing::Subscriber for WarnCountingSubscriber {
     fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
-        if event.metadata().level() == &tracing::Level::WARN {
-            self.warn_count.fetch_add(1, Ordering::Relaxed);
-        }
+        // The tracing dispatcher only calls event() when enabled() returned
+        // true; our enabled() accepts only WARN, so only WARN events reach
+        // here. The debug_assert catches direct misuse (called outside the
+        // dispatcher) loudly in debug builds.
+        debug_assert_eq!(
+            event.metadata().level(),
+            &tracing::Level::WARN,
+            "event() reached with non-WARN — enabled() contract violated"
+        );
+        self.warn_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
