@@ -20050,11 +20050,11 @@
         "description": "Follow-up from task 919 review. Address reviewer suggestions S4-S9:\n\n**S4 (reuse_auditor)**: DRY the 3 one-liner Arc::clone accessors (values_arc/snapshot_values_arc/results_arc) in concurrent_eval.rs:307-326 via a declarative macro.\n\n**S5 (reuse_auditor)**: Extract a macro or helper for the repeated warn-counting + catch_unwind test pattern (~160 lines of near-identical boilerplate) in poison_shared_fallback module. Also applies to existing poison_recovery_extended tests.\n\n**S6 (robustness)**: In the 3 warn-counting tests (tracing_warn_emitted_on_poison_into_result_shared_fallback_*), assert that catch_unwind result is Ok rather than discarding with let _result. Prevents masking unexpected panics.\n\n**S7 (robustness + test_analyst)**: Add data-content assertions to into_result_shared_fallback_recovers_from_poisoned_values and _snapshot_values recovery tests (currently only assert no-panic, unlike the _results test which checks node_results.is_empty()).\n\n**S8 (test_analyst)**: Extend warn_counting_subscriber (or add a parallel helper) to capture emitted message strings and assert content contains shared-fallback-specific text, rather than just counting all WARN events.\n\n**S9 (test_analyst)**: Add a multi-lock shared-fallback test that holds all 3 Arc guards, poisons all 3 locks, calls into_result(), and asserts warn_count == 3 plus usable returned data.\n\nModules: crates/reify-runtime/src/concurrent_eval.rs, crates/reify-runtime/tests/concurrent_eval.rs, crates/reify-test-support/src/tracing_support.rs",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:57.988Z",
+        "updatedAt": "2026-04-08T21:15:53.151Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime",
@@ -23384,7 +23384,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:15:49.689Z",
+      "lastModified": "2026-04-08T21:15:53.151Z",
       "taskCount": 1139,
       "completedCount": 806,
       "tags": [
