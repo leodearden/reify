@@ -319,6 +319,11 @@ async fn notification_with_malformed_params_returns_error() {
         "notification with malformed params should return Err, got: {:?}",
         result
     );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("didOpen params error"),
+        "error message should contain 'didOpen params error', got: {err}"
+    );
 }
 
 /// An unknown/unsupported method name should return Err, not panic or silently succeed.
