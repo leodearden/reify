@@ -1274,6 +1274,14 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
     assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
     assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+
+    // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
+    // bracket_source() starts "structure Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 30 (manually verified):
+    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    //   + 10 bytes "    param " → col 11 when 'w' is reached.
+    assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
+    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
 }
 
 #[test]
