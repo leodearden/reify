@@ -726,9 +726,24 @@ mod tests {
     /// whose `enabled_fn` always returns `true`, causing the tracing framework to
     /// deliver an ERROR event directly into the inner subscriber's `event()`.
     /// The `debug_assert_eq!` inside `event()` detects the contract violation
-    /// and panics with a message containing `"enabled() contract violated"`.
-    // debug_assert_eq! is compiled out in release builds, so this test would
-    // incorrectly fail under #[should_panic] without the cfg gate.
+    /// and panics with the full message:
+    ///
+    /// ```text
+    /// event() reached with non-WARN — enabled() contract violated
+    /// ```
+    ///
+    /// The `#[should_panic(expected = "enabled() contract violated")]` attribute
+    /// performs a **substring match** against that message, using
+    /// [`CONTRACT_VIOLATION_MARKER`] as the canonical anchor.  The test
+    /// [`contract_violation_marker_matches_panic_expected`] enforces that the
+    /// const value stays in sync with the literal in this attribute.
+    ///
+    /// # Release-build note
+    ///
+    /// `debug_assert_eq!` is compiled out in release builds, so the inner
+    /// subscriber would silently accept the non-WARN event without panicking.
+    /// The `#[cfg(debug_assertions)]` gate prevents the test from incorrectly
+    /// failing under `#[should_panic]` in release mode.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "enabled() contract violated")]
