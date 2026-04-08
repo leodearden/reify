@@ -176,5 +176,91 @@ assert "mktemp failure: _PORTABLE_TIMEOUT_TIMED_OUT is false on success" \
         [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
     '
 
+# -- Test 12: POSIX flag-file genuine timeout (happy path) --------------------
+echo ""
+echo "--- Test 12: POSIX flag-file genuine timeout (happy path) ---"
+
+# Force POSIX fallback: exclude directories containing timeout/gtimeout from PATH.
+# Because timeout, sleep, and mktemp often share the same directory (/usr/bin on
+# Linux), we first create a rescue dir with symlinks to essential commands so they
+# remain available after stripping that directory.  Unlike MKTEMP_FAIL_SETUP we do
+# NOT override TMPDIR, so mktemp succeeds and the flag-file happy-path is exercised.
+POSIX_FALLBACK_SETUP='
+    rescue_dir=$(mktemp -d)
+    for cmd in sleep kill grep rm mktemp ln touch; do
+        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+    done
+    trap "rm -rf \"$rescue_dir\"" EXIT
+    new_path="$rescue_dir"
+    IFS=: read -ra dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+            continue
+        fi
+        new_path="${new_path:+$new_path:}$d"
+    done
+    export PATH="$new_path"
+    hash -r
+    source "$LIB_PORTABLE"
+'
+
+assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        rc=0; portable_timeout 1 sleep 10 || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "POSIX fallback: _PORTABLE_TIMEOUT_TIMED_OUT true on genuine timeout" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ]
+    '
+
+# -- Test 13: reset-semantics -------------------------------------------------
+echo ""
+echo "--- Test 13: _PORTABLE_TIMEOUT_TIMED_OUT resets between consecutive calls ---"
+
+# In a single shell session: first call genuinely times out (flag → true),
+# second call completes successfully (flag → false).  Verifies the reset at
+# the top of portable_timeout() works across back-to-back invocations.
+assert "POSIX fallback: flag resets to false after timeout then fast success" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        # First call: genuine timeout → true
+        portable_timeout 1 sleep 10 || true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "true" ] || { echo "expected true after timeout"; exit 1; }
+        # Second call: fast success → reset to false
+        portable_timeout 5 true
+        [ "$_PORTABLE_TIMEOUT_TIMED_OUT" = "false" ]
+    '
+
+# -- Test 14: tree-sitter-generate guard: natural exit 124 not misdiagnosed ---
+echo ""
+echo "--- Test 14: tree-sitter-generate guard distinguishes natural exit 124 ---"
+
+# Replicate the guard logic from scripts/tree-sitter-generate.sh:
+#   if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
+#       echo "ERROR: tree-sitter generate timed out" >&2
+#   fi
+# Under POSIX fallback, a command that naturally exits 124 must NOT trigger the
+# timeout error path.  The stub sets tree-sitter() to exit 124 without sleeping.
+assert "guard: natural exit 124 does not emit timeout error (POSIX fallback)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        # Stub tree-sitter to exit 124 immediately (not a real timeout).
+        tree-sitter() { return 124; }
+        # Replicate guard logic from tree-sitter-generate.sh lines 141-148.
+        GEN_EXIT=0
+        portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
+        timeout_error=""
+        if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
+            timeout_error="ERROR: tree-sitter generate timed out after 60s"
+        fi
+        # The timeout error must NOT have been set.
+        [ -z "$timeout_error" ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary

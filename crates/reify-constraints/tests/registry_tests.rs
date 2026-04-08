@@ -5,7 +5,7 @@ use reify_test_support::*;
 use reify_types::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ContentHash,
     DimensionVector, OptimizationObjective, ResolutionProblem, ResolvedFunction, SolveResult,
-    Severity, Type, Value, ValueMap,
+    Type, Value, ValueMap,
 };
 
 /// Basic dispatch: SolverRegistry with DimensionalSolver as fallback

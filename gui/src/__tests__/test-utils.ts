@@ -51,3 +51,22 @@ export async function withSuppressedRejectionsAndErrorSpy(
     errorSpy.mockRestore();
   }
 }
+
+/**
+ * Run `fn` with both a temporary `console.warn` spy (output suppressed) and
+ * the `unhandledrejection` suppression from `withSuppressedRejections`.
+ *
+ * The spy is passed as the first argument to `fn` so callers can make
+ * targeted assertions (e.g. `expect(warnSpy).toHaveBeenCalledWith(...)`).
+ * The spy is restored in a `finally` block so it never leaks across tests.
+ */
+export async function withSuppressedRejectionsAndWarnSpy(
+  fn: (warnSpy: MockInstance) => Promise<void>,
+): Promise<void> {
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await withSuppressedRejections(() => fn(warnSpy));
+  } finally {
+    warnSpy.mockRestore();
+  }
+}

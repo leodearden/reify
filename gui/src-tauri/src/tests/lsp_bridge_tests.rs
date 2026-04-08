@@ -207,12 +207,27 @@ async fn lsp_request_impl_accepts_valid_json_null_literal() {
     // "null" is valid JSON — parsing must succeed; the error (if any) must NOT
     // come from the JSON parse step itself.
     let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
-    if let Err(ref e) = result {
-        assert!(
-            !e.contains("invalid JSON params"),
-            "null literal should not trigger a JSON parse error, got: {e}"
-        );
-    }
-    // Whether the LSP handler accepts null params or not is its own concern;
-    // what matters is that the JSON parse step did not reject it.
+    // The LSP initialize handler rejects null params (initialize requires a structured
+    // params object), so result must be Err. But the error must not say "invalid JSON
+    // params" — that would mean the JSON parse step itself rejected it, which is wrong
+    // because null IS valid JSON.
+    let err = result.unwrap_err();
+    assert!(
+        !err.contains("invalid JSON params"),
+        "null literal should not trigger a JSON parse error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn lsp_request_impl_rejects_empty_string_params() {
+    let bridge = LspBridge::new();
+    // "" (empty string) is NOT valid JSON — serde_json::from_str("") returns Err.
+    // The wrapper code at lsp_bridge.rs should reject it before dispatching.
+    let result = lsp_request_impl(&bridge, "initialize", "".to_string()).await;
+    assert!(result.is_err(), "empty string params should return Err");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("invalid JSON params"),
+        "error should contain 'invalid JSON params', got: {err}"
+    );
 }

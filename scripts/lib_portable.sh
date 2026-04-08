@@ -34,6 +34,19 @@ portable_sha256() {
 #
 # Returns the command's exit code, or 124 if the command was killed
 # due to exceeding the time limit (matches GNU timeout convention).
+#
+# Sets the global _PORTABLE_TIMEOUT_TIMED_OUT variable:
+#   true  — the command was killed by the timeout mechanism
+#   false — the command exited on its own (any exit code, including 124)
+#
+# Ambiguity note (GNU timeout / gtimeout paths):
+#   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
+#   to true whenever the exit code is 124.  However, exit 124 can also be
+#   returned by the wrapped command itself (e.g. `bash -c 'exit 124'`).
+#   There is no way to distinguish these two cases on the GNU path.
+#   _PORTABLE_TIMEOUT_TIMED_OUT is only fully reliable on the POSIX
+#   flag-file fallback path, where the flag is created by the timer process
+#   and the command's exit code is additionally required to be 143 (SIGTERM).
 portable_timeout() {
     local seconds="$1"
     shift
@@ -42,11 +55,14 @@ portable_timeout() {
     local cmd_exit=0
     if command -v timeout >/dev/null 2>&1; then
         timeout "$seconds" "$@" || cmd_exit=$?
+        # Ambiguity: exit 124 may mean the timeout fired OR the command
+        # naturally exited 124.  See doc comment above for details.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@" || cmd_exit=$?
+        # Same exit-124 ambiguity as the GNU timeout branch above.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
@@ -63,6 +79,13 @@ portable_timeout() {
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
             rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
+            # Trap INT/TERM so that if the caller's shell is interrupted during the
+            # wait window the temp flag path is cleaned up.  Save and restore any
+            # existing handler so we don't clobber the caller's traps.
+            local _pt_old_int _pt_old_term
+            _pt_old_int=$(trap -p INT 2>/dev/null || true)
+            _pt_old_term=$(trap -p TERM 2>/dev/null || true)
+            trap 'rm -f "$timeout_flag" 2>/dev/null' INT TERM
             ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
@@ -75,12 +98,26 @@ portable_timeout() {
         kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
 
-        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ]; then
-            # Timer fired and killed the process — genuine timeout.
+        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+            # Timer fired and killed the process — genuine timeout (timer touched
+            # the flag, then killed the process with SIGTERM → exit 143).
+            # Requiring exit 143 here closes the false-positive race: if the
+            # command exits naturally while the timer is between touch and kill,
+            # the flag exists but cmd_exit ≠ 143 so we do not misreport a timeout.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
             rm -f "$timeout_flag"
-        elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
+        elif [ -n "$timeout_flag" ]; then
+            # Flag path: timer may have touched the flag but the command exited
+            # naturally (not SIGTERM).  Clean up the stale flag file.
+            rm -f "$timeout_flag"
+        fi
+        # Restore caller's INT/TERM traps (only set in the flag-file path above).
+        if [ -n "$timeout_flag" ]; then
+            if [ -n "$_pt_old_int" ]; then eval "$_pt_old_int"; else trap - INT; fi
+            if [ -n "$_pt_old_term" ]; then eval "$_pt_old_term"; else trap - TERM; fi
+        fi
+        if [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
             # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124

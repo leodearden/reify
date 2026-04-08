@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "npm@10.9.4",
   "type": "module",
+  "packageManager": "npm@10.9.7",
   "scripts": {
     "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
     "dev": "vite",

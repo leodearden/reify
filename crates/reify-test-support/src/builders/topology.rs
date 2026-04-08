@@ -343,7 +343,6 @@ impl TopologyTemplateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_compiler::ValueCellKind;
 
     #[test]
     fn auto_param_builder() {

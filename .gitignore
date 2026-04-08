@@ -12,7 +12,8 @@ node_modules/
 /package.json
 /package-lock.json
 gui/package-lock.json
-**/pnpm-lock.yaml
+# legacy pnpm lockfile — project uses npm (see packageManager in package.json)
+gui/pnpm-lock.yaml
 gui/sidecar/package-lock.json
 tree-sitter-reify/package-lock.json
 test_bracket.reify
@@ -21,6 +22,10 @@ test_bracket.reify
 *.kate-swp
 .jcodemunch.jsonc
 data/review-checkpoints/
+data/orchestrator/
+gui/src-tauri/gen/
+orchestrator.log*
+review/reports/
 
 # Tree-sitter generated (regenerate via scripts/tree-sitter-generate.sh)
 tree-sitter-reify/src/parser.c

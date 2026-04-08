@@ -2,7 +2,7 @@
 # Test: Both copies of sanitize_value carry SYNC cross-reference comments.
 #
 # sanitize_value exists in two crates — reify-expr and reify-stdlib.
-# Each copy must have a `// SYNC:` marker so that `grep SYNC` finds both
+# Each copy must have a `// SYNC:` marker so that `grep SYNC:` finds both
 # sites when Value variants change.
 
 set -euo pipefail
@@ -23,5 +23,29 @@ assert \
 assert \
     "reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
+
+# Extract the function name referenced in reify-expr's SYNC comment and verify
+# it actually exists as a function definition in reify-stdlib
+_expr_ref_fn=$(grep 'SYNC:' "$EXPR_FILE" | grep -oE 'reify-stdlib::[a-z_]+' | head -1 | sed 's/.*:://' || true)
+assert \
+    "SYNC comment in reify-expr references a reify-stdlib function" \
+    test -n "$_expr_ref_fn"
+if [ -n "$_expr_ref_fn" ]; then
+    assert \
+        "fn ${_expr_ref_fn} exists in reify-stdlib/src/lib.rs (as referenced by SYNC in reify-expr)" \
+        grep -qE '^(pub )?(fn|async fn) '"${_expr_ref_fn}"'\b' "$STDLIB_FILE"
+fi
+
+# Extract the function name referenced in reify-stdlib's SYNC comment and verify
+# it actually exists as a function definition in reify-expr
+_stdlib_ref_fn=$(grep 'SYNC:' "$STDLIB_FILE" | grep -oE 'reify-expr::[a-z_]+' | head -1 | sed 's/.*:://' || true)
+assert \
+    "SYNC comment in reify-stdlib references a reify-expr function" \
+    test -n "$_stdlib_ref_fn"
+if [ -n "$_stdlib_ref_fn" ]; then
+    assert \
+        "fn ${_stdlib_ref_fn} exists in reify-expr/src/lib.rs (as referenced by SYNC in reify-stdlib)" \
+        grep -qE '^(pub )?(fn|async fn) '"${_stdlib_ref_fn}"'\b' "$EXPR_FILE"
+fi
 
 test_summary
