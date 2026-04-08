@@ -1772,4 +1772,51 @@ mod tests {
             "exactly 1 entry in point_entities cache should remain after the Err"
         );
     }
+
+    /// `add_line_pair` must return a named-field struct (`LinePairEntities`)
+    /// rather than a plain tuple. This test accesses `.line_a` and `.line_b`
+    /// explicitly to guard against positional ambiguity. It will FAIL against
+    /// the current tuple-returning implementation and forces step 6 to introduce
+    /// the `LinePairEntities` struct.
+    #[test]
+    fn add_line_pair_returns_named_line_pair_entities_struct() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let pair = builder
+            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
+
+        // Access named fields — not tuple index or destructuring
+        assert_ne!(
+            pair.line_a, pair.line_b,
+            "line_a and line_b handles must be distinct"
+        );
+    }
 }
