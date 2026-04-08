@@ -458,6 +458,24 @@ async fn initialized_with_null_params_returns_ok() {
     );
 }
 
+/// Malformed params for `textDocument/didOpen` should return an Err
+/// containing "didOpen params error".
+///
+/// Documents that the didOpen arm performs strict deserialization — bad
+/// params are surfaced to the caller rather than silently ignored.
+/// Uses a fully initialized server to match the realistic call-site where
+/// didOpen is sent after the initialize/initialized handshake.
+#[tokio::test]
+async fn did_open_with_malformed_params_returns_error() {
+    let lsp = initialized_lsp().await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didOpen",
+        error_prefix::DID_OPEN_PARAMS,
+    )
+    .await;
+}
+
 /// Malformed params for `textDocument/didChange` should return an Err
 /// containing "didChange params error".
 ///
