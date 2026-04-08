@@ -2315,13 +2315,8 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         // PartialEq uses to_bits(): -0.0 and +0.0 have different bit patterns → not equal.
-        assert_ne!(pos_zero, neg_zero);
-        // Ord must agree: since they're not equal, cmp must not be Equal.
-        assert_ne!(pos_zero.cmp(&neg_zero), std::cmp::Ordering::Equal);
-        // Antisymmetry check (mirrors value_ord_real_negative_zero pattern).
-        assert_eq!(pos_zero.cmp(&neg_zero), neg_zero.cmp(&pos_zero).reverse());
-        // IEEE 754 totalOrder: -0.0 < +0.0.
-        assert!(neg_zero < pos_zero);
+        // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_zero as the smaller value.
+        assert_ord_consistent(&neg_zero, &pos_zero, false);
 
         // --- NaN self-equality ---
         let nan_a = Value::Scalar {
@@ -2333,9 +2328,7 @@ mod tests {
             dimension: DimensionVector::LENGTH,
         };
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
-        assert_eq!(nan_a, nan_b);
-        // Ord must agree: cmp returns Equal for equal values.
-        assert_eq!(nan_a.cmp(&nan_b), std::cmp::Ordering::Equal);
+        assert_ord_consistent(&nan_a, &nan_b, true);
         // IEEE 754 totalOrder: NaN sorts strictly after +Infinity.
         let inf = Value::Scalar {
             si_value: f64::INFINITY,
