@@ -333,5 +333,25 @@ echo "--- Test 17: lib_portable.sh timer subshell has SIGKILL escalation ---"
 assert "lib_portable.sh timer subshell contains SIGKILL escalation (kill -9)" \
     grep -qE 'kill -9[[:space:]]|kill -KILL[[:space:]]' "$LIB_PORTABLE"
 
+# -- Test 18: monitor mode (set -m) preserved after POSIX fallback call --------
+echo ""
+echo "--- Test 18: POSIX fallback: monitor mode (set -m) preserved ---"
+
+# If the caller has job control enabled (set -m), portable_timeout must restore
+# it after using set -m internally.  Current code unconditionally runs set +m
+# after launching the timer subshell (lines 98/108), which silently disables
+# the caller's monitor mode.  This test FAILS on unpatched code.
+assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        set -m 2>/dev/null || true
+        portable_timeout 5 true
+        # $- must still contain "m" (monitor mode active).
+        case $- in
+            *m*) ;;
+            *) echo "monitor mode was clobbered by portable_timeout"; exit 1 ;;
+        esac
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
