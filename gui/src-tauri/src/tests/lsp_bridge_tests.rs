@@ -252,7 +252,7 @@ async fn lsp_request_impl_rejects_wrong_shape_params() {
     // serde_json::from_str accepts them (they are valid JSON), but
     // serde_json::from_value::<InitializeParams> rejects them at the handler level.
     let bridge = LspBridge::new();
-    for case in ["[]", "42", "true"] {
+    for case in ["{}", "[]", "42", "true"] {
         let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
         assert!(
             result.is_err(),
