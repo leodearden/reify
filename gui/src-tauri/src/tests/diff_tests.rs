@@ -1,4 +1,6 @@
-use crate::diff::{StateDelta, diff_gui_state};
+use std::sync::atomic::Ordering;
+
+use crate::diff::{StateDelta, delta_to_events, diff_gui_state};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
@@ -294,8 +296,6 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
 
 #[test]
 fn delta_to_events_returns_empty_vec_for_empty_delta() {
-    use crate::diff::delta_to_events;
-
     let delta = StateDelta {
         changed_meshes: vec![],
         changed_values: vec![],
@@ -307,4 +307,59 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
 
     let events = delta_to_events(&delta);
     assert!(events.is_empty(), "empty delta should produce no events");
+}
+
+/// A mesh with f32::NAN in vertices causes serde_json::to_value to fail.
+/// The function must log a tracing::warn! for the failure and NOT emit a
+/// "mesh-update" event for the bad mesh, while still emitting events for
+/// valid items in the same delta.
+#[test]
+fn delta_to_events_warns_and_skips_on_serialization_failure() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+
+    let delta = StateDelta {
+        changed_meshes: vec![
+            // NaN vertices — serde_json::to_value will return Err
+            sample_mesh("Bad.body", vec![f32::NAN, 0.0, 0.0]),
+            // Valid mesh — should still produce a "mesh-update" event
+            sample_mesh("Good.body", vec![1.0, 2.0, 3.0]),
+        ],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
+
+    // One warn should have been emitted for the NaN mesh serialization failure
+    assert_eq!(
+        warn_count.load(Ordering::Relaxed),
+        1,
+        "expected exactly one tracing::warn for the NaN mesh; got {}",
+        warn_count.load(Ordering::Relaxed)
+    );
+
+    // The valid mesh should still produce its event
+    let mesh_update_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-update")
+        .collect();
+    assert_eq!(
+        mesh_update_events.len(),
+        1,
+        "expected exactly one mesh-update event for the valid mesh"
+    );
+    assert_eq!(mesh_update_events[0].1["entity_path"], "Good.body");
+
+    // No mesh-update event for the NaN mesh
+    let nan_events: Vec<_> = events
+        .iter()
+        .filter(|(name, val)| name == "mesh-update" && val["entity_path"] == "Bad.body")
+        .collect();
+    assert!(
+        nan_events.is_empty(),
+        "expected no mesh-update event for the NaN mesh"
+    );
 }
