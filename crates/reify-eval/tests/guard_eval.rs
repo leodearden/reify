@@ -1240,3 +1240,130 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
         "Auto else_member deactivated by Undef guard should have DeterminacyState::Auto"
     );
 }
+
+/// Regression test: topology_fingerprint round-trips correctly through guard state transitions.
+///
+/// Verifies that `edit_param` re-elaboration correctly reflects guard cell values in the
+/// topology_fingerprint. If guard cells were silently defaulting to `Value::Undef` (rather
+/// than reading the actual guard value from the values map), all guard states would produce
+/// the same fingerprint hash (hash of Undef), causing stale incremental caches.
+///
+/// Note: `eval()` and `edit_param()` use different hash format strings for guard state, so
+/// the fingerprint from `eval(true)` cannot be directly compared to `edit_param(true)`. The
+/// round-trip is tested within the `edit_param` code path: after `false → true → false`, the
+/// final `false` fingerprint must equal the first `false` fingerprint (F4 == F2), and the
+/// intermediate `true` fingerprint must differ from both (F3 ≠ F2).
+///
+/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3 ≠ F2,
+///           edit_param(false) → F4 == F2.
+#[test]
+fn edit_param_guard_fingerprint_round_trips() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when guard is true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when guard is false)
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Phase 1: initial eval with guard=true
+    let result1 = engine.eval(&module);
+    let f1 = engine.snapshot().unwrap().topology_fingerprint;
+
+    // Sanity-check initial state (use EvalResult.values which is HashMap<_, Value>)
+    assert_eq!(
+        result1.values.get(&x_id),
+        Some(&Value::length(0.005)),
+        "x should be 5mm when guard is true"
+    );
+    assert_eq!(
+        result1.values.get(&y_id),
+        Some(&Value::Undef),
+        "y should be Undef when guard is true"
+    );
+
+    // Phase 2: edit guard to false → fingerprint F2, must differ from F1
+    let result2 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) should succeed");
+    let f2 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_ne!(
+        f1, f2,
+        "topology_fingerprint must change when guard transitions true→false"
+    );
+
+    // Sanity-check: x deactivated, y active
+    assert_eq!(
+        result2.values.get(&x_id),
+        Some(&Value::Undef),
+        "x should be Undef after guard transitions to false"
+    );
+    assert_eq!(
+        result2.values.get(&y_id),
+        Some(&Value::length(0.01)),
+        "y should be 10mm after guard transitions to false"
+    );
+
+    // Phase 3: edit guard back to true → fingerprint F3 must differ from F2.
+    // KEY ASSERTION: if guard cells silently fell back to Undef, F3 would equal F2
+    // (both would hash Undef), making the fingerprint insensitive to guard state.
+    let result3 = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param(active=true) should succeed");
+    let f3 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_ne!(
+        f2, f3,
+        "topology_fingerprint must change when guard transitions false→true (guard state must be reflected in fingerprint)"
+    );
+
+    // Verify values returned to initial state
+    assert_eq!(
+        result3.values.get(&x_id),
+        Some(&Value::length(0.005)),
+        "x should be 5mm again after guard returns to true"
+    );
+    assert_eq!(
+        result3.values.get(&y_id),
+        Some(&Value::Undef),
+        "y should be Undef again after guard returns to true"
+    );
+
+    // Phase 4: edit guard back to false → fingerprint F4 must equal F2 (round-trip).
+    // This verifies consistency within the edit_param code path.
+    let _result4 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) second time should succeed");
+    let f4 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_eq!(
+        f2, f4,
+        "topology_fingerprint must be the same for identical guard states (false==false round-trip)"
+    );
+}
