@@ -20,14 +20,17 @@ export interface SerializationErrorCoalescer {
 export function createSerializationErrorCoalescer(
   showToast: ShowToast,
   windowMs = 500,
+  maxWaitMs = 3000,
 ): SerializationErrorCoalescer {
   const buffer = new Map<string, SerializationError>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let firstArrival: number | undefined;
 
   function flush(): void {
     const errors = Array.from(buffer.values());
     buffer.clear();
     timer = undefined;
+    firstArrival = undefined;
 
     if (errors.length === 0) return;
 
@@ -42,14 +45,22 @@ export function createSerializationErrorCoalescer(
   function add(error: SerializationError): void {
     const key = `${error.item_type}:${error.item_id}`;
     buffer.set(key, error);
+    firstArrival ??= Date.now();
+    const elapsed = Date.now() - firstArrival;
+    const remaining = maxWaitMs - elapsed;
     clearTimeout(timer);
-    timer = setTimeout(flush, windowMs);
+    if (remaining <= 0) {
+      flush();
+    } else {
+      timer = setTimeout(flush, Math.min(windowMs, remaining));
+    }
   }
 
   function cleanup(): void {
     clearTimeout(timer);
     timer = undefined;
     buffer.clear();
+    firstArrival = undefined;
   }
 
   return { add, cleanup };
