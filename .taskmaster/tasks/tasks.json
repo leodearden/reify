@@ -21589,16 +21589,15 @@
         }
       },
       {
-        "id": 1043,
+        "id": "1043",
         "title": "e2e_meta.rs DRY cleanup and style conformance",
-        "description": "Refactor crates/reify-eval/tests/e2e_meta.rs to match project conventions:\n- Extract a module-local `parse_and_compile(source: &str) -> reify_compiler::CompiledModule` helper (mirroring m5_integration.rs:14-33) and a `make_engine()` helper, replacing the verbatim boilerplate in all three test functions (suggestions 0, 4, 5).\n- Inside the helper, replace the `collect::<Vec<_>>()` + `assert!(is_empty)` pattern with a form that only allocates on failure (suggestion 3).\n- Replace the `// step-13:`, `// step-15:`, `// step-17:` section headers with plain descriptive banners like `// --- let binding uses meta.key ---` (suggestion 1).\n\nmemory_hints: search for \"e2e test helper pattern parse_and_compile\" and \"test boilerplate conventions\"",
-        "details": "",
-        "testStrategy": "",
+        "description": "Refactor crates/reify-eval/tests/e2e_meta.rs to match project conventions:\n- Extract a module-local `parse_and_compile(source: &str) -> reify_compiler::CompiledModule` helper (mirroring m5_integration.rs:14-33) and a `make_engine()` helper, replacing the verbatim boilerplate in all three test functions (suggestions 0, 4, 5).\n- Inside the helper, replace the `collect::<Vec<_>>()` + `assert!(is_empty)` pattern with a form that only allocates on failure (suggestion 3).\n- Replace the `// step-13:`, `// step-15:`, `// step-17:` section headers with plain descriptive banners like `// --- let binding uses meta.key ---` (suggestion 1).\n- Deduplicate boilerplate across the 8+ new tests added by task 213 (e2e_meta_access_on_occurrence, e2e_meta_access_on_structure_resolves, e2e_meta_nonexistent_key_error, e2e_meta_no_meta_block_error, e2e_meta_sub_structure_child_meta, e2e_meta_let_binding_downstream, e2e_meta_string_eq_match, e2e_meta_string_eq_mismatch). Each new test repeats ~20 lines of parse→compile→filter-errors→engine-construct boilerplate (~180 lines total) that should collapse to ~40 lines via the `parse_and_compile` / `make_engine` helpers.\n- Add a `parse_compile_expect_err(source, needle)` helper for the error-diagnostic tests.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "Coordinate with task 1084 to ensure no overlap or conflicts in changes.",
+        "testStrategy": "Ensure all refactored tests pass without errors. Verify that the new helpers reduce boilerplate and maintain test coverage. Use `parse_compile_expect_err` to validate error diagnostics in relevant tests.",
         "subtasks": [],
-        "updatedAt": "2026-04-07T19:30:46.292Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
