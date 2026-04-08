@@ -22454,6 +22454,19 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1092,
+        "title": "Resolve Duplicate Wrapper-Equality Tests in value.rs",
+        "description": "Remove duplicate wrapper-equality tests in crates/reify-types/src/value.rs by choosing between consolidated and per-variant tests.",
+        "details": "Option (a) is preferred: Remove the consolidated test `wrapper_variants_delegate_equality_to_inner_value` and retain the existing per-variant tests for better failure locality and adherence to the existing convention. This involves deleting the consolidated test code around lines 5233-5395 and ensuring the individual tests such as `value_tensor_construction_and_partial_eq`, `value_matrix_construction_and_partial_eq`, and others remain intact. If opting for option (b), remove the per-variant tests and split the consolidated test into separate tests for each variant to maintain failure locality.",
+        "testStrategy": "Run `cargo test -p reify-types value::tests` to ensure all tests pass. Search for all `*_partial_eq_*` tests in `value.rs` to confirm no behavior regression. Verify that the tests cover all necessary cases and that no duplicate tests remain.",
+        "status": "pending",
+        "dependencies": [
+          552
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22466,7 +22479,7 @@
       ],
       "created": "2026-04-08T17:20:40.111Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T17:21:09.853Z"
+      "updated": "2026-04-08T17:21:22.194Z"
     }
   }
 }
