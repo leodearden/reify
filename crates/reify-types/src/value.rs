@@ -3851,6 +3851,29 @@ mod tests {
         };
         assert_eq!(nan_z_a, nan_z_b);
         assert_eq!(nan_z_a.cmp(&nan_z_b), std::cmp::Ordering::Equal);
+
+        // --- neg-zero in `z`: lexicographic fallthrough through w → x → y → z ---
+        // w, x, y are all 0.0 (Equal), so comparison chains to z (-0.0 vs +0.0).
+        let pos_z = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let neg_z = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: -0.0,
+        };
+        // PartialEq uses to_bits(): z differs (-0.0 vs +0.0) → not equal.
+        assert_ne!(pos_z, neg_z);
+        // Ord must also distinguish them (chains through w → x → y → z).
+        assert_ne!(pos_z.cmp(&neg_z), std::cmp::Ordering::Equal);
+        // Antisymmetry.
+        assert_eq!(pos_z.cmp(&neg_z), neg_z.cmp(&pos_z).reverse());
+        // IEEE 754 totalOrder: -0.0 < +0.0.
+        assert!(neg_z < pos_z);
     }
 
     #[test]
