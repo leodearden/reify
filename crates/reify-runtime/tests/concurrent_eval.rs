@@ -1597,6 +1597,58 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 
 #[cfg(feature = "test-utils")]
 use reify_test_support::warn_counting_subscriber;
+#[cfg(feature = "test-utils")]
+use reify_test_support::warn_capturing_subscriber;
+
+/// Runs `action` under a `warn_capturing_subscriber`, asserts that it does not
+/// panic, that exactly `expected_warns` WARN events were emitted, and that at
+/// least one of those messages contains `message_substring`.  Returns the
+/// value produced by `action` for downstream assertions.
+///
+/// # Panics
+///
+/// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
+/// WARN count or message checks fail.
+#[cfg(feature = "test-utils")]
+fn assert_poison_recovers<T: Send + 'static>(
+    action: impl FnOnce() -> T + std::panic::UnwindSafe,
+    expected_warns: usize,
+    message_substring: &str,
+) -> T {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let (subscriber, capture) = warn_capturing_subscriber();
+    let result = tracing::subscriber::with_default(subscriber, || {
+        catch_unwind(AssertUnwindSafe(action))
+    });
+    assert!(
+        result.is_ok(),
+        "action panicked when poison recovery was expected — catch_unwind returned Err"
+    );
+    capture.assert_count_and_any_message_contains(expected_warns, message_substring);
+    result.unwrap()
+}
+
+/// Simpler variant of [`assert_poison_recovers`] that only checks the WARN
+/// count, without a message-substring assertion.  Use this when multiple locks
+/// may fire (e.g. evaluate() touching both read and write paths) or when the
+/// exact message content is not the focus of the test.
+#[cfg(feature = "test-utils")]
+fn assert_poison_recovers_checked<T: Send + 'static>(
+    action: impl FnOnce() -> T + std::panic::UnwindSafe,
+    expected_warns: usize,
+) -> T {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let (subscriber, capture) = warn_capturing_subscriber();
+    let result = tracing::subscriber::with_default(subscriber, || {
+        catch_unwind(AssertUnwindSafe(action))
+    });
+    assert!(
+        result.is_ok(),
+        "action panicked when poison recovery was expected — catch_unwind returned Err"
+    );
+    capture.assert_count(expected_warns);
+    result.unwrap()
+}
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
@@ -1604,8 +1656,8 @@ mod poison_recovery {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// values() recovers gracefully from a poisoned values RwLock: no panic,
-    /// returned slice contains both T.a and T.b, and exactly one tracing::warn!
-    /// is emitted.
+    /// returned slice contains both T.a and T.b with correct values, and exactly
+    /// one tracing::warn! is emitted with the "values RwLock poisoned" message.
     #[test]
     fn values_recovers_from_poisoned_values_lock_with_warn() {
         let setup = simple_setup();
@@ -1613,24 +1665,23 @@ mod poison_recovery {
 
         adapter.poison_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| adapter.values()))
-        });
-
-        assert!(
-            result.is_ok(),
-            "values() should recover from poisoned lock, not panic"
+        // values() acquires 1 lock: values RwLock. Only that lock is poisoned,
+        // so exactly 1 WARN fires, and the message must name the lock.
+        let values = assert_poison_recovers(
+            || adapter.values(),
+            1,
+            "values RwLock poisoned",
         );
-        let values = result.unwrap();
-        assert!(values.contains(&ValueCellId::new("T", "a")));
-        assert!(values.contains(&ValueCellId::new("T", "b")));
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
-        // poisoned, so exactly 1 WARN fires.
+        // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
         assert_eq!(
-            count, 1,
-            "values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+            values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after values() poison recovery"
+        );
+        assert_eq!(
+            values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(10.0)),
+            "T.b should be Real(10.0) after values() poison recovery"
         );
     }
 
