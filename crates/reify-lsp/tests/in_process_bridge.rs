@@ -399,20 +399,7 @@ async fn valid_notification_returns_ok_null() {
 #[tokio::test]
 async fn initialized_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-
-    // json!(42) is clearly malformed for InitializedParams (expects an object)
-    let result = lsp.handle_request("initialized", json!(42)).await;
-
-    assert!(
-        result.is_err(),
-        "initialized with malformed params should return Err, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("initialized params error"),
-        "error message should contain 'initialized params error', got: {err}"
-    );
+    assert_malformed_params_returns_error(&lsp, "initialized", "initialized params error").await;
 }
 
 /// LSP clients (e.g. some VS Code extensions, Neovim) may send `params: null` for
