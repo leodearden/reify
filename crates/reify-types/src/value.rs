@@ -1171,19 +1171,14 @@ impl PartialOrd for Value {
 
 /// Total order for `Value`, consistent with `impl PartialEq for Value`.
 ///
-/// Float-bearing variants use `to_bits()` unsigned comparison, giving a
-/// deterministic total order that agrees with bit-identity equality:
-/// `-0.0` and `+0.0` sort differently (negative zero has the sign bit set,
-/// so it compares greater than positive zero under unsigned `u64` comparison),
-/// and `NaN` occupies a fixed position in the order.
+/// Float-bearing variants use IEEE 754 `total_cmp()`, giving a deterministic
+/// total order that agrees with bit-identity equality:
+/// `-0.0` and `+0.0` sort differently (`-0.0 < +0.0` under `total_cmp()`),
+/// and `NaN` occupies a fixed position after `+Infinity` in the order.
 ///
 /// **Eq/Ord contract:** Both `PartialEq` and `Ord` define equality as
 /// bit-pattern identity, so the contract `a == b` iff `a.cmp(&b) == Ordering::Equal`
 /// is preserved.
-///
-/// **WARNING:** Any change to the comparison strategy (e.g. migrating to
-/// `total_cmp()`) must preserve this invariant and must update **both** impls
-/// together — if equality semantics change in one, they must change in the other.
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
@@ -1349,11 +1344,13 @@ impl Ord for Value {
                     y: by,
                     z: bz,
                 },
-            ) => aw
-                .total_cmp(bw)
-                .then_with(|| ax.total_cmp(bx))
-                .then_with(|| ay.total_cmp(by))
-                .then_with(|| az.total_cmp(bz)),
+            ) => {
+                // Lexicographic: w → x → y → z (IEEE 754 total_cmp per component)
+                aw.total_cmp(bw)
+                    .then_with(|| ax.total_cmp(bx))
+                    .then_with(|| ay.total_cmp(by))
+                    .then_with(|| az.total_cmp(bz))
+            }
             (
                 Value::Range {
                     lower: al,
@@ -3733,7 +3730,7 @@ mod tests {
 
     #[test]
     fn value_orientation_ord_within_type() {
-        // Lexicographic on w, x, y, z via to_bits
+        // Lexicographic on w, x, y, z via total_cmp() — component priority: w→x→y→z
         let a = Value::Orientation {
             w: 0.0,
             x: 0.0,
