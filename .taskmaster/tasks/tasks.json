@@ -22392,15 +22392,16 @@
         "description": "Follow-up from Task 1063 review triage (esc-1063-7). Three related test-quality improvements in gui/src-tauri/src/tests/lsp_bridge_tests.rs, all in the block lines 192-234.\n\n## (S1) Hoist LspBridge out of the malformed-JSON loop (perf)\nAt line 197-199 `lsp_request_impl_rejects_malformed_json_params` constructs a fresh `LspBridge::new()` on every loop iteration. Since `lsp_request_impl` fails at the JSON-parse step (gui/src-tauri/src/lsp_bridge.rs:60) BEFORE touching any LSP state, the bridge is effectively stateless for these cases. Hoist `let bridge = LspBridge::new();` above the `for case in [...]` loop to remove 3 redundant in-process LSP server constructions. Minor but free win. Source: reviewer_comprehensive S1.\n\n## (S2) Add positive assertion on `initialize params error` in null-literal test (test_quality)\nAt line 213 `lsp_request_impl_null_literal_passes_json_parse_step` currently only asserts the *absence* of the `invalid JSON params` prefix and relies on `unwrap_err()` panic-on-Ok as the signal that the handler rejected null. Add a positive assertion on the expected downstream error:\n\n```\nassert!(\n    err.contains(\"initialize params error\"),\n    \"expected handler-side rejection, got: {err}\"\n);\n```\n\nThe `initialize params error: ...` prefix is emitted at crates/reify-lsp/src/bridge.rs:108-110 where `serde_json::from_value::<InitializeParams>(Value::Null)` fails. This tightens the contract pin without changing the invariant under test. Source: reviewer_comprehensive S2.\n\n## (S3) Add wrong-shape params test (test_coverage)\nThe malformed-JSON table covers parser failures, and the null test covers a single valid-JSON-but-handler-rejects case. Add a new test `lsp_request_impl_rejects_wrong_shape_params` covering valid JSON that parses successfully but fails downstream `InitializeParams` deserialization:\n\n```rust\n#[tokio::test]\nasync fn lsp_request_impl_rejects_wrong_shape_params() {\n    let bridge = LspBridge::new();\n    for case in [\"[]\", \"42\", \"true\"] {\n        let result = lsp_request_impl(&bridge, \"initialize\", case.to_string()).await;\n        let err = result.unwrap_err();\n        assert!(\n            !err.contains(\"invalid JSON params\"),\n            \"case {case:?}: wrong-shape params should not be treated as parse error, got: {err}\"\n        );\n        assert!(\n            err.contains(\"initialize params error\"),\n            \"case {case:?}: expected handler-side rejection, got: {err}\"\n        );\n    }\n}\n```\n\nThis generalizes the null-literal invariant to other shapes and verifies that non-parse errors do NOT carry the `invalid JSON params` prefix. Source: reviewer_comprehensive S3 (optional but aligned with S2).\n\n## Verification\nRun `cargo test -p <gui-tauri-crate> lsp_request_impl` to confirm:\n- existing malformed-JSON cases still pass with hoisted bridge\n- null-literal test passes with the additional positive assertion\n- new wrong-shape test passes\n\nSource escalation: esc-1063-7.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T17:17:09.284Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:17:05.265Z",
+      "lastModified": "2026-04-08T17:17:09.284Z",
       "taskCount": 1087,
       "completedCount": 752,
       "tags": [
