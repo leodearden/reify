@@ -227,9 +227,9 @@ echo "--- Test 16: timeout path cleans up partial output files ---"
 # On timeout, tree-sitter generate may leave partially-written parser.c,
 # grammar.json, and node-types.json.  The timeout error path must remove
 # these files before exiting so they don't confuse subsequent runs.
-# Grep for 'rm.*parser.c' (or similar) in the timeout error block.
-assert "timeout error path removes partial output files (rm parser.c)" \
-    grep -qE 'rm[[:space:]].*parser\.c' "$GENERATE_SCRIPT"
+# Require all three output files in a single rm -f command.
+assert "timeout error path removes all three partial output files (rm -f parser.c grammar.json node-types.json)" \
+    grep -qE 'rm -f .*parser\.c .*grammar\.json .*node-types\.json' "$GENERATE_SCRIPT"
 
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
