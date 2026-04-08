@@ -22125,6 +22125,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1076,
+        "title": "Detect sibling prelude unit collisions and add transitive/diamond test coverage",
+        "description": "Two related issues from Task 209 review:\n\n1. **Silent overwrite (S4):** seed_prelude_unit has last-wins semantics. If entry imports two siblings (A, B) that both declare `pub unit foo` with different definitions, whichever was inserted last wins silently with no diagnostic. Detect this and emit a diagnostic for conflicting units from different prelude modules.\n\n2. **Missing test coverage (S5):** Add tests for:\n   - Transitive visibility: entry imports A, A imports B with pub unit → unit should NOT propagate to entry (locks in design choice)\n   - Diamond case: A imports B and C, both pub-export same unit → should trigger collision diagnostic (pairs with fix above)\n   - Pub unit from dep that shadows a stdlib unit name\n\nmemory_hints: search \"seed_prelude_unit last-wins overwrite\", search \"compile_project prelude unit seeding\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22137,7 +22148,7 @@
       ],
       "created": "2026-04-08T11:50:01.805Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T11:50:07.696Z"
+      "updated": "2026-04-08T11:50:15.308Z"
     }
   }
 }
