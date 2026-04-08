@@ -21721,11 +21721,11 @@
         "description": "Follow-up from Task 1033 review triage (esc-1033-1, suggestion S2). `gui/src/__tests__/gotoDefinition.test.ts` has ~8 near-identical mockView/mockEvent constructions (each ~20 lines of clientX/Y, ctrlKey, posAtCoords, doc.lineAt, doc.line, dom.isConnected boilerplate). Extract a shared factory near the top of the file:\n\n```ts\nconst ctrlClick = { ctrlKey: true, metaKey: false, clientX: 100, clientY: 50 } as MouseEvent;\n\nfunction makeView({ lines = 100, isConnected = true, lineFn }: {\n  lines?: number;\n  isConnected?: boolean;\n  lineFn?: (n: number) => { from: number };\n} = {}) {\n  return {\n    posAtCoords: () => 5,\n    state: {\n      doc: {\n        lines,\n        lineAt: () => ({ number: 1, from: 0, to: 10 }),\n        line: lineFn ?? ((n: number) => ({ from: (n - 1) * 20 })),\n      },\n    },\n    dispatch: vi.fn(),\n    dom: { isConnected },\n  };\n}\n```\n\nThen rewrite each test to use `ctrlClick` and `makeView({...})`, keeping any tests that need a custom `line: () => { throw ... }` to pass a `lineFn` override. Should roughly halve the test file surface while making the guard logic easier to evolve.\n\nNot blocking — this pattern was pre-existing before Task 1033 but that task is a natural place to notice it. Verify with `npm test -- src/__tests__/gotoDefinition.test.ts`.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:45:20.132Z",
+        "updatedAt": "2026-04-08T10:48:55.884Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -21750,7 +21750,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T10:48:52.220Z",
+      "lastModified": "2026-04-08T10:48:55.885Z",
       "taskCount": 1054,
       "completedCount": 743,
       "tags": [
