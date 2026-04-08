@@ -461,6 +461,16 @@ enum PointKey {
     Fixed(u64, u64, u64), // f64 bits for hashing
 }
 
+/// Named return type for [`SystemBuilder::add_line_pair`].
+///
+/// Holds the two line-segment entity handles with explicit field names so
+/// callers are not forced to rely on tuple-position semantics.
+#[derive(Debug)]
+struct LinePairEntities {
+    line_a: Slvs_hEntity,
+    line_b: Slvs_hEntity,
+}
+
 impl SystemBuilder {
     fn new() -> Self {
         Self {
@@ -623,14 +633,17 @@ impl SystemBuilder {
         line_b: &LineRef,
         auto_params: &[AutoParam],
         current_values: &ValueMap,
-    ) -> Result<(Slvs_hEntity, Slvs_hEntity), BuilderError> {
+    ) -> Result<LinePairEntities, BuilderError> {
         let la_start = self.add_point(&line_a.start, auto_params, current_values)?;
         let la_end = self.add_point(&line_a.end, auto_params, current_values)?;
         let lb_start = self.add_point(&line_b.start, auto_params, current_values)?;
         let lb_end = self.add_point(&line_b.end, auto_params, current_values)?;
         let line_a_e = self.add_line_segment(la_start, la_end);
         let line_b_e = self.add_line_segment(lb_start, lb_end);
-        Ok((line_a_e, line_b_e))
+        Ok(LinePairEntities {
+            line_a: line_a_e,
+            line_b: line_b_e,
+        })
     }
 
     /// Get or create the default XY workplane.
@@ -981,8 +994,10 @@ fn add_pattern_to_builder(
             line_b,
             angle_deg,
         } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Angle constraints require a workplane in SolveSpace.
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -996,8 +1011,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Parallel { line_a, line_b } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             // Parallel/perpendicular require a workplane in SolveSpace
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
@@ -1011,8 +1028,10 @@ fn add_pattern_to_builder(
             );
         }
         GeometricPattern::Perpendicular { line_a, line_b } => {
-            let (line_a_e, line_b_e) =
-                builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
+            let LinePairEntities {
+                line_a: line_a_e,
+                line_b: line_b_e,
+            } = builder.add_line_pair(line_a, line_b, auto_params, current_values)?;
             let wp = builder.get_workplane();
             builder.add_constraint_wrkpl(
                 SLVS_C_PERPENDICULAR,
@@ -1236,9 +1255,9 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
+        let entities = result.expect("add_line_pair should return Ok");
         assert_ne!(
-            line_a_e, line_b_e,
+            entities.line_a, entities.line_b,
             "line entities should be distinct handles"
         );
         // 4 Fixed points (each creates 1 entity) + 2 line segments = 6 entities
@@ -1728,9 +1747,9 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
+        let entities = result.expect("add_line_pair should return Ok");
         assert_ne!(
-            line_a_e, line_b_e,
+            entities.line_a, entities.line_b,
             "line segment handles should be distinct even when an endpoint is shared"
         );
         // 3 unique point entities + 2 line segment entities = 5 (not 6)
@@ -1744,6 +1763,59 @@ mod tests {
             builder.point_entities.len(),
             3,
             "PointKey cache should contain exactly 3 unique entries for the shared-endpoint case"
+        );
+    }
+
+    // ── add_line_pair: named-struct return-type test (S2) ────────────────────
+
+    /// Accessing the return value of `add_line_pair` by field name rather than
+    /// tuple position makes callers self-documenting.  This test exercises
+    /// the named fields `entities.line_a` and `entities.line_b` and asserts
+    /// they are distinct handles.
+    ///
+    /// Driving test for the `LinePairEntities` refactor in step 6: until that
+    /// struct exists this test fails to compile.
+    #[test]
+    fn add_line_pair_returns_named_struct() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let entities = builder
+            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
+        // Access by named field — if LinePairEntities doesn't exist this
+        // line fails to compile, driving the step-6 refactor.
+        let _: Slvs_hEntity = entities.line_a;
+        let _: Slvs_hEntity = entities.line_b;
+        assert_ne!(
+            entities.line_a, entities.line_b,
+            "line_a and line_b entity handles should be distinct"
         );
     }
 
@@ -1784,11 +1856,11 @@ mod tests {
             },
         };
 
-        let (line_a_e, line_b_e) = builder
+        let entities = builder
             .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
             .expect("add_line_pair should return Ok");
 
-        for (label, handle) in [("line_a", line_a_e), ("line_b", line_b_e)] {
+        for (label, handle) in [("line_a", entities.line_a), ("line_b", entities.line_b)] {
             let entity = builder
                 .entities
                 .iter()
