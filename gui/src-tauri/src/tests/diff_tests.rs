@@ -309,6 +309,53 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
     assert!(events.is_empty(), "empty delta should produce no events");
 }
 
+/// A mesh with f32::NAN vertices should produce a "serialization-error" event
+/// with a structured payload containing item_type, item_id, and error fields.
+/// This test fails because step-2 only logs, it doesn't emit an error event.
+#[test]
+fn delta_to_events_emits_serialization_error_event_on_failure() {
+    let delta = StateDelta {
+        changed_meshes: vec![sample_mesh("Bad.body", vec![f32::NAN, 0.0, 0.0])],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = delta_to_events(&delta);
+
+    // Should have exactly one "serialization-error" event
+    let error_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "serialization-error")
+        .collect();
+    assert_eq!(
+        error_events.len(),
+        1,
+        "expected exactly one serialization-error event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    // The payload must have item_type, item_id, and error fields
+    let payload = &error_events[0].1;
+    assert_eq!(payload["item_type"], "mesh", "item_type must be \"mesh\"");
+    assert_eq!(
+        payload["item_id"], "Bad.body",
+        "item_id must be the entity_path"
+    );
+    assert!(
+        payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
+        "error must be a non-empty string"
+    );
+
+    // No mesh-update event should have been emitted for the failed mesh
+    assert!(
+        events.iter().all(|(n, _)| n != "mesh-update"),
+        "no mesh-update event should be emitted for a mesh that failed serialization"
+    );
+}
+
 /// A mesh with f32::NAN in vertices causes serde_json::to_value to fail.
 /// The function must log a tracing::warn! for the failure and NOT emit a
 /// "mesh-update" event for the bad mesh, while still emitting events for
