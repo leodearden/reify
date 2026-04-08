@@ -24016,15 +24016,16 @@
         "description": "The test `serialize_finite_f32_vec_partial_output_not_observable_on_error` (types_tests.rs:608-630) is functionally near-identical to `serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error` (lines 592-606). Both use `vec![1.0, 2.0, f32::NAN]` and assert error contains \"non-finite\". The newer test adds a redundant `assert!(result.is_err())` before `unwrap_err()`.\n\nOptions:\n1. **Consolidate**: Merge the partial-output safety documentation into the existing test's comment and delete the duplicate.\n2. **Annotate**: Keep both but add an inline note to the newer test explaining it deliberately overlaps with the prior test for documentation clarity.\n\nEither approach resolves the duplication concern. Option 1 is cleaner.\n\nmemory_hints: search \"serialize_finite_f32_vec\", search \"Task 1161\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:05:07.685Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:05:07.468Z",
+      "lastModified": "2026-04-08T23:05:07.685Z",
       "taskCount": 1175,
       "completedCount": 859,
       "tags": [
