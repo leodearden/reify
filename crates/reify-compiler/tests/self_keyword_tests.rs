@@ -85,7 +85,6 @@ fn self_dot_param_resolves_to_value_ref() {
 // ─── step-2: self.sub.param resolves ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_sub_dot_param_resolves() {
     // `self.bolt.d` should resolve to the sub component's member.
     let source = r#"structure Bolt {
