@@ -56,9 +56,9 @@ use crate::concurrent::{
 /// hashes for Changed/Unchanged determination, and records results. Skip decisions
 /// are made by the scheduler via pre-computed `changed_vcids` tracking.
 ///
-/// All lock acquisitions recover gracefully from poisoning — if an evaluation task
-/// panics mid-computation, subsequent lock acquisitions on the same adapter will
-/// extract the inner data from the `PoisonError` rather than propagating the panic.
+/// This adapter upholds the module-level poison-recovery contract: all public operations
+/// remain panic-safe against prior task panics, so a single faulting node cannot take
+/// down the entire evaluation batch sharing this adapter via `Arc`.
 pub struct ConcurrentEvalAdapter {
     /// The evaluation graph (immutable during evaluation).
     graph: Arc<EvaluationGraph>,
