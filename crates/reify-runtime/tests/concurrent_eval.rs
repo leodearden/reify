@@ -1596,8 +1596,6 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 // the faulting node.
 
 #[cfg(feature = "test-utils")]
-use reify_test_support::warn_counting_subscriber;
-#[cfg(feature = "test-utils")]
 use reify_test_support::warn_capturing_subscriber;
 
 /// Runs `action` under a `warn_capturing_subscriber`, asserts that it does not
@@ -2520,7 +2518,8 @@ mod poison_evaluate {
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
     /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
-    /// so poisoning values should produce multiple WARN events.
+    /// so poisoning values should produce multiple WARN events.  At least one message must
+    /// contain "values RwLock poisoned" to confirm the correct lock triggered the warning.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tracing_warn_emitted_on_poison_evaluate() {
         let setup = simple_setup();
@@ -2530,7 +2529,7 @@ mod poison_evaluate {
         // Poison values lock — affects both read and write paths in evaluate()
         adapter.poison_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
+        let (subscriber, capture) = warn_capturing_subscriber();
         let outcome = tracing::subscriber::with_default(subscriber, || {
             evaluate_with_recovery(&adapter, node)
         });
@@ -2538,10 +2537,17 @@ mod poison_evaluate {
             outcome.expect("evaluate() should recover from poisoned values lock, not panic");
         assert_eq!(outcome, EvalOutcome::Changed);
 
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        let count = capture.count();
         assert!(
             count >= 2,
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
+        );
+        // Verify the warning messages name the correct lock
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("values RwLock poisoned")),
+            "at least one WARN message should contain 'values RwLock poisoned'; \
+             captured messages: {msgs:?}"
         );
     }
 }
