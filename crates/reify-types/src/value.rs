@@ -1896,6 +1896,16 @@ mod tests {
     }
 
     #[test]
+    fn nan_partialeq_bit_identity() {
+        let nan1 = Value::Real(f64::NAN);
+        let nan2 = Value::Real(f64::NAN);
+        assert_eq!(
+            nan1, nan2,
+            "two separately constructed NaN values with identical bit patterns must compare equal"
+        );
+    }
+
+    #[test]
     fn different_values_different_hashes() {
         let a = Value::length(0.08);
         let b = Value::length(0.10);
