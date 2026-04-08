@@ -24045,15 +24045,16 @@
         "description": "Two test quality gaps in `useSerializationErrorCoalescer.test.ts`:\n\n1. **\"Last error wins\" assertion (line 50-67):** The deduplication test asserts `stringContaining(\"Failed to serialize mesh 'Bracket.body'\")` but does not verify the documented \"last error wins\" behavior. All 5 errors have distinct `error` fields (`error variant 0` through `4`), but the assertion doesn't check that the toast contains `error variant 4` (the last one). Tighten to: `expect(showToast).toHaveBeenCalledWith(\"Failed to serialize mesh 'Bracket.body': error variant 4\", 'error');`\n\n2. **add-after-cleanup test:** No test covers calling `add()` after `cleanup()` has been called. The current implementation handles this gracefully (cleanup clears state, a subsequent add starts a fresh timer), but this edge case should be asserted since `App.tsx`'s `onCleanup` could race with a late-arriving event. Add a test that calls `cleanup()`, then `add()`, advances timers, and verifies the expected behavior.\n\nMemory hints: search \"createSerializationErrorCoalescer test\" \"serialization error coalescer cleanup\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T23:10:58.959Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:10:58.677Z",
+      "lastModified": "2026-04-08T23:10:58.959Z",
       "taskCount": 1177,
       "completedCount": 861,
       "tags": [
