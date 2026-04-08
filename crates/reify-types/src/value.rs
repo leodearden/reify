@@ -2283,6 +2283,13 @@ mod tests {
     }
 
     #[test]
+    fn test_assert_ord_consistent_not_equal() {
+        // Meta-test: verify assert_ord_consistent works for a non-equal pair.
+        // Value::Int(1) < Value::Int(2), so pass the smaller value first.
+        assert_ord_consistent(&Value::Int(1), &Value::Int(2), false);
+    }
+
+    #[test]
     fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
         // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
         // for the Scalar variant's bit-identity edge cases.
