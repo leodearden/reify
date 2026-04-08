@@ -21232,7 +21232,7 @@
         "description": "In tree-sitter-reify/tests/build_logic_tests.rs, the assertion `assert!(drop_impl.contains(\"if let Err\"), ...)` in the ReadonlyGuard drop-logging guard enforces a specific syntactic form rather than the semantic property. A semantically correct refactor using `match` would satisfy the behavioral intent but fail this check.\n\nFix: Remove the `contains(\"if let Err\")` assertion. The existing pair of `!contains(\"let _ = std::fs::set_permissions\")` plus `contains(\"eprintln!\")` already fully enforces the invariant (errors not silently discarded, errors logged). If `if let Err` is intentionally mandated as the project style, add an explicit comment documenting that decision instead.\n\nApplies to whichever test contains the drop impl check after the restructuring task above.\n\nmemory_hints: search \"ReadonlyGuard drop impl assertion\" in reify project; search \"over-constrained assertion convention\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21250,7 +21250,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-08T12:08:51.591Z"
+        "updatedAt": "2026-04-08T20:44:44.524Z"
       },
       {
         "id": "1024",
@@ -22819,7 +22819,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:44:43.257Z",
+      "lastModified": "2026-04-08T20:44:44.524Z",
       "taskCount": 1111,
       "completedCount": 783,
       "tags": [
