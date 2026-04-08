@@ -23091,6 +23091,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1129,
+        "title": "Add negative test pinning dimensioned-domain gradient assertion skip",
+        "description": "In crates/reify-expr/tests/gradient_tests.rs, add a test that verifies a gradient field with a dimensioned domain (e.g., domain=Scalar[LENGTH]) and a mismatched codomain (e.g., declared Scalar[MASS] but lambda returns Scalar[LENGTH]) does NOT panic, even though the codomain is wrong.\n\nThis pins the intentional design decision in lib.rs (~line 854): the debug assertion only fires for dimensionless domains (domain_dim.is_none()). With dimensioned domains, `make_arg` passes Scalar<domain_dim> which causes the lambda to naturally return a dimensioned value regardless of the declared codomain — so the assertion is skipped.\n\nThe test should:\n- Create a field with domain=Scalar[LENGTH], codomain=Scalar[MASS], lambda |x| 2*x\n- Compute gradient, sample at a point\n- Assert it returns a value (not Undef) and does NOT panic\n\nMemory hints: search for \"gradient codomain_type dimensioned domain skip\" and \"domain_dim assertion skip\".\nSource: task 1007 review suggestion S2.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23103,7 +23114,7 @@
       ],
       "created": "2026-04-08T21:08:31.236Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:08:31.245Z"
+      "updated": "2026-04-08T21:08:37.764Z"
     }
   }
 }
