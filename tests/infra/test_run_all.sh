@@ -41,7 +41,7 @@ if [ -f "$RUN_ALL" ]; then
     t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" && t2_rc=0 || t2_rc=$?
     rm -rf "$TMPDIR_T2"
 
-    if ! echo "$t2_output" | grep -q "Running.*test_helpers"; then
+    if ! echo "$t2_output" | grep -q "Running: test_helpers\.sh"; then
         assert "test_helpers.sh not listed as a discovered test" true
     else
         assert "test_helpers.sh not listed as a discovered test (got: $t2_output)" false
@@ -81,7 +81,9 @@ if [ -f "$RUN_ALL" ]; then
         assert "test_test_helpers.sh is discovered (got: $t3_output)" false
     fi
 
-    if ! echo "$t3_output" | grep -q "Running.*test_helpers\.sh"; then
+    # Use "Running: test_helpers.sh" not "Running.*test_helpers.sh" —
+    # the latter would also match "test_test_helpers.sh" as a suffix.
+    if ! echo "$t3_output" | grep -q "Running: test_helpers\.sh"; then
         assert "test_helpers.sh is NOT in discovered output" true
     else
         assert "test_helpers.sh is NOT in discovered output (got: $t3_output)" false
