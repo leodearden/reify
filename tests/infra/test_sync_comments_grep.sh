@@ -71,6 +71,21 @@ assert "accepts: multi-space between fn and name (fn   sanitize_value()" \
 assert "accepts: trailing space before paren (fn sanitize_value ()" \
     bash -c "printf '%s\n' 'fn sanitize_value (v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(crate) fn sanitize_value(" \
+    bash -c "printf '%s\n' 'pub(crate) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(super) fn sanitize_value(" \
+    bash -c "printf '%s\n' 'pub(super) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: unsafe fn sanitize_value(" \
+    bash -c "printf '%s\n' 'unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: const fn sanitize_value(" \
+    bash -c "printf '%s\n' 'const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: fn sanitize_value<T>(" \
+    bash -c "printf '%s\n' 'fn sanitize_value<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
