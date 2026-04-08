@@ -1888,6 +1888,85 @@ mod tests {
         }
     }
 
+    /// Documents the **deliberate exception** to the hash-equality invariant for
+    /// NaN payloads.
+    ///
+    /// The standard invariant is: `a == b  ⟹  content_hash(a) == content_hash(b)`
+    /// (equivalently: `content_hash(a) != content_hash(b)  ⟹  a != b`).
+    ///
+    /// For NaN-bearing variants, `content_hash()` intentionally **collapses** all
+    /// NaN bit patterns to the canonical `f64::NAN` bit pattern (see the method
+    /// doc on `content_hash()` for the rationale).  `PartialEq`, by contrast, uses
+    /// `to_bits()` and therefore distinguishes NaN values that differ only in
+    /// payload.  This creates the exception:
+    ///
+    ///   `a != b`  yet  `content_hash(a) == content_hash(b)`
+    ///
+    /// **Contrast with -0.0/+0.0**: those variants *do* maintain the invariant —
+    /// `-0.0 != +0.0` (via `to_bits()`) AND their hashes differ.  See
+    /// `real_neg_zero_hash_differs_from_pos_zero`, `scalar_neg_zero_hash_differs_from_pos_zero`,
+    /// and `hash_equality_invariant_real` for those tests.
+    ///
+    /// **Caller guidance**: content-addressed lookups for NaN-bearing values should
+    /// treat a hash-hit as "possibly equal" and re-check `PartialEq` when exact
+    /// bit-pattern identity matters.
+    #[test]
+    fn nan_payload_hash_equality_invariant_exception() {
+        // Build a non-canonical NaN: same NaN class, distinct low-mantissa bit.
+        let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
+        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+
+        // (1) Value::Real
+        {
+            let a = Value::Real(f64::NAN);
+            let b = Value::Real(non_canon_nan);
+            // PartialEq uses to_bits() → they are NOT equal
+            assert_ne!(a, b, "Real: NaN values with different payloads must be unequal via PartialEq");
+            // content_hash collapses both to canonical NaN → they DO hash equally
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "Real: NaN values with different payloads must hash equally (invariant exception)"
+            );
+        }
+
+        // (2) Value::Scalar
+        {
+            let a = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::DIMENSIONLESS };
+            let b = Value::Scalar { si_value: non_canon_nan, dimension: DimensionVector::DIMENSIONLESS };
+            assert_ne!(a, b, "Scalar: NaN values with different payloads must be unequal via PartialEq");
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "Scalar: NaN values with different payloads must hash equally (invariant exception)"
+            );
+        }
+
+        // (3) Value::Complex (re field)
+        {
+            let a = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+            let b = Value::Complex { re: non_canon_nan, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
+            assert_ne!(a, b, "Complex re: NaN values with different payloads must be unequal via PartialEq");
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "Complex re: NaN values with different payloads must hash equally (invariant exception)"
+            );
+        }
+
+        // (4) Value::Orientation (w field)
+        {
+            let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
+            let b = Value::Orientation { w: non_canon_nan, x: 0.0, y: 0.0, z: 0.0 };
+            assert_ne!(a, b, "Orientation: NaN values with different payloads must be unequal via PartialEq");
+            assert_eq!(
+                a.content_hash(),
+                b.content_hash(),
+                "Orientation: NaN values with different payloads must hash equally (invariant exception)"
+            );
+        }
+    }
+
     #[test]
     fn nan_normalized() {
         let nan1 = Value::Real(f64::NAN);
