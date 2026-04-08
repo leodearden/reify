@@ -19390,11 +19390,11 @@
         "description": "In crates/reify-test-support/src/tracing_support.rs: (1) Fix non_warn_events_are_not_counted to document two-level filtering (enabled accepts ERROR, event filters it). (2) Add non-zero span ID invariant assertion in new_span_ids_are_unique.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:58:57.372Z",
+        "updatedAt": "2026-04-08T11:40:27.848Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support"
@@ -22091,7 +22091,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:40:23.375Z",
+      "lastModified": "2026-04-08T11:40:27.855Z",
       "taskCount": 1073,
       "completedCount": 752,
       "tags": [
