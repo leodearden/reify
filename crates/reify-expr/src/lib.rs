@@ -1446,11 +1446,20 @@ fn eval_method_call(
                 return Value::Undef;
             }
             match obj {
-                Value::Complex { re, im, dimension } => Value::Complex {
-                    re: *re,
-                    im: -im,
-                    dimension: *dimension,
-                },
+                Value::Complex { re, im, dimension } => {
+                    // Defense-in-depth: reject poisoned inputs before constructing
+                    // the output Complex, mirroring the phase-method pattern (line ~1423).
+                    // sanitize_value's Complex arm provides a secondary layer but a
+                    // direct pre-guard is independent and more robust.
+                    if !re.is_finite() || !im.is_finite() {
+                        return Value::Undef;
+                    }
+                    Value::Complex {
+                        re: *re,
+                        im: -im,
+                        dimension: *dimension,
+                    }
+                }
                 _ => Value::Undef,
             }
         }
@@ -4445,6 +4454,156 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::ANGLE);
             }
             other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
+        }
+    }
+
+    // ── method: conjugate (NaN/Inf sanitization) ─────────────────────────────
+
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // -1.0 (or -NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.conjugate → Undef
+        // -(NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry +Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with +Inf real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_im_returns_undef() {
+        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.conjugate → Undef
+        // The conjugate would flip -Inf → +Inf, still non-finite; should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_re_returns_undef() {
+        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry -Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf real part should return Undef"
+        );
+    }
+
+    // ── method regression: finite conjugate still works ──────────────────────
+
+    #[test]
+    fn conjugate_finite_dimensioned_correct() {
+        // Complex{re:3.0, im:4.0, LENGTH}.conjugate == Complex{re:3.0, im:-4.0, LENGTH}
+        // Guards against the pre-guard accidentally rejecting finite values.
+        // Uses a dimensioned (LENGTH) Complex to add coverage beyond the dimensionless
+        // path already tested in tests/complex_eval_tests.rs::method_conjugate.
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::length()),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Complex { re, im, dimension } => {
+                assert!(
+                    (re - 3.0).abs() < 1e-12,
+                    "expected re=3.0, got {}",
+                    re
+                );
+                assert!(
+                    (im - (-4.0)).abs() < 1e-12,
+                    "expected im=-4.0, got {}",
+                    im
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}", other),
         }
     }
 
