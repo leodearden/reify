@@ -4086,6 +4086,42 @@ mod tests {
     }
 
     #[test]
+    fn sign_insensitive_macro_non_trivial_quaternion() {
+        // 90° rotation quaternion: (s, s, 0, 0) where s = FRAC_1_SQRT_2.
+        // Tests that the sign-flip handles non-zero x component, not just the trivial
+        // w-only identity case.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        // Positive form: actual (s, s, 0, 0) should match expected (s, s, 0, 0).
+        assert_orientation_approx_sign_insensitive!(
+            Value::Orientation {
+                w: s,
+                x: s,
+                y: 0.0,
+                z: 0.0
+            },
+            s,
+            s,
+            0.0,
+            0.0,
+            1e-10
+        );
+        // Negated form: actual (-s, -s, 0, 0) should also match expected (s, s, 0, 0).
+        assert_orientation_approx_sign_insensitive!(
+            Value::Orientation {
+                w: -s,
+                x: -s,
+                y: 0.0,
+                z: 0.0
+            },
+            s,
+            s,
+            0.0,
+            0.0,
+            1e-10
+        );
+    }
+
+    #[test]
     fn sign_insensitive_macro_rejects_wrong_value() {
         // w=0.5,x=0.5,y=0.5,z=0.5 does not match ±(1,0,0,0) — macro should panic.
         let result = std::panic::catch_unwind(|| {
