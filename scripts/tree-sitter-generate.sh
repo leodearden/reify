@@ -145,6 +145,9 @@ GEN_EXIT=0
 portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
+    # Remove any partial output files left by the killed process to prevent
+    # corrupted parser.c/grammar.json/node-types.json from being used.
+    rm -f src/parser.c src/grammar.json src/node-types.json
     exit 1
 elif [ "$GEN_EXIT" -ne 0 ]; then
     echo "ERROR: tree-sitter generate failed (exit code $GEN_EXIT)" >&2
