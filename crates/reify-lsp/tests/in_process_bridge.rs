@@ -600,6 +600,38 @@ async fn shutdown_returns_ok_null() {
     );
 }
 
+/// Smoke test: `open_bracket_doc` opens the standard bracket document and makes
+/// it available for subsequent requests.
+///
+/// Calls the helper then issues a completion request on `file:///test.ri`,
+/// asserting non-empty results — the same round-trip already exercised by
+/// `did_open_and_completion_returns_items` after step-3 refactors it.
+#[tokio::test]
+async fn open_bracket_doc_makes_document_available() {
+    let lsp = initialized_lsp().await;
+
+    open_bracket_doc(&lsp).await;
+
+    let result = lsp
+        .handle_request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 1, "character": 0 }
+            }),
+        )
+        .await
+        .expect("completion should succeed after open_bracket_doc");
+
+    let items = result
+        .as_array()
+        .expect("completion should return an array");
+    assert!(
+        !items.is_empty(),
+        "completion should return non-empty items for bracket source"
+    );
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
