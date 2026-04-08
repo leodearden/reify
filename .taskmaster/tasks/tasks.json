@@ -22442,7 +22442,12 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1091,
