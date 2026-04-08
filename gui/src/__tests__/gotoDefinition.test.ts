@@ -359,8 +359,7 @@ describe('line-bounds guard', () => {
     };
     mockInvoke.mockResolvedValue(JSON.stringify(staleLocation));
 
-    const onNavigate = vi.fn();
-    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
     const mockEvent = {
@@ -388,7 +387,6 @@ describe('line-bounds guard', () => {
 
     // Stale LSP line (11 > 5) should be rejected before reaching doc.line()
     expect(mockView.dispatch).not.toHaveBeenCalled();
-    expect(onNavigate).not.toHaveBeenCalled();
   });
 
   it('does not dispatch when LSP line is negative (malformed response)', async () => {
@@ -402,8 +400,7 @@ describe('line-bounds guard', () => {
     };
     mockInvoke.mockResolvedValue(JSON.stringify(malformedLocation));
 
-    const onNavigate = vi.fn();
-    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const ext = reifyGotoDefinition(currentUri) as any;
     const mousedownHandler = ext.handlers.mousedown;
 
     const mockEvent = {
@@ -436,12 +433,57 @@ describe('line-bounds guard', () => {
 
       // Negative line should be rejected by the guard; dispatch must never be called
       expect(mockView.dispatch).not.toHaveBeenCalled();
-      expect(onNavigate).not.toHaveBeenCalled();
       // The guard fires before doc.line(), so no warning should be logged
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('dispatches when LSP line is exactly at document boundary (start.line=4, doc.lines=5)', async () => {
+    const currentUri = 'file:///current.ri';
+    // LSP reports line 4 (0-based), so line+1=5 which equals doc.lines=5; guard 5>5 is false.
+    // doc.line(5) is called and returns { from: 80 }, so anchor = 80 + character(0) = 80.
+    const boundaryLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 4, character: 0 }, end: { line: 4, character: 3 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(boundaryLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 5,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          // line n (1-based) → from = (n-1)*20, to = (n-1)*20+15
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // Exact boundary (5 > 5 is false) — dispatch should be called with the exact anchor.
+    // Asserting anchor: 80 (not expect.any(Number)) so an off-by-one in the line indexing
+    // (e.g. doc.line(n) instead of doc.line(n-1)) would fail this test.
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: 80 },
+      scrollIntoView: true,
+    });
   });
 });
 
@@ -623,6 +665,50 @@ describe('.catch() error handler', () => {
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
       // dispatch should not have been called (line() threw before it could be called)
       expect(mockView.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it('logs a warning when view.dispatch() throws (catch covers full .then() body)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Same-file response with a valid line so the code reaches view.dispatch()
+    const sameFileLocation = {
+      uri: 'file:///current.ri',
+      range: { start: { line: 2, character: 0 }, end: { line: 2, character: 5 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const ext = reifyGotoDefinition(currentUri) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const dispatchError = new Error('dispatch blew up');
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lines: 100,
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }),
+        },
+      },
+      // dispatch itself throws — this error should be caught by .catch()
+      dispatch: vi.fn().mockImplementation(() => { throw dispatchError; }),
+      dom: { isConnected: true },
+    };
+
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+      // .catch() should log a warning — proving it covers dispatch(), not just doc.line()
+      expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', dispatchError);
+      // dispatch WAS called (it just threw)
+      expect(mockView.dispatch).toHaveBeenCalled();
     });
   });
 });
