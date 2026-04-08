@@ -353,5 +353,24 @@ assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout c
         esac
     '
 
+# -- Test 19: no-monitor mode (set +m, default) preserved after POSIX fallback -
+echo ""
+echo "--- Test 19: POSIX fallback: no-monitor mode (set +m) preserved ---"
+
+# Symmetric case: when the caller did NOT have job control enabled, portable_timeout
+# must leave it disabled after the call.  This is the default condition and already
+# passes (the bug is only visible when set -m was active), but it provides regression
+# coverage so future patches cannot accidentally enable monitor mode for the caller.
+assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        set +m 2>/dev/null || true
+        portable_timeout 5 true
+        # $- must NOT contain "m" (monitor mode inactive).
+        case $- in
+            *m*) echo "portable_timeout unexpectedly enabled monitor mode"; exit 1 ;;
+        esac
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
