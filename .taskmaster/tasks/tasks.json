@@ -10006,14 +10006,13 @@
       {
         "id": "489",
         "title": "Wire extrude/revolve in compiler: add to is_geometry_function + compile_geometry_call",
-        "description": "Tasks 308/309 implemented SweepKind::Extrude/Revolve in the eval layer and OCCT FFI, but the compiler was never updated to produce these variants. User code `extrude(profile, distance)` and `revolve(profile, axis, angle)` hit the catch-all diagnostic \"unsupported geometry function\" and produce no geometry.\n\n**What's wrong:**\n- `is_geometry_function()` at crates/reify-compiler/src/lib.rs:402 does not include \"extrude\" or \"revolve\"\n- `compile_geometry_call()` at crates/reify-compiler/src/lib.rs:5036 has no match arms for \"extrude\" or \"revolve\"\n- SweepKind::Extrude and SweepKind::Revolve exist (lib.rs:386-387) but are never constructed\n\n**Fix:** Add \"extrude\" and \"revolve\" to is_geometry_function(), add match arms in compile_geometry_call() that produce CompiledGeometryOp::Sweep with the correct SweepKind. Follow the pattern of existing sweep/loft arms. Add integration test that parses .ri source with extrude/revolve through full pipeline.\n\n**Memory hints:** search for \"extrude FFI implementation\", \"revolve OCCT\", entity names: SweepKind, compile_geometry_call, is_geometry_function",
-        "details": "",
-        "testStrategy": "",
-        "status": "pending",
+        "description": "The original diagnosis was incorrect. Tasks 308/309 did wire the compiler, as confirmed by commits such as fa48b3e3f \"impl(task-309/step-12): add SweepKind::Revolve arm in compile_geometry_op\". However, the wiring was removed by commit 3a248e07d due to a regression cluster involving c88ca9635/3a248e07d, not because tasks 308/309 missed it. The fix has been applied in Phase B recovery: extrude/revolve/revolve_full have been added to is_geometry_function, and compile_geometry_call match arms have been restored. The extrude_e2e tests are now passing.",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
+        "details": "The task now involves ensuring that the recovery changes are stable and that no further regressions occur. Review the changes made in Phase B recovery and confirm the functionality through additional testing.",
+        "testStrategy": "Conduct regression testing to ensure that the extrude and revolve functionalities are stable. Verify that the extrude_e2e tests pass consistently and add any additional tests if necessary.",
         "subtasks": [],
-        "updatedAt": "2026-03-27T06:16:51.666Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -10024,7 +10023,8 @@
             "crates/reify-compiler/src",
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T13:56:08.767Z"
       },
       {
         "id": "490",
@@ -22262,9 +22262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T13:55:40.944Z",
+      "lastModified": "2026-04-08T13:56:08.768Z",
       "taskCount": 1082,
-      "completedCount": 746,
+      "completedCount": 747,
       "tags": [
         "master"
       ]
