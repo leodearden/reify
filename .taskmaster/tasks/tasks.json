@@ -21320,11 +21320,11 @@
         "description": "In `gui/src/__tests__/gotoDefinition.test.ts`: (1) Add a `makeMockView(overrides?)` factory function near the top of the file that returns the default mock view shape (with `lines: 100`, `lineAt`, `line`, `dispatch: vi.fn()`, `dom.isConnected: true`). Replace all 7 copy-pasted `mockView` literals with calls to `makeMockView(...)`, passing only the per-test overrides (e.g. `{ dom: { isConnected: false } }` or `{ state: { doc: { lines: 5 } } }`). (2) Add a module-level `const BASE_MOUSE_EVENT = { ctrlKey: true, metaKey: false, clientX: 100, clientY: 50 } as MouseEvent;` and replace all 7 copy-pasted `mockEvent` literals with it.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:30:13.224Z",
+        "updatedAt": "2026-04-08T11:32:46.500Z",
         "metadata": {
           "modules": [
             "gui/src"
@@ -22005,7 +22005,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:32:46.182Z",
+      "lastModified": "2026-04-08T11:32:46.500Z",
       "taskCount": 1069,
       "completedCount": 750,
       "tags": [
