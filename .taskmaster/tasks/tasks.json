@@ -23891,7 +23891,7 @@
         "description": "In crates/reify-eval/src/lib.rs, the `eval_arg` closures at lines 3354-3364 and 3410-3420 use `unwrap_or(reify_types::Value::Undef)` when looking up named geometry operation arguments. This violates the project convention: \"errors must be noisy — never silently swallow logic errors with unwrap_or(Value::Undef)\".\n\n**What's wrong:** When `evaluate_geometry_op()` looks up a required argument (like \"width\" for a Box primitive), a missing argument silently returns `Value::Undef`. This masks potential compiler bugs — if the compiler fails to emit a required argument, the geometry operation receives Undef and produces invalid geometry without any diagnostic.\n\n**Context:** The argument names are statically known per geometry op kind (e.g., Box needs width/height/depth). A missing named argument indicates a compiler bug (the compiler should always emit all required args), NOT a user error. Returning Undef here is incorrect.\n\n**Suggested fix:** Replace `unwrap_or(Value::Undef)` with a diagnostic emission or `tracing::warn!` + `Value::Undef` at minimum. Better: emit a diagnostic saying \"missing required geometry argument '{name}' for {kind}\" and return Undef. This follows the pattern established by dd5e10dbe (which replaced guard-site unwrap_or with expect) and a300a6f6c (which replaced solutions_agree unwrap_or(0.0)).\n\n**Two sites to fix:**\n- Line ~3363: eval_arg in Primitive handling\n- Line ~3419: eval_arg in Modify handling\n\nMemory hints: search \"silent defaults convention\" \"eval_arg geometry\" entity \"evaluate_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23903,7 +23903,7 @@
             "crates/reify-eval/src"
           ]
         },
-        "updatedAt": "2026-04-08T23:20:15.107Z"
+        "updatedAt": "2026-04-08T23:39:10.271Z"
       },
       {
         "id": "1168",
@@ -24257,9 +24257,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:39:03.538Z",
+      "lastModified": "2026-04-08T23:39:10.271Z",
       "taskCount": 1191,
-      "completedCount": 873,
+      "completedCount": 874,
       "tags": [
         "master"
       ]
