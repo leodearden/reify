@@ -1367,3 +1367,70 @@ fn edit_param_guard_fingerprint_round_trips() {
         "topology_fingerprint must be the same for identical guard states (false==false round-trip)"
     );
 }
+
+/// Cross-path consistency: topology_fingerprint from eval() must equal the fingerprint
+/// from edit_param() when both represent the same logical guard state.
+///
+/// If `eval()` and `edit_param()` use different hash format strings for guard state,
+/// the same logical guard value (e.g. `Bool(true)`) produces different hashes depending
+/// on which code path computed it, causing spurious cache misses or stale incremental
+/// caches when switching between paths.
+///
+/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3.
+/// Asserts: F1 == F3 (eval and edit_param produce identical fingerprints for same state).
+#[test]
+fn eval_edit_param_guard_fingerprint_cross_path_consistency() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when guard is true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when guard is false)
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // F1: initial eval with guard=true
+    engine.eval(&module);
+    let f1 = engine.snapshot().unwrap().topology_fingerprint;
+
+    // F2: edit guard to false (topology changes, fingerprint must differ from F1)
+    engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) should succeed");
+    let f2 = engine.snapshot().unwrap().topology_fingerprint;
+    assert_ne!(f1, f2, "fingerprint must change on guard true→false");
+
+    // F3: edit guard back to true — must equal F1 (same logical state, same code path → same hash)
+    engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param(active=true) should succeed");
+    let f3 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_eq!(
+        f1, f3,
+        "topology_fingerprint from eval(guard=true) must equal edit_param(guard=true): \
+         eval() and edit_param() must use the same guard-state hash format"
+    );
+}
