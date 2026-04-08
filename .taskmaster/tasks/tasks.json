@@ -21952,6 +21952,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1066,
+        "title": "Widen fn-existence regex in sync_comments_test.sh to cover all Rust fn forms",
+        "description": "Follow-up from task 1025 review (esc-1025-24, suggestion S2, tests/sync_comments_test.sh:36,48).\n\nThe current regex `^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+NAME[[:space:](]` silently fails to match several legitimate Rust fn forms:\n  - `pub(crate) fn ...`, `pub(super) fn ...`\n  - `unsafe fn ...`\n  - `const fn ...`\n  - generic declarations `fn name<T>(...)` (the `<` is not in `[[:space:](]`)\n\nCurrently sanitize_value is plain `fn sanitize_value(`, so this works. But if a future edit adds any of the above forms, the existence assertion will silently pass as a no-op (the name is found by extraction but not by the regex) or fail cryptically. Since this is the exact kind of brittleness task 1025 aims to prevent, widen the pattern now.\n\nSuggested pattern:\n`^[[:space:]]*(pub(\\\\([^)]*\\\\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+NAME[[:space:](<]`\n\nAdd corresponding fixture cases in tests/infra/test_sync_comments_grep.sh for `pub(crate) fn`, `unsafe fn`, `const fn`, and `fn name<T>(`. Verify with `bash tests/sync_comments_test.sh` and `bash tests/infra/test_sync_comments_grep.sh`.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21964,7 +21975,7 @@
       ],
       "created": "2026-04-08T11:31:30.501Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T11:31:30.525Z"
+      "updated": "2026-04-08T11:31:41.518Z"
     }
   }
 }
