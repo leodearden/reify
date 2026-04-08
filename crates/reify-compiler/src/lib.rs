@@ -5225,19 +5225,17 @@ fn compile_entity(
                 // `Option<Length>`, override the OptionNone's result_type to match
                 // the declared type — mirroring the param-default fixup at lines
                 // 5179-5185.
-                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone) {
-                    if let Some(type_expr) = &let_decl.type_expr {
-                        if let Some(resolved) = resolve_type_expr_with_aliases(
-                            type_expr,
-                            &type_param_names,
-                            alias_registry,
-                            diagnostics,
-                        ) {
-                            if matches!(&resolved, Type::Option(_)) {
-                                compiled_expr = CompiledExpr::option_none(resolved);
-                            }
-                        }
-                    }
+                if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
+                    && let Some(type_expr) = &let_decl.type_expr
+                    && let Some(resolved) = resolve_type_expr_with_aliases(
+                        type_expr,
+                        &type_param_names,
+                        alias_registry,
+                        diagnostics,
+                    )
+                    && matches!(&resolved, Type::Option(_))
+                {
+                    compiled_expr = CompiledExpr::option_none(resolved);
                 }
                 let cell_type = compiled_expr.result_type.clone();
                 let id = ValueCellId::new(entity_name, &let_decl.name);
