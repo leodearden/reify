@@ -110,3 +110,78 @@ fn trait_hierarchy_parses_and_compiles() {
         "eval should produce non-empty values for trait_hierarchy.ri"
     );
 }
+
+// ── step-3: 3-deep chain value assertions ────────────────────────────────────
+
+/// Verify that ThreeDeepLeaf resolves values from all 3 trait levels:
+///   - x = 5mm = 0.005 SI (from Root, via Middle → Leaf)
+///   - y = 3mm = 0.003 SI (from Middle, via Leaf)
+///   - z = 1mm = 0.001 SI (from Leaf)
+///   - computed = x + y = 8mm = 0.008 SI (let binding from Middle)
+#[test]
+fn three_deep_chain_values() {
+    let result = eval_ri_file(
+        "../../examples/trait_hierarchy.ri",
+        "trait_hierarchy",
+    );
+
+    // x = 5mm = 0.005 m SI
+    let x_id = ValueCellId::new("ThreeDeepLeaf", "x");
+    let x_val = result.values.get(&x_id)
+        .unwrap_or_else(|| panic!("ThreeDeepLeaf.x not found in result"));
+    match x_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.005).abs() < 1e-12,
+                "ThreeDeepLeaf.x should be 0.005 m (5mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ThreeDeepLeaf.x should be Scalar, got {:?}", other),
+    }
+
+    // y = 3mm = 0.003 m SI
+    let y_id = ValueCellId::new("ThreeDeepLeaf", "y");
+    let y_val = result.values.get(&y_id)
+        .unwrap_or_else(|| panic!("ThreeDeepLeaf.y not found in result"));
+    match y_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.003).abs() < 1e-12,
+                "ThreeDeepLeaf.y should be 0.003 m (3mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ThreeDeepLeaf.y should be Scalar, got {:?}", other),
+    }
+
+    // z = 1mm = 0.001 m SI
+    let z_id = ValueCellId::new("ThreeDeepLeaf", "z");
+    let z_val = result.values.get(&z_id)
+        .unwrap_or_else(|| panic!("ThreeDeepLeaf.z not found in result"));
+    match z_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.001).abs() < 1e-12,
+                "ThreeDeepLeaf.z should be 0.001 m (1mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ThreeDeepLeaf.z should be Scalar, got {:?}", other),
+    }
+
+    // computed = x + y = 8mm = 0.008 m SI (let binding from Middle trait)
+    let computed_id = ValueCellId::new("ThreeDeepLeaf", "computed");
+    let computed_val = result.values.get(&computed_id)
+        .unwrap_or_else(|| panic!("ThreeDeepLeaf.computed not found in result"));
+    match computed_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.008).abs() < 1e-12,
+                "ThreeDeepLeaf.computed should be 0.008 m (x+y=5mm+3mm=8mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ThreeDeepLeaf.computed should be Scalar, got {:?}", other),
+    }
+}
