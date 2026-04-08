@@ -164,6 +164,75 @@ fn known_module_pragma_no_warning() {
     );
 }
 
+// ── Step 9: trait-level and purpose-level pragmas propagated ─────────────────
+
+/// Block-level pragma on a trait body is propagated to CompiledTrait.pragmas.
+#[test]
+fn trait_pragma_propagated_to_compiled_trait() {
+    let module = compile_module("trait T { #precision(bits=32) param x : Real }");
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(module.trait_defs.len(), 1, "expected 1 trait");
+    let trait_def = &module.trait_defs[0];
+    assert_eq!(
+        trait_def.pragmas.len(),
+        1,
+        "expected 1 pragma on trait, got {}: {:?}",
+        trait_def.pragmas.len(),
+        trait_def.pragmas
+    );
+    let precision = &trait_def.pragmas[0];
+    assert_eq!(precision.name, "precision", "expected pragma name 'precision'");
+    assert_eq!(precision.args.len(), 1, "expected 1 arg on #precision");
+    match &precision.args[0] {
+        reify_syntax::PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "bits");
+            assert_eq!(value, &reify_syntax::PragmaValue::Number(32.0));
+        }
+        other => panic!("expected KeyValue arg on #precision, got: {:?}", other),
+    }
+}
+
+/// Block-level pragma on a purpose body is propagated to CompiledPurpose.pragmas.
+#[test]
+fn purpose_pragma_propagated_to_compiled_purpose() {
+    let source = r#"
+        structure S { param x : Real = 0.0 }
+        purpose p(s : Structure) {
+            #solver(method="gradient")
+            constraint s.x >= 0.0
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "unexpected errors: {:?}",
+        errors_only(&module)
+    );
+    assert_eq!(module.compiled_purposes.len(), 1, "expected 1 purpose");
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(
+        purpose.pragmas.len(),
+        1,
+        "expected 1 pragma on purpose, got {}: {:?}",
+        purpose.pragmas.len(),
+        purpose.pragmas
+    );
+    let solver = &purpose.pragmas[0];
+    assert_eq!(solver.name, "solver", "expected pragma name 'solver'");
+    assert_eq!(solver.args.len(), 1, "expected 1 arg on #solver");
+    match &solver.args[0] {
+        reify_syntax::PragmaArg::KeyValue { key, value } => {
+            assert_eq!(key, "method");
+            assert_eq!(value, &reify_syntax::PragmaValue::String("gradient".to_string()));
+        }
+        other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
+    }
+}
+
 // ── Step 7: entity-level pragmas propagated to TopologyTemplate ───────────────
 
 /// Block-level pragma on a structure body is propagated to TopologyTemplate.pragmas.
