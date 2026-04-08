@@ -22041,11 +22041,16 @@
         "description": "Two doc alignment fixes in crates/reify-runtime/src/concurrent_eval.rs after the module-doc rewrite in task 964:\n\n1. **Add maintainer guidance to module doc (lines 11-20):** The rewritten contract enumerates public operations but no longer mentions that recovery is centralized in the private helper family (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`). Add a closing sentence so future contributors adding new public methods know to use these helpers (or follow the inline pattern in `into_result()`).\n\n2. **Update struct-level doc (lines 51-53):** The `ConcurrentEvalAdapter` struct doc still says \"All lock acquisitions recover gracefully from poisoning\" — phrased from the implementation-detail angle that the module-level doc just moved away from. Reframe to reference the public-operation contract instead.\n\nMemory hints: search for \"concurrent_eval poison recovery contract\" and \"task 964 module doc\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:34:20.826Z"
+        "updatedAt": "2026-04-08T11:39:59.421Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-runtime"
+          ]
+        }
       },
       {
         "id": "1071",
@@ -22086,7 +22091,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:39:46.349Z",
+      "lastModified": "2026-04-08T11:39:59.423Z",
       "taskCount": 1073,
       "completedCount": 752,
       "tags": [
