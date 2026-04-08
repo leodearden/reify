@@ -2257,6 +2257,25 @@ mod tests {
         assert!(mass_neg < length_neg);
     }
 
+    /// Asserts the PartialEq↔Ord two-sided contract for a pair of `Value`s.
+    ///
+    /// When `expect_equal` is `true`, asserts `a == b` and `a.cmp(b) == Equal`.
+    /// When `expect_equal` is `false`, asserts `a != b`, `a.cmp(b) != Equal`,
+    /// antisymmetry (`a.cmp(b) == b.cmp(a).reverse()`), and ordering direction
+    /// (`a < b` — caller must pass the smaller value as `a`).
+    fn assert_ord_consistent(a: &Value, b: &Value, expect_equal: bool) {
+        if expect_equal {
+            assert_eq!(a, b, "PartialEq↔Ord contract: expected a == b");
+            assert_eq!(
+                a.cmp(b),
+                std::cmp::Ordering::Equal,
+                "PartialEq↔Ord contract: expected a.cmp(b) == Equal when a == b"
+            );
+        } else {
+            todo!("non-equal branch not yet implemented")
+        }
+    }
+
     #[test]
     fn test_assert_ord_consistent_equal() {
         // Meta-test: verify assert_ord_consistent works for an equal pair.
