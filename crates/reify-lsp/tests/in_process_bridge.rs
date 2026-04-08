@@ -64,6 +64,23 @@ async fn initialized_lsp() -> InProcessLsp {
     lsp
 }
 
+/// Build a `textDocument/didOpen` params value for `uri` and `text`.
+///
+/// All four inline `textDocument/didOpen` JSON blocks in this file share the
+/// same `{ "textDocument": { "uri", "languageId": "reify", "version": 1, "text" } }`
+/// structure; this helper eliminates the repetition while keeping the LSP-specific
+/// logic local to this test file (it is not useful outside the bridge interface).
+fn did_open_params(uri: &str, text: &str) -> serde_json::Value {
+    json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "reify",
+            "version": 1,
+            "text": text
+        }
+    })
+}
+
 /// Open the standard bracket document in `lsp` as `file:///test.ri`.
 ///
 /// Sends a `textDocument/didOpen` notification with [`reify_test_support::bracket_source()`]
@@ -77,17 +94,9 @@ async fn initialized_lsp() -> InProcessLsp {
 /// Mirrors the `open_bracket_source` helper in `server.rs` tests, adapted for
 /// the [`InProcessLsp`] bridge interface.
 async fn open_bracket_doc(lsp: &InProcessLsp) {
-    let source = reify_test_support::bracket_source();
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
+        did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
     )
     .await
     .expect("open_bracket_doc: didOpen should succeed");
@@ -207,14 +216,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
     let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": "file:///test.ri",
-                "languageId": "reify",
-                "version": 1,
-                "text": source
-            }
-        }),
+        did_open_params("file:///test.ri", source),
     )
     .await
     .unwrap();
@@ -283,14 +285,7 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
     let uri = "file:///broken.ri";
     lsp.handle_request(
         "textDocument/didOpen",
-        json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "reify",
-                "version": 1,
-                "text": broken_source
-            }
-        }),
+        did_open_params(uri, broken_source),
     )
     .await
     .unwrap();
@@ -422,14 +417,7 @@ async fn did_open_returns_ok_null() {
     let result = lsp
         .handle_request(
             "textDocument/didOpen",
-            json!({
-                "textDocument": {
-                    "uri": "file:///test.ri",
-                    "languageId": "reify",
-                    "version": 1,
-                    "text": reify_test_support::bracket_source()
-                }
-            }),
+            did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
         )
         .await
         .expect("didOpen should return Ok");
