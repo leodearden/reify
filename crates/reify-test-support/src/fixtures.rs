@@ -992,7 +992,47 @@ mod tests {
         assert!(mass_cell.is_some(), "Bolt should have param mass");
     }
 
-    // --- Annotated entity fixture tests (step-21) ---
+    // --- Annotated entity fixture tests (steps 31-32) ---
+
+    #[test]
+    fn annotated_module_has_annotated_entities() {
+        let module = annotated_module();
+
+        // (a) one trait with @deprecated("use Rigid2") annotation
+        assert_eq!(module.trait_defs.len(), 1);
+        let rigid = &module.trait_defs[0];
+        assert_eq!(rigid.name, "Rigid");
+        assert_eq!(rigid.annotations.len(), 1);
+        assert_eq!(rigid.annotations[0].name, "deprecated");
+        assert_eq!(rigid.annotations[0].args.len(), 1);
+        assert!(matches!(
+            &rigid.annotations[0].args[0],
+            reify_types::AnnotationArg::String(s) if s == "use Rigid2"
+        ));
+
+        // (b) one template with @test and @optimized annotations (no args)
+        assert_eq!(module.templates.len(), 1);
+        let bolt = &module.templates[0];
+        assert_eq!(bolt.name, "Bolt");
+        assert_eq!(bolt.annotations.len(), 2);
+        let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
+        assert!(ann_names.contains(&"test"), "expected @test annotation");
+        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+
+        // (c) one field with @deprecated annotation
+        assert_eq!(module.fields.len(), 1);
+        let temp_field = &module.fields[0];
+        assert_eq!(temp_field.name, "temp");
+        assert_eq!(temp_field.annotations.len(), 1);
+        assert_eq!(temp_field.annotations[0].name, "deprecated");
+
+        // (d) one purpose with @solver_hint annotation
+        assert_eq!(module.compiled_purposes.len(), 1);
+        let purpose = &module.compiled_purposes[0];
+        assert_eq!(purpose.name, "mfg_ready");
+        assert_eq!(purpose.annotations.len(), 1);
+        assert_eq!(purpose.annotations[0].name, "solver_hint");
+    }
 
     #[test]
     fn trait_structure_module_has_trait_and_template() {
