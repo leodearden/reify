@@ -1520,4 +1520,256 @@ mod tests {
 
         assert_missing_err(result, &cell_id);
     }
+
+    /// `add_line_pair` should deduplicate shared endpoints via add_point's
+    /// point_entities cache. When line_a ends at the same Fixed coordinates
+    /// that line_b starts at, only 3 unique point entities should be created
+    /// (not 4), so total entities = 3 points + 2 line segments = 5.
+    #[test]
+    fn add_line_pair_dedups_shared_endpoint() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        // line_a: (0,0,0) → (1,0,0)
+        // line_b: (1,0,0) → (2,0,0)  — shares the (1,0,0) endpoint with line_a
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        result.expect("add_line_pair should return Ok");
+        // 3 unique Fixed points (deduped) + 2 line segments = 5 entities
+        assert_eq!(
+            builder.entities.len(),
+            5,
+            "expected 3 unique point entities (shared endpoint deduped) + 2 line segments = 5"
+        );
+        assert_eq!(
+            builder.point_entities.len(),
+            3,
+            "expected 3 unique point cache entries (shared endpoint deduped)"
+        );
+    }
+
+    /// `add_line_pair` must return handles that correspond to LINE_SEGMENT entities,
+    /// not to point entities. Guards against regressions where the wrong handles
+    /// might accidentally be returned.
+    #[test]
+    fn add_line_pair_returns_line_segment_entities() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let (line_a_e, line_b_e) = builder
+            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
+
+        // Look up each returned handle in builder.entities and assert the type
+        let entity_a = builder
+            .entities
+            .iter()
+            .find(|e| e.h == line_a_e)
+            .expect("line_a_e handle not found in builder.entities");
+        let entity_b = builder
+            .entities
+            .iter()
+            .find(|e| e.h == line_b_e)
+            .expect("line_b_e handle not found in builder.entities");
+
+        assert_eq!(
+            entity_a.type_,
+            slvs_sys::SLVS_E_LINE_SEGMENT,
+            "line_a_e should refer to a LINE_SEGMENT entity, got type_ = {}",
+            entity_a.type_
+        );
+        assert_eq!(
+            entity_b.type_,
+            slvs_sys::SLVS_E_LINE_SEGMENT,
+            "line_b_e should refer to a LINE_SEGMENT entity, got type_ = {}",
+            entity_b.type_
+        );
+    }
+
+    /// `add_line_pair` must propagate Err from all four `?` sites inside the function
+    /// (line_a.start, line_a.end, line_b.start, line_b.end). Each position is tested
+    /// independently to ensure no site swallows errors.
+    #[test]
+    fn add_line_pair_propagates_error_from_each_position() {
+        let cell_id = ValueCellId::new("Test", "bad");
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        // Helper: a Fixed point that always succeeds
+        let good = || PointRef::Fixed {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        // Helper: an Auto point with a non-auto cell_id absent from current_values → Err
+        let bad = || PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
+        };
+
+        let positions: &[(&str, LineRef, LineRef)] = &[
+            (
+                "line_a.start",
+                LineRef {
+                    start: bad(),
+                    end: good(),
+                },
+                LineRef {
+                    start: good(),
+                    end: good(),
+                },
+            ),
+            (
+                "line_a.end",
+                LineRef {
+                    start: good(),
+                    end: bad(),
+                },
+                LineRef {
+                    start: good(),
+                    end: good(),
+                },
+            ),
+            (
+                "line_b.start",
+                LineRef {
+                    start: good(),
+                    end: good(),
+                },
+                LineRef {
+                    start: bad(),
+                    end: good(),
+                },
+            ),
+            (
+                "line_b.end",
+                LineRef {
+                    start: good(),
+                    end: good(),
+                },
+                LineRef {
+                    start: good(),
+                    end: bad(),
+                },
+            ),
+        ];
+
+        for (position_name, line_a, line_b) in positions {
+            let mut builder = SystemBuilder::new();
+            let result =
+                builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
+            assert!(
+                result.is_err(),
+                "expected Err when erroring Auto point is at position '{position_name}'"
+            );
+        }
+    }
+
+    /// When `add_line_pair` returns Err at the second `?` site (line_a.end),
+    /// the first point (line_a.start) has already been registered. The function
+    /// does not roll back prior entities. This test encodes that contract so
+    /// future refactors cannot silently change it.
+    #[test]
+    fn add_line_pair_err_leaves_prior_points_registered() {
+        let (_, cell_id, auto_params, current_values) = missing_coord_setup("Test", "bad");
+        let mut builder = SystemBuilder::new();
+
+        let initial_entity_count = builder.entities.len();
+        let initial_point_count = builder.point_entities.len();
+
+        // line_a.start = Fixed (succeeds, registers 1 point entity)
+        // line_a.end = erroring Auto (fails at second ? site)
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 2.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert!(result.is_err(), "expected Err due to erroring Auto point");
+        // line_a.start was registered before the failure — 1 point entity remains
+        assert_eq!(
+            builder.entities.len(),
+            initial_entity_count + 1,
+            "exactly 1 point entity (line_a.start) should have been registered before the Err"
+        );
+        assert_eq!(
+            builder.point_entities.len(),
+            initial_point_count + 1,
+            "exactly 1 entry in point_entities cache should remain after the Err"
+        );
+    }
 }
