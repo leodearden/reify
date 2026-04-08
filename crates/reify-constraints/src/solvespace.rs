@@ -1520,4 +1520,285 @@ mod tests {
 
         assert_missing_err(result, &cell_id);
     }
+
+    // ── add_line_pair: additional error-propagation tests (S6) ────────────────
+
+    /// `add_line_pair` must propagate Err when `line_a.end` contains a non-auto
+    /// cell_id missing from current_values.  The `?` on the second `add_point`
+    /// call (`la_end`) must surface the error.
+    #[test]
+    fn add_line_pair_propagates_error_at_line_a_end() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("LineAEnd", "x");
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id);
+    }
+
+    /// `add_line_pair` must propagate Err when `line_b.start` contains a non-auto
+    /// cell_id missing from current_values.  The `?` on the third `add_point`
+    /// call (`lb_start`) must surface the error.
+    #[test]
+    fn add_line_pair_propagates_error_at_line_b_start() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("LineBStart", "x");
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id);
+    }
+
+    /// `add_line_pair` must propagate Err when `line_b.end` contains a non-auto
+    /// cell_id missing from current_values.  The `?` on the fourth `add_point`
+    /// call (`lb_end`) must surface the error.
+    #[test]
+    fn add_line_pair_propagates_error_at_line_b_end() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("LineBEnd", "x");
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id);
+    }
+
+    // ── add_line_pair: partial-mutation contract test (S3) ────────────────────
+
+    /// When `add_line_pair` fails at `lb_start` (line_b.start has a missing
+    /// non-auto coord), the two points for line_a have ALREADY been inserted
+    /// into `builder.point_entities`.  There is no rollback.  This test pins
+    /// that contract so a future refactor that introduces rollback must
+    /// consciously update both the test and the doc.
+    #[test]
+    fn add_line_pair_partial_mutation_on_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("LineBStart", "x");
+
+        // line_a is fully Fixed — both points will be created before the error
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        // line_b.start triggers the error; line_b.end is never reached
+        let line_b = LineRef {
+            start: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        assert!(result.is_err(), "expected Err when lb_start is missing");
+        // The two line_a points were inserted before the error — no rollback.
+        assert!(
+            builder.point_entities.len() >= 2,
+            "builder.point_entities should contain the already-created line_a points \
+             (len={}) — add_line_pair has no rollback on Err",
+            builder.point_entities.len()
+        );
+    }
+
+    // ── add_line_pair: dedup shared-endpoint test (S1) ───────────────────────
+
+    /// When two lines share an endpoint (line_a.end == line_b.start as Fixed
+    /// coordinates), `add_point` returns the cached entity handle on the second
+    /// call.  Only 3 point entities + 2 line entities = 5 total are created,
+    /// not 6.  This pins the PointKey::Fixed dedup contract.
+    #[test]
+    fn add_line_pair_dedups_shared_endpoint() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        // line_a end == line_b start → the (1,0,0) point is shared
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+
+        let (line_a_e, line_b_e) = result.expect("add_line_pair should return Ok");
+        assert_ne!(
+            line_a_e, line_b_e,
+            "line segment handles should be distinct even when an endpoint is shared"
+        );
+        // 3 unique point entities + 2 line segment entities = 5 (not 6)
+        assert_eq!(
+            builder.entities.len(),
+            5,
+            "expected 3 unique point entities + 2 line segment entities when one endpoint \
+             is shared"
+        );
+        assert_eq!(
+            builder.point_entities.len(),
+            3,
+            "PointKey cache should contain exactly 3 unique entries for the shared-endpoint case"
+        );
+    }
+
+    // ── add_line_pair: entity-type guard test (S4) ────────────────────────────
+
+    /// The two handles returned by `add_line_pair` must refer to
+    /// `SLVS_E_LINE_SEGMENT` entities, not point entities or any other type.
+    /// This guards against a future regression where point handles are
+    /// accidentally returned in the wrong positions.
+    #[test]
+    fn add_line_pair_returns_line_segment_entities() {
+        let mut builder = SystemBuilder::new();
+        let auto_params: Vec<AutoParam> = vec![];
+        let current_values = ValueMap::new();
+
+        let line_a = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        };
+        let line_b = LineRef {
+            start: PointRef::Fixed {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            end: PointRef::Fixed {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        };
+
+        let (line_a_e, line_b_e) = builder
+            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
+
+        for (label, handle) in [("line_a", line_a_e), ("line_b", line_b_e)] {
+            let entity = builder
+                .entities
+                .iter()
+                .find(|e| e.h == handle)
+                .unwrap_or_else(|| panic!("{label} handle not found in builder.entities"));
+            assert_eq!(
+                entity.type_,
+                slvs_sys::SLVS_E_LINE_SEGMENT,
+                "{label} entity type should be SLVS_E_LINE_SEGMENT"
+            );
+        }
+    }
 }
