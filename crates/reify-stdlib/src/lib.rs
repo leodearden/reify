@@ -4223,9 +4223,19 @@ mod tests {
                 1e-10
             );
         });
+        let err = result.expect_err("expected assert_orientation_approx_sign_insensitive to panic for wrong value");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
         assert!(
-            result.is_err(),
-            "expected assert_orientation_approx_sign_insensitive to panic for wrong value"
+            msg.contains("expected Orientation(\u{b1}"),
+            "expected panic message to contain 'expected Orientation(\u{b1}', got: {msg:?}"
+        );
+        assert!(
+            msg.contains("got"),
+            "expected panic message to contain 'got', got: {msg:?}"
         );
     }
 
