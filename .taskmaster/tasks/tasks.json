@@ -23528,11 +23528,11 @@
         "description": "In gui/src-tauri/src/diff.rs:146-197, the three match arms for meshes, values, and constraints follow an identical pattern: match on serde_json::to_value, log a warning with the item identifier, and emit a serialization-error event with item_type/item_id/error fields. Extract a helper like `fn try_serialize_event(events: &mut Vec<...>, event_name: &str, item_type: &str, item_id: &str, result: Result<Value, Error>)` to consolidate the match/warn/push logic.\n\nmemory_hints: search \"delta_to_events code duplication\", get_entity \"StateDelta\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:44:18.768Z",
+        "updatedAt": "2026-04-08T22:36:27.602Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -23903,7 +23903,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:36:27.475Z",
+      "lastModified": "2026-04-08T22:36:27.602Z",
       "taskCount": 1167,
       "completedCount": 848,
       "tags": [
