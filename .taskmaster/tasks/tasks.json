@@ -22672,15 +22672,16 @@
         "description": "Two small improvements in gui/src-tauri/src/tests/lsp_bridge_tests.rs:\n\n1. **Extract shared constant for error prefix** (from esc-1087-33 S3): Both `lsp_request_impl_null_literal_passes_json_parse_step` (line 235) and `lsp_request_impl_rejects_wrong_shape_params` (line 258) assert on the substring `\"initialize params error\"`, coupling them to the exact format string in `crates/reify-lsp/src/bridge.rs:110`. Define a `const INIT_PARAMS_ERR: &str = \"initialize params error\";` at module scope in the test file and use it in both assertions. This documents the contract and reduces silent breakage if the message changes.\n\n2. **Add `\"{}\"` to wrong-shape test cases** (from esc-1087-33 S2): The `lsp_request_impl_rejects_wrong_shape_params` test at line 246 covers `[]`, `42`, `true`. Add `\"{}\"` (empty object) as a case — it is structurally closer to a valid `InitializeParams` and exercises the `serde_json::from_value` path where required fields like `capabilities` are missing. Update to: `for case in [\"{}\", \"[]\", \"42\", \"true\"]`.\n\n**Verification:** `cargo test -p reify-gui lsp_request_impl`\n\nmemory_hints: search \"lsp_bridge_tests error prefix constant\" for prior context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:36:31.290Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:36:30.908Z",
+      "lastModified": "2026-04-08T20:36:31.290Z",
       "taskCount": 1103,
       "completedCount": 771,
       "tags": [
