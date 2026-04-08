@@ -235,3 +235,62 @@ fn three_deep_chain_constraints_all_satisfied() {
         );
     }
 }
+
+// ── step-7/8: Diamond inheritance ────────────────────────────────────────────
+
+/// Verify diamond inheritance: DiamondStruct : LeftBase + RightBase (both refine Base).
+/// Checks:
+///   - DiamondStruct.d = 10mm = 0.01 SI (single shared param, deduplicated)
+///   - Constraints from Base (d > 0mm) and structure (d < 500mm) all Satisfied
+///   - The merged member 'd' appears exactly once (no duplication)
+#[test]
+fn diamond_inheritance_merges_correctly() {
+    let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
+        .expect("trait_hierarchy.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // d = 10mm = 0.01 m SI (single merged param from diamond)
+    let d_id = ValueCellId::new("DiamondStruct", "d");
+    let d_val = result.values.get(&d_id)
+        .unwrap_or_else(|| panic!("DiamondStruct.d not found — diamond merge should produce single 'd'"));
+    match d_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.01).abs() < 1e-12,
+                "DiamondStruct.d should be 0.01 m (10mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("DiamondStruct.d should be Scalar, got {:?}", other),
+    }
+
+    // Constraints: d > 0mm (from Base, deduplicated) and d < 500mm (from structure)
+    let check_result = engine.check(&compiled);
+    let diamond_constraints: Vec<_> = check_result.constraint_results.iter()
+        .filter(|e| e.id.entity == "DiamondStruct")
+        .collect();
+
+    assert!(
+        diamond_constraints.len() >= 2,
+        "expected >= 2 constraints for DiamondStruct (d>0mm from Base, d<500mm from struct), got {}",
+        diamond_constraints.len()
+    );
+    for entry in &diamond_constraints {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "DiamondStruct constraint {} should be Satisfied",
+            entry.id
+        );
+    }
+}
