@@ -3967,16 +3967,28 @@ mod tests {
         );
     }
 
-    /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }` where each
-    /// component is within `1e-12` of the expected value.
+    /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }`.
+    ///
+    /// Three calling forms:
+    /// - `assert_orientation_approx!(expr, w, x, y, z)` — sign-sensitive, tolerance 1e-12,
+    ///   emits per-component labeled diagnostics.
+    /// - `assert_orientation_approx!(expr, w, x, y, z, tol = T)` — sign-sensitive with
+    ///   explicit tolerance, same per-component diagnostics.
+    /// - `assert_orientation_approx!(expr, w, x, y, z, sign_insensitive = T)` — accepts
+    ///   ±quaternion within explicit tolerance, single combined diagnostic.
     macro_rules! assert_orientation_approx {
+        // Default tolerance (1e-12), sign-sensitive, per-component diagnostics.
         ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr) => {
+            assert_orientation_approx!($expr, $ew, $ex, $ey, $ez, tol = 1e-12)
+        };
+        // Explicit tolerance, sign-sensitive, per-component diagnostics.
+        ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr, tol = $tol:expr) => {
             match $expr {
                 Value::Orientation { w, x, y, z } => {
-                    assert!((w - $ew).abs() < 1e-12, "w: expected {}, got {}", $ew, w);
-                    assert!((x - $ex).abs() < 1e-12, "x: expected {}, got {}", $ex, x);
-                    assert!((y - $ey).abs() < 1e-12, "y: expected {}, got {}", $ey, y);
-                    assert!((z - $ez).abs() < 1e-12, "z: expected {}, got {}", $ez, z);
+                    assert!((w - $ew).abs() < $tol, "w: expected {}, got {}", $ew, w);
+                    assert!((x - $ex).abs() < $tol, "x: expected {}, got {}", $ex, x);
+                    assert!((y - $ey).abs() < $tol, "y: expected {}, got {}", $ey, y);
+                    assert!((z - $ez).abs() < $tol, "z: expected {}, got {}", $ez, z);
                 }
                 other => panic!(
                     "expected Orientation({}, {}, {}, {}), got {:?}",
@@ -3984,14 +3996,8 @@ mod tests {
                 ),
             }
         };
-    }
-
-    /// Assert that an expression evaluates to `Value::Orientation { w, x, y, z }` where either
-    /// the positive quaternion (+w,+x,+y,+z) or the negative quaternion (-w,-x,-y,-z) matches
-    /// the expected values within `$tol`. Quaternions represent the same rotation under sign
-    /// flip, so this variant is appropriate when the sign is implementation-defined.
-    macro_rules! assert_orientation_approx_sign_insensitive {
-        ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr, $tol:expr) => {
+        // Sign-insensitive: accepts ±quaternion within explicit tolerance.
+        ($expr:expr, $ew:expr, $ex:expr, $ey:expr, $ez:expr, sign_insensitive = $tol:expr) => {
             match $expr {
                 Value::Orientation { w, x, y, z } => {
                     let pos_ok = (w - $ew).abs() < $tol
@@ -4004,12 +4010,12 @@ mod tests {
                         && (z + $ez).abs() < $tol;
                     assert!(
                         pos_ok || neg_ok,
-                        "expected Orientation(±{}, ±{}, ±{}, ±{}) within {}, got ({}, {}, {}, {})",
+                        "expected Orientation(\u{b1}{}, \u{b1}{}, \u{b1}{}, \u{b1}{}) within {}, got ({}, {}, {}, {})",
                         $ew, $ex, $ey, $ez, $tol, w, x, y, z
                     );
                 }
                 other => panic!(
-                    "expected Orientation(±{}, ±{}, ±{}, ±{}), got {:?}",
+                    "expected Orientation(\u{b1}{}, \u{b1}{}, \u{b1}{}, \u{b1}{}), got {:?}",
                     $ew, $ex, $ey, $ez, other
                 ),
             }
@@ -4046,12 +4052,96 @@ mod tests {
         );
     }
 
-    // ── assert_orientation_approx_sign_insensitive tests ────────────────────
+    #[test]
+    fn orient_per_component_diagnostic_x() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.5, // wrong x
+                0.0,
+                0.0
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("x:"),
+            "expected panic message to contain 'x:', got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn orient_per_component_diagnostic_y() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.0,
+                0.5, // wrong y
+                0.0
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("y:"),
+            "expected panic message to contain 'y:', got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn orient_per_component_diagnostic_z() {
+        let result = std::panic::catch_unwind(|| {
+            assert_orientation_approx!(
+                Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0
+                },
+                1.0,
+                0.0,
+                0.0,
+                0.5 // wrong z
+            );
+        });
+        let err = result.expect_err("expected assert_orientation_approx to panic");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("z:"),
+            "expected panic message to contain 'z:', got: {msg:?}"
+        );
+    }
+
+    // ── assert_orientation_approx sign_insensitive = tests ──────────────────
 
     #[test]
     fn sign_insensitive_macro_positive() {
         // Positive-sign identity: should pass with positive-sign expected values.
-        assert_orientation_approx_sign_insensitive!(
+        assert_orientation_approx!(
             Value::Orientation {
                 w: 1.0,
                 x: 0.0,
@@ -4062,7 +4152,7 @@ mod tests {
             0.0,
             0.0,
             0.0,
-            1e-10
+            sign_insensitive = 1e-10
         );
     }
 
@@ -4070,7 +4160,7 @@ mod tests {
     fn sign_insensitive_macro_negative() {
         // Negated identity quaternion: w=-1,x=0,y=0,z=0 represents the same rotation as identity.
         // The sign-insensitive macro should accept it when expected values are (1,0,0,0).
-        assert_orientation_approx_sign_insensitive!(
+        assert_orientation_approx!(
             Value::Orientation {
                 w: -1.0,
                 x: 0.0,
@@ -4081,7 +4171,43 @@ mod tests {
             0.0,
             0.0,
             0.0,
-            1e-10
+            sign_insensitive = 1e-10
+        );
+    }
+
+    #[test]
+    fn sign_insensitive_macro_non_trivial_quaternion() {
+        // 90° rotation quaternion: (s, s, 0, 0) where s = FRAC_1_SQRT_2.
+        // Tests that the sign-flip handles non-zero x component, not just the trivial
+        // w-only identity case.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        // Positive form: actual (s, s, 0, 0) should match expected (s, s, 0, 0).
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: s,
+                x: s,
+                y: 0.0,
+                z: 0.0
+            },
+            s,
+            s,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-10
+        );
+        // Negated form: actual (-s, -s, 0, 0) should also match expected (s, s, 0, 0).
+        assert_orientation_approx!(
+            Value::Orientation {
+                w: -s,
+                x: -s,
+                y: 0.0,
+                z: 0.0
+            },
+            s,
+            s,
+            0.0,
+            0.0,
+            sign_insensitive = 1e-10
         );
     }
 
@@ -4089,7 +4215,7 @@ mod tests {
     fn sign_insensitive_macro_rejects_wrong_value() {
         // w=0.5,x=0.5,y=0.5,z=0.5 does not match ±(1,0,0,0) — macro should panic.
         let result = std::panic::catch_unwind(|| {
-            assert_orientation_approx_sign_insensitive!(
+            assert_orientation_approx!(
                 Value::Orientation {
                     w: 0.5,
                     x: 0.5,
@@ -4100,12 +4226,22 @@ mod tests {
                 0.0,
                 0.0,
                 0.0,
-                1e-10
+                sign_insensitive = 1e-10
             );
         });
+        let err = result.expect_err("expected assert_orientation_approx sign_insensitive to panic for wrong value");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| err.downcast_ref::<&str>().copied())
+            .unwrap_or("");
         assert!(
-            result.is_err(),
-            "expected assert_orientation_approx_sign_insensitive to panic for wrong value"
+            msg.contains("expected Orientation(\u{b1}"),
+            "expected panic message to contain 'expected Orientation(\u{b1}', got: {msg:?}"
+        );
+        assert!(
+            msg.contains("got"),
+            "expected panic message to contain 'got', got: {msg:?}"
         );
     }
 
@@ -7779,7 +7915,7 @@ mod tests {
                 translation,
             } => {
                 // Identity rotation
-                assert_orientation_approx_sign_insensitive!(*rotation, 1.0, 0.0, 0.0, 0.0, 1e-10);
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
                 // Zero translation
                 match *translation {
                     Value::Vector(ref items) if items.len() == 3 => {
@@ -7807,7 +7943,7 @@ mod tests {
                 translation,
             } => {
                 // Identity rotation
-                assert_orientation_approx_sign_insensitive!(*rotation, 1.0, 0.0, 0.0, 0.0, 1e-10);
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
                 // Translation = (5,0,0)
                 match *translation {
                     Value::Vector(ref items) if items.len() == 3 => {
@@ -7838,7 +7974,7 @@ mod tests {
             } => {
                 // 90Z rotation
                 let s = std::f64::consts::FRAC_1_SQRT_2;
-                assert_orientation_approx_sign_insensitive!(*rotation, s, 0.0, 0.0, s, 1e-10);
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-10);
                 // Zero translation
                 match *translation {
                     Value::Vector(ref items) if items.len() == 3 => {
@@ -7870,7 +8006,7 @@ mod tests {
                 translation,
             } => {
                 let s = std::f64::consts::FRAC_1_SQRT_2;
-                assert_orientation_approx_sign_insensitive!(*rotation, s, 0.0, 0.0, s, 1e-10);
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-10);
                 match *translation {
                     Value::Vector(ref items) if items.len() == 3 => {
                         let tx = items[0].as_f64().unwrap();

@@ -199,19 +199,19 @@ fn cmd_gui(args: &[String]) -> ExitCode {
     let file = &args[0];
     let path = std::path::Path::new(file);
 
-    // Validate file exists
-    if !path.exists() {
-        eprintln!("Error: file does not exist: {}", file);
-        return ExitCode::FAILURE;
-    }
-
-    // Validate .ri extension
+    // Validate .ri extension (checked before existence to give a clear error for wrong file types)
     match path.extension().and_then(|e| e.to_str()) {
         Some("ri") => {}
         _ => {
             eprintln!("Error: file must have .ri extension: {}", file);
             return ExitCode::FAILURE;
         }
+    }
+
+    // Validate file exists
+    if !path.exists() {
+        eprintln!("Error: file does not exist: {}", file);
+        return ExitCode::FAILURE;
     }
 
     // Check if launch is suppressed (for testing / CI)

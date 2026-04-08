@@ -19876,15 +19876,21 @@
         "description": "Review suggestions from task 832 (add_line_pair extraction). All changes in crates/reify-constraints/src/solvespace.rs:\n\n1. Fix doc comment entity count accuracy — add_point deduplicates shared endpoints, so 'Add 4 point entities' is not always true. Revise to say 'up to 4' and qualify dedup behavior.\n2. Consider a named return type (type alias or struct) for the (Slvs_hEntity, Slvs_hEntity) return to make positional meaning explicit.\n3. Add partial-mutation doc note — on Err, prior point entities are already registered in the builder. Document this side-effect contract.\n4. Add shared-endpoint dedup test — test with two lines sharing an endpoint, assert entity count is 5 (3 unique points + 2 line segments).\n5. Add entity-type assertion — verify returned handles are line-segment entities, not point entities.\n6. Improve error propagation coverage — test error at line_b.start or line_b.end (not just line_a.start) to confirm all four ? sites propagate errors.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:19.497Z",
+        "updatedAt": "2026-04-08T11:21:23.130Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Improve add_line_pair documentation and test coverage"
+            ]
+          }
         }
       },
       {
@@ -19893,11 +19899,11 @@
         "description": "Review suggestions from task 832 (add_line_pair extraction). All changes in crates/reify-constraints/src/solvespace.rs:\n\n1. Fix doc comment entity count accuracy — add_point deduplicates shared endpoints, so 'Add 4 point entities' is not always true. Revise to say 'up to 4' and qualify dedup behavior.\n2. Consider a named return type (type alias or struct) for the (Slvs_hEntity, Slvs_hEntity) return to make positional meaning explicit.\n3. Add partial-mutation doc note — on Err, prior point entities are already registered in the builder. Document this side-effect contract.\n4. Add shared-endpoint dedup test — test with two lines sharing an endpoint, assert entity count is 5 (3 unique points + 2 line segments).\n5. Add entity-type assertion — verify returned handles are line-segment entities, not point entities.\n6. Improve error propagation coverage — test error at line_b.start or line_b.end (not just line_a.start) to confirm all four ? sites propagate errors.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.372Z",
+        "updatedAt": "2026-04-08T11:21:26.355Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -20112,11 +20118,11 @@
         "description": "In crates/reify-stdlib/src/lib.rs: (1) Unify assert_orientation_approx and assert_orientation_approx_sign_insensitive into a single macro with tolerance parameter, eliminating duplication. (2) Add non-trivial quaternion test for sign_insensitive (not just negated identity). (3) Test per-component diagnostic for all 4 components (not just w). (4) Strengthen sign_insensitive_macro_rejects_wrong_value to check error message content. In crates/reify-cli/tests/cli_gui.rs: (5) Add test for extension validation firing before existence check.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:25:02.707Z",
+        "updatedAt": "2026-04-08T11:22:59.837Z",
         "metadata": {
           "modules": [
             "crates/reify-cli",
@@ -20225,11 +20231,11 @@
         "description": "Follow-up from task 923 review. Seven suggestions across 5 reviewers, all in crates/reify-stdlib/src/lib.rs:\n\n1. **Tolerance API inconsistency** (architect, reuse_auditor): `assert_orientation_approx!` hardcodes 1e-12 while `assert_orientation_approx_sign_insensitive!` takes `$tol`. Add optional tolerance arm to the strict macro for symmetry.\n\n2. **Degenerate negative-sign test** (test_analyst): `sign_insensitive_macro_negative` uses (-1,0,0,0) where x/y/z are trivially zero. Add a test with a fully non-trivial quaternion (e.g. negated 45-degree rotation).\n\n3. **Per-component diagnostic only validates w:** (test_analyst): Add catch_unwind tests for x, y, z component labels too.\n\n4. **Rejection test ignores message** (test_analyst): `sign_insensitive_macro_rejects_wrong_value` only checks `is_err()`. Inspect the panic message content.\n\n5. **Non-Orientation arm untested** (test_analyst): Add a catch_unwind test passing a non-Orientation value to the sign-insensitive macro.\n\n6. **$tol multiple evaluation** (robustness): Macro evaluates `$tol` 9 times. Capture into a local binding for hygiene.\n\n7. **Shared inner helper macro** (reuse_auditor): Both macros repeat per-component abs-diff logic. Extract a private helper macro.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.493Z",
+        "updatedAt": "2026-04-08T11:23:05.781Z",
         "metadata": {
           "modules": [
             "crates/reify-stdlib"
@@ -21199,7 +21205,7 @@
         "description": "In tree-sitter-reify/tests/build_logic_tests.rs, the assertion `assert!(drop_impl.contains(\"if let Err\"), ...)` in the ReadonlyGuard drop-logging guard enforces a specific syntactic form rather than the semantic property. A semantically correct refactor using `match` would satisfy the behavioral intent but fail this check.\n\nFix: Remove the `contains(\"if let Err\")` assertion. The existing pair of `!contains(\"let _ = std::fs::set_permissions\")` plus `contains(\"eprintln!\")` already fully enforces the invariant (errors not silently discarded, errors logged). If `if let Err` is intentionally mandated as the project style, add an explicit comment documenting that decision instead.\n\nApplies to whichever test contains the drop impl check after the restructuring task above.\n\nmemory_hints: search \"ReadonlyGuard drop impl assertion\" in reify project; search \"over-constrained assertion convention\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -21210,7 +21216,8 @@
           "modules": [
             "tree-sitter-reify/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-08T11:14:53.619Z"
       },
       {
         "id": "1024",
@@ -21230,16 +21237,22 @@
         "description": "In tests/sync_comments_test.sh lines 36 and 48, `grep -q \"fn ${name}\"` will false-positive on prefix-named functions (e.g., `fn sanitize_value_raw`) and on commented-out mentions. Replace with an anchored pattern such as `grep -qE \"^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+${name}[[:space:](]\"` to require a proper function declaration with the exact name followed by whitespace or `(`.\n\nNote: Do NOT use grep -P (PCRE) as it is non-portable — macOS grep does not support -P.\n\nmemory_hints: search(\"sync_comments_test fn grep anchoring\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:14.476Z",
+        "updatedAt": "2026-04-08T11:17:32.834Z",
         "metadata": {
           "modules": [
             "tests/infra",
             "tests/sync_comments_test.sh"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix fn existence grep to use precise word-boundary anchoring in sync_comments_test.sh"
+            ]
+          }
         }
       },
       {
@@ -21336,13 +21349,13 @@
         "description": "Three targeted fixes in gui/sidecar/src/__tests__/utils.test.ts:\n\n1. Split the 'falls through to String() for plain object with non-string .message' test (currently lines 46-49) into separate it-blocks for null and numeric values, each with a comment explaining that the entire err object — not the .message value — is passed to String() (suggestion [2]).\n\n2. Add an `{ message: undefined }` assertion to the non-string .message coverage (suggestion [6]).\n\n3. Remove the standalone 'falls through to String() for bare object' test at lines 55-57 — it duplicates the '{ key: \"val\" }' case at line 22 (suggestion [7]).\n\nNote: if the behavior fix task (suggestion [9] — return 'Unknown error' for non-string .message) is implemented first, update the expected values from '[object Object]' to 'Unknown error' in the split tests.\n\nMemory hints: search for \"errorMessage test coverage\" and \"sidecar test structure\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "1028"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:56:46.023Z",
+        "updatedAt": "2026-04-08T11:10:26.393Z",
         "metadata": {
           "files": [
             "gui/sidecar/src/__tests__/utils.test.ts"
@@ -21483,15 +21496,21 @@
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Replace the bare path on line ~884 in `test_is_root_uses_libc_not_raw_ffi` with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")`.\n\n2. Refactor `test_self_read_paths_use_manifest_dir` to use a loop over function names instead of duplicated check blocks (covers the new third entry too):\n   ```rust\n   for fn_name in &[\"fn test_unix_...()\", \"fn test_readonly_...()\", \"fn test_is_root_...()\" ] {\n       let body = extract_test_fn_body(&source, fn_name).unwrap_or_else(|| panic!(...));\n       assert!(body.contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\"), ...);\n   }\n   ```\n\n3. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n4. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:15.932Z",
+        "updatedAt": "2026-04-08T11:14:49.032Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Fix incomplete CARGO_MANIFEST_DIR coverage in build_logic_tests and strengthen meta-test"
+            ]
+          }
         }
       },
       {
@@ -21784,11 +21803,16 @@
         "description": "Follow-up from task 1017 review. Two related improvements to `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n**1. Extract didOpen payload helper (reduce duplication)**\nThe didOpen JSON payload in `did_open_returns_ok_null` (lines 369-398) is an exact duplicate of the payload in `did_open_and_completion_returns_items` (lines 81-91): same URI, same source, same fields. Extract into a test-local helper such as `fn open_bracket_doc_params() -> serde_json::Value` and reuse from both tests so future URI/schema changes live in one place.\n\n**2. Fill Ok(Value::Null) coverage gap for didChange/didClose**\nTask 1017 split the old `valid_notification_returns_ok_null` test into `initialized_returns_ok_null` and `did_open_returns_ok_null`, but the original docstring claimed to document the `Ok(Value::Null)` contract for all four notification arms. The refactor leaves `textDocument/didChange` and `textDocument/didClose` with no positive-path return-shape assertion (malformed-params tests exist, but not return-shape). Both arms also return `Ok(Value::Null)` after strict deserialization (see `crates/reify-lsp/src/bridge.rs:129-140`).\n\nAdd `did_change_returns_ok_null` and `did_close_returns_ok_null` that perform the minimal handshake + didOpen, then assert each arm returns exactly `Ok(Value::Null)`. Use the extracted didOpen helper from (1).\n\nSource: review suggestions S1 + S2 from reviewer_comprehensive on task 1017 (esc-1017-10).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:00:13.428Z"
+        "updatedAt": "2026-04-08T11:12:54.902Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp"
+          ]
+        }
       },
       {
         "id": "1057",
@@ -21796,18 +21820,94 @@
         "description": "Follow-up from task 911 review triage. Two review suggestions about the NaN assertions added in `crates/reify-types/src/value.rs`:\n\n**S1 (test_organization)** — `value_ord_real_nan_and_neg_zero_still_consistent` (~line 2156) mixes a PartialEq bit-identity assertion (`assert_eq!(nan, nan2, ...)`) into a test whose name/comments focus on Ord/total_cmp. The natural home for a \"NaN PartialEq equality\" assertion is next to `nan_normalized` (line 1889), which already constructs two independent `f64::NAN` values for a content_hash check.\n\n**S2 (test_coverage)** — After task 911, `value_ord_real_nan_total_order` (~line 2122) still only asserts `nan.cmp(&nan) == Equal` against the *same* binding. There is no assertion that two *independently constructed* NaN values compare Equal under `Ord`. Per the Eq/Ord contract documented at value.rs:983-986 (`a == b` iff `a.cmp(&b) == Ordering::Equal`), this is a coverage gap.\n\nSuggested fix (addresses both):\n1. In `value_ord_real_nan_total_order`, add `let nan2 = Value::Real(f64::NAN); assert_eq!(nan.cmp(&nan2), std::cmp::Ordering::Equal);` to lock in the cross-construction Ord invariant.\n2. Move the PartialEq assertion out of `value_ord_real_nan_and_neg_zero_still_consistent` into either (a) an extension of `nan_normalized`, or (b) a new sibling test `nan_partialeq_bit_identity` adjacent to `nan_normalized`.\n\nNet effect: Ord checks live with Ord checks, PartialEq checks live with PartialEq checks, and both now cover the cross-construction case.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:01:21.450Z"
+        "updatedAt": "2026-04-08T11:04:21.555Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "1058",
+        "title": "Sync errorMessage tests between gui/src and gui/sidecar + add no-message-key companion test",
+        "description": "Three related fixes on errorMessage test files, all stemming from review triage of task 1031:\n\n1. **Sync mirror file (gui/src/__tests__/errorClassifier.test.ts lines 141-147)** — apply the same improvements just landed in gui/sidecar/src/__tests__/utils.test.ts so the \"kept in sync\" convention (declared in gui/sidecar/src/utils.ts:1 and gui/src/utils/errorClassifier.ts:35) is respected:\n   - Split the combined `{ message: 42 }` case into separate `null` and numeric it-blocks, each with a comment explaining that the `'message' in err` guard catches them (the object is never passed to `String()`).\n   - Add a new `it('returns \"Unknown error\" for plain object with undefined .message', ...)` case exercising `errorMessage({ message: undefined })` with a comment explaining that JS `in` returns true for properties set to undefined.\n   - The existing `'falls through to String() for plain object without .message'` test at line 145-147 already covers the no-message-key contrast — leave it in place (see item 2 below for the sidecar companion).\n\n2. **Re-add companion no-message-key test in gui/sidecar/src/__tests__/utils.test.ts** — add `it('returns \"[object Object]\" for plain object with no .message property', () => { expect(errorMessage({})).toBe('[object Object]'); })` adjacent to the new `{ message: undefined }` test (currently lines 58-62). This makes the `'message' in err` vs `err.message === undefined` distinction visible in one place, which is the whole point of the undefined test. The no-key case is currently only covered indirectly by the `{ key: 'val' }` line in the grouped `coerces non-Error, non-string values` test (line 22), which is in a separate describe context.\n\n3. **Remove trailing blank line on gui/sidecar/src/__tests__/utils.test.ts line 67** — stray blank line introduced when the bare-object test was deleted in task 1031. Minor style fix.\n\nReviewer: reviewer_comprehensive on task 1031.\nNote: both mirror files carry `errorMessage` byte-identically; any future change to one must be applied to the other.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "1031"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:13:27.082Z",
+        "metadata": {
+          "modules": [
+            "gui/sidecar",
+            "gui/src"
+          ]
+        }
+      },
+      {
+        "id": "1059",
+        "title": "Tighten and document meta-test test_self_read_paths_use_manifest_dir (follow-up to 1039)",
+        "description": "Follow-up to task 1039 addressing four reviewer_comprehensive suggestions on `tree-sitter-reify/tests/build_logic_tests.rs` (in and around `test_self_read_paths_use_manifest_dir`, lines ~1041-1085):\n\n**S1 — stale_comment (line ~1043)**: Update the doc comment that still says \"the two source-self-inspection tests\" to \"each source-self-inspection test\" (or \"the three\") so it stays truthful as the target list grows.\n\n**S2 — hidden_coupling (line ~1045)**: The comment was intentionally single-quoted (`'tests/build_logic_tests.rs'`) so the blanket guard at line ~1080 does not match its own describing comment. This reason is load-bearing but undocumented — a future normalization back to double quotes will make the test fail with a confusing error. Add a brief aside, e.g. `// (single-quoted on purpose so the blanket-guard assertion below does not match this comment)`.\n\n**S3 — brittle_assertion (line ~1068)**: The per-function needle `read_to_string(THIS_FILE)` unnecessarily couples the guard to one read method. A future self-reading test that uses `std::fs::read(THIS_FILE)`, `File::open(THIS_FILE)`, or `fs::read_to_string(Path::new(THIS_FILE))` would fail even though correct. Loosen to `body.contains(\"(THIS_FILE)\")` (still rules out bare-identifier mentions in comments).\n\n**S4 — hardcoded_list (lines ~1059-1063)**: The per-function loop hardcodes three target function signatures. A new self-reading test added later will only be caught by the blanket guard — no per-function safety net. This file already has precedent for dynamic discovery in `find_cfg_unix_test_fns` (~line 785). Consider discovering self-reading tests dynamically: scan for test fns whose body contains `read_to_string(` (or more broadly `(THIS_FILE)` after S3) and assert each uses THIS_FILE. If dynamic discovery is overkill, at minimum add a comment instructing maintainers to append to `target_fns` when adding a self-reading test.\n\n**Scope**: single file, `tree-sitter-reify/tests/build_logic_tests.rs`. Verify with `cargo test -p tree-sitter-reify --test build_logic_tests`.\n\nSource: review triage of task 1039 (esc-1039-15).",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:14:52.390Z"
+      },
+      {
+        "id": "1060",
+        "title": "Clean up add_line_pair tests and docstrings (follow-up to task 960)",
+        "description": "Follow-up review suggestions from task 960 (add_line_pair doc/test improvements). All changes in crates/reify-constraints/src/solvespace.rs.\n\n1. **Delete add_line_pair_returns_named_line_pair_entities_struct** (S2). It asserts `pair.line_a != pair.line_b` with identical geometry to the pre-existing `add_line_pair_returns_two_line_entities`. The struct's named-field guarantee is enforced at compile time (the test wouldn't compile if the return type became a tuple), so this test adds no runtime coverage. Deleting it also resolves S1 (its stale docstring still references \"step 6\" and \"will FAIL against the current tuple-returning implementation\", which is now historical).\n\n2. **Delete add_line_pair_propagates_point_error** (S4). It only exercises `line_a.start`; the new `add_line_pair_propagates_error_from_each_position` subsumes it by testing all four `?` sites.\n\n3. **Add test-fixture helpers near missing_coord_setup** (S3): `fn fixed_point(x: f64, y: f64, z: f64) -> PointRef { PointRef::Fixed { x, y, z } }` and `fn line(start: PointRef, end: PointRef) -> LineRef { LineRef { start, end } }`. Use them in all add_line_pair tests to cut the ~6 repeated 8-field literal blocks.\n\n4. **Rename or weaken add_line_pair_err_leaves_prior_points_registered** (S6). The current test hard-asserts `entities.len() == initial + 1`, encoding \"no rollback\" as an invariant. If a future refactor adds rollback (which the docstring acknowledges as a defensible improvement), this test would look like a regression rather than an expected inversion. Rename to `add_line_pair_currently_does_not_rollback_on_err` and add a comment that it documents observed behavior, not a requirement; or weaken to `assert!(builder.entities.len() <= initial_entity_count + 1)`.\n\n5. **Tighten add_line_pair docstring dedup paragraph** (S5). Current wording says \"if two of the four points have identical coordinates (or the same Auto cell IDs)\" — but `PointKey::Auto` hashes the full `(x_id, y_id, z_id)` triple, so two Auto points dedupe only when **all three** cell IDs match. Dedup also applies when more than two points coincide. Rewrite to: \"Endpoints with byte-identical Fixed coordinates, or with all three Auto cell IDs equal, are deduplicated through add_point's point_entities cache. The actual point-entity count is therefore between 1 and 4.\"\n\nAfter changes: `cargo test -p reify-constraints` and `cargo clippy -p reify-constraints --all-targets -- -D warnings` must be clean.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:21:25.213Z"
+      },
+      {
+        "id": "1061",
+        "title": "Harden CLI GUI Extension-Existence Test",
+        "description": "Improve robustness and documentation of the gui_extension_validation_fires_before_existence_check test in reify-cli.",
+        "details": "1. **Eliminate /tmp Path Flake:** Replace the current sentinel path with a unique, per-invocation path to avoid flakiness. Use `tempfile::TempDir` to create a temporary directory and append a non-existent child path, ensuring the path is unique and does not rely on global state.\n\n2. **Fix Stale Doc Comment:** Update the misleading comment on lines 88-89 to accurately reflect the current behavior. Change it to: \"Regression test: extension validation must fire before existence check, ensuring a non-existent non-.ri path reports the extension error rather than not-found.\"\n\nImplement these changes in `crates/reify-cli/tests/cli_gui.rs` and ensure the test logic remains intact.",
+        "testStrategy": "Run `cargo test -p reify-cli --test cli_gui gui_extension_validation_fires_before_existence_check` to verify the test exercises both assertions: that stderr contains '.ri' and does not contain not-found language. Ensure the path used in the test is definitively non-existent.",
+        "status": "in-progress",
+        "dependencies": [
+          "551"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:23:04.807Z"
+      },
+      {
+        "id": "1062",
+        "title": "Enhance assert_orientation_approx! Test Coverage and Reduce Duplication",
+        "description": "Improve test coverage and eliminate duplication in assert_orientation_approx! tests in crates/reify-stdlib/src/lib.rs.",
+        "details": "1. **Consolidate Diagnostic Tests:** Replace the duplicated tests `orient_identity_per_component_diagnostic`, `orient_per_component_diagnostic_x`, `_y`, `_z` with a single table-driven test or a helper closure. This should iterate over components `[('w:', factory_w), ('x:', factory_x), ...]` and use `catch_unwind` to handle each case. Aim for a concise implementation of about 20-30 lines.\n\n2. **Explicit-Tolerance Coverage:** Add tests for the explicit-tolerance arm of `assert_orientation_approx!`. Include a positive test case that fails at the default tolerance but passes with a looser tolerance (e.g., `tol = 1e-2`), and a negative test case that panics with a tighter tolerance (e.g., `tol = 1e-6`).\n\n3. **Robustness with Non-Trivial Quaternion:** Introduce a test using a fully-populated quaternion `(0.5, 0.5, 0.5, 0.5)` and its negation, ensuring they pass with `sign_insensitive = 1e-10`. This ensures comprehensive coverage of all comparison lines.",
+        "testStrategy": "Run `cargo test -p reify-stdlib --lib orient` to ensure all existing tests pass and new tests fail if the explicit-tolerance arm or any sign_insensitive comparisons are broken. Verify that the consolidated diagnostic tests execute correctly and cover all components.",
+        "status": "pending",
+        "dependencies": [
+          "955"
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:01:34.100Z",
-      "taskCount": 1057,
-      "completedCount": 744,
+      "lastModified": "2026-04-08T11:23:05.781Z",
+      "taskCount": 1062,
+      "completedCount": 746,
       "tags": [
         "master"
       ]
