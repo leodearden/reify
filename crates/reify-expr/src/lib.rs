@@ -822,15 +822,17 @@ fn compute_numerical_gradient_at_point(
         // ORIGINAL codomain's dimension. Reconstruct it: for dimensioned domains,
         // original_codomain = result_dim * domain_dim; for dimensionless domains
         // (domain_dim = None), original_codomain = result_dim.
+        // Only validate the lambda's runtime return type for dimensionless domains.
+        // When domain_dim is Some, make_arg passes Scalar<domain_dim> to the lambda,
+        // and operations like `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH>
+        // regardless of the declared codomain — the codomain_type is metadata, not a
+        // constraint on the lambda's output type in dimensioned contexts.
+        // For dimensionless domains, make_arg passes Real, so the lambda's return
+        // dimension is unambiguous and can be validated against the declaration.
         #[cfg(debug_assertions)]
-        if i == 0 {
+        if i == 0 && domain_dim.is_none() {
             let runtime_dim = f_plus.dimension();
-            let expected_codomain_dim = match domain_dim {
-                Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => {
-                    result_dim.mul(&dd)
-                }
-                _ => result_dim,
-            };
+            let expected_codomain_dim = result_dim;
             assert_eq!(
                 runtime_dim,
                 expected_codomain_dim,
