@@ -1232,6 +1232,30 @@ mod tests {
         assert_warn_count_delta(&counter, 0, 2, "expected warn delta");
     }
 
+    /// `assert_warn_count_delta` panics when the counter appears to have gone
+    /// backwards (i.e., `before` > `after`), indicating a stale or wrong
+    /// `before` snapshot.
+    ///
+    /// Under the current `saturating_sub` implementation this test will **not**
+    /// panic (it silently computes 0 and the assertion passes), which means the
+    /// `#[should_panic]` expectation is NOT met and the test fails — confirming
+    /// the gap that step-2 closes.
+    #[test]
+    #[should_panic(expected = "warn counter went backwards")]
+    fn assert_warn_count_delta_panics_when_counter_went_backwards() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        // Obtain a fresh counter at 0 — do NOT install the subscriber or emit
+        // any warns.  The counter stays at 0.
+        let (_subscriber, counter) = warn_counting_subscriber();
+
+        // Passing before=5 against a counter at 0 is a backwards snapshot.
+        // This must panic with "warn counter went backwards"; if it silently
+        // returns 0 the should_panic expectation fails and this test is red.
+        assert_warn_count_delta(&counter, 5, 0, "stale snapshot");
+    }
+
     /// `assert_warn_count` (convenience wrapper with before=0) passes when
     /// counter equals `expected`.
     #[test]
