@@ -3264,6 +3264,136 @@ fn gradient_decomposed_n3_dimensionless() {
     }
 }
 
+/// Regression test for the decomposed (multi-param) path at irrational coordinates.
+///
+/// Lambda: |x, y, z| x + 2*y + 3*z.  Gradient is the constant vector (1, 2, 3).
+/// Sample at Point3(1/3, π/7, √2) — coordinates not exactly representable in IEEE 754.
+///
+/// The exact-restore at line ~853 (`work_coords[i] = coord_i`) affects both the
+/// single_point_param and decomposed code paths.  The companion test
+/// `gradient_single_point_param_irrational_coords` covers single_point_param=true;
+/// this test covers single_point_param=false at the same irrational inputs.
+///
+/// For a linear function centered finite difference is exact in real arithmetic;
+/// any measurable FP error reflects rounding in the decomposed-path eval.  The
+/// tolerance 1e-9 provides a strong regression signal while remaining achievable.
+#[test]
+fn gradient_decomposed_n3_irrational_coords() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + 2*y + 3*z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            // 2*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(Value::Real(2.0), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // 3*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 3D decomposed field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1/3, π/7, √2) — not exactly representable in IEEE 754
+    let x = 1.0_f64 / 3.0;
+    let y = std::f64::consts::PI / 7.0;
+    let z = 2.0_f64.sqrt();
+    let point = Value::Point(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(components.len(), 3, "gradient vector should have 3 components");
+            let expected = [1.0_f64, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-9,
+                    "gradient component {} of x+2y+3z at irrational coords should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector; got {:?}",
+            sample_result
+        ),
+    }
+}
+
 /// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
 ///
 /// This test pins the 'trust the declaration' contract: the gradient code at lib.rs
