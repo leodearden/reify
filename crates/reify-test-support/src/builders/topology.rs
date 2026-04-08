@@ -25,6 +25,7 @@ pub struct TopologyTemplateBuilder {
     objective: Option<reify_types::OptimizationObjective>,
     meta: std::collections::HashMap<String, String>,
     is_recursive: bool,
+    annotations: Vec<reify_types::Annotation>,
 }
 
 impl TopologyTemplateBuilder {
@@ -44,7 +45,20 @@ impl TopologyTemplateBuilder {
             objective: None,
             meta: std::collections::HashMap::new(),
             is_recursive: false,
+            annotations: Vec::new(),
         }
+    }
+
+    /// Push a single annotation onto this builder.
+    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+        self.annotations.push(ann);
+        self
+    }
+
+    /// Replace all annotations with the given vec.
+    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+        self.annotations = anns;
+        self
     }
 
     /// Set meta entries for this template.
@@ -336,7 +350,49 @@ impl TopologyTemplateBuilder {
             meta: self.meta,
             content_hash,
             is_recursive: self.is_recursive,
+            annotations: self.annotations,
         }
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::*;
+    use crate::builders::{annotation, annotation_with_args, ann_str};
+
+    #[test]
+    fn topology_builder_single_annotation() {
+        let t = TopologyTemplateBuilder::new("T")
+            .annotation(annotation("optimized"))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].name, "optimized");
+    }
+
+    #[test]
+    fn topology_builder_annotation_with_args() {
+        let t = TopologyTemplateBuilder::new("T")
+            .annotation(annotation_with_args("deprecated", vec![ann_str("use Q")]))
+            .build();
+        assert_eq!(t.annotations.len(), 1);
+        assert_eq!(t.annotations[0].args.len(), 1);
+    }
+
+    #[test]
+    fn topology_builder_annotations_replace_all() {
+        let t = TopologyTemplateBuilder::new("T")
+            .annotations(vec![annotation("a"), annotation("b")])
+            .build();
+        assert_eq!(t.annotations.len(), 2);
+    }
+
+    #[test]
+    fn topology_builder_annotation_does_not_affect_content_hash() {
+        let t1 = TopologyTemplateBuilder::new("T").build();
+        let t2 = TopologyTemplateBuilder::new("T")
+            .annotation(annotation("optimized"))
+            .build();
+        assert_eq!(t1.content_hash, t2.content_hash);
     }
 }
 

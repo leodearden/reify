@@ -16,8 +16,12 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
 
-# Maximum seconds to wait for lock acquisition (used by both flock and mkdir paths).
+# Maximum seconds to wait for lock acquisition (used by flock and stale-age check).
 MAX_WAIT_SECS=120
+# Maximum polling iterations for mkdir-based lock (75 × 1s = 75s < MAX_WAIT_SECS).
+# Keeping these separate preserves the ~45s safety buffer between giving up and
+# treating a lock as stale — the original design intent.
+MAX_LOCK_ATTEMPTS=75
 
 if ! command -v tree-sitter >/dev/null 2>&1; then
     echo "ERROR: tree-sitter CLI not found on PATH." >&2
@@ -77,11 +81,11 @@ if command -v flock >/dev/null 2>&1; then
     fi
 else
     # Portable mkdir-based advisory lock (atomic on POSIX).
-    # Retry with backoff; stale locks are cleaned up after 120s.
+    # Retry with backoff; stale locks are cleaned up after MAX_WAIT_SECS.
     _lock_attempts=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
         _lock_attempts=$((_lock_attempts + 1))
-        if [ "$_lock_attempts" -ge $MAX_WAIT_SECS ]; then
+        if [ "$_lock_attempts" -ge $MAX_LOCK_ATTEMPTS ]; then
             # Stale lock detection: if lock dir is older than MAX_WAIT_SECS, remove it.
             # Use empty sentinel when stat fails — refuse to remove a lock
             # we cannot verify as stale (avoids unconditional removal on
@@ -90,7 +94,7 @@ else
                 _lock_mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo '')
                 if [ -n "$_lock_mtime" ]; then
                     _lock_age=$(( $(date +%s) - _lock_mtime ))
-                    if [ "$_lock_age" -gt $MAX_WAIT_SECS ]; then
+                    if [ "$_lock_age" -ge $MAX_WAIT_SECS ]; then
                         echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
                         if rmdir "$LOCK_DIR" 2>/dev/null; then
                             _lock_attempts=0
@@ -103,7 +107,7 @@ else
                     fi
                 fi
             fi
-            echo "ERROR: could not acquire generation lock after $MAX_WAIT_SECS attempts" >&2
+            echo "ERROR: could not acquire generation lock after $MAX_LOCK_ATTEMPTS attempts" >&2
             exit 1
         fi
         sleep 1
@@ -141,6 +145,9 @@ GEN_EXIT=0
 portable_timeout 60 tree-sitter generate || GEN_EXIT=$?
 if [ "$GEN_EXIT" -eq 124 ] && [ "${_PORTABLE_TIMEOUT_TIMED_OUT:-false}" = "true" ]; then
     echo "ERROR: tree-sitter generate timed out after 60s" >&2
+    # Remove any partial output files left by the killed process to prevent
+    # corrupted parser.c/grammar.json/node-types.json from being used.
+    rm -f src/parser.c src/grammar.json src/node-types.json
     exit 1
 elif [ "$GEN_EXIT" -ne 0 ]; then
     echo "ERROR: tree-sitter generate failed (exit code $GEN_EXIT)" >&2

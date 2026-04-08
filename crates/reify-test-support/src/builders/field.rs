@@ -10,6 +10,7 @@ pub struct CompiledFieldBuilder {
     domain_type: Type,
     codomain_type: Type,
     source: Option<CompiledFieldSource>,
+    annotations: Vec<reify_types::Annotation>,
 }
 
 impl CompiledFieldBuilder {
@@ -20,7 +21,20 @@ impl CompiledFieldBuilder {
             domain_type,
             codomain_type,
             source: None,
+            annotations: Vec::new(),
         }
+    }
+
+    /// Push a single annotation onto this builder.
+    pub fn annotation(mut self, ann: reify_types::Annotation) -> Self {
+        self.annotations.push(ann);
+        self
+    }
+
+    /// Replace all annotations with the given vec.
+    pub fn annotations(mut self, anns: Vec<reify_types::Annotation>) -> Self {
+        self.annotations = anns;
+        self
     }
 
     pub fn public(mut self) -> Self {
@@ -85,7 +99,57 @@ impl CompiledFieldBuilder {
             codomain_type: self.codomain_type,
             source,
             content_hash,
+            annotations: self.annotations,
         }
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::*;
+    use crate::builders::{annotation, annotation_with_args, ann_str};
+    use reify_types::Value;
+
+    #[test]
+    fn compiled_field_builder_single_annotation() {
+        let field = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            .imported()
+            .annotation(annotation("deprecated"))
+            .build();
+        assert_eq!(field.annotations.len(), 1);
+        assert_eq!(field.annotations[0].name, "deprecated");
+    }
+
+    #[test]
+    fn compiled_field_builder_annotation_with_args() {
+        let field = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            .imported()
+            .annotation(annotation_with_args("deprecated", vec![ann_str("use bar")]))
+            .build();
+        assert_eq!(field.annotations.len(), 1);
+        assert_eq!(field.annotations[0].args.len(), 1);
+    }
+
+    #[test]
+    fn compiled_field_builder_annotations_replace_all() {
+        let field = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            .imported()
+            .annotations(vec![annotation("a"), annotation("b")])
+            .build();
+        assert_eq!(field.annotations.len(), 2);
+    }
+
+    #[test]
+    fn compiled_field_builder_annotation_does_not_affect_content_hash() {
+        use reify_types::ContentHash;
+        let f1 = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            .imported()
+            .build();
+        let f2 = CompiledFieldBuilder::new("f", reify_types::Type::Geometry, reify_types::Type::Real)
+            .imported()
+            .annotation(annotation("test"))
+            .build();
+        assert_eq!(f1.content_hash, f2.content_hash);
     }
 }
 

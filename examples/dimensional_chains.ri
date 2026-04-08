@@ -1,0 +1,120 @@
+// Dimensional chains stress-test fixture.
+//
+// Exercises the .ri type system through:
+//   1. A 10-step unit chain: LENGTH → AREA → VOLUME → LENGTH → TIME → VELOCITY
+//                            → ACCELERATION → FORCE → ENERGY → LENGTH
+//   2. sqrt(area) → length round-trips, sqrt(L^4) = AREA, sqrt(sqrt(L^4)) = LENGTH
+//   3. Complex engineering formulas: Reynolds number (dimensionless), moment of
+//      inertia (kg·m²), pressure (Pa), power (W), gravitational PE (J), spring energy (J)
+
+structure def DimensionalChains {
+    // --- Newton unit helper ---
+    // 1 N = 1 kg·m/s²
+    let n_unit = 1kg * 1m / (1s * 1s)
+
+    // =====================================================================
+    // SECTION 1: 10-step dimension chain
+    // Chain: LENGTH → AREA → VOLUME → LENGTH(sqrt) → TIME →
+    //        VELOCITY → ACCELERATION → FORCE → ENERGY → LENGTH(round-trip)
+    // =====================================================================
+
+    // step 1: LENGTH — base 3 metres
+    let chain_L1 = 3.0 * 1m
+
+    // step 2: AREA = L * L = 9.0 m²
+    let chain_A = chain_L1 * chain_L1
+
+    // step 3: VOLUME = A * L = 27.0 m³
+    let chain_V = chain_A * chain_L1
+
+    // step 4: LENGTH via sqrt round-trip — sqrt(AREA) = sqrt(9.0 m²) = 3.0 m
+    let chain_L2 = sqrt(chain_A)
+
+    // step 5: TIME — base 2 seconds
+    let chain_T1 = 2.0 * 1s
+
+    // step 6: VELOCITY = L / T = 3.0 / 2.0 = 1.5 m/s
+    let chain_vel = chain_L1 / chain_T1
+
+    // step 7: ACCELERATION = vel / T = 1.5 / 2.0 = 0.75 m/s²
+    let chain_acc = chain_vel / chain_T1
+
+    // step 8: FORCE = MASS * ACCELERATION = 1kg * 0.75 m/s² = 0.75 N
+    let chain_F = 1.0 * 1kg * chain_acc
+
+    // step 9: ENERGY = FORCE * LENGTH = 0.75 N * 3.0 m = 2.25 J
+    let chain_E = chain_F * chain_L1
+
+    // step 10: LENGTH = ENERGY / FORCE = 2.25 / 0.75 = 3.0 m  (round-trip back to LENGTH)
+    let chain_L3 = chain_E / chain_F
+
+    // =====================================================================
+    // SECTION 2: sqrt round-trips
+    // =====================================================================
+
+    // sqrt(LENGTH * LENGTH) = LENGTH   ← sqrt(AREA) gives LENGTH
+    // w=4m, h=9m, sqrt(4*9) = sqrt(36) = 6.0 m
+    let sqrt_w = 4.0 * 1m
+    let sqrt_h = 9.0 * 1m
+    let sqrt_wh = sqrt(sqrt_w * sqrt_h)
+
+    // sqrt(VOLUME * LENGTH) = sqrt(L^4) = AREA
+    // chain_V = 27.0 m³, chain_L1 = 3.0 m  → chain_V * chain_L1 = 81.0 m⁴
+    // sqrt(81.0 m⁴) = 9.0 m²
+    let sqrt_V_L = sqrt(chain_V * chain_L1)
+
+    // sqrt(sqrt(L^4)) = LENGTH
+    // chain_A * chain_A = 9.0² = 81.0 m⁴  → sqrt = 9.0 m²  → sqrt again = 3.0 m
+    let sqrt_sqrt_L4 = sqrt(sqrt(chain_A * chain_A))
+
+    // sqrt(LENGTH) gives fractional dimension LENGTH^(1/2)
+    // chain_L1 = 3.0 m → sqrt(3.0) ≈ 1.7320508 m^(1/2)
+    let sqrt_L_frac = sqrt(chain_L1)
+
+    // =====================================================================
+    // SECTION 3: Engineering formulas
+    // =====================================================================
+
+    // --- Reynolds number: Re = ρ·v·L / μ   (dimensionless) ---
+    // ρ  = 1000 kg/m³  (water)
+    // v  = 2 m/s
+    // L  = 0.1 m
+    // μ  = 0.001 Pa·s = 0.001 kg/(m·s)
+    // Re = 1000 * 2 * 0.1 / 0.001 = 200000
+    let rho    = 1000.0 * 1kg / (1m * 1m * 1m)
+    let v_flow = 2.0 * 1m / 1s
+    let L_char = 0.1 * 1m
+    let mu_dyn = 0.001 * 1kg / (1m * 1s)
+    let reynolds = rho * v_flow * L_char / mu_dyn
+
+    // --- Moment of inertia: I = m·r²   (kg·m²) ---
+    // m = 2 kg, r = 0.5 m  → I = 2 * 0.25 = 0.5 kg·m²
+    let i_mass   = 2.0 * 1kg
+    let i_radius = 0.5 * 1m
+    let moment_of_inertia = i_mass * i_radius * i_radius
+
+    // --- Pressure: P = F/A   (Pa = kg·m⁻¹·s⁻²) ---
+    // F = 100 N, A = 0.01 m²  → P = 100 / 0.01 = 10000 Pa
+    let p_force = 100.0 * n_unit
+    let p_area  = 0.01 * 1m * 1m
+    let pressure = p_force / p_area
+
+    // --- Power: P = F·v   (W = kg·m²·s⁻³) ---
+    // F = 50 N, v = 3 m/s  → P = 50 * 3 = 150 W
+    let pw_force = 50.0 * n_unit
+    let pw_vel   = 3.0 * 1m / 1s
+    let power    = pw_force * pw_vel
+
+    // --- Gravitational PE: E = m·g·h   (J = kg·m²·s⁻²) ---
+    // m = 5 kg, g = 9.81 m/s², h = 2 m  → E = 5 * 9.81 * 2 = 98.1 J
+    let pe_mass   = 5.0 * 1kg
+    let g_earth   = 9.81 * 1m / (1s * 1s)
+    let pe_height = 2.0 * 1m
+    let grav_pe   = pe_mass * g_earth * pe_height
+
+    // --- Spring energy: E = ½kx²   (J = kg·m²·s⁻²) ---
+    // k = 500 N/m, x = 0.1 m  → E = 0.5 * 500 * 0.01 = 2.5 J
+    let spring_k = 500.0 * n_unit / 1m
+    let spring_x = 0.1 * 1m
+    let spring_e = 0.5 * spring_k * spring_x * spring_x
+}

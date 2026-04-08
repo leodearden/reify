@@ -220,13 +220,10 @@ mod tests {
     /// We verify this by wrapping the real `WarnCountingSubscriber` in a thin
     /// `EventDispatchCounter` that increments `dispatch_count` each time the
     /// tracing framework calls `event()` on us.  Because the wrapper delegates
-    /// `enabled()` to the inner subscriber, `event()` is only reached when the
-    /// inner subscriber's `enabled()` returns `true`.
-    ///
-    /// Under the current `<=` filter ERROR passes `enabled()`, so
-    /// `dispatch_count` ends up as 1 and this test **fails**.
-    /// After the fix (`==`), ERROR is rejected at `enabled()` and
-    /// `dispatch_count` stays 0.
+    /// `enabled()` to the inner subscriber, the tracing dispatcher only calls
+    /// `event()` on the wrapper — and therefore on the inner — when the inner's
+    /// `enabled()` returns `true`.  Our `enabled()` accepts only WARN, so an
+    /// ERROR event is rejected at the gate and `dispatch_count` stays 0.
     #[test]
     fn error_events_rejected_by_enabled_filter() {
         // ── thin wrapper ────────────────────────────────────────────────────
@@ -269,10 +266,9 @@ mod tests {
         }
 
         // ── test body ───────────────────────────────────────────────────────
-        let warn_count = Arc::new(AtomicUsize::new(0));
+        let (inner, warn_count) = warn_counting_subscriber();
         let dispatch_count = Arc::new(AtomicUsize::new(0));
 
-        let inner = super::WarnCountingSubscriber::new(Arc::clone(&warn_count));
         let subscriber = EventDispatchCounter {
             inner,
             dispatch_count: Arc::clone(&dispatch_count),
@@ -282,18 +278,16 @@ mod tests {
             tracing::error!("error message");
         });
 
-        // warn_count is 0 even under the current code because event() checks
-        // level == WARN before incrementing.  This assertion passes both before
-        // and after the fix.
+        // The dispatcher rejected the ERROR at enabled(), so event() was never
+        // called on either wrapper or inner, and warn_count stays 0.
         assert_eq!(
             warn_count.load(Ordering::Relaxed),
             0,
             "ERROR must not be counted as a WARN event"
         );
 
-        // dispatch_count is 0 only when enabled() rejected the ERROR event.
-        // Under the current `<=` filter dispatch_count == 1 → this FAILS.
-        // After the fix (`==` filter) dispatch_count == 0 → this PASSES.
+        // dispatch_count is 0 because the tracing dispatcher honoured the
+        // enabled() rejection and never forwarded the ERROR event to event().
         assert_eq!(
             dispatch_count.load(Ordering::Relaxed),
             0,
@@ -325,14 +319,19 @@ mod tests {
 
     /// Non-WARN events (DEBUG, INFO, ERROR) do not affect the warn counter.
     ///
-    /// The subscriber implements two-level filtering as defense in depth:
-    /// `enabled()` is the first gate (rejects non-WARN events before `event()` is
-    /// called), and `event()` is the second gate (only increments the counter when
-    /// the level is WARN).  This test validates end-to-end counting correctness —
-    /// that the counter stays zero when only non-WARN events are emitted.
+    /// Filtering is handled entirely at `enabled()`: it rejects non-WARN events
+    /// before the tracing dispatcher ever calls `event()` on this subscriber,
+    /// so the counter is never incremented for them.  `event()` itself no
+    /// longer carries a runtime level check (see task 972); it relies on the
+    /// dispatcher contract and a `debug_assert_eq!` backstop that panics in
+    /// debug builds if the contract is violated.  This test validates
+    /// end-to-end counting correctness — that the counter stays zero when only
+    /// non-WARN events are emitted.
     ///
     /// See `error_events_rejected_by_enabled_filter` for the test that
-    /// specifically validates the `enabled()` gate.
+    /// specifically validates the `enabled()` gate, and
+    /// `event_panics_on_non_warn_when_dispatcher_contract_violated` for the
+    /// debug-assert backstop.
     #[test]
     fn non_warn_events_are_not_counted() {
         let (subscriber, warn_count) = warn_counting_subscriber();
@@ -584,21 +583,29 @@ mod tests {
         );
     }
 
+    /// Calling `event()` directly on `WarnCountingSubscriber` with a non-WARN
+    /// event — bypassing the tracing dispatcher's `enabled()` gate — must panic
+    /// loudly in debug builds rather than silently swallowing the event.
+    ///
+    /// We simulate this by wrapping the subscriber in a `ForcedEventDispatcher`
+    /// whose `enabled()` always returns `true`, causing the tracing framework to
+    /// deliver an ERROR event directly into the inner subscriber's `event()`.
+    /// The `debug_assert_eq!` inside `event()` detects the contract violation
+    /// and panics with a message containing `"enabled() contract violated"`.
     // debug_assert_eq! is compiled out in release builds, so this test would
     // incorrectly fail under #[should_panic] without the cfg gate.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "enabled() contract violated")]
     fn event_panics_on_non_warn_when_dispatcher_contract_violated() {
-        // ForcedEventDispatcher bypasses the inner subscriber's enabled() filter
-        // by always returning true, allowing non-WARN events to reach event().
         struct ForcedEventDispatcher<S> {
             inner: S,
         }
 
         impl<S: tracing::Subscriber> tracing::Subscriber for ForcedEventDispatcher<S> {
             fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-                // Always return true, bypassing the inner subscriber's filter.
+                // Unconditionally true — bypasses the inner subscriber's filter,
+                // forcing non-WARN events through to inner.event().
                 true
             }
 
@@ -619,6 +626,7 @@ mod tests {
             }
 
             fn event(&self, event: &tracing::Event<'_>) {
+                // Forward unconditionally, even for non-WARN events.
                 self.inner.event(event)
             }
 
@@ -635,7 +643,7 @@ mod tests {
         let subscriber = ForcedEventDispatcher { inner };
 
         tracing::subscriber::with_default(subscriber, || {
-            tracing::error!("error message bypassing filter");
+            tracing::error!("non-WARN event delivered directly");
         });
     }
 

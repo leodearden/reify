@@ -245,9 +245,12 @@ fn type_error_dimension_mismatch() {
             ],
             span: SourceSpan::new(0, 55),
             content_hash: ContentHash::of_str("structure Bad"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("dim_mismatch module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -343,9 +346,12 @@ fn constraint_non_bool_produces_warning() {
             ],
             span: SourceSpan::new(0, 70),
             content_hash: ContentHash::of_str("structure Bad non_bool"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("non_bool_constraint module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -572,9 +578,12 @@ fn mul_div_different_dimensions_no_diagnostic() {
             ],
             span: SourceSpan::new(0, 100),
             content_hash: ContentHash::of_str("structure Good mul_div"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("mul_div_dims module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -1561,9 +1570,12 @@ fn scalar_plus_int_type_error() {
             ],
             span: SourceSpan::new(0, 45),
             content_hash: ContentHash::of_str("structure Bad scalar_plus_int"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("scalar_plus_int module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);

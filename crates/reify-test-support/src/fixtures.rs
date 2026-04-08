@@ -4,7 +4,8 @@ use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, T
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-    TopologyTemplateBuilder, TraitDefBuilder, range_constraint,
+    TopologyTemplateBuilder, TraitDefBuilder, ann_str, annotation, annotation_with_args,
+    range_constraint,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -300,6 +301,8 @@ pub fn bracket_parsed_module() -> ParsedModule {
         ],
         span: SourceSpan::new(0, 387),
         content_hash,
+        pragmas: vec![],
+        annotations: vec![],
     };
 
     ParsedModule {
@@ -307,6 +310,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         declarations: vec![reify_syntax::Declaration::Structure(structure)],
         errors: vec![],
         content_hash,
+        pragmas: vec![],
     }
 }
 
@@ -827,6 +831,39 @@ pub fn mutual_recursion_module() -> CompiledModule {
         .build()
 }
 
+/// Return a `CompiledModule` covering all four annotation-capable entity kinds.
+///
+/// - Trait `"Rigid"` with `@deprecated("use Rigid2")` annotation
+/// - Template `"Bolt"` with `@test` and `@optimized` annotations (no args)
+/// - Field `"temp"` (Geometry → Real, imported) with `@deprecated` annotation
+/// - Purpose `"mfg_ready"` with `@solver_hint` annotation
+pub fn annotated_module() -> CompiledModule {
+    let rigid_trait = CompiledTraitBuilder::new("Rigid")
+        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .build();
+
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .annotation(annotation("test"))
+        .annotation(annotation("optimized"))
+        .build();
+
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        .imported()
+        .annotation(annotation("deprecated"))
+        .build();
+
+    let purpose = CompiledPurposeBuilder::new("mfg_ready")
+        .annotation(annotation("solver_hint"))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
+        .trait_def(rigid_trait)
+        .template(bolt_template)
+        .field(temp_field)
+        .compiled_purpose(purpose)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,7 +1026,47 @@ mod tests {
         assert!(mass_cell.is_some(), "Bolt should have param mass");
     }
 
-    // --- Annotated entity fixture tests (step-21) ---
+    // --- Annotated entity fixture tests (steps 31-32) ---
+
+    #[test]
+    fn annotated_module_has_annotated_entities() {
+        let module = annotated_module();
+
+        // (a) one trait with @deprecated("use Rigid2") annotation
+        assert_eq!(module.trait_defs.len(), 1);
+        let rigid = &module.trait_defs[0];
+        assert_eq!(rigid.name, "Rigid");
+        assert_eq!(rigid.annotations.len(), 1);
+        assert_eq!(rigid.annotations[0].name, "deprecated");
+        assert_eq!(rigid.annotations[0].args.len(), 1);
+        assert!(matches!(
+            &rigid.annotations[0].args[0],
+            reify_types::AnnotationArg::String(s) if s == "use Rigid2"
+        ));
+
+        // (b) one template with @test and @optimized annotations (no args)
+        assert_eq!(module.templates.len(), 1);
+        let bolt = &module.templates[0];
+        assert_eq!(bolt.name, "Bolt");
+        assert_eq!(bolt.annotations.len(), 2);
+        let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
+        assert!(ann_names.contains(&"test"), "expected @test annotation");
+        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+
+        // (c) one field with @deprecated annotation
+        assert_eq!(module.fields.len(), 1);
+        let temp_field = &module.fields[0];
+        assert_eq!(temp_field.name, "temp");
+        assert_eq!(temp_field.annotations.len(), 1);
+        assert_eq!(temp_field.annotations[0].name, "deprecated");
+
+        // (d) one purpose with @solver_hint annotation
+        assert_eq!(module.compiled_purposes.len(), 1);
+        let purpose = &module.compiled_purposes[0];
+        assert_eq!(purpose.name, "mfg_ready");
+        assert_eq!(purpose.annotations.len(), 1);
+        assert_eq!(purpose.annotations[0].name, "solver_hint");
+    }
 
     #[test]
     fn trait_structure_module_has_trait_and_template() {

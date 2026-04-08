@@ -4,7 +4,7 @@
  * Provides a keymap/event handler that on Ctrl+Click (or Cmd+Click on Mac)
  * sends a textDocument/definition request and navigates to the result.
  */
-import { type Extension } from '@codemirror/state';
+import { type Extension, type Text, type Line } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { isSameFile } from '../utils/pathUtils';
@@ -71,6 +71,25 @@ async function requestDefinition(
 }
 
 /**
+ * Validate an LSP (0-based) position against the current document.
+ *
+ * Returns the resolved CodeMirror `Line` on success, or `null` if the
+ * position is invalid (negative, beyond document bounds, or character past
+ * end-of-line). Groups all same-file invariants in one place so the
+ * validation surface is easy to audit.
+ */
+function isValidLspPosition(
+  doc: Text,
+  line: number,
+  character: number,
+): { targetLine: Line } | null {
+  if (line < 0 || line + 1 > doc.lines) return null;
+  const targetLine = doc.line(line + 1);
+  if (character < 0 || character > targetLine.to - targetLine.from) return null;
+  return { targetLine };
+}
+
+/**
  * Create a CodeMirror extension that handles Ctrl+Click for go-to-definition.
  *
  * Accepts either a static URI string or a `() => string` getter for dynamic
@@ -110,18 +129,23 @@ export function reifyGotoDefinition(
 
         if (sameFile) {
           // Same document: navigate to definition in current view.
-          // Guard against stale LSP responses where the line number exceeds the
-          // current document length (lines may have been deleted since mousedown).
-          if (location.range.start.line < 0 || location.range.start.line + 1 > view.state.doc.lines) return;
-          const targetLine = view.state.doc.line(location.range.start.line + 1);
-          if (location.range.start.character > targetLine.to - targetLine.from) return;
-          const targetPos = targetLine.from + location.range.start.character;
+          const valid = isValidLspPosition(
+            view.state.doc,
+            location.range.start.line,
+            location.range.start.character,
+          );
+          if (!valid) return;
+          const targetPos = valid.targetLine.from + location.range.start.character;
           view.dispatch({
             selection: { anchor: targetPos },
             scrollIntoView: true,
           });
         } else if (onNavigate) {
-          // Different file: delegate to the onNavigate callback
+          // Different file: delegate to the onNavigate callback.
+          // Minimum guard: reject negative positions before delegating. Full
+          // doc-aware validation (character vs. line length) happens in the
+          // consumer (Editor.tsx) against the target file once it is opened.
+          if (location.range.start.line < 0 || location.range.start.character < 0) return;
           onNavigate(
             location.uri,
             location.range.start.line,

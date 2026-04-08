@@ -33,6 +33,18 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
   }
 }
 
+async function withSuppressedRejectionsAndConsoleSpy(
+  method: 'error' | 'warn',
+  fn: (spy: MockInstance) => Promise<void>,
+): Promise<void> {
+  const spy = vi.spyOn(console, method).mockImplementation(() => {});
+  try {
+    await withSuppressedRejections(() => fn(spy));
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 /**
  * Run `fn` with both a temporary `console.error` spy (output suppressed) and
  * the `unhandledrejection` suppression from `withSuppressedRejections`.
@@ -44,12 +56,7 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
 export async function withSuppressedRejectionsAndErrorSpy(
   fn: (errorSpy: MockInstance) => Promise<void>,
 ): Promise<void> {
-  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-  try {
-    await withSuppressedRejections(() => fn(errorSpy));
-  } finally {
-    errorSpy.mockRestore();
-  }
+  return withSuppressedRejectionsAndConsoleSpy('error', fn);
 }
 
 /**
@@ -63,10 +70,5 @@ export async function withSuppressedRejectionsAndErrorSpy(
 export async function withSuppressedRejectionsAndWarnSpy(
   fn: (warnSpy: MockInstance) => Promise<void>,
 ): Promise<void> {
-  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  try {
-    await withSuppressedRejections(() => fn(warnSpy));
-  } finally {
-    warnSpy.mockRestore();
-  }
+  return withSuppressedRejectionsAndConsoleSpy('warn', fn);
 }

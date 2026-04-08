@@ -262,5 +262,76 @@ assert "guard: natural exit 124 does not emit timeout error (POSIX fallback)" \
         [ -z "$timeout_error" ]
     '
 
+# -- Test 15: structural: timer cleanup uses process-group kill ----------------
+echo ""
+echo "--- Test 15: lib_portable.sh timer cleanup uses process-group kill ---"
+
+# The POSIX fallback timer subshell starts an inner 'sleep $seconds' process.
+# Killing only the subshell PID leaves the inner sleep as an orphan.
+# Correct cleanup uses 'kill -- -$timer_pid' (process-group kill) so all
+# children of the timer subshell are terminated atomically.
+assert "lib_portable.sh timer cleanup uses process-group kill (kill -- -)" \
+    grep -qE 'kill -- -\$timer_pid' "$LIB_PORTABLE"
+
+# -- Test 16: behavioral: no orphan sleep after fast-exit command --------------
+echo ""
+echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
+
+# This test verifies that the timer's inner 'sleep 31337' (a distinctive
+# sentinel duration) is fully cleaned up when the command exits before the
+# timeout fires.
+#
+# Subtlety: timer subshells inherit EXIT traps from the calling shell.
+# If POSIX_FALLBACK_SETUP's "rm -rf $rescue_dir" EXIT trap is inherited,
+# it cleans up the rescue dir when the timer subshell is killed, removing
+# 'grep' and 'sleep' from PATH.  Workaround: save absolute paths BEFORE
+# PATH manipulation and use them for the post-timeout orphan check.
+
+assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        # Save absolute paths before PATH is stripped of timeout directories.
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
+        # would clean up the rescue dir on exit, causing false-positive passes.
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Run a fast command under a long timeout (31337s sentinel).
+        # Timer subshell starts "sleep 31337" which must be cleaned up when
+        # the command exits before the timeout fires.
+        portable_timeout 31337 true || true
+
+        # Use saved absolute paths — rescue_dir may be gone if the timer
+        # subshell ran its inherited EXIT trap when killed.
+        "$_abs_sleep" 0.5
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
+    '
+
+# -- Test 17: structural: timer subshell has SIGKILL escalation ---------------
+echo ""
+echo "--- Test 17: lib_portable.sh timer subshell has SIGKILL escalation ---"
+
+# After the initial SIGTERM to the command, the timer subshell should escalate
+# to SIGKILL (kill -9) if the process is still running after a grace period.
+# Grep for 'kill -9' or 'kill -KILL' in the timer subshell section of lib_portable.sh.
+assert "lib_portable.sh timer subshell contains SIGKILL escalation (kill -9)" \
+    grep -qE 'kill -9[[:space:]]|kill -KILL[[:space:]]' "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

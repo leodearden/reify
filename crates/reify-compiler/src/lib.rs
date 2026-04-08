@@ -36,6 +36,8 @@ pub struct CompiledTrait {
     /// Members with defaults that are injected if the structure doesn't override.
     pub defaults: Vec<TraitDefault>,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -101,6 +103,8 @@ pub struct CompiledField {
     pub codomain_type: Type,
     pub source: CompiledFieldSource,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled purpose parameter — binds an entity reference.
@@ -132,6 +136,8 @@ pub struct CompiledPurpose {
     /// Reflective schema queries resolved at compile time.
     pub resolved_queries: Vec<ResolvedSchemaQuery>,
     pub content_hash: ContentHash,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -199,6 +205,8 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    /// Compiled annotations carried over from the parsed declaration.
+    pub annotations: Vec<reify_types::Annotation>,
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -440,6 +448,9 @@ fn is_geometry_function(name: &str) -> bool {
             | "circular_pattern"
             | "mirror"
             | "loft"
+            | "extrude"
+            | "revolve"
+            | "revolve_full"
             | "shell"
             | "thicken"
             | "draft"
@@ -1983,6 +1994,15 @@ struct CompilationScope<'u> {
     /// Populated from already-compiled child templates to resolve correct types for
     /// indexed member access (e.g., bolts[0].diameter → Type::length()).
     collection_sub_member_types: HashMap<String, HashMap<String, Type>>,
+    /// Trait member index for qualified access validation: trait_name → set of member names.
+    /// Populated from trait_registry in compile_entity.
+    trait_members: HashMap<String, HashSet<String>>,
+    /// Sub-component type map: sub_name → structure_name.
+    /// Used to resolve instance qualified access (sub.(Trait::member)).
+    sub_component_types: HashMap<String, String>,
+    /// Trait bounds per structure name: structure_name → [trait_names].
+    /// Used to verify a sub-component implements a given trait.
+    sub_structure_traits: HashMap<String, Vec<String>>,
     /// Meta block entries for the current entity: key → value.
     meta_entries: HashMap<String, String>,
     /// Reference to the active unit registry.
@@ -1998,6 +2018,9 @@ impl<'u> CompilationScope<'u> {
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
             collection_sub_member_types: HashMap::new(),
+            trait_members: HashMap::new(),
+            sub_component_types: HashMap::new(),
+            sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
             unit_registry: None,
         }
@@ -2134,6 +2157,11 @@ fn compile_expr_guarded(
             CompiledExpr::literal(Value::String(s.clone()), Type::String)
         }
         reify_syntax::ExprKind::Ident(name) => {
+            // Intercept `none` before scope lookup — it's a language-level keyword.
+            // Default inner type is Real; contextual override happens at param/let sites.
+            if name == "none" {
+                return CompiledExpr::option_none(Type::Option(Box::new(Type::Real)));
+            }
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
                 None => {
@@ -2404,6 +2432,35 @@ fn compile_expr_guarded(
             )
         }
         reify_syntax::ExprKind::FunctionCall { name, args } => {
+            // Intercept `some(expr)` before general function resolution.
+            // some() is a language-level constructor, not a user-defined function.
+            if name == "some" {
+                if args.len() != 1 {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "some() requires exactly 1 argument, got {}",
+                            args.len()
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "wrong number of arguments",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+                let inner = compile_expr_guarded(
+                    &args[0],
+                    scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                    current_guard,
+                    lambda_counter,
+                );
+                let result_type = Type::Option(Box::new(inner.result_type.clone()));
+                return CompiledExpr::option_some(inner, result_type);
+            }
+
             let compiled_args: Vec<CompiledExpr> = args
                 .iter()
                 .map(|arg| {
@@ -3158,14 +3215,166 @@ fn compile_expr_guarded(
             );
             CompiledExpr::literal(Value::Undef, Type::Real)
         }
-        // QualifiedAccess compiler support is implemented in a separate task.
-        reify_syntax::ExprKind::QualifiedAccess { .. }
-        | reify_syntax::ExprKind::InstanceQualifiedAccess { .. } => {
-            diagnostics.push(
-                Diagnostic::error("qualified access (::) is not yet supported in the compiler")
-                    .with_label(DiagnosticLabel::new(expr.span, "not yet supported")),
-            );
-            CompiledExpr::literal(Value::Undef, Type::Real)
+        reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+            // Resolve `TraitName::member` to the member's ValueCellId in the current scope.
+            // Only simple `Ident::member` form is supported.
+            let trait_name = match &qualifier.kind {
+                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "unsupported qualified access: only 'TraitName::member' form is supported",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "unsupported form")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Validate trait existence.
+            let members = match scope.trait_members.get(&trait_name) {
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("trait '{}' not found", trait_name))
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown trait")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+                Some(m) => m,
+            };
+
+            // Validate member existence in trait.
+            if !members.contains(member.as_str()) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "member '{}' not defined in trait '{}'",
+                        member, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Resolve the member in the current scope (the structure should have it
+            // because it conforms to the trait).
+            match scope.resolve(member) {
+                Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
+                None => {
+                    // Fallback: create a ValueCellId directly (trait conformance will catch
+                    // missing members separately).
+                    let id = ValueCellId::new(&scope.entity_name, member);
+                    CompiledExpr::value_ref(id, Type::Real)
+                }
+            }
+        }
+        reify_syntax::ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            // Resolve `sub.(TraitName::member)` to a ValueCellId for the sub's member.
+
+            // Extract the sub-component name.
+            let sub_name = match &object.kind {
+                reify_syntax::ExprKind::Ident(name) => name.clone(),
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "unsupported instance qualified access: object must be an identifier",
+                        )
+                        .with_label(DiagnosticLabel::new(object.span, "unsupported")),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Extract trait_name and member from the qualified access part.
+            let (trait_name, member) = match &qualified.kind {
+                reify_syntax::ExprKind::QualifiedAccess { qualifier, member } => {
+                    match &qualifier.kind {
+                        reify_syntax::ExprKind::Ident(name) => (name.clone(), member.clone()),
+                        _ => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "unsupported qualified access in instance access",
+                                )
+                                .with_label(DiagnosticLabel::new(
+                                    qualified.span,
+                                    "unsupported form",
+                                )),
+                            );
+                            return CompiledExpr::literal(Value::Undef, Type::Real);
+                        }
+                    }
+                }
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "expected 'Trait::member' form in instance qualified access",
+                        )
+                        .with_label(DiagnosticLabel::new(
+                            qualified.span,
+                            "expected qualified access",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Look up the sub-component's structure type.
+            let structure_name = match scope.sub_component_types.get(&sub_name) {
+                Some(s) => s.clone(),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(format!("unknown sub-component '{}'", sub_name))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unknown sub-component",
+                            )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
+                }
+            };
+
+            // Check if the sub-component's structure implements the referenced trait.
+            let trait_bounds = scope
+                .sub_structure_traits
+                .get(&structure_name)
+                .cloned()
+                .unwrap_or_default();
+            if !trait_bounds.contains(&trait_name) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "sub-component '{}' (type '{}') does not implement trait '{}'",
+                        sub_name, structure_name, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "trait not implemented")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Optionally validate the member exists in the trait.
+            if let Some(members) = scope.trait_members.get(&trait_name)
+                && !members.contains(member.as_str())
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "member '{}' not defined in trait '{}'",
+                        member, trait_name
+                    ))
+                    .with_label(DiagnosticLabel::new(expr.span, "not in trait")),
+                );
+                return CompiledExpr::literal(Value::Undef, Type::Real);
+            }
+
+            // Generate ValueCellId for the sub-component's member.
+            // The eval engine scopes sub-components as "{parent}.{sub_name}".
+            let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+            let id = ValueCellId::new(&scoped_entity, &member);
+            // Infer member type from the sub's structure member types if available.
+            let ty = scope
+                .collection_sub_member_types
+                .get(&sub_name)
+                .and_then(|m| m.get(&member))
+                .cloned()
+                .unwrap_or(Type::Real);
+            CompiledExpr::value_ref(id, ty)
         }
     }
 }
@@ -3291,6 +3500,9 @@ fn compile_trait(
     // Convert parsed type parameters to compiled TypeParam structs
     let type_params = convert_type_params(&trait_decl.type_params);
 
+    let annotations = lower_annotations(&trait_decl.annotations, diagnostics);
+    validate_annotations(&annotations, "trait", diagnostics);
+
     CompiledTrait {
         name: trait_decl.name.clone(),
         is_pub: trait_decl.is_pub,
@@ -3299,6 +3511,7 @@ fn compile_trait(
         required_members,
         defaults,
         content_hash,
+        annotations,
     }
 }
 
@@ -3505,6 +3718,9 @@ fn compile_purpose(
         }
     }
 
+    let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
+    validate_annotations(&annotations, "purpose", diagnostics);
+
     CompiledPurpose {
         name: purpose_def.name.clone(),
         is_pub: purpose_def.is_pub,
@@ -3513,6 +3729,7 @@ fn compile_purpose(
         objective,
         resolved_queries,
         content_hash: purpose_def.content_hash,
+        annotations,
     }
 }
 
@@ -4197,6 +4414,7 @@ struct EntityDefRef<'a> {
     type_params: &'a [reify_syntax::TypeParamDecl],
     trait_bounds: &'a [reify_syntax::TraitBoundRef],
     members: &'a [reify_syntax::MemberDecl],
+    annotations: &'a [reify_syntax::Annotation],
     span: SourceSpan,
     #[allow(dead_code)]
     content_hash: ContentHash,
@@ -4210,6 +4428,7 @@ impl<'a> From<&'a reify_syntax::StructureDef> for EntityDefRef<'a> {
             type_params: &s.type_params,
             trait_bounds: &s.trait_bounds,
             members: &s.members,
+            annotations: &s.annotations,
             span: s.span,
             content_hash: s.content_hash,
         }
@@ -4224,8 +4443,116 @@ impl<'a> From<&'a reify_syntax::OccurrenceDef> for EntityDefRef<'a> {
             type_params: &o.type_params,
             trait_bounds: &o.trait_bounds,
             members: &o.members,
+            annotations: &o.annotations,
             span: o.span,
             content_hash: o.content_hash,
+        }
+    }
+}
+
+/// Lower parsed syntax annotations to compiled annotation types.
+fn lower_annotations(
+    parsed: &[reify_syntax::Annotation],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<reify_types::Annotation> {
+    parsed
+        .iter()
+        .map(|ann| {
+            let args = ann
+                .args
+                .iter()
+                .filter_map(|expr| {
+                    use reify_syntax::ExprKind;
+                    match &expr.kind {
+                        ExprKind::NumberLiteral(value) => {
+                            if *value == value.floor() && value.abs() < i64::MAX as f64 {
+                                Some(reify_types::AnnotationArg::Int(*value as i64))
+                            } else {
+                                Some(reify_types::AnnotationArg::Real(*value))
+                            }
+                        }
+                        ExprKind::StringLiteral(s) => {
+                            Some(reify_types::AnnotationArg::String(s.clone()))
+                        }
+                        ExprKind::BoolLiteral(b) => Some(reify_types::AnnotationArg::Bool(*b)),
+                        ExprKind::Ident(name) => {
+                            Some(reify_types::AnnotationArg::Ident(name.clone()))
+                        }
+                        _ => {
+                            diagnostics.push(
+                                Diagnostic::warning(format!(
+                                    "unsupported expression in annotation @{} argument; only literals and identifiers are allowed",
+                                    ann.name
+                                ))
+                                .with_label(DiagnosticLabel::new(expr.span, "complex expression")),
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+            reify_types::Annotation {
+                name: ann.name.clone(),
+                args,
+                span: ann.span,
+            }
+        })
+        .collect()
+}
+
+/// Validate annotations against known annotation rules and context.
+///
+/// Known annotations and their valid contexts:
+/// - `@test`: valid on structure, occurrence, function
+/// - `@optimized`: valid on structure, occurrence
+/// - `@solver_hint`: valid on structure, occurrence
+/// - `@deprecated`: valid on any context
+fn validate_annotations(
+    annotations: &[reify_types::Annotation],
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for ann in annotations {
+        match ann.name.as_str() {
+            "deprecated" => {
+                // Valid on any context — no warning.
+            }
+            "test" => {
+                if !matches!(context, "structure" | "occurrence" | "function") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @test is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@test")),
+                    );
+                }
+            }
+            "optimized" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @optimized is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@optimized")),
+                    );
+                }
+            }
+            "solver_hint" => {
+                if !matches!(context, "structure" | "occurrence") {
+                    diagnostics.push(
+                        Diagnostic::warning(format!(
+                            "annotation @solver_hint is not valid on {context} declarations"
+                        ))
+                        .with_label(DiagnosticLabel::new(ann.span, "@solver_hint")),
+                    );
+                }
+            }
+            other => {
+                diagnostics.push(
+                    Diagnostic::warning(format!("unknown annotation @{other}"))
+                        .with_label(DiagnosticLabel::new(ann.span, "unknown annotation")),
+                );
+            }
         }
     }
 }
@@ -4576,6 +4903,22 @@ fn compile_entity(
     let entity_name = structure.name;
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
+
+    // Populate trait member index for qualified access resolution.
+    for (trait_name, compiled_trait) in trait_registry {
+        let mut members: HashSet<String> = compiled_trait
+            .required_members
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        for default in &compiled_trait.defaults {
+            if let Some(n) = &default.name {
+                members.insert(n.clone());
+            }
+        }
+        scope.trait_members.insert(trait_name.clone(), members);
+    }
+
     let mut value_cells = Vec::new();
     let mut constraints = Vec::new();
     let mut sub_components: Vec<SubComponentDecl> = Vec::new();
@@ -4706,6 +5049,18 @@ fn compile_entity(
                 }
             }
             reify_syntax::MemberDecl::Sub(sub) => {
+                // Register sub-component type info for instance qualified access.
+                scope
+                    .sub_component_types
+                    .insert(sub.name.clone(), sub.structure_name.clone());
+                if let Some(child_tmpl) = compiled_templates
+                    .iter()
+                    .find(|t| t.name == sub.structure_name)
+                {
+                    scope
+                        .sub_structure_traits
+                        .insert(sub.structure_name.clone(), child_tmpl.trait_bounds.clone());
+                }
                 if sub.is_collection {
                     scope.collection_sub_names.insert(sub.name.clone());
                     // Populate member types from already-compiled child template
@@ -4818,10 +5173,18 @@ fn compile_entity(
                         span: param.span,
                     }
                 } else {
-                    let default_expr = param
-                        .default
-                        .as_ref()
-                        .map(|expr| compile_expr(expr, &scope, enum_defs, functions, diagnostics));
+                    let default_expr = param.default.as_ref().map(|expr| {
+                        let mut compiled =
+                            compile_expr(expr, &scope, enum_defs, functions, diagnostics);
+                        // If the default is OptionNone and the param type is Option<T>,
+                        // override the OptionNone's result_type to match the declared type.
+                        if matches!(&compiled.kind, CompiledExprKind::OptionNone)
+                            && matches!(&cell_type, Type::Option(_))
+                        {
+                            compiled = CompiledExpr::option_none(cell_type.clone());
+                        }
+                        compiled
+                    });
 
                     ValueCellDecl {
                         id,
@@ -5687,6 +6050,13 @@ fn compile_entity(
         }
     }
 
+    let context = match entity_kind {
+        EntityKind::Structure => "structure",
+        EntityKind::Occurrence => "occurrence",
+    };
+    let annotations = lower_annotations(structure.annotations, diagnostics);
+    validate_annotations(&annotations, context, diagnostics);
+
     TopologyTemplate {
         name: entity_name.to_string(),
         entity_kind,
@@ -5705,6 +6075,7 @@ fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
+        annotations,
     }
 }
 
@@ -6785,6 +7156,7 @@ fn check_trait_conformance(
     let mut visited_traits: HashSet<String> = HashSet::new();
     let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
     let mut seen_default_names: HashMap<String, Type> = HashMap::new();
+    let mut seen_let_hashes: HashMap<String, ContentHash> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -6795,11 +7167,28 @@ fn check_trait_conformance(
             &mut visited_traits,
             &mut seen_requirement_names,
             &mut seen_default_names,
+            &mut seen_let_hashes,
             &structure_members,
             structure.span,
             diagnostics,
         );
     }
+
+    // Build a map of available default names from all_defaults (non-constraint, named).
+    // Used to cross-check requirements: a requirement is satisfied if the structure
+    // provides the member OR if another trait in the bound set provides a matching default.
+    let available_defaults: HashMap<String, Type> = all_defaults
+        .iter()
+        .filter_map(|d| {
+            let name = d.name.as_deref()?;
+            let ty = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
+                DefaultKind::Let(_) => Type::Real,
+                DefaultKind::Constraint(_) => return None,
+            };
+            Some((name.to_string(), ty))
+        })
+        .collect();
 
     // Check each requirement against structure members.
     for req in &all_requirements {
@@ -6818,13 +7207,41 @@ fn check_trait_conformance(
                         }
                     }
                     None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "missing required member '{}' (expected type: {})",
-                                req.name, expected_type
-                            ))
-                            .with_label(DiagnosticLabel::new(structure.span, "required by trait")),
-                        );
+                        // Check if a matching default from another trait satisfies this requirement.
+                        match available_defaults.get(&req.name) {
+                            Some(default_type)
+                                if implicitly_converts_to(default_type, expected_type) =>
+                            {
+                                // Default satisfies the requirement — no error.
+                            }
+                            Some(default_type) => {
+                                // Default exists but has wrong type → type mismatch.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "type mismatch for trait member '{}': \
+                                         requirement expects {}, available default has {}",
+                                        req.name, expected_type, default_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "type mismatch",
+                                    )),
+                                );
+                            }
+                            None => {
+                                // No default available — truly missing.
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "missing required member '{}' (expected type: {})",
+                                        req.name, expected_type
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        structure.span,
+                                        "required by trait",
+                                    )),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -6962,6 +7379,7 @@ fn collect_all_requirements(
     visited: &mut HashSet<String>,
     seen_names: &mut HashMap<String, Type>,
     seen_defaults: &mut HashMap<String, Type>,
+    seen_let_hashes: &mut HashMap<String, ContentHash>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -6988,6 +7406,7 @@ fn collect_all_requirements(
             visited,
             seen_names,
             seen_defaults,
+            seen_let_hashes,
             structure_members,
             span,
             diagnostics,
@@ -7026,7 +7445,30 @@ fn collect_all_requirements(
             // Unnamed defaults (e.g., unlabeled constraints) — always push.
             defaults.push(default.clone());
         } else if let Some(name) = &default.name {
-            // Extract type for dedup comparison.
+            // For let bindings: use content_hash comparison to distinguish same
+            // expression (dedup) vs different expression (conflict).
+            if let DefaultKind::Let(let_decl) = &default.kind {
+                if let Some(existing_hash) = seen_let_hashes.get(name.as_str()) {
+                    if existing_hash != &let_decl.content_hash
+                        && !structure_members.contains_key(name.as_str())
+                    {
+                        // Same name, different expression, not overridden → conflict.
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "conflicting trait let bindings for '{}': different expressions from merged traits",
+                                name
+                            ))
+                            .with_label(DiagnosticLabel::new(span, "conflicting trait let bindings")),
+                        );
+                    }
+                    // Same name already seen (same or different hash) → skip.
+                    continue;
+                }
+                seen_let_hashes.insert(name.clone(), let_decl.content_hash);
+                // Fall through to insert into seen_defaults and push.
+            }
+
+            // Extract type for dedup comparison (non-Let defaults).
             let default_type = match &default.kind {
                 DefaultKind::Param { cell_type, .. } => cell_type.clone(),
                 DefaultKind::Let(_) => Type::Real,
@@ -7144,6 +7586,9 @@ fn compile_function(
         ContentHash::combine_all(all_hashes)
     };
 
+    let annotations = lower_annotations(&fn_def.annotations, diagnostics);
+    validate_annotations(&annotations, "function", diagnostics);
+
     Some(CompiledFunction {
         name: fn_def.name.clone(),
         is_pub: fn_def.is_pub,
@@ -7154,6 +7599,7 @@ fn compile_function(
             result_expr,
         },
         content_hash,
+        annotations,
     })
 }
 
@@ -7261,6 +7707,9 @@ fn compile_field(
         ContentHash::combine_all([name_hash, domain_hash, codomain_hash, source_hash])
     };
 
+    let annotations = lower_annotations(&field_def.annotations, diagnostics);
+    validate_annotations(&annotations, "field", diagnostics);
+
     CompiledField {
         name: field_def.name.clone(),
         is_pub: field_def.is_pub,
@@ -7268,6 +7717,7 @@ fn compile_field(
         codomain_type,
         source,
         content_hash,
+        annotations,
     }
 }
 
@@ -7655,6 +8105,97 @@ fn compile_geometry_call(
                 kind: SweepKind::Loft,
                 profiles,
                 args,
+            }])
+        }
+        // extrude(profile, distance)
+        "extrude" => {
+            if compiled_args.len() != 2 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "extrude() expects exactly 2 arguments (profile, distance), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let distance_expr = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("distance".to_string(), distance_expr),
+                ],
+            }])
+        }
+        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
+        "revolve" => {
+            if compiled_args.len() != 8 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve() expects exactly 8 arguments (profile, ox, oy, oz, ax, ay, az, angle), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            let angle = it.next().unwrap();
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), angle),
+                ],
+            }])
+        }
+        // revolve_full(profile, ox, oy, oz, ax, ay, az) — injects 2π for angle
+        "revolve_full" => {
+            if compiled_args.len() != 7 {
+                diagnostics.push(Diagnostic::error(format!(
+                    "revolve_full() expects exactly 7 arguments (profile, ox, oy, oz, ax, ay, az), got {}",
+                    compiled_args.len()
+                )));
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let profile_expr = it.next().unwrap();
+            let ox = it.next().unwrap();
+            let oy = it.next().unwrap();
+            let oz = it.next().unwrap();
+            let ax = it.next().unwrap();
+            let ay = it.next().unwrap();
+            let az = it.next().unwrap();
+            // Inject literal 2π for the angle
+            let tau_expr = CompiledExpr::literal(
+                Value::Real(std::f64::consts::TAU),
+                reify_types::Type::Real,
+            );
+            Some(vec![CompiledGeometryOp::Sweep {
+                kind: SweepKind::Revolve,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".to_string(), profile_expr),
+                    ("ox".to_string(), ox),
+                    ("oy".to_string(), oy),
+                    ("oz".to_string(), oz),
+                    ("ax".to_string(), ax),
+                    ("ay".to_string(), ay),
+                    ("az".to_string(), az),
+                    ("angle".to_string(), tau_expr),
+                ],
             }])
         }
         // sweep(profile, path)

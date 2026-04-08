@@ -86,16 +86,33 @@ portable_timeout() {
             _pt_old_int=$(trap -p INT 2>/dev/null || true)
             _pt_old_term=$(trap -p TERM 2>/dev/null || true)
             trap 'rm -f "$timeout_flag" 2>/dev/null' INT TERM
-            ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
+            # Enable job control temporarily so the timer subshell is placed in its
+            # own process group, making 'kill -- -$timer_pid' safe and effective.
+            set -m 2>/dev/null || true
+            ( sleep "$seconds" && {
+                touch "$timeout_flag" 2>/dev/null
+                kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
+              } ) &
+            set +m 2>/dev/null || true
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
-            ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+            set -m 2>/dev/null || true
+            ( sleep "$seconds" && {
+                kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
+              } ) &
+            set +m 2>/dev/null || true
         fi
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
-        # Clean up timer — if command finished before timeout, kill the sleep+kill subshell.
-        kill "$timer_pid" 2>/dev/null || true
+        # Clean up timer — if command finished before timeout, kill the timer subshell
+        # and its inner sleep child.  Process-group kill ('kill -- -$pid') terminates
+        # all children of the subshell atomically; fall back to plain kill if unsupported.
+        kill -- -$timer_pid 2>/dev/null || kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
 
         if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then

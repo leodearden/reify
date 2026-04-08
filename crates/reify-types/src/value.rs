@@ -2160,7 +2160,10 @@ mod tests {
         let neg_inf = Value::Real(f64::NEG_INFINITY);
         // Two independently constructed NaN values must compare equal under PartialEq.
         let nan2 = Value::Real(f64::NAN);
-        assert_eq!(nan, nan2, "two separately constructed NaN values with identical bit patterns must compare equal");
+        assert_eq!(
+            nan, nan2,
+            "two separately constructed NaN values with identical bit patterns must compare equal"
+        );
         // NaN > +Infinity (total_cmp: NaN is the maximum)
         assert!(nan > inf);
         // -Infinity < NaN
@@ -5215,6 +5218,323 @@ mod tests {
         assert_eq!(
             -Value::Point(vec![Value::length(1.0), Value::length(2.0)]),
             Value::Undef
+        );
+    }
+
+    // ── Consolidated wrapper-delegation & NaN-canonicalization tests ──────────
+    // Covers the PartialEq impl (~lines 987-1162) and content_hash()
+    // NaN canonicalization (~lines 266-494).
+
+    /// Regression sentinel: verifies that equality for every wrapper variant
+    /// delegates to the inner `Value` comparison.  One test per variant; struct-
+    /// shaped wrappers get two inequality checks (one per field) to ensure both
+    /// conjunction arms of the PartialEq match are exercised.
+    #[test]
+    fn wrapper_variants_delegate_equality_to_inner_value() {
+        // ── Vec<Value> wrappers ──────────────────────────────────────────────
+        // Point
+        let p1 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let p2 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let p3 = Value::Point(vec![Value::length(9.0), Value::length(2.0)]);
+        assert_eq!(p1, p2, "Point: equal inner vecs must be equal");
+        assert_ne!(p1, p3, "Point: differing first element must be unequal");
+
+        // Vector
+        let v1 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        let v3 = Value::Vector(vec![Value::length(1.0), Value::length(9.0)]);
+        assert_eq!(v1, v2, "Vector: equal inner vecs must be equal");
+        assert_ne!(v1, v3, "Vector: differing second element must be unequal");
+
+        // Tensor
+        let t1 = Value::Tensor(vec![Value::length(1.0), Value::length(2.0)]);
+        let t2 = Value::Tensor(vec![Value::length(1.0), Value::length(2.0)]);
+        let t3 = Value::Tensor(vec![Value::length(1.0), Value::length(9.0)]);
+        assert_eq!(t1, t2, "Tensor: equal inner vecs must be equal");
+        assert_ne!(t1, t3, "Tensor: differing second element must be unequal");
+
+        // ── Vec<Vec<Value>> wrapper ──────────────────────────────────────────
+        // Matrix
+        let row_a1 = vec![Value::Int(1), Value::Int(2)];
+        let row_a2 = vec![Value::Int(3), Value::Int(4)];
+        let m1 = Value::Matrix(vec![row_a1.clone(), row_a2.clone()]);
+        let m2 = Value::Matrix(vec![row_a1.clone(), row_a2.clone()]);
+        let row_diff = vec![Value::Int(3), Value::Int(9)];
+        let m3 = Value::Matrix(vec![row_a1, row_diff]);
+        assert_eq!(m1, m2, "Matrix: equal nested vecs must be equal");
+        assert_ne!(m1, m3, "Matrix: differing row element must be unequal");
+
+        // ── Struct-shaped wrappers (two inequality checks each) ──────────────
+        // Frame: origin and basis
+        let f_eq = make_frame(make_point3_length(), make_orientation_identity());
+        let f_eq2 = make_frame(make_point3_length(), make_orientation_identity());
+        assert_eq!(
+            f_eq, f_eq2,
+            "Frame: structurally equal frames must be equal"
+        );
+        let alt_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let f_diff_origin = make_frame(alt_origin, make_orientation_identity());
+        assert_ne!(
+            f_eq, f_diff_origin,
+            "Frame: different origin must be unequal"
+        );
+        let alt_basis = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let f_diff_basis = make_frame(make_point3_length(), alt_basis);
+        assert_ne!(f_eq, f_diff_basis, "Frame: different basis must be unequal");
+
+        // Transform: rotation and translation
+        let tr_eq = make_transform(make_orientation_identity(), make_vector3_length());
+        let tr_eq2 = make_transform(make_orientation_identity(), make_vector3_length());
+        assert_eq!(
+            tr_eq, tr_eq2,
+            "Transform: structurally equal transforms must be equal"
+        );
+        let alt_rot = Value::Orientation {
+            w: 0.0,
+            x: 0.0,
+            y: 1.0,
+            z: 0.0,
+        };
+        let tr_diff_rot = make_transform(alt_rot, make_vector3_length());
+        assert_ne!(
+            tr_eq, tr_diff_rot,
+            "Transform: different rotation must be unequal"
+        );
+        let alt_trans = Value::Vector(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let tr_diff_trans = make_transform(make_orientation_identity(), alt_trans);
+        assert_ne!(
+            tr_eq, tr_diff_trans,
+            "Transform: different translation must be unequal"
+        );
+
+        // Plane: origin and normal
+        let pl_eq = make_plane(make_point3_origin(), make_normal_z());
+        let pl_eq2 = make_plane(make_point3_origin(), make_normal_z());
+        assert_eq!(
+            pl_eq, pl_eq2,
+            "Plane: structurally equal planes must be equal"
+        );
+        let alt_pl_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let pl_diff_origin = make_plane(alt_pl_origin, make_normal_z());
+        assert_ne!(
+            pl_eq, pl_diff_origin,
+            "Plane: different origin must be unequal"
+        );
+        let alt_normal = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let pl_diff_normal = make_plane(make_point3_origin(), alt_normal);
+        assert_ne!(
+            pl_eq, pl_diff_normal,
+            "Plane: different normal must be unequal"
+        );
+
+        // Axis: origin and direction
+        let ax_eq = make_axis(make_point3_origin(), make_direction_z());
+        let ax_eq2 = make_axis(make_point3_origin(), make_direction_z());
+        assert_eq!(ax_eq, ax_eq2, "Axis: structurally equal axes must be equal");
+        let alt_ax_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let ax_diff_origin = make_axis(alt_ax_origin, make_direction_z());
+        assert_ne!(
+            ax_eq, ax_diff_origin,
+            "Axis: different origin must be unequal"
+        );
+        let alt_dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let ax_diff_dir = make_axis(make_point3_origin(), alt_dir);
+        assert_ne!(
+            ax_eq, ax_diff_dir,
+            "Axis: different direction must be unequal"
+        );
+
+        // BoundingBox: min and max
+        let bb_eq = make_bbox(make_point3_min(), make_point3_max());
+        let bb_eq2 = make_bbox(make_point3_min(), make_point3_max());
+        assert_eq!(
+            bb_eq, bb_eq2,
+            "BoundingBox: structurally equal bboxes must be equal"
+        );
+        let alt_min = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let bb_diff_min = make_bbox(alt_min, make_point3_max());
+        assert_ne!(
+            bb_eq, bb_diff_min,
+            "BoundingBox: different min must be unequal"
+        );
+        let alt_max = Value::Point(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(1.0),
+        ]);
+        let bb_diff_max = make_bbox(make_point3_min(), alt_max);
+        assert_ne!(
+            bb_eq, bb_diff_max,
+            "BoundingBox: different max must be unequal"
+        );
+    }
+
+    /// Regression sentinel: verifies that `content_hash()` normalizes every
+    /// non-canonical NaN bit pattern to the canonical `f64::NAN` bit pattern.
+    /// Uses `f64::from_bits(f64::NAN.to_bits() ^ 1)` — XOR toggles the low
+    /// mantissa bit while keeping the exponent fully set, so the value remains
+    /// NaN by IEEE 754 but has a distinct bit pattern.  Without the
+    /// canonicalization branches in `content_hash()`, the hashes would differ.
+    #[test]
+    fn nan_payload_canonicalized_in_content_hash() {
+        let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
+        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+
+        // (1) Value::Real
+        assert_eq!(
+            Value::Real(f64::NAN).content_hash(),
+            Value::Real(non_canon_nan).content_hash(),
+            "Real: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (2) Value::Scalar — si_value field
+        assert_eq!(
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            Value::Scalar {
+                si_value: non_canon_nan,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            "Scalar: non-canonical NaN in si_value must hash equal to canonical NaN"
+        );
+
+        // (3) Value::Complex — re field
+        assert_eq!(
+            Value::Complex {
+                re: f64::NAN,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            Value::Complex {
+                re: non_canon_nan,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            "Complex re: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (4) Value::Complex — im field
+        assert_eq!(
+            Value::Complex {
+                re: 0.0,
+                im: f64::NAN,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            Value::Complex {
+                re: 0.0,
+                im: non_canon_nan,
+                dimension: DimensionVector::DIMENSIONLESS,
+            }
+            .content_hash(),
+            "Complex im: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (5) Value::Orientation — w field
+        assert_eq!(
+            Value::Orientation {
+                w: f64::NAN,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }
+            .content_hash(),
+            Value::Orientation {
+                w: non_canon_nan,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }
+            .content_hash(),
+            "Orientation w: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (6) Value::Orientation — x field
+        assert_eq!(
+            Value::Orientation {
+                w: 1.0,
+                x: f64::NAN,
+                y: 0.0,
+                z: 0.0,
+            }
+            .content_hash(),
+            Value::Orientation {
+                w: 1.0,
+                x: non_canon_nan,
+                y: 0.0,
+                z: 0.0,
+            }
+            .content_hash(),
+            "Orientation x: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (7) Value::Orientation — y field
+        assert_eq!(
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: f64::NAN,
+                z: 0.0,
+            }
+            .content_hash(),
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: non_canon_nan,
+                z: 0.0,
+            }
+            .content_hash(),
+            "Orientation y: non-canonical NaN must hash equal to canonical NaN"
+        );
+
+        // (8) Value::Orientation — z field
+        assert_eq!(
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: f64::NAN,
+            }
+            .content_hash(),
+            Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: non_canon_nan,
+            }
+            .content_hash(),
+            "Orientation z: non-canonical NaN must hash equal to canonical NaN"
         );
     }
 }

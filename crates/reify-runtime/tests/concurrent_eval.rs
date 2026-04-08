@@ -1603,19 +1603,28 @@ mod poison_recovery {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// Verify that tracing::warn! is emitted when values() recovers from a poisoned lock.
+    /// values() recovers gracefully from a poisoned values RwLock: no panic,
+    /// returned slice contains both T.a and T.b, and exactly one tracing::warn!
+    /// is emitted.
     #[test]
-    fn tracing_warn_emitted_on_poison_values_read() {
+    fn values_recovers_from_poisoned_values_lock_with_warn() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
         adapter.poison_values();
 
         let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
+        let result = tracing::subscriber::with_default(subscriber, || {
             catch_unwind(AssertUnwindSafe(|| adapter.values()))
         });
 
+        assert!(
+            result.is_ok(),
+            "values() should recover from poisoned lock, not panic"
+        );
+        let values = result.unwrap();
+        assert!(values.contains(&ValueCellId::new("T", "a")));
+        assert!(values.contains(&ValueCellId::new("T", "b")));
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
         // poisoned, so exactly 1 WARN fires.
@@ -1625,56 +1634,26 @@ mod poison_recovery {
         );
     }
 
-    /// values() recovers gracefully from a poisoned values RwLock and returns valid data.
+    /// take_results() recovers gracefully from a poisoned results Mutex: no panic,
+    /// returned results are empty, and exactly one tracing::warn! is emitted.
     #[test]
-    fn values_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| adapter.values()));
-        assert!(
-            result.is_ok(),
-            "values() should recover from poisoned lock, not panic"
-        );
-        let values = result.unwrap();
-        // The recovered data should still contain the pre-poisoning values
-        assert!(values.contains(&ValueCellId::new("T", "a")));
-        assert!(values.contains(&ValueCellId::new("T", "b")));
-    }
-
-    /// take_results() recovers gracefully from a poisoned results Mutex and returns valid data.
-    #[test]
-    fn take_results_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-
-        adapter.poison_results();
-
-        let result = catch_unwind(AssertUnwindSafe(|| adapter.take_results()));
-        assert!(
-            result.is_ok(),
-            "take_results() should recover from poisoned lock, not panic"
-        );
-        let results = result.unwrap();
-        // Results should be empty (no evaluations have occurred), but accessible
-        assert!(results.is_empty());
-    }
-
-    /// Verify that tracing::warn! is emitted when take_results() recovers from a poisoned lock.
-    #[test]
-    fn tracing_warn_emitted_on_poison_results_lock() {
+    fn take_results_recovers_from_poisoned_results_lock_with_warn() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
         adapter.poison_results();
 
         let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
+        let result = tracing::subscriber::with_default(subscriber, || {
             catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
         });
 
+        assert!(
+            result.is_ok(),
+            "take_results() should recover from poisoned lock, not panic"
+        );
+        let results = result.unwrap();
+        assert!(results.is_empty());
         let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
         // poisoned, so exactly 1 WARN fires.

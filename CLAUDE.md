@@ -1,5 +1,9 @@
 # Reify
 
+## Local Dev Setup
+
+The orchestrator verify pipeline requires `sccache` on PATH (install via `cargo install sccache`). `orchestrator.yaml` sets `RUSTC_WRAPPER=sccache` and `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees; rationale and design in `~/.claude/plans/playful-hopping-nygaard.md`.
+
 ## Memory Usage
 
 ### When to read memory
