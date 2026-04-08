@@ -8,7 +8,7 @@
 //!
 //! OCCT tests are guarded by reify_kernel_occt::OCCT_AVAILABLE.
 
-use reify_test_support::{mm, MockGeometryKernel};
+use reify_test_support::{MockGeometryKernel, mm};
 use reify_types::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
 
 // ── Helper: centroid JSON parser ───────────────────────────────────────────────
@@ -76,7 +76,9 @@ fn sphere_surface_area_consistency() {
         .execute(&GeometryOp::Sphere { radius: mm(50.0) })
         .unwrap();
 
-    let area_result = kernel.query(&GeometryQuery::SurfaceArea(handle.id)).unwrap();
+    let area_result = kernel
+        .query(&GeometryQuery::SurfaceArea(handle.id))
+        .unwrap();
     match area_result {
         Value::Real(a) => {
             let expected_a = 4.0 * std::f64::consts::PI * r_m.powi(2);
@@ -108,7 +110,10 @@ fn sphere_area_volume_ratio() {
         Value::Real(v) => v,
         other => panic!("expected Real volume, got {:?}", other),
     };
-    let area = match kernel.query(&GeometryQuery::SurfaceArea(handle.id)).unwrap() {
+    let area = match kernel
+        .query(&GeometryQuery::SurfaceArea(handle.id))
+        .unwrap()
+    {
         Value::Real(a) => a,
         other => panic!("expected Real area, got {:?}", other),
     };
@@ -182,13 +187,15 @@ fn centroid_shifts_correctly_after_translate() {
     let translated = kernel
         .execute(&GeometryOp::Translate {
             target: handle.id,
-            dx: 0.05,  // +50mm
+            dx: 0.05, // +50mm
             dy: 0.0,
             dz: 0.0,
         })
         .unwrap();
 
-    let centroid = kernel.query(&GeometryQuery::Centroid(translated.id)).unwrap();
+    let centroid = kernel
+        .query(&GeometryQuery::Centroid(translated.id))
+        .unwrap();
     let (cx, cy, cz) = parse_centroid(&centroid);
     // Original centroid at (0, 0, 0), translated by (+0.05, 0, 0)
     assert!(
@@ -266,7 +273,9 @@ fn box_surface_area_equals_formula() {
         })
         .unwrap();
 
-    let result = kernel.query(&GeometryQuery::SurfaceArea(handle.id)).unwrap();
+    let result = kernel
+        .query(&GeometryQuery::SurfaceArea(handle.id))
+        .unwrap();
     match result {
         Value::Real(a) => {
             let expected = 2.0 * (w_m * h_m + w_m * d_m + h_m * d_m);
@@ -366,11 +375,7 @@ fn mock_distance_self_is_zero() {
         .unwrap();
     match result {
         Value::Real(d) => {
-            assert!(
-                d.abs() < 1e-12,
-                "self-distance should be 0.0, got {}",
-                d
-            );
+            assert!(d.abs() < 1e-12, "self-distance should be 0.0, got {}", d);
         }
         other => panic!("distance should be Value::Real, got {:?}", other),
     }

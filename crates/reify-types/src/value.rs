@@ -1973,7 +1973,10 @@ mod tests {
             let a = Value::Real(f64::NAN);
             let b = Value::Real(non_canon_nan);
             // PartialEq uses to_bits() → they are NOT equal
-            assert_ne!(a, b, "Real: NaN values with different payloads must be unequal via PartialEq");
+            assert_ne!(
+                a, b,
+                "Real: NaN values with different payloads must be unequal via PartialEq"
+            );
             // content_hash collapses both to canonical NaN → they DO hash equally
             assert_eq!(
                 a.content_hash(),
@@ -1984,9 +1987,18 @@ mod tests {
 
         // (2) Value::Scalar
         {
-            let a = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::DIMENSIONLESS };
-            let b = Value::Scalar { si_value: non_canon_nan, dimension: DimensionVector::DIMENSIONLESS };
-            assert_ne!(a, b, "Scalar: NaN values with different payloads must be unequal via PartialEq");
+            let a = Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            let b = Value::Scalar {
+                si_value: non_canon_nan,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            assert_ne!(
+                a, b,
+                "Scalar: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -1996,9 +2008,20 @@ mod tests {
 
         // (3) Value::Complex (re field)
         {
-            let a = Value::Complex { re: f64::NAN, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-            let b = Value::Complex { re: non_canon_nan, im: 0.0, dimension: DimensionVector::DIMENSIONLESS };
-            assert_ne!(a, b, "Complex re: NaN values with different payloads must be unequal via PartialEq");
+            let a = Value::Complex {
+                re: f64::NAN,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            let b = Value::Complex {
+                re: non_canon_nan,
+                im: 0.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            };
+            assert_ne!(
+                a, b,
+                "Complex re: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -2008,9 +2031,22 @@ mod tests {
 
         // (4) Value::Orientation (w field)
         {
-            let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
-            let b = Value::Orientation { w: non_canon_nan, x: 0.0, y: 0.0, z: 0.0 };
-            assert_ne!(a, b, "Orientation: NaN values with different payloads must be unequal via PartialEq");
+            let a = Value::Orientation {
+                w: f64::NAN,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            };
+            let b = Value::Orientation {
+                w: non_canon_nan,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            };
+            assert_ne!(
+                a, b,
+                "Orientation: NaN values with different payloads must be unequal via PartialEq"
+            );
             assert_eq!(
                 a.content_hash(),
                 b.content_hash(),
@@ -2356,8 +2392,8 @@ mod tests {
         // value_ord_real_negative_magnitude which test a subset of these pairings.
         use std::collections::BTreeSet;
         let values: &[f64] = &[
-            0.0,           // +0.0
-            -0.0,          // -0.0
+            0.0,  // +0.0
+            -0.0, // -0.0
             f64::INFINITY,
             f64::NEG_INFINITY,
             f64::NAN,
@@ -2377,14 +2413,21 @@ mod tests {
             .collect();
 
         // Verify count (all 7 bit-distinct values must be stored)
-        assert_eq!(sorted.len(), 7, "all 7 bit-distinct boundary values must appear");
+        assert_eq!(
+            sorted.len(),
+            7,
+            "all 7 bit-distinct boundary values must appear"
+        );
 
         // Verify positions by property, not by bit-pattern indexing
         let neg_inf_idx = sorted
             .iter()
             .position(|f| f.is_infinite() && f.is_sign_negative())
             .expect("NEG_INFINITY must be present");
-        let neg_one_idx = sorted.iter().position(|&f| f == -1.0_f64).expect("-1.0 must be present");
+        let neg_one_idx = sorted
+            .iter()
+            .position(|&f| f == -1.0_f64)
+            .expect("-1.0 must be present");
         let neg_zero_idx = sorted
             .iter()
             .position(|f| *f == 0.0 && f.is_sign_negative())
@@ -2393,15 +2436,24 @@ mod tests {
             .iter()
             .position(|f| *f == 0.0 && f.is_sign_positive())
             .expect("+0.0 must be present");
-        let pos_one_idx = sorted.iter().position(|&f| f == 1.0_f64).expect("1.0 must be present");
+        let pos_one_idx = sorted
+            .iter()
+            .position(|&f| f == 1.0_f64)
+            .expect("1.0 must be present");
         let pos_inf_idx = sorted
             .iter()
             .position(|f| f.is_infinite() && f.is_sign_positive())
             .expect("INFINITY must be present");
-        let nan_idx = sorted.iter().position(|f| f.is_nan()).expect("NaN must be present");
+        let nan_idx = sorted
+            .iter()
+            .position(|f| f.is_nan())
+            .expect("NaN must be present");
 
         // Full ordering: NEG_INFINITY < -1.0 < -0.0 < +0.0 < 1.0 < INFINITY < NaN
-        assert!(neg_inf_idx < neg_one_idx, "NEG_INFINITY must come before -1.0");
+        assert!(
+            neg_inf_idx < neg_one_idx,
+            "NEG_INFINITY must come before -1.0"
+        );
         assert!(neg_one_idx < neg_zero_idx, "-1.0 must come before -0.0");
         assert!(neg_zero_idx < pos_zero_idx, "-0.0 must come before +0.0");
         assert!(pos_zero_idx < pos_one_idx, "+0.0 must come before 1.0");
@@ -2473,7 +2525,10 @@ mod tests {
                 b.cmp(a).reverse(),
                 "PartialEq↔Ord contract: antisymmetry violated"
             );
-            assert!(a < b, "PartialEq↔Ord contract: expected a < b (caller must pass smaller value first)");
+            assert!(
+                a < b,
+                "PartialEq↔Ord contract: expected a < b (caller must pass smaller value first)"
+            );
         }
     }
 
@@ -4280,19 +4335,9 @@ mod tests {
         // Real bounds. Negative-bound ranges must therefore sort correctly.
 
         // Real lower=-5.0, upper=5.0 (half-open [−5, 5))
-        let r_neg_real = make_range(
-            Some(Value::Real(-5.0)),
-            Some(Value::Real(5.0)),
-            true,
-            false,
-        );
+        let r_neg_real = make_range(Some(Value::Real(-5.0)), Some(Value::Real(5.0)), true, false);
         // Real lower=0.0, upper=10.0 (half-open [0, 10))
-        let r_pos_real = make_range(
-            Some(Value::Real(0.0)),
-            Some(Value::Real(10.0)),
-            true,
-            false,
-        );
+        let r_pos_real = make_range(Some(Value::Real(0.0)), Some(Value::Real(10.0)), true, false);
         // [-5, 5) < [0, 10) because lower bounds: −5.0 < 0.0
         assert!(r_neg_real < r_pos_real);
         // Antisymmetry
@@ -4302,19 +4347,9 @@ mod tests {
         );
 
         // Int lower=-10, upper=-1 (closed [−10, −1])
-        let r_neg_int = make_range(
-            Some(Value::Int(-10)),
-            Some(Value::Int(-1)),
-            true,
-            true,
-        );
+        let r_neg_int = make_range(Some(Value::Int(-10)), Some(Value::Int(-1)), true, true);
         // Int lower=-5, upper=-1 (closed [−5, −1])
-        let r_less_neg_int = make_range(
-            Some(Value::Int(-5)),
-            Some(Value::Int(-1)),
-            true,
-            true,
-        );
+        let r_less_neg_int = make_range(Some(Value::Int(-5)), Some(Value::Int(-1)), true, true);
         // [−10, −1] < [−5, −1] because lower bounds: −10 < −5
         assert!(r_neg_int < r_less_neg_int);
         assert_eq!(
@@ -6005,7 +6040,7 @@ mod tests {
                 "Scalar",
                 Value::Scalar {
                     si_value: 1.0,
-                    dimension: dim.clone(),
+                    dimension: dim,
                 },
             ),
             (
@@ -6019,10 +6054,7 @@ mod tests {
             ("Set", Value::Set(std::collections::BTreeSet::new())),
             ("Map", Value::Map(std::collections::BTreeMap::new())),
             ("Option_None", Value::Option(None)),
-            (
-                "Option_Some",
-                Value::Option(Some(Box::new(Value::Int(0)))),
-            ),
+            ("Option_Some", Value::Option(Some(Box::new(Value::Int(0))))),
             (
                 "Field",
                 Value::Field {
@@ -6052,7 +6084,7 @@ mod tests {
                 Value::Complex {
                     re: 0.0,
                     im: 0.0,
-                    dimension: dim.clone(),
+                    dimension: dim,
                 },
             ),
             (
@@ -6109,10 +6141,7 @@ mod tests {
                     max: Box::new(Value::Point(vec![])),
                 },
             ),
-            (
-                "Range",
-                Value::range(None, None, false, false),
-            ),
+            ("Range", Value::range(None, None, false, false)),
             ("Matrix", Value::Matrix(vec![])),
             ("Undef", Value::Undef),
         ];
@@ -6135,9 +6164,7 @@ mod tests {
         for (name, val) in &variants {
             let hash = val.content_hash();
             if let Some(previous_name) = seen.insert(hash, name) {
-                panic!(
-                    "content_hash collision: Value::{name} collides with {previous_name}"
-                );
+                panic!("content_hash collision: Value::{name} collides with {previous_name}");
             }
         }
     }

@@ -4229,7 +4229,9 @@ mod tests {
                 sign_insensitive = 1e-10
             );
         });
-        let err = result.expect_err("expected assert_orientation_approx sign_insensitive to panic for wrong value");
+        let err = result.expect_err(
+            "expected assert_orientation_approx sign_insensitive to panic for wrong value",
+        );
         let msg = err
             .downcast_ref::<String>()
             .map(|s| s.as_str())

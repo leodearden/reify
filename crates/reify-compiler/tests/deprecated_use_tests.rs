@@ -6,7 +6,11 @@
 /// Helper: parse and compile source, return compiled module.
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("deprecated_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -313,9 +317,7 @@ fn deprecated_no_args_produces_warning_without_trailing_colon() {
 fn annotation_compile_tests_no_regression() {
     // Ensure that compiling a @deprecated annotation on a struct without using it
     // does NOT produce a use-site warning (regression guard for annotation_compile_tests).
-    let module = compile_module(
-        r#"@deprecated("old") structure S { param x : Real }"#,
-    );
+    let module = compile_module(r#"@deprecated("old") structure S { param x : Real }"#);
     let errors: Vec<_> = errors_only(&module);
     assert!(errors.is_empty(), "errors: {:?}", errors);
 

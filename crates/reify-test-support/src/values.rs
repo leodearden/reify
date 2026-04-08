@@ -1394,7 +1394,10 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 for (i, expected) in [1.0, 2.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!((si_value - expected).abs() < 1e-12);
                             assert_eq!(*dimension, DimensionVector::LENGTH);
                         }
@@ -1414,7 +1417,10 @@ mod tests {
                 assert_eq!(items.len(), 2);
                 for (i, expected) in [5.0, -3.0].iter().enumerate() {
                     match &items[i] {
-                        Value::Scalar { si_value, dimension } => {
+                        Value::Scalar {
+                            si_value,
+                            dimension,
+                        } => {
                             assert!((si_value - expected).abs() < 1e-12);
                             assert_eq!(*dimension, DimensionVector::LENGTH);
                         }
@@ -1500,7 +1506,10 @@ mod tests {
         let basis = orientation_val(1.0, 0.0, 0.0, 0.0);
         let v = frame_val(origin.clone(), basis.clone());
         match v {
-            Value::Frame { origin: o, basis: b } => {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
                 assert!(matches!(*o, Value::Point(_)));
                 assert!(matches!(*b, Value::Orientation { .. }));
             }
@@ -1514,7 +1523,10 @@ mod tests {
         let translation = vec3(1.0, 2.0, 3.0);
         let v = transform_val(rotation, translation);
         match v {
-            Value::Transform { rotation: r, translation: t } => {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
                 assert!(matches!(*r, Value::Orientation { .. }));
                 assert!(matches!(*t, Value::Vector(_)));
             }

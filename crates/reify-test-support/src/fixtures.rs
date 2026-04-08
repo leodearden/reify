@@ -839,7 +839,10 @@ pub fn mutual_recursion_module() -> CompiledModule {
 /// - Purpose `"mfg_ready"` with `@solver_hint` annotation
 pub fn annotated_module() -> CompiledModule {
     let rigid_trait = CompiledTraitBuilder::new("Rigid")
-        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .annotation(annotation_with_args(
+            "deprecated",
+            vec![ann_str("use Rigid2")],
+        ))
         .build();
 
     let bolt_template = TopologyTemplateBuilder::new("Bolt")
@@ -1051,7 +1054,10 @@ mod tests {
         assert_eq!(bolt.annotations.len(), 2);
         let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
         assert!(ann_names.contains(&"test"), "expected @test annotation");
-        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+        assert!(
+            ann_names.contains(&"optimized"),
+            "expected @optimized annotation"
+        );
 
         // (c) one field with @deprecated annotation
         assert_eq!(module.fields.len(), 1);

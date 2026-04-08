@@ -57,7 +57,9 @@ fn direct_self_reference_tagged_recursive() {
     let recursion_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert!(
         !recursion_warnings.is_empty(),
@@ -143,15 +145,23 @@ fn indirect_cycle_three_structures_all_tagged() {
         .find(|t| t.name == "C")
         .expect("should have template C");
 
-    assert!(a_template.is_recursive, "A should be recursive in A->B->C->A cycle");
-    assert!(b_template.is_recursive, "B should be recursive in A->B->C->A cycle");
-    assert!(c_template.is_recursive, "C should be recursive in A->B->C->A cycle");
+    assert!(
+        a_template.is_recursive,
+        "A should be recursive in A->B->C->A cycle"
+    );
+    assert!(
+        b_template.is_recursive,
+        "B should be recursive in A->B->C->A cycle"
+    );
+    assert!(
+        c_template.is_recursive,
+        "C should be recursive in A->B->C->A cycle"
+    );
 
     // The diagnostic should contain the cycle path
-    let cycle_warning = compiled
-        .diagnostics
-        .iter()
-        .find(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"));
+    let cycle_warning = compiled.diagnostics.iter().find(|d| {
+        d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+    });
     assert!(
         cycle_warning.is_some(),
         "expected a warning diagnostic about recursive structure cycle, got: {:?}",
@@ -190,7 +200,9 @@ fn non_recursive_dag_no_false_positives() {
     let recursion_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert!(
         recursion_warnings.is_empty(),
@@ -218,15 +230,43 @@ fn mixed_recursive_and_non_recursive_only_cycle_tagged() {
     "#;
     let compiled = compile_module(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
-    let d_template = compiled.templates.iter().find(|t| t.name == "D").expect("template D");
+    let a_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "A")
+        .expect("template A");
+    let b_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "B")
+        .expect("template B");
+    let c_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "C")
+        .expect("template C");
+    let d_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "D")
+        .expect("template D");
 
-    assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
-    assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
-    assert!(!c_template.is_recursive, "C should NOT be recursive (only C->D, no cycle)");
-    assert!(!d_template.is_recursive, "D should NOT be recursive (no subs at all)");
+    assert!(
+        a_template.is_recursive,
+        "A should be recursive (in A<->B cycle)"
+    );
+    assert!(
+        b_template.is_recursive,
+        "B should be recursive (in A<->B cycle)"
+    );
+    assert!(
+        !c_template.is_recursive,
+        "C should NOT be recursive (only C->D, no cycle)"
+    );
+    assert!(
+        !d_template.is_recursive,
+        "D should NOT be recursive (no subs at all)"
+    );
 }
 
 // ─── step-11: sub referencing unknown/external structure ───
@@ -243,7 +283,11 @@ fn unknown_structure_reference_no_panic_no_false_positive() {
     // Note: this may emit a warning about unresolved structure, but should NOT
     // emit a recursive structure cycle warning.
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_recursive"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
 
     // Should not panic — verify it compiled
@@ -261,7 +305,9 @@ fn unknown_structure_reference_no_panic_no_false_positive() {
     let recursion_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert!(
         recursion_warnings.is_empty(),
@@ -292,13 +338,34 @@ fn multiple_subs_one_cycle_correct_tagging() {
     "#;
     let compiled = compile_module(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
+    let a_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "A")
+        .expect("template A");
+    let b_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "B")
+        .expect("template B");
+    let c_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "C")
+        .expect("template C");
 
-    assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
-    assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
-    assert!(!c_template.is_recursive, "C should NOT be recursive (not in any cycle)");
+    assert!(
+        a_template.is_recursive,
+        "A should be recursive (in A<->B cycle)"
+    );
+    assert!(
+        b_template.is_recursive,
+        "B should be recursive (in A<->B cycle)"
+    );
+    assert!(
+        !c_template.is_recursive,
+        "C should NOT be recursive (not in any cycle)"
+    );
 }
 
 // ─── step-17: multi-path cycle convergence (Tarjan bug) ───
@@ -336,14 +403,39 @@ fn multi_path_convergence_all_cycle_participants_tagged() {
     "#;
     let compiled = compile_module(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let c_template = compiled.templates.iter().find(|t| t.name == "C").expect("template C");
-    let d_template = compiled.templates.iter().find(|t| t.name == "D").expect("template D");
+    let a_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "A")
+        .expect("template A");
+    let b_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "B")
+        .expect("template B");
+    let c_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "C")
+        .expect("template C");
+    let d_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "D")
+        .expect("template D");
 
-    assert!(a_template.is_recursive, "A should be recursive (participates in A→B→C→A cycle)");
-    assert!(b_template.is_recursive, "B should be recursive (participates in A→B→C→A cycle)");
-    assert!(c_template.is_recursive, "C should be recursive (participates in both cycles)");
+    assert!(
+        a_template.is_recursive,
+        "A should be recursive (participates in A→B→C→A cycle)"
+    );
+    assert!(
+        b_template.is_recursive,
+        "B should be recursive (participates in A→B→C→A cycle)"
+    );
+    assert!(
+        c_template.is_recursive,
+        "C should be recursive (participates in both cycles)"
+    );
     assert!(
         d_template.is_recursive,
         "D should be recursive (participates in A→D→C→A cycle) — \
@@ -354,7 +446,9 @@ fn multi_path_convergence_all_cycle_participants_tagged() {
     let recursion_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert!(
         !recursion_warnings.is_empty(),
@@ -390,7 +484,9 @@ fn no_subs_not_recursive() {
     let recursion_warnings: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Warning && d.message.contains("recursive structure cycle"))
+        .filter(|d| {
+            d.severity == Severity::Warning && d.message.contains("recursive structure cycle")
+        })
         .collect();
     assert!(
         recursion_warnings.is_empty(),
@@ -424,12 +520,30 @@ fn pointer_into_cycle_not_tagged_recursive() {
     "#;
     let compiled = compile_module(source);
 
-    let a_template = compiled.templates.iter().find(|t| t.name == "A").expect("template A");
-    let b_template = compiled.templates.iter().find(|t| t.name == "B").expect("template B");
-    let z_template = compiled.templates.iter().find(|t| t.name == "Z").expect("template Z");
+    let a_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "A")
+        .expect("template A");
+    let b_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "B")
+        .expect("template B");
+    let z_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Z")
+        .expect("template Z");
 
-    assert!(a_template.is_recursive, "A should be recursive (in A<->B cycle)");
-    assert!(b_template.is_recursive, "B should be recursive (in A<->B cycle)");
+    assert!(
+        a_template.is_recursive,
+        "A should be recursive (in A<->B cycle)"
+    );
+    assert!(
+        b_template.is_recursive,
+        "B should be recursive (in A<->B cycle)"
+    );
     assert!(
         !z_template.is_recursive,
         "Z should NOT be recursive — it points into the A<->B cycle but is not a member of it; \

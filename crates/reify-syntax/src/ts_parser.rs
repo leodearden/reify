@@ -1010,10 +1010,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(
-        &mut self,
-        node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
         let mut cursor = node.walk();
@@ -1095,10 +1092,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// Collect members and block-level pragmas from trait_member children of a trait_declaration node.
-    fn lower_trait_members(
-        &mut self,
-        node: tree_sitter::Node,
-    ) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_trait_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
         let mut cursor = node.walk();

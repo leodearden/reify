@@ -2,8 +2,8 @@
 
 use std::sync::atomic::Ordering;
 
-use reify_lsp::bridge::error_prefix;
 use reify_lsp::bridge::InProcessLsp;
+use reify_lsp::bridge::error_prefix;
 use reify_test_support::warn_counting_subscriber;
 use serde_json::json;
 

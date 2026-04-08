@@ -119,7 +119,7 @@ impl CompiledPurposeBuilder {
 #[cfg(test)]
 mod annotation_tests {
     use super::*;
-    use crate::builders::{annotation, annotation_with_args, ann_str};
+    use crate::builders::{ann_str, annotation, annotation_with_args};
 
     #[test]
     fn compiled_purpose_builder_single_annotation() {

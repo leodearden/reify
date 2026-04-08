@@ -12,7 +12,11 @@ use reify_types::{ModulePath, Severity, Value, ValueCellId};
 /// Helper: parse, compile, and eval source, return eval result.
 fn eval_source(source: &str) -> reify_eval::EvalResult {
     let parsed = reify_syntax::parse(source, ModulePath::single("chain_eval_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -350,7 +354,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("chain_desugar_verify"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -396,7 +404,11 @@ structure S {
                     left: ll,
                     right: lr,
                 } => {
-                    assert_eq!(*lop, BinOp::Lt, "left pairwise should be Lt(2mm, thickness)");
+                    assert_eq!(
+                        *lop,
+                        BinOp::Lt,
+                        "left pairwise should be Lt(2mm, thickness)"
+                    );
                     assert!(
                         matches!(&ll.kind, CompiledExprKind::Literal(_)),
                         "left.left should be Literal(2mm), got: {:?}",
@@ -408,10 +420,7 @@ structure S {
                         lr.kind
                     );
                 }
-                other => panic!(
-                    "expected BinOp(Lt) for left side of And, got: {:?}",
-                    other
-                ),
+                other => panic!("expected BinOp(Lt) for left side of And, got: {:?}", other),
             }
 
             // right: Lt(ValueRef(thickness), Literal(10mm))
@@ -437,10 +446,7 @@ structure S {
                         rr.kind
                     );
                 }
-                other => panic!(
-                    "expected BinOp(Lt) for right side of And, got: {:?}",
-                    other
-                ),
+                other => panic!("expected BinOp(Lt) for right side of And, got: {:?}", other),
             }
         }
         other => panic!(

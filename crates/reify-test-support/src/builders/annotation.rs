@@ -61,8 +61,8 @@ mod tests {
 
     #[test]
     fn ann_real_produces_real_arg() {
-        let arg = ann_real(3.14);
-        assert_eq!(arg, AnnotationArg::Real(3.14));
+        let arg = ann_real(2.72);
+        assert_eq!(arg, AnnotationArg::Real(2.72));
     }
 
     #[test]
@@ -89,6 +89,9 @@ mod tests {
         let ann = annotation_with_args("deprecated", vec![ann_str("use Foo instead")]);
         assert_eq!(ann.name, "deprecated");
         assert_eq!(ann.args.len(), 1);
-        assert_eq!(ann.args[0], AnnotationArg::String("use Foo instead".to_string()));
+        assert_eq!(
+            ann.args[0],
+            AnnotationArg::String("use Foo instead".to_string())
+        );
     }
 }

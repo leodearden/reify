@@ -1615,9 +1615,7 @@ fn assert_poison_recovers<T: Send + 'static>(
 ) -> T {
     use std::panic::catch_unwind;
     let (subscriber, capture) = warn_capturing_subscriber();
-    let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(action)
-    });
+    let result = tracing::subscriber::with_default(subscriber, || catch_unwind(action));
     assert!(
         result.is_ok(),
         "action panicked when poison recovery was expected — catch_unwind returned Err"
@@ -1625,7 +1623,6 @@ fn assert_poison_recovers<T: Send + 'static>(
     capture.assert_count_and_any_message_contains(expected_warns, message_substring);
     result.unwrap()
 }
-
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
@@ -1643,11 +1640,7 @@ mod poison_recovery {
 
         // values() acquires 1 lock: values RwLock. Only that lock is poisoned,
         // so exactly 1 WARN fires, and the message must name the lock.
-        let values = assert_poison_recovers(
-            || adapter.values(),
-            1,
-            "values RwLock poisoned",
-        );
+        let values = assert_poison_recovers(|| adapter.values(), 1, "values RwLock poisoned");
         // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
         assert_eq!(
             values.get(&ValueCellId::new("T", "a")),
@@ -1673,12 +1666,13 @@ mod poison_recovery {
 
         // take_results() acquires 1 lock: results Mutex. Only that lock is poisoned,
         // so exactly 1 WARN fires, and the message must name the lock.
-        let results = assert_poison_recovers(
-            || adapter.take_results(),
-            1,
-            "results Mutex poisoned",
+        let results =
+            assert_poison_recovers(|| adapter.take_results(), 1, "results Mutex poisoned");
+        assert_eq!(
+            results.len(),
+            0,
+            "results should be empty after poison recovery"
         );
-        assert_eq!(results.len(), 0, "results should be empty after poison recovery");
     }
 
     /// snapshot_values() recovers gracefully from a poisoned snapshot_values RwLock:
@@ -2024,11 +2018,8 @@ mod poison_recovery_extended {
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn build_result_shared_recovers_from_poisoned_values_lock() {
-        let edit_result = poison_and_recover!(
-            poison_values,
-            build_result_shared,
-            "values RwLock poisoned"
-        );
+        let edit_result =
+            poison_and_recover!(poison_values, build_result_shared, "values RwLock poisoned");
         // Verify both T.a and T.b are present with exact values from simple_setup
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
@@ -2073,8 +2064,11 @@ mod poison_recovery_extended {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
-        let edit_result =
-            poison_and_recover!(poison_results, build_result_shared, "results Mutex poisoned");
+        let edit_result = poison_and_recover!(
+            poison_results,
+            build_result_shared,
+            "results Mutex poisoned"
+        );
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2085,8 +2079,7 @@ mod poison_recovery_extended {
     /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
-        let edit_result =
-            poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
+        let edit_result = poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
             Some(&Value::Real(10.0)),
@@ -2132,7 +2125,10 @@ mod poison_recovery_extended {
     /// Message must contain "values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_values, "values RwLock poisoned");
+        assert_into_result_poison_warn(
+            ConcurrentEvalAdapter::poison_values,
+            "values RwLock poisoned",
+        );
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2140,7 +2136,10 @@ mod poison_recovery_extended {
     /// Message must contain "snapshot_values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_snapshot_values, "snapshot_values RwLock poisoned");
+        assert_into_result_poison_warn(
+            ConcurrentEvalAdapter::poison_snapshot_values,
+            "snapshot_values RwLock poisoned",
+        );
     }
 
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
@@ -2148,7 +2147,10 @@ mod poison_recovery_extended {
     /// Message must contain "results Mutex poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_results() {
-        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_results, "results Mutex poisoned");
+        assert_into_result_poison_warn(
+            ConcurrentEvalAdapter::poison_results,
+            "results Mutex poisoned",
+        );
     }
 }
 
@@ -2178,11 +2180,7 @@ mod poison_shared_fallback {
             let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
             let _guard = adapter.$arc_method();
             adapter.$poison_method();
-            assert_poison_recovers(
-                || adapter.into_result(&eval_set, HashSet::new()),
-                1,
-                $msg,
-            )
+            assert_poison_recovers(|| adapter.into_result(&eval_set, HashSet::new()), 1, $msg)
         }};
     }
 
@@ -2345,7 +2343,8 @@ mod poison_shared_fallback {
         // (3) All 3 distinct shared-fallback messages present.
         let msgs = capture.messages();
         assert!(
-            msgs.iter().any(|m| m.contains("values RwLock poisoned (shared fallback)")),
+            msgs.iter()
+                .any(|m| m.contains("values RwLock poisoned (shared fallback)")),
             "no WARN message contained 'values RwLock poisoned (shared fallback)'; \
              captured messages: {msgs:?}"
         );
@@ -2356,7 +2355,8 @@ mod poison_shared_fallback {
              captured messages: {msgs:?}"
         );
         assert!(
-            msgs.iter().any(|m| m.contains("results Mutex poisoned (shared fallback)")),
+            msgs.iter()
+                .any(|m| m.contains("results Mutex poisoned (shared fallback)")),
             "no WARN message contained 'results Mutex poisoned (shared fallback)'; \
              captured messages: {msgs:?}"
         );

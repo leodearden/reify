@@ -1537,10 +1537,15 @@ impl Engine {
         // eval() and edit_param() produce identical fingerprints for the same
         // logical guard configuration.
         if !snapshot.graph.guarded_groups.is_empty() {
-            let guard_state_hash =
-                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, GuardLookup::Lenient);
-            snapshot.topology_fingerprint =
-                snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+            let guard_state_hash = guard_state_fingerprint(
+                &snapshot.graph.guarded_groups,
+                &values,
+                GuardLookup::Lenient,
+            );
+            snapshot.topology_fingerprint = snapshot
+                .graph
+                .topology_fingerprint()
+                .combine(guard_state_hash);
         }
 
         // Store internal state for incremental evaluation
@@ -2113,8 +2118,10 @@ impl Engine {
                     &values,
                     GuardLookup::Strict,
                 );
-                new_snapshot.topology_fingerprint =
-                    new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
+                new_snapshot.topology_fingerprint = new_snapshot
+                    .graph
+                    .topology_fingerprint()
+                    .combine(guard_state_hash);
             }
         }
 
@@ -4877,9 +4884,10 @@ mod tests {
             else_constraints: vec![],
         }];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
-        let expected = ContentHash::combine_all(std::iter::once(
-            ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
-        ));
+        let expected = ContentHash::combine_all(std::iter::once(ContentHash::of_str(&format!(
+            "guard:{}={:?}",
+            cell, val
+        ))));
         assert_eq!(result, expected);
     }
 
@@ -4889,9 +4897,11 @@ mod tests {
         let values = ValueMap::new(); // cell absent
         let groups = vec![make_guard_group("E", "g")];
         let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
-        let expected = ContentHash::combine_all(std::iter::once(
-            ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
-        ));
+        let expected = ContentHash::combine_all(std::iter::once(ContentHash::of_str(&format!(
+            "guard:{}={:?}",
+            cell,
+            Value::Undef
+        ))));
         assert_eq!(result, expected);
     }
 

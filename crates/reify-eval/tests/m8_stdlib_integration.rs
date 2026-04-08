@@ -17,8 +17,8 @@ use reify_types::{DimensionVector, ModulePath, Severity, Value, ValueCellId};
 /// Load a .ri file, parse, compile (asserting no errors), and evaluate.
 /// Returns the full EvalResult for per-test assertions.
 fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
-    let source = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
     let parsed = reify_syntax::parse(&source, ModulePath::single(module_name));
     assert!(
         parsed.errors.is_empty(),
@@ -85,7 +85,10 @@ fn math_linalg_dot_product_work() {
 
     let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 50.0).abs() < 1e-9,
                 "work si_value should be ≈50.0 J, got {}",
@@ -119,7 +122,10 @@ fn math_linalg_cross_product_torque() {
             assert_eq!(components.len(), 3, "torque should have 3 components");
             // cx ≈ 0.0
             match &components[0] {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         si_value.abs() < 1e-9,
                         "torque x-component should be ≈0, got {}",
@@ -131,7 +137,10 @@ fn math_linalg_cross_product_torque() {
             }
             // cy ≈ 0.0
             match &components[1] {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         si_value.abs() < 1e-9,
                         "torque y-component should be ≈0, got {}",
@@ -143,7 +152,10 @@ fn math_linalg_cross_product_torque() {
             }
             // cz ≈ -6.0
             match &components[2] {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         (si_value - (-6.0)).abs() < 1e-9,
                         "torque z-component should be ≈-6, got {}",
@@ -175,7 +187,10 @@ fn math_linalg_normalize_and_magnitude() {
 
     let expected_vel_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     match speed {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 5.0).abs() < 1e-9,
                 "speed should be ≈5.0 m/s, got {}",
@@ -237,7 +252,10 @@ fn math_linalg_angle_and_chained() {
         .unwrap_or_else(|| panic!("'angle_between' not found in eval result"));
 
     match angle {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
                 "angle_between should be ≈π/2, got {}",
@@ -263,7 +281,10 @@ fn math_linalg_angle_and_chained() {
         .unwrap_or_else(|| panic!("'chained' not found in eval result"));
 
     match chained {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.0037).abs() < 1e-9,
                 "chained should be ≈0.0037 (3.7mm), got {}",
@@ -287,8 +308,10 @@ fn math_linalg_angle_and_chained() {
 /// Load dimensional_consistency.ri, parse, compile, eval — no errors, non-empty values.
 #[test]
 fn dimensional_consistency_parses_and_compiles() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     assert!(
         !result.values.is_empty(),
         "eval should produce non-empty values for dimensional_consistency.ri"
@@ -300,8 +323,10 @@ fn dimensional_consistency_parses_and_compiles() {
 /// lerp(5mm, 15mm, 0.5) = Scalar(0.010, LENGTH) — lerp preserves LENGTH dimension.
 #[test]
 fn dim_lerp_preserves_length() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "lerp_mm");
     let val = result
         .values
@@ -309,14 +334,21 @@ fn dim_lerp_preserves_length() {
         .unwrap_or_else(|| panic!("'lerp_mm' not found"));
 
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             // lerp(0.005, 0.015, 0.5) = 0.010
             assert!(
                 (si_value - 0.010).abs() < 1e-9,
                 "lerp_mm si_value should be ≈0.010 (10mm), got {}",
                 si_value
             );
-            assert_eq!(*dimension, DimensionVector::LENGTH, "lerp_mm dimension should be LENGTH");
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "lerp_mm dimension should be LENGTH"
+            );
         }
         other => panic!("lerp_mm should be Scalar, got {:?}", other),
     }
@@ -325,8 +357,10 @@ fn dim_lerp_preserves_length() {
 /// dot(m_vec, n_vec) where m_vec=[2m,1m,0m] and n_vec=[3N,0N,0N] = Scalar(6.0, FORCE*LENGTH).
 #[test]
 fn dim_dot_energy() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "dot_result");
     let val = result
         .values
@@ -335,7 +369,10 @@ fn dim_dot_energy() {
 
     let expected_dim = reify_types::dimension::FORCE.mul(&DimensionVector::LENGTH);
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             // dot([2,1,0], [3,0,0]) = 2*3 + 1*0 + 0*0 = 6.0
             assert!(
                 (si_value - 6.0).abs() < 1e-9,
@@ -359,8 +396,10 @@ fn dim_dot_energy() {
 ///       cz = mx*ny - my*nx = 2*0 - 1*3 = -3
 #[test]
 fn dim_cross_torque() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "cross_result");
     let val = result
         .values
@@ -372,7 +411,10 @@ fn dim_cross_torque() {
         Value::Vector(components) => {
             assert_eq!(components.len(), 3, "cross_result should have 3 components");
             match &components[2] {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         (si_value - (-3.0)).abs() < 1e-9,
                         "cross_result z-component should be ≈-3, got {}",
@@ -394,8 +436,10 @@ fn dim_cross_torque() {
 /// g_accel = 9.81 m/s², weight = g_accel * 1kg = 9.81 N.
 #[test]
 fn dim_gravity_force() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "weight");
     let val = result
         .values
@@ -403,7 +447,10 @@ fn dim_gravity_force() {
         .unwrap_or_else(|| panic!("'weight' not found"));
 
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 9.81).abs() < 1e-9,
                 "weight si_value should be ≈9.81 N, got {}",
@@ -423,23 +470,32 @@ fn dim_gravity_force() {
 /// mod(7, 3) = Value::Int(1).
 #[test]
 fn dim_mod_integer() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "mod_result");
     let val = result
         .values
         .get(&id)
         .unwrap_or_else(|| panic!("'mod_result' not found"));
 
-    assert_eq!(val, &Value::Int(1), "mod(7, 3) should be Int(1), got {:?}", val);
+    assert_eq!(
+        val,
+        &Value::Int(1),
+        "mod(7, 3) should be Int(1), got {:?}",
+        val
+    );
 }
 
 /// normalize(vec3(3m, 4m, 0m)) produces Vector with Real (dimensionless) components.
 /// normalize always returns dimensionless components regardless of input dimension.
 #[test]
 fn dim_normalize_dimensionless() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "norm_result");
     let val = result
         .values
@@ -474,8 +530,10 @@ fn dim_normalize_dimensionless() {
 /// magnitude(vec3(3m, 4m, 0m)) = Scalar(5.0, LENGTH) — preserves input dimension.
 #[test]
 fn dim_magnitude_preserves() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "mag_result");
     let val = result
         .values
@@ -483,7 +541,10 @@ fn dim_magnitude_preserves() {
         .unwrap_or_else(|| panic!("'mag_result' not found"));
 
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 5.0).abs() < 1e-9,
                 "mag_result si_value should be ≈5.0 m, got {}",
@@ -503,8 +564,10 @@ fn dim_magnitude_preserves() {
 /// clamp(3mm, 1mm, 10mm) = Scalar(0.003, LENGTH) — clamp preserves dimension.
 #[test]
 fn dim_clamp_preserves() {
-    let result =
-        eval_ri_file("../../examples/dimensional_consistency.ri", "dimensional_consistency");
+    let result = eval_ri_file(
+        "../../examples/dimensional_consistency.ri",
+        "dimensional_consistency",
+    );
     let id = ValueCellId::new("DimensionalConsistency", "clamped_dim");
     let val = result
         .values
@@ -512,7 +575,10 @@ fn dim_clamp_preserves() {
         .unwrap_or_else(|| panic!("'clamped_dim' not found"));
 
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 0.003).abs() < 1e-9,
                 "clamped_dim si_value should be ≈0.003 (3mm), got {}",

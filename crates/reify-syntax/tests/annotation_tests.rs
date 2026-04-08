@@ -15,7 +15,11 @@ fn parse_module(source: &str) -> ParsedModule {
 fn parse_bare_annotation_on_structure() {
     let source = "@test structure S { param x: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(
         module.declarations.len(),
         1,
@@ -48,7 +52,11 @@ fn parse_bare_annotation_on_structure() {
 fn parse_annotation_with_identifier_arg() {
     let source = "@category(mechanical) structure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -80,7 +88,11 @@ fn parse_annotation_with_identifier_arg() {
 fn parse_multiple_annotations_on_structure() {
     let source = "@test\n@deprecated(\"old\")\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -101,7 +113,11 @@ fn parse_multiple_annotations_on_structure() {
     );
     // Second annotation: @deprecated("old")
     assert_eq!(s.annotations[1].name, "deprecated");
-    assert_eq!(s.annotations[1].args.len(), 1, "expected 1 arg for @deprecated");
+    assert_eq!(
+        s.annotations[1].args.len(),
+        1,
+        "expected 1 arg for @deprecated"
+    );
     match &s.annotations[1].args[0].kind {
         ExprKind::StringLiteral(s) => assert_eq!(s, "old"),
         other => panic!("expected StringLiteral(\"old\"), got {:?}", other),
@@ -114,7 +130,11 @@ fn parse_multiple_annotations_on_structure() {
 fn parse_annotation_with_multiple_args() {
     let source = r#"@config("prod", 3, true) structure S {}"#;
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -153,7 +173,11 @@ fn parse_annotation_with_multiple_args() {
 fn parse_annotation_with_complex_expression_arg() {
     let source = "@tolerance(width * 0.01) structure S { param width: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -172,10 +196,9 @@ fn parse_annotation_with_complex_expression_arg() {
                 other => panic!("expected Ident(\"width\"), got {:?}", other),
             }
             match &right.kind {
-                ExprKind::NumberLiteral(n) => assert!(
-                    (*n - 0.01).abs() < 1e-10,
-                    "expected 0.01, got {n}"
-                ),
+                ExprKind::NumberLiteral(n) => {
+                    assert!((*n - 0.01).abs() < 1e-10, "expected 0.01, got {n}")
+                }
                 other => panic!("expected NumberLiteral(0.01), got {:?}", other),
             }
         }
@@ -189,7 +212,11 @@ fn parse_annotation_with_complex_expression_arg() {
 fn parse_annotation_with_string_arg() {
     let source = r#"@deprecated("use NewS") structure S {}"#;
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -221,7 +248,11 @@ fn parse_annotation_with_string_arg() {
 fn parse_annotation_on_function() {
     let source = "@pure fn area(w: Real, h: Real) -> Real { w * h }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let f = match &module.declarations[0] {
         Declaration::Function(f) => f,
@@ -236,7 +267,11 @@ fn parse_annotation_on_function() {
 fn parse_annotation_on_trait() {
     let source = "@marker trait Rigid { param mass: Mass }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let t = match &module.declarations[0] {
         Declaration::Trait(t) => t,
@@ -251,7 +286,11 @@ fn parse_annotation_on_trait() {
 fn parse_annotation_on_enum() {
     let source = "@flags enum Dir { In, Out }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let e = match &module.declarations[0] {
         Declaration::Enum(e) => e,
@@ -266,7 +305,11 @@ fn parse_annotation_on_enum() {
 fn parse_annotation_on_import() {
     let source = "@reexport import std.math";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let i = match &module.declarations[0] {
         Declaration::Import(i) => i,
@@ -281,7 +324,11 @@ fn parse_annotation_on_import() {
 fn parse_annotation_on_field_def() {
     let source = "@cached field def temp : Point3 -> Scalar { source = analytical { |p| p } }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let f = match &module.declarations[0] {
         Declaration::Field(f) => f,
@@ -294,10 +341,13 @@ fn parse_annotation_on_field_def() {
 
 #[test]
 fn parse_annotation_on_purpose() {
-    let source =
-        "@strict purpose mfg_ready(subject: Structure) { constraint subject.params == subject.params }";
+    let source = "@strict purpose mfg_ready(subject: Structure) { constraint subject.params == subject.params }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let p = match &module.declarations[0] {
         Declaration::Purpose(p) => p,
@@ -312,7 +362,11 @@ fn parse_annotation_on_purpose() {
 fn parse_annotation_on_constraint_def() {
     let source = "@builtin constraint def MinWall { x > 0 }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let c = match &module.declarations[0] {
         Declaration::Constraint(c) => c,
@@ -327,7 +381,11 @@ fn parse_annotation_on_constraint_def() {
 fn parse_annotation_on_unit() {
     let source = "@si unit meter : Length";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let u = match &module.declarations[0] {
         Declaration::Unit(u) => u,
@@ -342,7 +400,11 @@ fn parse_annotation_on_unit() {
 fn parse_annotation_on_occurrence() {
     let source = "@async occurrence def Heat { param rate: Real }";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let o = match &module.declarations[0] {
         Declaration::Occurrence(o) => o,
@@ -357,7 +419,11 @@ fn parse_annotation_on_occurrence() {
 fn parse_annotation_on_type_alias() {
     let source = "@builtin type Pressure = Force / Area";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let ta = match &module.declarations[0] {
         Declaration::TypeAlias(ta) => ta,
@@ -374,7 +440,11 @@ fn parse_annotation_on_type_alias() {
 fn parse_annotation_with_empty_arg_list() {
     let source = "@test() structure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -397,7 +467,11 @@ fn parse_pragma_then_annotation_on_structure() {
     // Pragma is module-level; annotation attaches to following structure.
     let source = "#optimize\n@test\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragma
     assert_eq!(module.pragmas.len(), 1, "expected 1 module pragma");
@@ -418,7 +492,11 @@ fn parse_annotation_then_pragma_then_structure() {
     // The pragma goes to module-level; the annotation accumulates and drains into S.
     let source = "@test\n#optimize\nstructure S {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     // Module-level pragma
     assert_eq!(module.pragmas.len(), 1, "expected 1 module pragma");
@@ -439,7 +517,11 @@ fn parse_annotation_then_pragma_then_structure() {
 fn parse_trailing_annotation_is_silently_dropped() {
     let source = "structure S {}\n@orphan";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
 
     let s = match &module.declarations[0] {
         Declaration::Structure(s) => s,
@@ -458,7 +540,11 @@ fn parse_trailing_annotation_is_silently_dropped() {
 fn parse_annotation_attaches_to_following_declaration() {
     let source = "structure A {}\n@middle\nstructure B {}";
     let module = parse_module(source);
-    assert!(module.errors.is_empty(), "parse errors: {:?}", module.errors);
+    assert!(
+        module.errors.is_empty(),
+        "parse errors: {:?}",
+        module.errors
+    );
     assert_eq!(module.declarations.len(), 2, "expected 2 declarations");
 
     let a = match &module.declarations[0] {

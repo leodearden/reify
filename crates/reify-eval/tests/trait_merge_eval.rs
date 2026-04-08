@@ -11,7 +11,11 @@ use reify_types::{ModulePath, Satisfaction, Severity, ValueCellId};
 /// Returns the compiled module.
 fn parse_compile_check(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
     let errors: Vec<_> = compiled
@@ -102,7 +106,11 @@ structure def S : Bounded {
     assert!(
         any_violated,
         "expected at least one Violated constraint (5mm is not > 10mm), got: {:?}",
-        result.constraint_results.iter().map(|e| (&e.id, &e.satisfaction)).collect::<Vec<_>>()
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, &e.satisfaction))
+            .collect::<Vec<_>>()
     );
 }
 

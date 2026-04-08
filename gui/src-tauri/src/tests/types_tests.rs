@@ -541,7 +541,10 @@ fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
 }
 
@@ -555,7 +558,10 @@ fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("inf"), "expected 'inf' in: {msg}");
 }
 
@@ -569,7 +575,10 @@ fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_in
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("-inf"), "expected '-inf' in: {msg}");
 }
 
@@ -585,7 +594,10 @@ fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
     assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
 }
 
@@ -602,5 +614,8 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
     };
     let err = serde_json::to_value(&mesh).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(
+        msg.contains("non-finite"),
+        "expected 'non-finite' in: {msg}"
+    );
 }

@@ -81,6 +81,42 @@ fn make_value_lambda(
     }
 }
 
+/// Assert that a `Value::Vector` has components matching `expected` within `tol`.
+///
+/// Panics with a descriptive message if:
+/// - `result` is not a `Value::Vector`
+/// - the vector length differs from `expected.len()`
+/// - any component is non-numeric
+/// - any component differs from the expected value by more than `tol`
+fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &str) {
+    match result {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(),
+                expected.len(),
+                "{label}: gradient vector has {} components, expected {}",
+                components.len(),
+                expected.len()
+            );
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp.as_f64().unwrap_or_else(|| {
+                    panic!("{label}: component {} should be numeric, got {:?}", i, comp)
+                });
+                assert!(
+                    (val - exp).abs() < tol,
+                    "{label}: component {} = {} differs from expected {} by {} (tolerance {})",
+                    i,
+                    val,
+                    exp,
+                    (val - exp).abs(),
+                    tol
+                );
+            }
+        }
+        _ => panic!("{label}: expected Value::Vector, got {:?}", result),
+    }
+}
+
 /// Sampling a field with a wrong-size Tensor point returns Undef.
 ///
 /// Build a 3D analytical field whose lambda expects 3 decomposed coordinate
@@ -2660,10 +2696,11 @@ fn gradient_composed_field_returns_field() {
 /// - `domain_type` is `Type::point3(Type::Real)`
 /// - `grad_codomain_type` is `Type::vec3(Type::Real)`
 ///
-/// Used by three tests that share this setup:
+/// Used by four tests that share this setup:
 /// `gradient_3d_field_single_point_param`,
 /// `gradient_sample_with_nan_point_returns_undef`,
-/// `gradient_sample_with_inf_point_returns_undef`.
+/// `gradient_sample_with_inf_point_returns_undef`,
+/// `gradient_tensor_single_point_param_returns_undef`.
 fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
     let p_id = ValueCellId::new("$lambda0.S", "p");
 
@@ -2715,6 +2752,66 @@ fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
     (grad_result, domain_type, Type::vec3(Type::Real))
 }
 
+/// Build a gradient field for `|p: Point3<Real>| dot(p, p)` = x²+y²+z².
+///
+/// Returns `(grad_field, domain_type, grad_codomain_type)` where:
+/// - `grad_field` is the evaluated `Value::Field { source: Gradient, .. }`
+/// - `domain_type` is `Type::point3(Type::Real)`
+/// - `grad_codomain_type` is `Type::vec3(Type::Real)`
+///
+/// The gradient of dot(p,p) is 2p = (2x, 2y, 2z), which depends on the
+/// coordinates. Used by `gradient_single_point_param_quadratic` and
+/// `gradient_single_point_param_irrational_coords`.
+fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    // Lambda: |p| dot(p, p)
+    let body = make_function_call(
+        "dot",
+        vec![
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+        ],
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "make_3d_quadratic_gradient_field: gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, [1,2,3]).
 ///
 /// dot(p, [1,2,3]) = x + 2y + 3z, so its gradient is the constant vector
@@ -2744,32 +2841,103 @@ fn gradient_3d_field_single_point_param() {
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(
-                components.len(),
-                3,
-                "gradient vector should have 3 components"
-            );
-            let expected = [1.0_f64, 2.0, 3.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-3,
-                    "gradient component {} of dot(p,[1,2,3]) should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[1.0, 2.0, 3.0],
+        1e-3,
+        "gradient of dot(p,[1,2,3]) at (5,7,11)",
+    );
+}
+
+/// Gradient of a 3D field with a 1-param lambda: |p| dot(p, p) at integer coordinates.
+///
+/// dot(p, p) = x² + y² + z², so its gradient is 2p = (2x, 2y, 2z). Unlike the
+/// linear dot(p, [1,2,3]) test above (whose gradient is the constant (1,2,3)),
+/// this function's gradient depends on coordinates, so any restore error in one
+/// axis would corrupt its gradient component.
+///
+/// Central difference is mathematically exact for quadratic polynomials — the
+/// O(h²) truncation error vanishes — leaving only FP roundoff. Tolerance 1e-9
+/// is therefore well-justified and could even be tighter.
+#[test]
+fn gradient_single_point_param_quadratic() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_quadratic_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at Point3(2.0, 3.0, 5.0); expected gradient = (4.0, 6.0, 10.0)
+    let point = Value::Point(vec![Value::Real(2.0), Value::Real(3.0), Value::Real(5.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[4.0, 6.0, 10.0],
+        1e-9,
+        "gradient of dot(p,p) at (2,3,5)",
+    );
+}
+
+/// Gradient of a 3D field with a 1-param lambda: |p| dot(p, p) at irrational coordinates.
+///
+/// dot(p, p) = x² + y² + z² with gradient 2p = (2x, 2y, 2z). Unlike the old
+/// linear dot(p, [1,2,3]) version (whose gradient is the constant (1,2,3)), this
+/// function's gradient is coordinate-dependent: any restore error in one axis would
+/// corrupt its gradient component. Exercises the single_point_param path at
+/// IEEE-754-unrepresentable coordinates.
+///
+/// Tolerance 1e-8: central diff of a quadratic is exact to FP roundoff; the
+/// irrational coordinates introduce small representation errors, giving worst-case
+/// ε·|f|/2h ≈ 1.8e-9; 1e-8 provides 5× margin.
+#[test]
+fn gradient_single_point_param_irrational_coords() {
+    use std::f64::consts::PI;
+
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_quadratic_gradient_field();
+    let values = ValueMap::new();
+
+    let cx = 1.0_f64 / 3.0;
+    let cy = PI / 7.0;
+    let cz = 2.0_f64.sqrt();
+
+    // Sample at Point3(1/3, π/7, √2); expected gradient = (2/3, 2π/7, 2√2)
+    let point = Value::Point(vec![Value::Real(cx), Value::Real(cy), Value::Real(cz)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[2.0 * cx, 2.0 * cy, 2.0 * cz],
+        1e-8,
+        "gradient of dot(p,p) at (1/3, π/7, √2)",
+    );
 }
 
 /// NaN in a Point coordinate causes gradient sampling to return Undef
@@ -2923,7 +3091,10 @@ fn gradient_tensor_point_returns_undef() {
         grad_result
     );
 
-    // Sample with a Tensor instead of a Point — must return Undef
+    // Sample with a Tensor instead of a Point — must return Undef.
+    // The type annotation is intentionally point3(Real) to match the field's domain,
+    // so the Value variant (Tensor vs Point) is the sole distinguishing factor.
+    // Undef is expected from the value-kind dispatch, not a type error.
     let tensor_point = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
     let grad_field_type = Type::Field {
@@ -2935,7 +3106,7 @@ fn gradient_tensor_point_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(tensor_point, Type::vec3(Type::Real)),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
         ],
         Type::vec3(Type::Real),
     );
@@ -2946,6 +3117,46 @@ fn gradient_tensor_point_returns_undef() {
         sample_result,
         Value::Undef,
         "gradient sampled at a Tensor point must return Undef (Tensor is not a coordinate list)"
+    );
+}
+
+/// Sampling a gradient field with a Value::Tensor point returns Undef — single_point_param path.
+///
+/// Complements `gradient_tensor_point_returns_undef` (which exercises the decomposed
+/// 3-param lambda, i.e. single_point_param=false). This test uses the 1-param lambda
+/// `|p| dot(p, [1,2,3])` built by `make_3d_dot_product_gradient_field()`, which exercises
+/// the single_point_param=true code path. The sample point is a Value::Tensor, so the
+/// value-kind dispatch must return Undef before any coordinate extraction occurs.
+#[test]
+fn gradient_tensor_single_point_param_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_dot_product_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample with a Tensor instead of a Point — must return Undef.
+    // The type annotation is point3(Real) (matching the domain) so the Value variant is
+    // the sole distinguishing factor; Undef comes from value-kind dispatch, not a type error.
+    let tensor_point = Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at a Tensor point must return Undef (single_point_param=true path)"
     );
 }
 
@@ -3074,28 +3285,175 @@ fn gradient_decomposed_n3_dimensionless() {
     }
 }
 
-/// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
+/// Regression test for the decomposed (multi-param) path at irrational coordinates.
 ///
-/// This test pins the 'trust the declaration' contract: the gradient code at lib.rs
-/// line 754 extracts result_dim from the declared codomain_type, ignoring whatever
-/// Value variant the lambda actually returns at runtime.
+/// Lambda: |x, y, z| x + 2*y + 3*z.  Gradient is the constant vector (1, 2, 3).
+/// Sample at Point3(1/3, π/7, √2) — coordinates not exactly representable in IEEE 754.
+///
+/// The exact-restore at line ~853 (`work_coords[i] = coord_i`) affects both the
+/// single_point_param and decomposed code paths.  The companion test
+/// `gradient_single_point_param_irrational_coords` covers single_point_param=true;
+/// this test covers single_point_param=false at the same irrational inputs.
+///
+/// Regression smoke test for the allocation refactor and decomposed path at
+/// irrational inputs.  The tolerance is 1e-8 (5× margin over the theoretical
+/// worst-case ~1.8e-9 from ε·|f|/2h).  Note: a linear function produces correct
+/// gradients regardless of restore strategy, so this test primarily guards against
+/// gross regressions in the decomposed-path refactor rather than FP-restore drift.
+#[test]
+fn gradient_decomposed_n3_irrational_coords() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + 2*y + 3*z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            // 2*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::literal(Value::Real(2.0), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // 3*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Call gradient(field)
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 3D decomposed field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample at Point3(1/3, π/7, √2) — not exactly representable in IEEE 754
+    let x = 1.0_f64 / 3.0;
+    let y = std::f64::consts::PI / 7.0;
+    let z = 2.0_f64.sqrt();
+    let point = Value::Point(vec![Value::Real(x), Value::Real(y), Value::Real(z)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(),
+                3,
+                "gradient vector should have 3 components"
+            );
+            let expected = [1.0_f64, 2.0, 3.0];
+            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
+                let val = comp
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
+                assert!(
+                    (val - exp).abs() < 1e-8,
+                    "gradient component {} of x+2y+3z at irrational coords should be ~{}, got {}",
+                    i,
+                    exp,
+                    val
+                );
+            }
+        }
+        _ => panic!(
+            "gradient sample should return a Vector; got {:?}",
+            sample_result
+        ),
+    }
+}
+
+/// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
+/// Sampling a gradient field panics in debug mode when codomain_type does not match
+/// the runtime dimension returned by the lambda.
+///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result.
+/// In debug builds, a hard assertion catches dimensionless-domain mismatches
+/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
+/// This is a deliberate design choice to avoid false positives from dimensioned-domain
+/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
+/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
+/// emitted instead of a hard assertion.
+///
+/// This test validates the #[cfg(debug_assertions)] assertion in
+/// compute_numerical_gradient_at_point. The assertion fires after the first f_plus
+/// evaluation when the declared codomain dimension does not match the actual runtime
+/// return dimension.
 ///
 /// Setup:
 /// - domain_type = Type::Real (1D, dimensionless)
-/// - codomain_type = Type::Scalar { dimension: MASS }  (declared as kg)
-/// - lambda body: |x| 2*x — returns Value::Real at runtime (NOT Value::Scalar)
+/// - codomain_type = Type::Scalar { dimension: MASS } (declared as kg)
+/// - lambda body: |x| 2*x — returns Value::Real at runtime (dimensionless, NOT MASS)
 ///
-/// Expected behavior:
-/// 1. The gradient field's codomain_type is Scalar { dimension: MASS }
-///    (1D case: gradient_quantity = codomain_type.clone() since domain_dim=None for Real)
-/// 2. Sampling at x=1.0 produces Value::Scalar { si_value: ~2.0, dimension: MASS }
-///    because grad_dim = result_dim = MASS (no domain dimension to divide by)
+/// The mismatch: declared says dimension=MASS, but f_plus.dimension() = DIMENSIONLESS.
+/// The assertion should fire with message containing "codomain_type does not match".
+#[cfg(debug_assertions)]
 #[test]
-fn gradient_codomain_type_vs_runtime_mismatch() {
+#[should_panic(expected = "codomain_type does not match")]
+fn gradient_runtime_codomain_dim_mismatch_panics() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let dim_kg = DimensionVector::MASS;
 
-    // Lambda: |x| 2*x — body returns Value::Real at runtime
+    // Lambda: |x| 2*x — body returns Value::Real at runtime (dimensionless)
     let body = CompiledExpr::binop(
         BinOp::Mul,
         CompiledExpr::literal(Value::Real(2.0), Type::Real),
@@ -3104,7 +3462,7 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    // Domain: dimensionless Real; codomain: declared as Scalar[MASS]
+    // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
     let domain_type = Type::Real;
     let codomain_type = Type::Scalar { dimension: dim_kg };
 
@@ -3133,21 +3491,8 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
     let values = ValueMap::new();
     let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
-    // Assert 1: gradient field's codomain_type is Scalar { dimension: MASS }
-    match &grad_result {
-        Value::Field {
-            codomain_type: ct, ..
-        } => {
-            assert_eq!(
-                ct, &codomain_type,
-                "gradient field codomain_type should be Scalar[MASS] (trusts declaration), got {:?}",
-                ct
-            );
-        }
-        _ => panic!("gradient should return a Field, got {:?}", grad_result),
-    }
-
-    // Assert 2: sampling at x=1.0 produces Value::Scalar { si_value: ~2.0, dimension: MASS }
+    // Sampling triggers the assertion: f_plus returns Real (dimensionless) but
+    // codomain declares MASS — the debug assertion should fire here.
     let grad_field_type = Type::Field {
         domain: Box::new(Type::Real),
         codomain: Box::new(codomain_type),
@@ -3160,26 +3505,365 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
         ],
         Type::Scalar { dimension: dim_kg },
     );
+    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    // Expected to panic before reaching here
+}
+
+/// Gradient field structure trusts the declared codomain_type.
+///
+/// When taking a gradient of a field whose lambda returns the wrong runtime type,
+/// the gradient VALUE itself (before sampling) still has correct codomain_type
+/// metadata — it trusts the declaration. This is a non-panicking structural check.
+///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result,
+/// not the runtime return type of the lambda. This means a misconfigured codomain_type
+/// silently propagates the declared (wrong) dimension into the gradient field's metadata.
+/// In debug builds, a hard assertion catches this for dimensionless domains; for
+/// dimensioned domains, a soft warning (eprintln) is emitted instead. This is
+/// intentional — changing to runtime-driven dimensioning would require propagating
+/// dimension metadata through all arithmetic operations, which is architecturally
+/// expensive and error-prone.
+///
+/// Setup:
+/// - domain_type = Type::Real (1D, dimensionless)
+/// - codomain_type = Type::Scalar { dimension: MASS }
+/// - lambda body: |x| 2*x — returns Value::Real at runtime
+#[test]
+fn gradient_codomain_type_vs_runtime_mismatch_field_structure() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let dim_kg = DimensionVector::MASS;
+
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Scalar { dimension: dim_kg };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Gradient field's codomain_type should be Scalar[MASS] (trusts declaration)
+    match &grad_result {
+        Value::Field {
+            codomain_type: ct, ..
+        } => {
+            assert_eq!(
+                ct, &codomain_type,
+                "gradient field codomain_type should be Scalar[MASS] (trusts declaration), got {:?}",
+                ct
+            );
+        }
+        _ => panic!("gradient should return a Field, got {:?}", grad_result),
+    }
+}
+
+/// Sampling a gradient field with declared codomain=MASS but lambda returning Real
+/// panics in debug mode because the runtime dimension does not match the declaration.
+///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result.
+/// In debug builds, a hard assertion catches dimensionless-domain mismatches
+/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
+/// This is a deliberate design choice to avoid false positives from dimensioned-domain
+/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
+/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
+/// emitted instead of a hard assertion.
+///
+/// The debug assertion fires after the first f_plus evaluation when
+/// f_plus.dimension() (DIMENSIONLESS) != expected_codomain_dim (MASS).
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "codomain_type does not match")]
+fn gradient_codomain_type_vs_runtime_mismatch() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let dim_kg = DimensionVector::MASS;
+
+    // Lambda: |x| 2*x — body returns Value::Real at runtime (NOT Value::Scalar[MASS])
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
+    let domain_type = Type::Real;
+    let codomain_type = Type::Scalar { dimension: dim_kg };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::Real),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Sampling triggers the debug assertion: f_plus returns Real (dimensionless) but
+    // codomain declares MASS — the assertion fires here.
+    let grad_field_type = Type::Field {
+        domain: Box::new(Type::Real),
+        codomain: Box::new(codomain_type),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::Scalar { dimension: dim_kg },
+    );
+    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+    // Expected to panic before reaching here
+}
+
+/// Gradient trusts declared codomain_type even for dimensioned domains.
+///
+/// When a field's lambda returns a value with the wrong dimension at runtime,
+/// the gradient field's codomain_type still reflects the declared codomain divided
+/// by the domain dimension — not the runtime return type.
+///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result,
+/// not the runtime return type of the lambda. For dimensioned domains the debug
+/// assertion is intentionally skipped (`domain_dim.is_some()`) because lambda
+/// arithmetic like `Real * Scalar<LENGTH>` returns `Scalar<LENGTH>` regardless of
+/// the declared codomain — the codomain_type is metadata, not a runtime constraint.
+///
+/// Setup:
+/// - domain_type = Type::length() = Scalar{LENGTH}
+/// - codomain_type = Type::Scalar { dimension: MASS } (declared mass)
+/// - lambda body: |x| 2*x — at runtime receives Scalar{LENGTH}, returns Scalar{LENGTH}
+///   (not MASS as declared)
+///
+/// Expected: gradient codomain_type = Scalar{MASS/LENGTH} (trusts declaration,
+/// not the runtime Scalar{LENGTH} the lambda actually returns).
+/// This is a structural test — no sampling is performed.
+#[test]
+fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let dim_kg = DimensionVector::MASS;
+
+    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH},
+    // NOT Scalar{MASS} as codomain_type declares.
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        Type::length(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
+    let domain_type = Type::length();
+    let codomain_type = Type::Scalar { dimension: dim_kg };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // The gradient field's codomain_type must be Scalar{MASS/LENGTH} — derived from
+    // the declared codomain (MASS) divided by the domain dimension (LENGTH).
+    // This demonstrates trust-the-declaration: the runtime Scalar{LENGTH} returned
+    // by the lambda is ignored; the declared MASS drives the gradient dimension.
+    let expected_codomain = Type::Scalar {
+        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
+    };
+    match &grad_result {
+        Value::Field {
+            codomain_type: ct, ..
+        } => {
+            assert_eq!(
+                ct, &expected_codomain,
+                "gradient codomain_type should be Scalar[MASS/LENGTH] (trusts declaration), got {:?}",
+                ct
+            );
+        }
+        _ => panic!("gradient should return a Field, got {:?}", grad_result),
+    }
+}
+
+/// Sampling a gradient field with dimensioned-domain codomain mismatch does NOT panic.
+///
+/// This is the dimensioned-domain counterpart to `gradient_runtime_codomain_dim_mismatch_panics`.
+/// For a dimensionless domain, sampling panics in debug mode because the hard assertion
+/// fires (`domain_dim.is_none()`). For a dimensioned domain, the assertion is intentionally
+/// skipped — dimensioned lambda arithmetic produces apparent type mismatches that are not
+/// actual errors.
+///
+/// **DESIGN DECISION: dimensioned-domain mismatches are not caught by the debug assertion**
+/// The lambda return type is influenced by domain arithmetic: `Real * Scalar<LENGTH>`
+/// naturally returns `Scalar<LENGTH>` regardless of the declared codomain. A hard
+/// assertion there would produce false positives in legitimate use cases. Instead,
+/// a soft eprintln! warning is emitted (see the implementation) without blocking execution.
+///
+/// Setup:
+/// - domain_type = Type::length() = Scalar{LENGTH}
+/// - codomain_type = Type::Scalar { dimension: MASS } (declared mass)
+/// - lambda body: |x| 2*x — at runtime returns Scalar{LENGTH} (not MASS)
+/// - Sample point: Scalar{si_value: 1.0, dimension: LENGTH}
+///
+/// Expected: completes without panic; result is Scalar{≈2.0, MASS/LENGTH}.
+/// The derivative 2.0 is computed numerically from the lambda (which correctly
+/// evaluates d(2x)/dx = 2), and MASS/LENGTH comes from the declared codomain
+/// (MASS) divided by the domain dimension (LENGTH).
+#[cfg(debug_assertions)]
+#[test]
+fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH}
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        Type::length(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
+    let domain_type = Type::length();
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::MASS,
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type.clone()),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // Gradient codomain is Scalar{MASS/LENGTH}
+    let grad_codomain = Type::Scalar {
+        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
+    };
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain.clone()),
+    };
+
+    // Sample at Scalar{1.0, LENGTH} — must NOT panic (unlike the dimensionless-domain case)
+    let point = Value::Scalar {
+        si_value: 1.0,
+        dimension: DimensionVector::LENGTH,
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::length()),
+        ],
+        grad_codomain,
+    );
+
+    // This must not panic (contrast: gradient_runtime_codomain_dim_mismatch_panics does panic)
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
+    // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0
     match &sample_result {
         Value::Scalar {
             si_value,
             dimension,
         } => {
             assert_eq!(
-                *dimension, dim_kg,
-                "gradient sample should have dimension MASS (trusts declaration), got {:?}",
+                *dimension,
+                DimensionVector::MASS.div(&DimensionVector::LENGTH),
+                "derivative dimension should be MASS/LENGTH, got {:?}",
                 dimension
             );
             assert!(
                 (si_value - 2.0).abs() < 1e-4,
-                "gradient of 2*x at x=1.0 should be ~2.0, got {}",
+                "derivative should be ≈2.0 (d/dx[2x] = 2), got {}",
                 si_value
             );
         }
         _ => panic!(
-            "gradient sample should return Value::Scalar[MASS], got {:?}",
+            "sample should return Scalar{{MASS/LENGTH}}, got {:?}",
             sample_result
         ),
     }

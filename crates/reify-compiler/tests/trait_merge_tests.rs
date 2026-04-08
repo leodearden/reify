@@ -10,14 +10,22 @@ use reify_types::*;
 /// Helper: parse source and compile, returning the CompiledModule.
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: parse source and compile, returning first template + diagnostics.
 fn compile_first_template(source: &str) -> (TopologyTemplate, Vec<Diagnostic>) {
     let module = compile_module(source);
-    let template = module.templates.into_iter().next().expect("expected 1 template");
+    let template = module
+        .templates
+        .into_iter()
+        .next()
+        .expect("expected 1 template");
     (template, module.diagnostics)
 }
 
@@ -88,7 +96,10 @@ structure def U : A + B {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected conflict diagnostic for same-name different-type let defaults");
+    assert!(
+        !errors.is_empty(),
+        "expected conflict diagnostic for same-name different-type let defaults"
+    );
 
     let error_msg = format!("{:?}", errors);
     assert!(

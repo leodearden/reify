@@ -1,7 +1,7 @@
 // IPC types for GUI ↔ Engine communication
 
-use serde::{Deserialize, Serialize};
 use serde::ser::Error as SerError;
+use serde::{Deserialize, Serialize};
 
 use reify_types::{DeterminacyState, Value};
 

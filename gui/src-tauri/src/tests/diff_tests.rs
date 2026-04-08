@@ -489,7 +489,13 @@ fn delta_to_events_multiple_failures_warn_for_each() {
 fn try_serialize_event_pushes_update_on_ok() {
     let mut events: Vec<(String, serde_json::Value)> = Vec::new();
     let val = serde_json::json!({"x": 1});
-    try_serialize_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
+    try_serialize_event(
+        &mut events,
+        "mesh-update",
+        "mesh",
+        "A.body",
+        Ok(val.clone()),
+    );
     assert_eq!(events.len(), 1, "expected exactly one event");
     assert_eq!(events[0].0, "mesh-update");
     assert_eq!(events[0].1, val);
@@ -510,7 +516,11 @@ fn try_serialize_event_pushes_error_and_warns_on_err() {
         1,
         "expected exactly 1 warn"
     );
-    assert_eq!(events.len(), 1, "expected exactly one serialization-error event");
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one serialization-error event"
+    );
     let (name, payload) = &events[0];
     assert_eq!(name, "serialization-error");
     assert_eq!(payload["item_type"], "value", "item_type must be \"value\"");

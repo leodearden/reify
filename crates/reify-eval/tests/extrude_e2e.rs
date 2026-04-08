@@ -91,7 +91,11 @@ fn extrude_compiler_accepts_two_args() {
     let result = extrude(profile, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_ext2"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     assert_eq!(
@@ -164,7 +168,12 @@ fn extrude_through_full_eval_pipeline() {
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
-    assert_eq!(ops.len(), 2, "expected 2 geometry operations, got {}", ops.len());
+    assert_eq!(
+        ops.len(),
+        2,
+        "expected 2 geometry operations, got {}",
+        ops.len()
+    );
 
     let profile_handle = ops[0].result_handle;
 
@@ -175,13 +184,18 @@ fn extrude_through_full_eval_pipeline() {
                 "Extrude profile should be handle from op 0 ({:?}), got {:?}",
                 profile_handle, profile
             );
-            let dist_si = distance.as_f64().expect("distance should be a numeric value");
+            let dist_si = distance
+                .as_f64()
+                .expect("distance should be a numeric value");
             assert!(
                 (dist_si - 0.01).abs() < 1e-9,
                 "Extrude distance should be 0.01 m (10 mm SI), got {}",
                 dist_si
             );
         }
-        other => panic!("expected GeometryOp::Extrude at op index 1, got {:?}", other),
+        other => panic!(
+            "expected GeometryOp::Extrude at op index 1, got {:?}",
+            other
+        ),
     }
 }

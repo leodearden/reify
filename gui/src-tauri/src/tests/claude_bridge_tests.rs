@@ -678,8 +678,7 @@ async fn tool_result_write_failure_emits_claude_error_event() {
     // Inject a reify_ tool_call from simulated sidecar stdout.
     // The MCP handler will try to write the tool_result back to stdin_writer,
     // which will fail because stdin_reader was dropped.
-    let tool_call =
-        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+    let tool_call = r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
     stdout_writer
         .write_all(format!("{}\n", tool_call).as_bytes())
         .await

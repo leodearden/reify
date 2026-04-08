@@ -5,14 +5,22 @@
 /// Helper: parse and compile source, return compiled module (no prelude).
 fn compile_module(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("pragma_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
 /// Helper: parse and compile source using the full stdlib prelude.
 fn compile_module_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("pragma_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile_with_stdlib(&parsed)
 }
 
@@ -50,9 +58,8 @@ fn pragma_warnings<'a>(
 /// Module-level pragmas are stored on CompiledModule.pragmas with correct names/args.
 #[test]
 fn module_pragmas_stored_on_compiled_module() {
-    let module = compile_module(
-        "#precision(value=64)\n#version(1)\nstructure S { param x : Real }",
-    );
+    let module =
+        compile_module("#precision(value=64)\n#version(1)\nstructure S { param x : Real }");
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -69,7 +76,10 @@ fn module_pragmas_stored_on_compiled_module() {
     );
 
     let precision = module.pragmas.iter().find(|p| p.name == "precision");
-    assert!(precision.is_some(), "#precision pragma not found in module.pragmas");
+    assert!(
+        precision.is_some(),
+        "#precision pragma not found in module.pragmas"
+    );
     let precision = precision.unwrap();
     assert_eq!(precision.args.len(), 1, "expected 1 arg on #precision");
     match &precision.args[0] {
@@ -81,7 +91,10 @@ fn module_pragmas_stored_on_compiled_module() {
     }
 
     let version = module.pragmas.iter().find(|p| p.name == "version");
-    assert!(version.is_some(), "#version pragma not found in module.pragmas");
+    assert!(
+        version.is_some(),
+        "#version pragma not found in module.pragmas"
+    );
     let version = version.unwrap();
     assert_eq!(version.args.len(), 1, "expected 1 arg on #version");
     match &version.args[0] {
@@ -111,9 +124,7 @@ fn no_prelude_simple_structure_compiles_clean() {
 /// so suppressing the prelude must cause an "unknown unit" error.
 #[test]
 fn no_prelude_suppresses_stdlib_units() {
-    let module = compile_module_with_stdlib(
-        "#no_prelude\nstructure S { param x : Length = 10km }",
-    );
+    let module = compile_module_with_stdlib("#no_prelude\nstructure S { param x : Length = 10km }");
     let errs = errors_only(&module);
     assert!(
         !errs.is_empty(),
@@ -185,7 +196,10 @@ fn trait_pragma_propagated_to_compiled_trait() {
         trait_def.pragmas
     );
     let precision = &trait_def.pragmas[0];
-    assert_eq!(precision.name, "precision", "expected pragma name 'precision'");
+    assert_eq!(
+        precision.name, "precision",
+        "expected pragma name 'precision'"
+    );
     assert_eq!(precision.args.len(), 1, "expected 1 arg on #precision");
     match &precision.args[0] {
         reify_syntax::PragmaArg::KeyValue { key, value } => {
@@ -227,7 +241,10 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
     match &solver.args[0] {
         reify_syntax::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "method");
-            assert_eq!(value, &reify_syntax::PragmaValue::String("gradient".to_string()));
+            assert_eq!(
+                value,
+                &reify_syntax::PragmaValue::String("gradient".to_string())
+            );
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
     }
@@ -238,9 +255,7 @@ fn purpose_pragma_propagated_to_compiled_purpose() {
 /// Block-level pragma on a structure body is propagated to TopologyTemplate.pragmas.
 #[test]
 fn structure_pragma_propagated_to_topology_template() {
-    let module = compile_module(
-        r#"structure S { #solver(backend="ipopt") param x : Real }"#,
-    );
+    let module = compile_module(r#"structure S { #solver(backend="ipopt") param x : Real }"#);
     assert!(
         errors_only(&module).is_empty(),
         "unexpected errors: {:?}",
@@ -261,7 +276,10 @@ fn structure_pragma_propagated_to_topology_template() {
     match &solver.args[0] {
         reify_syntax::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "backend");
-            assert_eq!(value, &reify_syntax::PragmaValue::String("ipopt".to_string()));
+            assert_eq!(
+                value,
+                &reify_syntax::PragmaValue::String("ipopt".to_string())
+            );
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
     }

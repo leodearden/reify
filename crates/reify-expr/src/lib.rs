@@ -123,7 +123,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        ..
+                        codomain_type: grad_codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
@@ -132,10 +132,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             }
                             // Gradient-produced field: lambda slot contains the
                             // original field (with its own lambda inside).
+                            // Pass grad_codomain_type (the gradient field's codomain,
+                            // already R/Q-divided by compute_gradient) instead of the
+                            // inner field's codomain — eliminates the redundant division
+                            // inside compute_numerical_gradient_at_point.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
-                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
@@ -143,7 +146,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                inner_codomain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -751,15 +754,32 @@ fn compute_numerical_gradient_at_point(
         );
     }
 
-    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
-    // The gradient is df/dx, so its dimension is [codomain] / [domain].
+    // DESIGN DECISION: trust-the-declaration
+    // result_dim is derived from the declared codomain_type, not from the runtime return
+    // type of the lambda. This means a misconfigured codomain_type will silently produce
+    // gradient values with the declared (wrong) dimension rather than the runtime dimension.
+    // This is intentional: changing to runtime-driven dimensioning would require propagating
+    // dimension metadata through all arithmetic operations, which is architecturally expensive
+    // and error-prone. The two-tier validation strategy is:
+    //   - Dimensionless domains (domain_dim = None): hard assert_eq! below catches mismatches;
+    //     the lambda's return type is unambiguous (receives Real, must return Real or Scalar).
+    //   - Dimensioned domains (domain_dim = Some): soft eprintln! warning below catches
+    //     mismatches; hard assertions would produce false positives because arithmetic like
+    //     `Real * Scalar<LENGTH>` naturally returns `Scalar<LENGTH>` regardless of the
+    //     declared codomain.
+    //
+    // Extract per-component gradient dimension from codomain_type.
+    // codomain_type is now the gradient field's codomain (already R/Q-divided by
+    // compute_gradient), so no further division is needed here:
+    //   - 1D field  → Scalar { dimension } or Real
+    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
+        Type::Vector { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            _ => DimensionVector::DIMENSIONLESS,
+        },
         Type::Scalar { dimension } => *dimension,
         _ => DimensionVector::DIMENSIONLESS,
-    };
-    let grad_dim = match domain_dim {
-        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-        _ => result_dim,
     };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
@@ -774,46 +794,134 @@ fn compute_numerical_gradient_at_point(
         }
     };
 
-    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
-    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
-    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
-    let mut work_coords = coords.clone();
+    // Take ownership of coords — no clone needed.
+    // work_coords[i] equals the original coords[i] bit-for-bit at the start of
+    // every axis iteration: at the bottom of the loop, work_coords[i] is restored
+    // via direct assignment (`work_coords[i] = coord_i`), which is an exact
+    // bit-identical restore of the value captured at the top of the iteration.
+    let mut work_coords = coords;
     // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
 
+    // point_scratch: reusable inner Vec for the single_point_param path.
+    // Pre-allocated once; only the perturbed element is updated each axis,
+    // eliminating the per-axis .collect() allocation on the caller side.
+    // (apply_lambda still clones the Vec once per eval when populating its
+    // eval_map, so the savings are roughly halving inner-Vec allocations,
+    // not reducing to O(1) overall.)
+    // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
+    let mut point_scratch: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
     let mut gradient_components = Vec::with_capacity(n);
 
     for i in 0..n {
-        let coord_i = coords[i];
+        // Read from work_coords — the original coords Vec was taken by ownership
+        // above and is no longer accessible.  work_coords[i] holds the original
+        // value bit-for-bit at this point: on the first iteration it comes
+        // directly from the caller; on subsequent iterations the bottom of the
+        // loop restores it via `work_coords[i] = coord_i` (direct assignment,
+        // not arithmetic, so no ULP drift).
+        let coord_i = work_coords[i];
         let h = 1e-6_f64 * coord_i.abs().max(1e-3);
 
         // Perturb forward (+h), evaluate
         work_coords[i] += h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(
-                work_coords.iter().map(|&v| make_arg(v)).collect(),
-            ));
+            // Update only the perturbed element; transfer ownership via take.
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
+        // Recovery above is infallible: apply_lambda borrows &[Value] and cannot
+        // mutate work_args; we pushed exactly one Value::Point, so pop() always
+        // succeeds and always yields Value::Point.  The if-let is just destructuring.
+
+        // On the first axis, validate the lambda's runtime return dimension against the
+        // declared codomain (via codomain_type). Two-tier strategy:
+        //
+        //   Tier 1 — hard assertion (dimensionless domains, domain_dim = None):
+        //     make_arg passes Real to the lambda, so the return type is unambiguous.
+        //     assert_eq! panics on mismatch — a clear misconfiguration.
+        //
+        //   Tier 2 — soft warning (dimensioned domains, domain_dim = Some):
+        //     make_arg passes Scalar<domain_dim>. Operations like
+        //     `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH> regardless of
+        //     the declared codomain — the codomain_type is metadata, not a runtime
+        //     constraint. Hard assertions here produce false positives. A soft
+        //     eprintln! warns for genuine mismatches without blocking execution.
+        //
+        // result_dim is the gradient's per-component dimension (codomain/domain).
+        // f_plus comes from the original lambda, so its dimension is the ORIGINAL
+        // codomain's dimension. Reconstruct:
+        //   dimensionless domain: original_codomain = result_dim
+        //   dimensioned domain:   original_codomain = result_dim * domain_dim
+        #[cfg(debug_assertions)]
+        if i == 0 && domain_dim.is_none() {
+            let runtime_dim = f_plus.dimension();
+            let expected_codomain_dim = result_dim;
+            assert_eq!(
+                runtime_dim, expected_codomain_dim,
+                "codomain_type does not match runtime return dimension: \
+                 declared codomain expects dimension {:?} but lambda returned {:?}",
+                expected_codomain_dim, runtime_dim,
+            );
+        }
+        // Tier 2: soft warning for dimensioned-domain mismatches.
+        // original_codomain = result_dim * domain_dim; compare with f_plus dimension.
+        #[cfg(debug_assertions)]
+        if i == 0
+            && let Some(dom_dim) = domain_dim
+        {
+            let expected_original_codomain = result_dim.mul(&dom_dim);
+            let runtime_dim = f_plus.dimension();
+            if runtime_dim != expected_original_codomain {
+                eprintln!(
+                    "[reify-expr] gradient: codomain_type mismatch (non-fatal): \
+                     declared original codomain dimension {:?} but lambda returned {:?}",
+                    expected_original_codomain, runtime_dim,
+                );
+            }
+        }
 
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
         work_args.clear();
         if single_point_param {
-            work_args.push(Value::Point(
-                work_coords.iter().map(|&v| make_arg(v)).collect(),
-            ));
+            point_scratch[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
+        // Recover point_scratch from work_args (single_point_param only).
+        if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
+            point_scratch = inner;
+        }
+        // Recovery above is infallible for the same reason as the f_plus recovery:
+        // apply_lambda cannot mutate work_args, and exactly one Value::Point was
+        // pushed before the call.
 
-        // Restore coord[i] to original value
-        work_coords[i] += h;
+        // Restore coord[i] to original value.
+        // Use exact restore (direct assignment) instead of arithmetic
+        // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
+        // drift from x + h - 2h + h ≠ x in floating-point).
+        work_coords[i] = coord_i;
+        // Keep point_scratch in sync with the invariant.
+        if single_point_param {
+            point_scratch[i] = make_arg(coord_i);
+        }
 
         // Extract numeric values, propagate Undef.
         // Guard with is_finite() — as_f64() returns Some(NaN) for
@@ -835,16 +943,23 @@ fn compute_numerical_gradient_at_point(
             return Value::Undef;
         }
 
-        if grad_dim != DimensionVector::DIMENSIONLESS {
+        if result_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
-                dimension: grad_dim,
+                dimension: result_dim,
             });
         } else {
             gradient_components.push(Value::Real(deriv));
         }
     }
 
+    // For n==1 the loop above always pushes exactly one component (or returns
+    // early via Undef). The unwrap_or(Undef) fallback is unreachable in practice;
+    // this assert documents and enforces that invariant in debug builds.
+    debug_assert!(
+        n != 1 || !gradient_components.is_empty(),
+        "gradient loop must push exactly one component for n==1"
+    );
     if n == 1 {
         gradient_components
             .into_iter()
@@ -3199,6 +3314,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"double"),
+            annotations: vec![],
         }
     }
 
@@ -3227,6 +3343,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
+            annotations: vec![],
         }
     }
 
@@ -3295,6 +3412,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"factorial"),
+            annotations: vec![],
         }
     }
 
@@ -3317,6 +3435,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"infinite"),
+            annotations: vec![],
         }
     }
 
@@ -3436,6 +3555,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"area"),
+            annotations: vec![],
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -3500,6 +3620,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
+            annotations: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let process2 = CompiledFunction {
@@ -3517,6 +3638,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
+            annotations: vec![],
         };
 
         let functions = [process1, process2];

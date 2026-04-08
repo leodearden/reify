@@ -793,10 +793,10 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
             if let Some(end) = trimmed.find(')') {
                 let sig = trimmed[..=end].to_string();
                 // Only collect if the function body contains (THIS_FILE)
-                if let Some(body) = extract_test_fn_body(source, &sig) {
-                    if body.contains("(THIS_FILE)") {
-                        result.push(sig);
-                    }
+                if let Some(body) = extract_test_fn_body(source, &sig)
+                    && body.contains("(THIS_FILE)")
+                {
+                    result.push(sig);
                 }
             }
             saw_test = false;
@@ -821,8 +821,7 @@ fn test_unix_permission_tests_have_root_guard() {
     // The set of unix test functions is discovered dynamically by
     // find_cfg_unix_test_fns so that newly added #[cfg(unix)] tests are
     // automatically checked without updating a hardcoded list.
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(THIS_FILE).expect("should be able to read this test file");
 
     let unix_test_fns = find_cfg_unix_test_fns(&source);
 
@@ -854,8 +853,7 @@ fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
     // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
-    let source = std::fs::read_to_string(THIS_FILE)
-        .expect("should be able to read this test file");
+    let source = std::fs::read_to_string(THIS_FILE).expect("should be able to read this test file");
 
     // Extract the Drop impl for ReadonlyGuard
     let drop_start = source

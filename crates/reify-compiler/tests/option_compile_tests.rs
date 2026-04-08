@@ -8,12 +8,13 @@ use reify_types::{CompiledExprKind, Type};
 
 /// Helper: compile source and extract the value cell named `cell_name`'s default_expr.
 /// Panics if there are errors or the cell is missing.
-fn compile_and_get_expr(
-    source: &str,
-    cell_name: &str,
-) -> reify_types::CompiledExpr {
+fn compile_and_get_expr(source: &str, cell_name: &str) -> reify_types::CompiledExpr {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -22,7 +23,11 @@ fn compile_and_get_expr(
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template
@@ -40,7 +45,11 @@ fn compile_and_get_expr(
 /// Helper: compile source and expect diagnostics (errors allowed). Returns compiled module.
 fn compile_expecting_errors(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -122,7 +131,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -131,7 +144,11 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no error diagnostics, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template
@@ -181,7 +198,10 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected an error for some() with 0 args");
+    assert!(
+        !errors.is_empty(),
+        "expected an error for some() with 0 args"
+    );
     let msg = &errors[0].message;
     assert!(
         msg.contains("some") && (msg.contains("1") || msg.contains("argument")),
@@ -204,7 +224,10 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(!errors.is_empty(), "expected an error for some(1, 2) with 2 args");
+    assert!(
+        !errors.is_empty(),
+        "expected an error for some(1, 2) with 2 args"
+    );
 }
 
 /// step-8c: nested some(some(42)) → OptionSome(OptionSome(Literal(42))) with type Option<Option<Int>>.
@@ -292,7 +315,11 @@ structure S {
 }
 "#;
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test_option"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -301,7 +328,11 @@ structure S {
         .iter()
         .filter(|d| d.severity == reify_types::Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "expected no errors for `let x = none`, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "expected no errors for `let x = none`, got: {:?}",
+        errors
+    );
 
     let template = &compiled.templates[0];
     let cell = template

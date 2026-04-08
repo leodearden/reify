@@ -2469,10 +2469,7 @@ fn compile_expr_guarded(
                             "some() requires exactly 1 argument, got {}",
                             args.len()
                         ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "wrong number of arguments",
-                        )),
+                        .with_label(DiagnosticLabel::new(expr.span, "wrong number of arguments")),
                     );
                     return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
@@ -2514,13 +2511,7 @@ fn compile_expr_guarded(
                     // Exactly one user fn matches — emit UserFunctionCall
                     // Deprecation check: warn if the called function is @deprecated.
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
-                        emit_deprecation_warning(
-                            "function",
-                            name,
-                            &msg,
-                            expr.span,
-                            diagnostics,
-                        );
+                        emit_deprecation_warning("function", name, &msg, expr.span, diagnostics);
                     }
                     let result_type = matched_fn.return_type.clone();
                     let content_hash = {
@@ -2693,10 +2684,7 @@ fn compile_expr_guarded(
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
                         let scoped_entity = format!("{}.{}", scope.entity_name, member);
                         let sub_id = ValueCellId::new(&scoped_entity, "__self");
-                        return CompiledExpr::value_ref(
-                            sub_id,
-                            Type::StructureRef(structure_name),
-                        );
+                        return CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name));
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -2707,14 +2695,8 @@ fn compile_expr_guarded(
                         }
                         None => {
                             diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unknown member '{}' on self",
-                                    member
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unknown member",
-                                )),
+                                Diagnostic::error(format!("unknown member '{}' on self", member))
+                                    .with_label(DiagnosticLabel::new(expr.span, "unknown member")),
                             );
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
@@ -2749,8 +2731,7 @@ fn compile_expr_guarded(
                             return CompiledExpr::literal(Value::Undef, Type::Real);
                         }
                     };
-                    let scoped_entity =
-                        format!("{}.{}", scope.entity_name, sub_name);
+                    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
                 }
@@ -3438,10 +3419,7 @@ fn compile_expr_guarded(
                 None => {
                     diagnostics.push(
                         Diagnostic::error(format!("unknown sub-component '{}'", sub_name))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "unknown sub-component",
-                            )),
+                            .with_label(DiagnosticLabel::new(expr.span, "unknown sub-component")),
                     );
                     return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
@@ -3905,7 +3883,8 @@ pub fn compile_with_prelude(
     }
 
     // Validate module-level pragmas: warn on unknown names.
-    const KNOWN_MODULE_PRAGMAS: &[&str] = &["no_prelude", "precision", "solver", "kernel", "version"];
+    const KNOWN_MODULE_PRAGMAS: &[&str] =
+        &["no_prelude", "precision", "solver", "kernel", "version"];
     for pragma in &parsed.pragmas {
         if !KNOWN_MODULE_PRAGMAS.contains(&pragma.name.as_str()) {
             diagnostics.push(
@@ -4782,10 +4761,8 @@ fn emit_deprecation_warning(
     } else {
         format!("use of deprecated {entity_kind} '{entity_name}': {message}")
     };
-    diagnostics.push(
-        Diagnostic::warning(text)
-            .with_label(DiagnosticLabel::new(span, "deprecated")),
-    );
+    diagnostics
+        .push(Diagnostic::warning(text).with_label(DiagnosticLabel::new(span, "deprecated")));
 }
 
 // ─── Recursive termination check (Task 204) ─────────────────────────────────
@@ -7511,10 +7488,9 @@ fn check_trait_conformance(
                                          requirement expects {}, available default has {}",
                                         req.name, expected_type, default_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "type mismatch",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "type mismatch"),
+                                    ),
                                 );
                             }
                             None => {
@@ -7524,10 +7500,9 @@ fn check_trait_conformance(
                                         "missing required member '{}' (expected type: {})",
                                         req.name, expected_type
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        structure.span,
-                                        "required by trait",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(structure.span, "required by trait"),
+                                    ),
                                 );
                             }
                         }
@@ -8468,10 +8443,8 @@ fn compile_geometry_call(
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
-            let tau_expr = CompiledExpr::literal(
-                Value::Real(std::f64::consts::TAU),
-                reify_types::Type::Real,
-            );
+            let tau_expr =
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_types::Type::Real);
             Some(vec![CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
                 profiles: vec![GeomRef::Step(0)],

@@ -127,12 +127,7 @@ impl tracing::Subscriber for CountingSubscriber {
 
     fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
 
-    fn record_follows_from(
-        &self,
-        _span: &tracing::span::Id,
-        _follows: &tracing::span::Id,
-    ) {
-    }
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
 
     fn event(&self, event: &tracing::Event<'_>) {
         // Apply optional target-prefix filter before counting.
@@ -150,7 +145,6 @@ impl tracing::Subscriber for CountingSubscriber {
 
     fn exit(&self, _span: &tracing::span::Id) {}
 }
-
 
 // ── Contract violation marker ─────────────────────────────────────────────────
 
@@ -263,10 +257,7 @@ impl WarnCapture {
     /// Panics if the count does not equal `expected`.
     pub fn assert_count(&self, expected: usize) {
         let n = self.count();
-        assert_eq!(
-            n, expected,
-            "expected {expected} WARN events, got {n}"
-        );
+        assert_eq!(n, expected, "expected {expected} WARN events, got {n}");
     }
 
     /// Assert that exactly `expected` WARN events were emitted **and** that at
@@ -838,7 +829,11 @@ mod tests {
             tracing::warn!("second warning");
         });
 
-        assert_eq!(capture.count(), 2, "count should be 2 after two WARN events");
+        assert_eq!(
+            capture.count(),
+            2,
+            "count should be 2 after two WARN events"
+        );
     }
 
     /// `WarnCapture::messages()` captures the formatted text of each WARN event.

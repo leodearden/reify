@@ -112,7 +112,7 @@ mod reexport_contract_tests {
         // Annotation helpers
         let _ = ann_str("hello");
         let _ = ann_int(42);
-        let _ = ann_real(3.14);
+        let _ = ann_real(2.72);
         let _ = ann_bool(true);
         let _ = ann_ident("foo");
         let ann = annotation("test");
@@ -129,14 +129,20 @@ mod reexport_contract_tests {
         let _ = pragma_with_args("cfg", vec![pragma_bare(pragma_ident("test"))]);
 
         // Annotation methods on builders (compile-time check)
-        let _ = TopologyTemplateBuilder::new("T").annotation(ann.clone()).build();
+        let _ = TopologyTemplateBuilder::new("T")
+            .annotation(ann.clone())
+            .build();
         let _ = TraitDefBuilder::new("T").annotation(ann.clone()).build();
-        let _ = CompiledTraitBuilder::new("T").annotation(ann.clone()).build();
+        let _ = CompiledTraitBuilder::new("T")
+            .annotation(ann.clone())
+            .build();
         let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::Real)
             .imported()
             .annotation(ann.clone())
             .build();
-        let _ = CompiledPurposeBuilder::new("p").annotation(ann.clone()).build();
+        let _ = CompiledPurposeBuilder::new("p")
+            .annotation(ann.clone())
+            .build();
 
         // Field expr helpers
         let field_expr = field_literal_expr(
