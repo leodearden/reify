@@ -23345,15 +23345,16 @@
         "description": "Refactor `value_orientation_ord_within_type` (line ~3716) and `value_orientation_ord_equal_w_different_x` (line ~3749) in value.rs to use the `orient()` helper instead of manually constructing `Value::Orientation { w, x, y, z }`. The helper was extracted in task 959 and is used by `value_ord_orientation_negative_components` but the earlier tests were not updated, creating inconsistency.\n\nAlso consider updating `value_orientation_ord_cross_type` (line ~3700) for the Orientation value (the Complex value must remain manually constructed).\n\nmemory_hints:\n- search: \"orient helper value.rs Orientation test\"\n- search: \"task 959 orient helper extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T21:14:33.668Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:14:32.934Z",
+      "lastModified": "2026-04-08T21:14:33.668Z",
       "taskCount": 1137,
       "completedCount": 805,
       "tags": [
