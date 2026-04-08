@@ -111,7 +111,7 @@ fn trait_hierarchy_parses_and_compiles() {
     );
 }
 
-// ── step-3: 3-deep chain value assertions ────────────────────────────────────
+// ── step-3/4: 3-deep chain value assertions ───────────────────────────────────
 
 /// Verify that ThreeDeepLeaf resolves values from all 3 trait levels:
 ///   - x = 5mm = 0.005 SI (from Root, via Middle → Leaf)
@@ -183,5 +183,55 @@ fn three_deep_chain_values() {
             );
         }
         other => panic!("ThreeDeepLeaf.computed should be Scalar, got {:?}", other),
+    }
+}
+
+// ── step-5/6: 3-deep chain constraint assertions ──────────────────────────────
+
+/// Verify that all constraints from Root, Middle, and Leaf are enforced and
+/// satisfied for ThreeDeepLeaf with its defaults (x=5mm, y=3mm, z=1mm).
+///
+/// Expected constraints:
+///   - x > 0mm    (from Root)
+///   - y > 0mm    (from Middle)
+///   - z > 0mm    (from Leaf)
+///   - z < x      (from ThreeDeepLeaf itself)
+/// Total: at least 4 constraints, all Satisfied.
+#[test]
+fn three_deep_chain_constraints_all_satisfied() {
+    let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
+        .expect("trait_hierarchy.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+
+    // First eval to populate values
+    let _ = engine.eval(&compiled);
+
+    // Then check constraints
+    let check_result = engine.check(&compiled);
+    let leaf_constraints: Vec<_> = check_result.constraint_results.iter()
+        .filter(|e| e.id.entity == "ThreeDeepLeaf")
+        .collect();
+
+    assert!(
+        leaf_constraints.len() >= 4,
+        "expected >= 4 constraints for ThreeDeepLeaf (x>0mm, y>0mm, z>0mm, z<x), got {}",
+        leaf_constraints.len()
+    );
+    for entry in &leaf_constraints {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "ThreeDeepLeaf constraint {} should be Satisfied",
+            entry.id
+        );
     }
 }
