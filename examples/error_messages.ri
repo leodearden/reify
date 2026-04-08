@@ -1,0 +1,32 @@
+// Error messages documentation fixture.
+//
+// This file documents the various error classes the Reify compiler and evaluator
+// can produce. It is NOT used as a single loadable fixture — the actual
+// stress_error_messages.rs tests use inline source strings per error class so
+// each test is independent (parse errors prevent compilation, etc.).
+//
+// Error classes documented here:
+//
+// 1. Parse errors
+//    - Malformed syntax: 'structure S { @@@ }' → parse error
+//
+// 2. Compile errors
+//    - Unresolved name: 'let x = unknown_name' → "unresolved name: unknown_name"
+//    - Unknown unit: 'param x : Length = 5quux' → "unknown unit: quux"
+//    - Circular type alias: 'type A = B / type B = A' → "circular type alias 'A'"
+//    - Wrong geometry arg count: 'let r = extrude(p)' → "extrude() expects exactly 2 arguments"
+//    - Wrong loft arg count: 'let r = loft(p)' → "loft() expects at least 2 arguments"
+//    - Trait not found: 'structure S : NonExistentTrait { }' → "trait 'NonExistentTrait' not found"
+//
+// 3. Eval/build errors
+//    - Geometry kernel failure → "geometry error: ..."
+//    - Failed compile geometry op → "failed to compile geometry operation"
+//    - All ops fail → "all geometry operations failed; no geometry output produced"
+//
+// 4. Constraint violations
+//    - Violated constraint → Satisfaction::Violated for that constraint
+
+// Valid structure for smoke-testing this file loads cleanly as documentation:
+structure def ErrorDocumentation {
+    param placeholder : Real = 0.0
+}
