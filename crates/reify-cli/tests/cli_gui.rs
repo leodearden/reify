@@ -81,19 +81,18 @@ fn gui_non_ri_file_shows_error() {
 
 #[test]
 fn gui_extension_validation_fires_before_existence_check() {
-    // A path that is BOTH non-existent AND has a non-.ri extension.
-    // When extension check fires first, stderr should mention '.ri' and NOT 'does not exist'.
-    // This test FAILS against the current cmd_gui order (existence checked before extension).
-    let tmp_dir = std::env::temp_dir();
-    let nonexistent_txt = tmp_dir.join("definitely_nonexistent_971.txt");
+    // Regression test: extension validation must fire before existence check,
+    // so a non-existent non-.ri path reports the extension error rather than not-found.
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let nonexistent_path = tmp_dir.path().join("definitely_nonexistent.txt");
     // Do NOT create the file — it must not exist on disk.
     assert!(
-        !nonexistent_txt.exists(),
+        !nonexistent_path.exists(),
         "test file must not exist for this test to be meaningful"
     );
 
     let output = reify_cmd()
-        .args(["gui", nonexistent_txt.to_str().unwrap()])
+        .args(["gui", nonexistent_path.to_str().unwrap()])
         .output()
         .expect("failed to execute reify binary");
 
