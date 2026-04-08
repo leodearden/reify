@@ -99,8 +99,6 @@ portable_timeout() {
             ( sleep "$seconds" && {
                 touch "$timeout_flag" 2>/dev/null
                 kill "$cmd_pid" 2>/dev/null
-                sleep 2
-                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         else
@@ -109,8 +107,6 @@ portable_timeout() {
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
-                sleep 2
-                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         fi
