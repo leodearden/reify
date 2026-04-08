@@ -2224,6 +2224,26 @@ mod poison_recovery_extended {
 mod poison_shared_fallback {
     use super::*;
 
+    /// Sets up a shared-fallback scenario: creates the adapter, holds a second
+    /// Arc for `$arc_method` (forcing `Arc::try_unwrap` to return `Err`), poisons
+    /// the lock via `$poison_method`, then delegates to [`assert_poison_recovers`]
+    /// with `into_result`.  Returns the [`ConcurrentEditResult`] for optional
+    /// downstream data assertions.
+    macro_rules! shared_fallback_recover {
+        ($arc_method:ident, $poison_method:ident, $msg:expr) => {{
+            let setup = simple_setup();
+            let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+            let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+            let _guard = adapter.$arc_method();
+            adapter.$poison_method();
+            assert_poison_recovers(
+                || adapter.into_result(&eval_set, HashSet::new()),
+                1,
+                $msg,
+            )
+        }};
+    }
+
     // -----------------------------------------------------------------------
     // values shared-fallback
     // -----------------------------------------------------------------------
@@ -2236,18 +2256,10 @@ mod poison_shared_fallback {
     /// Message must contain "values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.values_arc();
-        adapter.poison_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned (shared fallback)",
+        shared_fallback_recover!(
+            values_arc,
+            poison_values,
+            "values RwLock poisoned (shared fallback)"
         );
     }
 
@@ -2256,18 +2268,10 @@ mod poison_shared_fallback {
     /// Verifies T.a = Real(10.0) from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.values_arc();
-        adapter.poison_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "values RwLock poisoned (shared fallback)",
+        let edit_result = shared_fallback_recover!(
+            values_arc,
+            poison_values,
+            "values RwLock poisoned (shared fallback)"
         );
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
@@ -2287,17 +2291,10 @@ mod poison_shared_fallback {
     /// Message must contain "snapshot_values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.snapshot_values_arc();
-        adapter.poison_snapshot_values();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned (shared fallback)",
+        shared_fallback_recover!(
+            snapshot_values_arc,
+            poison_snapshot_values,
+            "snapshot_values RwLock poisoned (shared fallback)"
         );
     }
 
@@ -2306,17 +2303,10 @@ mod poison_shared_fallback {
     /// Verifies T.a and T.b tuples from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.snapshot_values_arc();
-        adapter.poison_snapshot_values();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "snapshot_values RwLock poisoned (shared fallback)",
+        let edit_result = shared_fallback_recover!(
+            snapshot_values_arc,
+            poison_snapshot_values,
+            "snapshot_values RwLock poisoned (shared fallback)"
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2341,17 +2331,10 @@ mod poison_shared_fallback {
     /// Message must contain "results Mutex poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.results_arc();
-        adapter.poison_results();
-
-        assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned (shared fallback)",
+        shared_fallback_recover!(
+            results_arc,
+            poison_results,
+            "results Mutex poisoned (shared fallback)"
         );
     }
 
@@ -2360,17 +2343,10 @@ mod poison_shared_fallback {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.results_arc();
-        adapter.poison_results();
-
-        let edit_result = assert_poison_recovers(
-            || adapter.into_result(&eval_set, HashSet::new()),
-            1,
-            "results Mutex poisoned (shared fallback)",
+        let edit_result = shared_fallback_recover!(
+            results_arc,
+            poison_results,
+            "results Mutex poisoned (shared fallback)"
         );
         assert!(
             edit_result.node_results.is_empty(),
