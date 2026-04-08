@@ -3205,9 +3205,7 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
-        assert_eq!(nan_re_a, nan_re_b);
-        // Ord must agree.
-        assert_eq!(nan_re_a.cmp(&nan_re_b), std::cmp::Ordering::Equal);
+        assert_ord_consistent(&nan_re_a, &nan_re_b, true);
 
         // --- NaN in `im` ---
         let nan_im_a = Value::Complex {
@@ -3220,8 +3218,7 @@ mod tests {
             im: f64::NAN,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        assert_eq!(nan_im_a, nan_im_b);
-        assert_eq!(nan_im_a.cmp(&nan_im_b), std::cmp::Ordering::Equal);
+        assert_ord_consistent(&nan_im_a, &nan_im_b, true);
 
         // --- neg-zero in `re`: Ord consistency (PartialEq already covered by value_complex_neg_zero_distinguished) ---
         let pos_re = Value::Complex {
@@ -3234,13 +3231,8 @@ mod tests {
             im: 0.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        assert_ne!(pos_re, neg_re);
-        // Ord must also distinguish them.
-        assert_ne!(pos_re.cmp(&neg_re), std::cmp::Ordering::Equal);
-        // Antisymmetry.
-        assert_eq!(pos_re.cmp(&neg_re), neg_re.cmp(&pos_re).reverse());
-        // IEEE 754 totalOrder: -0.0 < +0.0.
-        assert!(neg_re < pos_re);
+        // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_re as the smaller value.
+        assert_ord_consistent(&neg_re, &pos_re, false);
 
         // --- neg-zero in `im` ---
         let pos_im = Value::Complex {
@@ -3253,9 +3245,9 @@ mod tests {
             im: -0.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        assert_ne!(pos_im, neg_im);
-        assert_ne!(pos_im.cmp(&neg_im), std::cmp::Ordering::Equal);
-        assert_eq!(pos_im.cmp(&neg_im), neg_im.cmp(&pos_im).reverse());
+        // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_im as the smaller value.
+        // Note: the ordering direction assertion (neg_im < pos_im) was previously missing here.
+        assert_ord_consistent(&neg_im, &pos_im, false);
     }
 
     #[test]
