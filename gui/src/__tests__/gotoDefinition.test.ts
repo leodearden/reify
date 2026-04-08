@@ -208,6 +208,53 @@ describe('cross-file goto-definition (onNavigate)', () => {
     });
   });
 
+  it('file:// currentUri with bare-path location.uri for same file dispatches cursor movement', async () => {
+    // Inverse of the forward-direction test: currentUri is a file:// URI;
+    // LSP returns a bare-path URI for the same physical file.
+    // isSameFile() should normalize both to the same bare path and recognize them as equal,
+    // so the handler dispatches cursor movement instead of calling onNavigate.
+    const currentUri = 'file:///project/src/foo.ri';
+    const sameFileLocation = {
+      uri: '/project/src/foo.ri',
+      range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = {
+      ctrlKey: true,
+      metaKey: false,
+      clientX: 100,
+      clientY: 50,
+    } as MouseEvent;
+
+    const mockView = {
+      posAtCoords: () => 5,
+      state: {
+        doc: {
+          lineAt: () => ({ number: 1, from: 0, to: 10 }),
+          line: (n: number) => ({ from: (n - 1) * 20 }),
+        },
+      },
+      dispatch: vi.fn(),
+      dom: { isConnected: true },
+    };
+
+    mousedownHandler(mockEvent, mockView);
+    await flushMacrotasks();
+
+    // onNavigate should NOT be called — it is the same file after URI normalization
+    expect(onNavigate).not.toHaveBeenCalled();
+    // view.dispatch SHOULD be called for same-file cursor movement
+    expect(mockView.dispatch).toHaveBeenCalledWith({
+      selection: { anchor: expect.any(Number) },
+      scrollIntoView: true,
+    });
+  });
+
   it('partial suffix overlap (/a/foo.ri vs /b/a/foo.ri) triggers cross-file navigation', async () => {
     // currentUri is '/a/foo.ri'; LSP returns 'file:///b/a/foo.ri'.
     // The bare path '/a/foo.ri' is a suffix of '/b/a/foo.ri', but they are different files.
