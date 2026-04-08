@@ -129,6 +129,40 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledWith('7 items failed to serialize', 'error');
   });
 
+  it('resets firstArrival after a max-wait force-flush — second batch runs independently', () => {
+    const showToast = vi.fn();
+    // windowMs=100ms, maxWaitMs=300ms
+    const coalescer = createSerializationErrorCoalescer(showToast, 100, 300);
+
+    // First batch: add errors every 80ms until maxWait ceiling fires
+    // t=0: add, firstArrival=0, timer=min(100,300)=100ms → fires at t=100
+    // t=80: add, elapsed=80, remaining=220, timer=min(100,220)=100ms → fires at t=180
+    // t=160: add, elapsed=160, remaining=140, timer=min(100,140)=100ms → fires at t=260
+    // t=240: add, elapsed=240, remaining=60, timer=min(100,60)=60ms → fires at t=300
+    coalescer.add({ item_type: 'mesh', item_id: 'a1', error: 'e' });
+    vi.advanceTimersByTime(80);
+    coalescer.add({ item_type: 'mesh', item_id: 'a2', error: 'e' });
+    vi.advanceTimersByTime(80);
+    coalescer.add({ item_type: 'mesh', item_id: 'a3', error: 'e' });
+    vi.advanceTimersByTime(80);
+    coalescer.add({ item_type: 'mesh', item_id: 'a4', error: 'e' });
+    // t=240: timer set to 60ms → fires at t=300
+    expect(showToast).not.toHaveBeenCalled();
+
+    // Advance to t=300 — first flush fires at the maxWait ceiling
+    vi.advanceTimersByTime(60);
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenNthCalledWith(1, '4 items failed to serialize', 'error');
+
+    // Second batch: starts fresh — firstArrival should be undefined after the flush
+    coalescer.add({ item_type: 'value', item_id: 'b1', error: 'e2' });
+    coalescer.add({ item_type: 'value', item_id: 'b2', error: 'e2' });
+    // windowMs=100ms, timer fires 100ms from the last add
+    vi.advanceTimersByTime(100);
+    expect(showToast).toHaveBeenCalledTimes(2);
+    expect(showToast).toHaveBeenNthCalledWith(2, '2 items failed to serialize', 'error');
+  });
+
   it('resets after a flush — can accumulate and emit a second batch', () => {
     const showToast = vi.fn();
     const coalescer = createSerializationErrorCoalescer(showToast);
