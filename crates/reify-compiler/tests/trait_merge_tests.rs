@@ -66,9 +66,8 @@ structure def S : HasArea + AlsoHasArea {
 
 /// Step 2: Trait A has `let x : Length = 5mm`, trait B has `let x : Mass = 1kg`.
 /// Structure implements both — different types → 'conflicting' error.
-/// NOTE: This test is EXPECTED TO FAIL until step-3 fixes the Type::Real sentinel.
+/// Fixed by c6751bf1c: content_hash comparison for let-binding defaults.
 #[test]
-#[ignore = "871ec2dbd test: trait merge dedup conflict-detection drifted post-task 385. See project_regression_c88ca9635.md."]
 fn let_defaults_same_name_different_type_error() {
     let source = r#"
 trait A {
@@ -101,9 +100,8 @@ structure def U : A + B {
 
 /// Step 4: Trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`.
 /// Same name, same type, different expressions — expect 'conflicting' error.
-/// NOTE: This test is EXPECTED TO FAIL until step-5 adds expression comparison.
+/// Fixed by c6751bf1c: content_hash comparison catches expression differences.
 #[test]
-#[ignore = "871ec2dbd test: trait merge dedup conflict-detection drifted post-task 385. See project_regression_c88ca9635.md."]
 fn let_defaults_same_name_same_type_different_expr_error() {
     let source = r#"
 trait A {
@@ -141,9 +139,8 @@ structure def V : A + B {
 /// Step 6: Trait A requires `param x : Length` (no default),
 /// trait B provides `param x : Length = 10mm` (default).
 /// Structure implements both with empty body — the default from B satisfies A's requirement.
-/// NOTE: This test is EXPECTED TO FAIL until step-7 cross-checks requirements against defaults.
+/// Fixed by d545080b3: available_defaults cross-check in check_trait_conformance.
 #[test]
-#[ignore = "871ec2dbd test: trait conformance now requires explicit unit (Scalar[m] vs Scalar). See project_regression_c88ca9635.md."]
 fn requirement_satisfied_by_cross_trait_default() {
     let source = r#"
 trait NeedsX {
