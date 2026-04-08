@@ -6,6 +6,29 @@ use crate::hash::ContentHash;
 use crate::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 
+// ── Float ordering strategy ───────────────────────────────────────────────────
+//
+// `f64::to_bits().cmp()` and `f64::total_cmp()` produce *different* total orders:
+//
+//   to_bits().cmp()  — treats the f64 bit pattern as a u64. The sign bit is the
+//     MSB, so all negative floats (including -0.0) sort *above* all positive
+//     values. Among negatives, larger magnitude → larger exponent → larger u64,
+//     so more-negative values sort *higher*, not lower. NaN canonical bits
+//     (0x7FF8_0000_0000_0000) sort after +Infinity (0x7FF0_0000_0000_0000).
+//
+//   total_cmp()      — implements IEEE 754 totalOrder. Negative floats sort
+//     *below* positive values. -0.0 sorts just below +0.0. NaN still sorts
+//     after +Infinity. This matches mathematical intuition.
+//
+// `Value::Real`, `Value::Scalar`, `Value::Complex`, and `Value::Orientation`
+// all use `total_cmp()` in their `Ord` impls (see `impl Ord for Value`).
+//
+// Migration note: any persisted or long-lived `BTreeSet<Value>` or
+// `BTreeMap<Value, _>` containing NaN or negative-float keys created under the
+// old `to_bits()` ordering would have stale tree invariants and must be fully
+// rebuilt before use.
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// The source kind of a field value at runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FieldSourceKind {
@@ -1228,25 +1251,8 @@ impl Ord for Value {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
             (Value::Real(a), Value::Real(b)) => {
-                // IEEE 754 total order via total_cmp() — sign-aware, consistent with
-                // mathematical ordering.
-                //
-                // NOTE: to_bits().cmp() and total_cmp() produce *different* total orders:
-                //
-                //   to_bits().cmp()  — negative floats (including -0.0) sort *above* all
-                //     positive values because the sign bit is the MSB and negative values
-                //     have a higher bit pattern than positive ones. NaN canonical bits
-                //     (0x7FF8_0000_0000_0000) sort after +Infinity (0x7FF0_0000_0000_0000).
-                //
-                //   total_cmp()      — negative floats sort *below* positive values
-                //     (IEEE 754 semantics). -0.0 sorts between -epsilon and +0.0.
-                //     NaN still sorts after +Infinity.
-                //
-                // Value::Set(BTreeSet<Value>) and Value::Map(BTreeMap<Value, Value>) rely
-                // on this Ord impl for their tree invariants. Any persisted or long-lived
-                // BTreeSet<Value> or BTreeMap<Value, _> containing NaN or negative-float
-                // keys created under the old to_bits() ordering would have stale tree
-                // invariants and must be fully rebuilt before use.
+                // IEEE 754 total order — see module-level "Float ordering strategy"
+                // doc for to_bits() vs total_cmp() rationale.
                 a.total_cmp(b)
             }
             (
@@ -2269,30 +2275,9 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_real_negative_vs_positive() {
-        // A negative real must order before a positive real.
-        // to_bits() gets this WRONG: (-0.5_f64).to_bits() > (0.5_f64).to_bits()
-        // because the sign bit (MSB) makes all negatives look larger as u64.
-        assert!(Value::Real(-0.5) < Value::Real(0.5));
-        assert!(Value::Real(-1.0) < Value::Real(0.0));
-        assert!(Value::Real(f64::NEG_INFINITY) < Value::Real(f64::INFINITY));
-    }
-
-    #[test]
-    fn value_ord_real_negative_magnitude() {
-        // Among negative reals, more-negative should order first (be smaller).
-        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
-        // because larger magnitude negatives have a larger exponent/mantissa as u64.
-        assert!(Value::Real(-2.0) < Value::Real(-1.0));
-        assert!(Value::Real(-1.0) < Value::Real(-0.5));
-        assert!(Value::Real(f64::NEG_INFINITY) < Value::Real(-1.0));
-    }
-
-    #[test]
     fn value_ord_scalar_negative_ordering() {
         // Negative scalar values must order correctly.
-        // to_bits() gets this WRONG for both magnitude-among-negatives and
-        // cross-sign comparisons.
+        // to_bits() would give wrong ordering here — see module-level doc.
         let neg1 = Value::Scalar {
             si_value: -1.0,
             dimension: DimensionVector::LENGTH,
@@ -3420,7 +3405,7 @@ mod tests {
     #[test]
     fn value_ord_complex_negative_re() {
         // Negative re components must order correctly.
-        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
+        // to_bits() would give wrong ordering here — see module-level doc.
         let a = Value::Complex {
             re: -1.0,
             im: 0.0,
@@ -3783,66 +3768,20 @@ mod tests {
 
     #[test]
     fn value_ord_orientation_negative_components() {
-        // Negative w values must order correctly.
-        // to_bits() gets this WRONG: (-1.0_f64).to_bits() > (-0.5_f64).to_bits()
-        let a = Value::Orientation {
-            w: -1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: -0.5,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(a < b);
+        // Negative component values must order correctly via total_cmp().
+        // to_bits() would give wrong ordering here — see module-level doc.
 
-        // Negative x tiebreaker (w tied)
-        let c = Value::Orientation {
-            w: 0.5,
-            x: -1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let d = Value::Orientation {
-            w: 0.5,
-            x: -0.5,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(c < d);
+        // Negative w: −1.0 < −0.5
+        assert!(orient(-1.0, 0.0, 0.0, 0.0) < orient(-0.5, 0.0, 0.0, 0.0));
 
-        // Negative y tiebreaker (w/x tied)
-        let g = Value::Orientation {
-            w: 0.5,
-            x: 0.0,
-            y: -1.0,
-            z: 0.0,
-        };
-        let h = Value::Orientation {
-            w: 0.5,
-            x: 0.0,
-            y: -0.5,
-            z: 0.0,
-        };
-        assert!(g < h);
+        // Negative x tiebreaker (w tied at 0.5): −1.0 < −0.5
+        assert!(orient(0.5, -1.0, 0.0, 0.0) < orient(0.5, -0.5, 0.0, 0.0));
 
-        // Cross-sign in z (w/x/y all tied)
-        let e = Value::Orientation {
-            w: 0.5,
-            x: 0.0,
-            y: 0.0,
-            z: -0.5,
-        };
-        let f = Value::Orientation {
-            w: 0.5,
-            x: 0.0,
-            y: 0.0,
-            z: 0.5,
-        };
-        assert!(e < f);
+        // Negative y tiebreaker (w/x tied): −1.0 < −0.5
+        assert!(orient(0.5, 0.0, -1.0, 0.0) < orient(0.5, 0.0, -0.5, 0.0));
+
+        // Cross-sign in z (w/x/y all tied at 0.5/0.0/0.0): −0.5 < +0.5
+        assert!(orient(0.5, 0.0, 0.0, -0.5) < orient(0.5, 0.0, 0.0, 0.5));
     }
 
     #[test]
