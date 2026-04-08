@@ -18974,11 +18974,11 @@
         "description": "In `crates/reify-types/src/value.rs`:\n1. (lines ~972-975) Qualify the NaN-payload claim in the `impl PartialEq for Value` doc: note that `content_hash()` normalises all NaN payloads to a canonical bit pattern, so NaN-payload differences affect only `PartialEq`, not content-addressing. Change 'must hash and compare differently' to something like 'NaN values with the same bit pattern compare equal; note that `content_hash()` normalises all NaN payloads so NaN-payload differences affect only `PartialEq`, not content-addressing.'\n2. (lines ~970-975) Add a caveat that `Point`, `Vector`, `Frame`, `Transform`, `Plane`, `Axis`, `BoundingBox`, `Matrix`, `Tensor` delegate equality to their inner type, so the bit-identity and Eq/Ord contract claims apply only to `Real`, `Scalar`, `Complex`, and `Orientation`.\n3. (lines ~972-980 and ~1174-1176) De-duplicate the Eq/Ord contract text: state the full contract once in the `PartialEq` doc and replace the `Ord` doc's restatement with a cross-reference like `/// See `impl PartialEq for Value` for the shared Eq/Ord contract.`\n\nMemory hints: search \"Value PartialEq Ord to_bits content_hash NaN canonicalization\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T11:54:39.511Z",
+        "updatedAt": "2026-04-08T17:22:23.322Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -22499,7 +22499,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:22:21.940Z",
+      "lastModified": "2026-04-08T17:22:23.325Z",
       "taskCount": 1094,
       "completedCount": 754,
       "tags": [
