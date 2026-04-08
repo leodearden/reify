@@ -3641,16 +3641,16 @@ fn compile_purpose(
     for param in &purpose_def.params {
         scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
         // Deprecation check: warn if the referenced entity kind is @deprecated.
-        if let Some(template) = template_registry.get(&param.entity_kind) {
-            if let Some(msg) = deprecation_message(&template.annotations) {
-                emit_deprecation_warning(
-                    &template.entity_kind.to_string().to_lowercase(),
-                    &param.entity_kind,
-                    &msg,
-                    param.span,
-                    diagnostics,
-                );
-            }
+        if let Some(template) = template_registry.get(&param.entity_kind)
+            && let Some(msg) = deprecation_message(&template.annotations)
+        {
+            emit_deprecation_warning(
+                &template.entity_kind.to_string().to_lowercase(),
+                &param.entity_kind,
+                &msg,
+                param.span,
+                diagnostics,
+            );
         }
     }
 
@@ -4176,16 +4176,16 @@ pub fn compile_with_prelude(
     // TraitDecl.refinements is Vec<String> without individual spans; use the child trait's span.
     for trait_decl in &trait_refs {
         for refinement_name in &trait_decl.refinements {
-            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str()) {
-                if let Some(msg) = deprecation_message(&parent_trait.annotations) {
-                    emit_deprecation_warning(
-                        "trait",
-                        refinement_name,
-                        &msg,
-                        trait_decl.span,
-                        &mut diagnostics,
-                    );
-                }
+            if let Some(parent_trait) = trait_registry.get(refinement_name.as_str())
+                && let Some(msg) = deprecation_message(&parent_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    refinement_name,
+                    &msg,
+                    trait_decl.span,
+                    &mut diagnostics,
+                );
             }
         }
     }
@@ -5314,16 +5314,16 @@ fn compile_entity(
 
         // Deprecation check: warn for each trait bound that references a @deprecated trait.
         for trait_bound in structure.trait_bounds {
-            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name) {
-                if let Some(msg) = deprecation_message(&compiled_trait.annotations) {
-                    emit_deprecation_warning(
-                        "trait",
-                        &trait_bound.name,
-                        &msg,
-                        trait_bound.span,
-                        diagnostics,
-                    );
-                }
+            if let Some(compiled_trait) = trait_registry.get(&trait_bound.name)
+                && let Some(msg) = deprecation_message(&compiled_trait.annotations)
+            {
+                emit_deprecation_warning(
+                    "trait",
+                    &trait_bound.name,
+                    &msg,
+                    trait_bound.span,
+                    diagnostics,
+                );
             }
         }
 
