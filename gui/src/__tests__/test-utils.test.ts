@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy } from './test-utils';
+import { flushMacrotasks, flushMicrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, expectNoUnhandledRejections } from './test-utils';
 
 describe('flushMacrotasks', () => {
   it('returns a Promise that resolves after yielding to the macrotask queue', async () => {
@@ -271,5 +271,66 @@ describe('withSuppressedRejectionsAndWarnSpy', () => {
     await expect(
       withSuppressedRejectionsAndWarnSpy(async () => { throw original; }),
     ).rejects.toThrow(original);
+  });
+});
+
+describe('expectNoUnhandledRejections', () => {
+  it('registers unhandledrejection handler before calling fn', async () => {
+    const addSpy = vi.spyOn(window, 'addEventListener');
+    let handlerRegisteredBeforeCall = false;
+
+    await expectNoUnhandledRejections(async () => {
+      handlerRegisteredBeforeCall = addSpy.mock.calls.some(
+        ([event]) => event === 'unhandledrejection',
+      );
+    });
+
+    expect(handlerRegisteredBeforeCall).toBe(true);
+    addSpy.mockRestore();
+  });
+
+  it('removes handler after fn resolves', async () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await expectNoUnhandledRejections(async () => {
+      // fn completes successfully
+    });
+
+    const removedRejection = removeSpy.mock.calls.some(
+      ([event]) => event === 'unhandledrejection',
+    );
+    expect(removedRejection).toBe(true);
+    removeSpy.mockRestore();
+  });
+
+  it('removes handler after fn rejects', async () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener');
+
+    await expectNoUnhandledRejections(async () => {
+      throw new Error('boom');
+    }).catch(() => {}); // swallow so the test doesn't fail
+
+    const removedRejection = removeSpy.mock.calls.some(
+      ([event]) => event === 'unhandledrejection',
+    );
+    expect(removedRejection).toBe(true);
+    removeSpy.mockRestore();
+  });
+
+  it('re-throws the original error from fn', async () => {
+    const original = new Error('original failure');
+
+    await expect(
+      expectNoUnhandledRejections(async () => { throw original; }),
+    ).rejects.toThrow(original);
+  });
+
+  it('fails the test if an unhandledrejection fires during fn', async () => {
+    await expect(
+      expectNoUnhandledRejections(async () => {
+        // Simulate an unhandledrejection event firing during fn
+        window.dispatchEvent(new Event('unhandledrejection'));
+      }),
+    ).rejects.toThrow();
   });
 });
