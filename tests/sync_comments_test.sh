@@ -33,7 +33,7 @@ assert \
 if [ -n "$_expr_ref_fn" ]; then
     assert \
         "fn ${_expr_ref_fn} exists in reify-stdlib/src/lib.rs (as referenced by SYNC in reify-expr)" \
-        grep -qE '^(pub )?(fn|async fn) '"${_expr_ref_fn}"'\b' "$STDLIB_FILE"
+        grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${_expr_ref_fn}"'[[:space:](]' "$STDLIB_FILE"
 fi
 
 # Extract the function name referenced in reify-stdlib's SYNC comment and verify
@@ -45,7 +45,7 @@ assert \
 if [ -n "$_stdlib_ref_fn" ]; then
     assert \
         "fn ${_stdlib_ref_fn} exists in reify-expr/src/lib.rs (as referenced by SYNC in reify-stdlib)" \
-        grep -qE '^(pub )?(fn|async fn) '"${_stdlib_ref_fn}"'\b' "$EXPR_FILE"
+        grep -qE '^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${_stdlib_ref_fn}"'[[:space:](]' "$EXPR_FILE"
 fi
 
 test_summary
