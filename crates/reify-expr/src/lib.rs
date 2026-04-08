@@ -4569,6 +4569,44 @@ mod tests {
         );
     }
 
+    // ── method regression: finite conjugate still works ──────────────────────
+
+    #[test]
+    fn conjugate_finite_dimensioned_correct() {
+        // Complex{re:3.0, im:4.0, LENGTH}.conjugate == Complex{re:3.0, im:-4.0, LENGTH}
+        // Guards against the pre-guard accidentally rejecting finite values.
+        // Uses a dimensioned (LENGTH) Complex to add coverage beyond the dimensionless
+        // path already tested in tests/complex_eval_tests.rs::method_conjugate.
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::length()),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Complex { re, im, dimension } => {
+                assert!(
+                    (re - 3.0).abs() < 1e-12,
+                    "expected re=3.0, got {}",
+                    re
+                );
+                assert!(
+                    (im - (-4.0)).abs() < 1e-12,
+                    "expected im=-4.0, got {}",
+                    im
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}", other),
+        }
+    }
+
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 
     #[test]
