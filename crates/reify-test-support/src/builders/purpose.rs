@@ -111,6 +111,7 @@ impl CompiledPurposeBuilder {
             resolved_queries: self.resolved_queries,
             content_hash,
             annotations: self.annotations,
+            pragmas: Vec::new(),
         }
     }
 }

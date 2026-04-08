@@ -38,6 +38,8 @@ pub struct CompiledTrait {
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#precision(bits=32)`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A required member in a trait — conforming structures must provide this.
@@ -138,6 +140,8 @@ pub struct CompiledPurpose {
     pub content_hash: ContentHash,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
+    /// Block-level pragmas from the parsed declaration (e.g., `#solver(method="gradient")`).
+    pub pragmas: Vec<reify_syntax::Pragma>,
 }
 
 /// A compiled module — the output of the compiler.
@@ -3621,6 +3625,7 @@ fn compile_trait(
         defaults,
         content_hash,
         annotations,
+        pragmas: trait_decl.pragmas.clone(),
     }
 }
 
@@ -3851,6 +3856,7 @@ fn compile_purpose(
         resolved_queries,
         content_hash: purpose_def.content_hash,
         annotations,
+        pragmas: purpose_def.pragmas.clone(),
     }
 }
 
