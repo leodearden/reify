@@ -311,6 +311,76 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     expect(mockView.dispatch).not.toHaveBeenCalled();
   });
 
+  it('does not call onNavigate when LSP line is NaN (non-integer cross-file)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Cross-file response with NaN line (serialised as null via JSON).
+    // null < 0 → false, so the current guard passes null through to onNavigate.
+    // Guard should reject null/non-integer before delegating to onNavigate.
+    const crossFileNanLine = {
+      uri: 'file:///other.ri',
+      range: { start: { line: NaN, character: 0 }, end: { line: NaN, character: 0 } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileNanLine));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    // Throwing doc.line() is defense-in-depth: if cross-file guard bypasses and
+    // somehow reaches doc.line(), the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN (null) line must be rejected; onNavigate must not be called
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not call onNavigate when LSP character is NaN (non-integer cross-file)', async () => {
+    const currentUri = 'file:///current.ri';
+    // Cross-file response with valid line but NaN character (serialised as null via JSON).
+    // null < 0 → false, so the current guard passes null through to onNavigate.
+    // Guard should reject null/non-integer before delegating to onNavigate.
+    const crossFileNanChar = {
+      uri: 'file:///other.ri',
+      range: { start: { line: 5, character: NaN }, end: { line: 5, character: NaN } },
+    };
+    mockInvoke.mockResolvedValue(JSON.stringify(crossFileNanChar));
+
+    const onNavigate = vi.fn();
+    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+    const mousedownHandler = ext.handlers.mousedown;
+
+    const mockEvent = makeMouseEvent();
+
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN (null) character must be rejected; onNavigate must not be called
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('partial suffix overlap (/a/foo.ri vs /b/a/foo.ri) triggers cross-file navigation', async () => {
     // currentUri is '/a/foo.ri'; LSP returns 'file:///b/a/foo.ri'.
     // The bare path '/a/foo.ri' is a suffix of '/b/a/foo.ri', but they are different files.
