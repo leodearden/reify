@@ -495,3 +495,26 @@ async fn did_close_with_malformed_params_returns_error() {
         "error message should contain 'didClose params error', got: {err}"
     );
 }
+
+/// The `shutdown` request should return exactly `Ok(Value::Null)`.
+///
+/// This documents that the shutdown arm follows the same `Ok(Value::Null)` contract
+/// as successfully-processed notifications, and provides coverage for an arm that
+/// was previously untested.
+#[tokio::test]
+async fn shutdown_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+
+    let result = lsp.handle_request("shutdown", json!({})).await;
+
+    assert!(
+        result.is_ok(),
+        "shutdown should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown should return exactly Ok(Value::Null)"
+    );
+}
