@@ -287,19 +287,7 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-
-    // json!(42) is clearly malformed for InitializeParams (expects an object)
-    let result = lsp.handle_request("initialize", json!(42)).await;
-
-    assert!(
-        result.is_err(),
-        "server should return Err on malformed params"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("initialize params error"),
-        "error message should contain 'initialize params error', got: {err}"
-    );
+    assert_malformed_params_returns_error(&lsp, "initialize", "initialize params error").await;
 }
 
 /// Notifications with malformed params should propagate deserialization errors as Err,
