@@ -1177,6 +1177,59 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     );
 }
 
+// --- byte_offset_to_line_col edge-case tests ---
+
+#[test]
+fn byte_offset_to_line_col_basic_conversion() {
+    use crate::engine::byte_offset_to_line_col;
+
+    let source = "abc\ndef";
+    // offset 0 → start of first line → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 3 → just before the '\n' → (1, 4) (col after 'a','b','c')
+    assert_eq!(byte_offset_to_line_col(source, 3), (1, 4));
+    // offset 4 → first char of second line → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 4), (2, 1));
+    // offset 6 → last char 'f' → (2, 3)
+    assert_eq!(byte_offset_to_line_col(source, 6), (2, 3));
+}
+
+#[test]
+fn byte_offset_to_line_col_empty_source() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Empty source: offset 0 → initial position (1, 1)
+    assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
+}
+
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "ab" (len=2). Offset 100 far exceeds the source length.
+    // The loop exhausts all chars without hitting the break, leaving the
+    // position after the last char: column incremented for 'a' and 'b' → (1, 3).
+    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+}
+
+#[test]
+fn byte_offset_to_line_col_empty_span_identical_coords() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // When a diagnostic span has start == end (empty span), both calls to
+    // byte_offset_to_line_col with the same offset must return identical coords.
+    // offset 6 in "hello\nworld" (after '\n') → start of second line → (2, 1).
+    let source = "hello\nworld";
+    let offset = 6; // 'w' is the first char of "world"
+    let start_coord = byte_offset_to_line_col(source, offset);
+    let end_coord = byte_offset_to_line_col(source, offset);
+    assert_eq!(
+        start_coord, end_coord,
+        "empty span: identical offsets must produce identical coords"
+    );
+    assert_eq!(start_coord, (2, 1));
+}
+
 // --- Task 837: offset_to_line_col_fast unit tests ---
 
 /// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
