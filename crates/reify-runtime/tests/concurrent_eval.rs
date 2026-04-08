@@ -1634,6 +1634,35 @@ mod poison_recovery {
         );
     }
 
+    /// take_results() recovers gracefully from a poisoned results Mutex: no panic,
+    /// returned results are empty, and exactly one tracing::warn! is emitted.
+    #[test]
+    fn take_results_recovers_from_poisoned_results_lock_with_warn() {
+        let setup = simple_setup();
+        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+
+        adapter.poison_results();
+
+        let (subscriber, warn_count) = warn_counting_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
+        });
+
+        assert!(
+            result.is_ok(),
+            "take_results() should recover from poisoned lock, not panic"
+        );
+        let results = result.unwrap();
+        assert!(results.is_empty());
+        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
+        // poisoned, so exactly 1 WARN fires.
+        assert_eq!(
+            count, 1,
+            "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+        );
+    }
+
     /// take_results() recovers gracefully from a poisoned results Mutex and returns valid data.
     #[test]
     fn take_results_recovers_from_poisoned_results_lock() {
