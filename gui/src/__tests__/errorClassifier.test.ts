@@ -141,6 +141,7 @@ describe('errorClassifier', () => {
     it('returns Unknown error for plain object with non-string .message', () => {
       expect(errorMessage({ message: 42 })).toBe('Unknown error');
       expect(errorMessage({ message: null })).toBe('Unknown error');
+      expect(errorMessage({ message: undefined })).toBe('Unknown error');
     });
 
     it('falls through to String() for plain object without .message', () => {
