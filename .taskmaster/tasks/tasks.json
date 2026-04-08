@@ -24104,16 +24104,21 @@
         "description": "The sweep degenerate tests cover zero-distance extrude and zero-angle revolve, but miss negative-distance extrude and negative-angle revolve. Negative values may be valid (reverse direction/clockwise rotation) or should be rejected — either way, explicit tests should document the intended behavior. Add test cases like negative_extrude_distance_is_valid (or _is_rejected) and negative_revolve_angle to crates/reify-eval/tests/stress_sweep_degenerate.rs.\n\nmemory_hints: search \"sweep degenerate stress test extrude revolve\" for related test context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:20:09.784Z"
+        "updatedAt": "2026-04-08T23:23:11.083Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T23:22:54.007Z",
+      "lastModified": "2026-04-08T23:23:11.083Z",
       "taskCount": 1181,
       "completedCount": 866,
       "tags": [
