@@ -22416,15 +22416,16 @@
         "description": "Three robustness improvements to portable_timeout() in scripts/lib_portable.sh (POSIX fallback path, lines 89-109):\n\n## S1 — Preserve caller's monitor-mode (`set -m`) state\nThe `set -m` / `set +m` toggle at lines 91/98 and 102/108 is not state-preserving. If the caller (or a sourcing parent) already had job control enabled, `set +m` will unconditionally disable it as a silent side effect. Save the previous state before toggling and only restore if it was previously unset:\n```bash\nlocal _pt_had_monitor=0\ncase $- in *m*) _pt_had_monitor=1 ;; esac\nset -m 2>/dev/null || true\n( sleep ... ) &\n[ \"$_pt_had_monitor\" -eq 0 ] && set +m 2>/dev/null || true\n```\n\n## S3 — Close SIGKILL PID-reuse race window\nLines 95-96 and 105-106 run `kill -0 \"$cmd_pid\"` + `kill -9` after a 2s grace, but by that point the main shell has already `wait`ed on `cmd_pid` and the kernel may have reaped it. On a busy system (especially CI containers with aggressive PID recycling) a second process could inherit `cmd_pid` and get killed by mistake. The 2s window is small but non-zero.\n\nPreferred fix (reviewer option a): remove the `kill -0` + `kill -9` escalation from inside the timer subshell entirely, and rely on the main shell's `kill -- -$timer_pid` cleanup path (line 115) to terminate the still-running command+timer as a process group. In the happy path the timer only escalates if the wait window closed with the command still running, which is exactly the timeout case.\n\n## S4 — Document or derive the SIGKILL grace period\nThe `sleep 2` grace period is a hardcoded magic constant. For callers using very short timeouts (`portable_timeout 1 ...`) it doubles the effective wait. Either:\n- Add a comment explaining the 2s choice, OR\n- Derive from the timeout duration: `grace=$(( seconds < 10 ? 1 : 2 ))`, OR\n- Document in the portable_timeout header comment that the function guarantees termination within `seconds + ~2s`.\n\n## Verification\nRun `tests/infra/test_portable_timeout.sh` and `scripts/test_tree_sitter_generate.sh`. Existing tests should still pass.\n\nSource: review escalation esc-994-69 (suggestions S1, S3, S4).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T17:20:32.483Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:20:31.559Z",
+      "lastModified": "2026-04-08T17:20:32.491Z",
       "taskCount": 1088,
       "completedCount": 753,
       "tags": [
