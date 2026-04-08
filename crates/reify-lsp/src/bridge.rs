@@ -107,7 +107,7 @@ impl InProcessLsp {
         match method {
             "initialize" => {
                 let p: InitializeParams = serde_json::from_value(params)
-                    .map_err(|e| format!("initialize params error: {e}"))?;
+                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZE_PARAMS))?;
                 let result = server
                     .initialize(p)
                     .await
@@ -125,25 +125,25 @@ impl InProcessLsp {
                     params
                 };
                 let p: InitializedParams = serde_json::from_value(params)
-                    .map_err(|e| format!("initialized params error: {e}"))?;
+                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZED_PARAMS))?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
                 let p: DidOpenTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("didOpen params error: {e}"))?;
+                    .map_err(|e| format!("{}: {e}", error_prefix::DID_OPEN_PARAMS))?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
                 let p: DidChangeTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("didChange params error: {e}"))?;
+                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CHANGE_PARAMS))?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
                 let p: DidCloseTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("didClose params error: {e}"))?;
+                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CLOSE_PARAMS))?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
@@ -181,7 +181,7 @@ impl InProcessLsp {
                     .map_err(|e| format!("shutdown error: {e}"))?;
                 Ok(Value::Null)
             }
-            other => Err(format!("unsupported LSP method: {other}")),
+            other => Err(format!("{} {other}", error_prefix::UNSUPPORTED_METHOD)),
         }
     }
 }
