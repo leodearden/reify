@@ -22715,6 +22715,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1106,
+        "title": "Extract assert_ord_consistent test helper for bit-identity tests",
+        "description": "In `crates/reify-types/src/value.rs` (lines ~2258-3643), the three bit-identity test functions (`value_scalar_bit_identity_neg_zero_and_nan_consistent`, `value_complex_bit_identity_nan_and_neg_zero_consistent`, `value_orientation_bit_identity_nan_and_neg_zero_consistent`) share an identical structural pattern:\n\n  create pair → assert_eq/ne → check cmp consistency → check antisymmetry → check ordering direction\n\nExtract a small test helper like:\n```rust\nfn assert_ord_consistent(a: &Value, b: &Value, expect_equal: bool)\n```\nthat takes two Values and an expected equality boolean, then asserts the full PartialEq↔Ord contract (equality match, antisymmetry, and optionally ordering direction). This would:\n- Reduce repetition across all three tests\n- Make it impossible to accidentally omit a consistency check (as happened with the missing `neg_im < pos_im` assertion)\n- Provide a reusable pattern for future Value variant tests\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -22727,7 +22738,7 @@
       ],
       "created": "2026-04-08T20:39:41.189Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T20:39:41.197Z"
+      "updated": "2026-04-08T20:39:49.157Z"
     }
   }
 }
