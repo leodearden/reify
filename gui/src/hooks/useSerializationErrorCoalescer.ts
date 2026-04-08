@@ -19,7 +19,10 @@ export interface SerializationErrorCoalescer {
  *
  * A hard ceiling (`maxWaitMs`, default 3000ms) guarantees a flush even when
  * errors arrive faster than `windowMs` would otherwise allow (i.e. when
- * continuous arrivals keep resetting the debounce indefinitely).
+ * continuous arrivals keep resetting the debounce indefinitely). When timers
+ * are throttled (e.g. a backgrounded tab) and the elapsed wall-clock time on
+ * a new arrival has already exceeded `maxWaitMs`, `add()` flushes synchronously
+ * rather than waiting for the throttled timer.
  */
 export function createSerializationErrorCoalescer(
   showToast: ShowToast,
@@ -49,6 +52,7 @@ export function createSerializationErrorCoalescer(
   function add(error: SerializationError): void {
     const key = `${error.item_type}:${error.item_id}`;
     buffer.set(key, error);
+    // Read Date.now() once: keeps firstArrival and elapsed consistent under throttled timers (backgrounded tabs).
     const now = Date.now();
     firstArrival ??= now;
     const elapsed = now - firstArrival;
