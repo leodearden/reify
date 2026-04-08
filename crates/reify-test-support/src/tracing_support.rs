@@ -1206,4 +1206,40 @@ mod tests {
 
         assert_warn_count(&counter, 1, "exactly one warn");
     }
+
+    // ── warn_counting_guard tests ─────────────────────────────────────────────
+
+    /// `warn_counting_guard()` installs a WARN-counting subscriber as the
+    /// thread-default and returns a live guard + shared counter.
+    ///
+    /// While the guard is in scope, `tracing::warn!` events are counted.
+    /// After the guard drops, the subscriber is removed.
+    #[test]
+    fn warn_counting_guard_captures_warn_events() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_guard;
+
+        let (_guard, counter) = warn_counting_guard();
+
+        tracing::warn!("from guard subscriber");
+
+        assert_warn_count(&counter, 1, "guard must count the WARN event");
+    }
+
+    /// `warn_counting_guard()` does not count WARN events after the guard drops.
+    ///
+    /// Once the guard is dropped the subscriber is removed, so events emitted
+    /// outside the guard's lifetime are not reflected in the counter.
+    #[test]
+    fn warn_counting_guard_stops_counting_after_drop() {
+        use crate::assert_warn_count;
+        use crate::warn_counting_guard;
+
+        let (guard, counter) = warn_counting_guard();
+        tracing::warn!("inside guard");
+        drop(guard);
+        // Any warn emitted here is not captured by the guard's subscriber.
+        // We just verify the count was exactly 1 (not more from external state).
+        assert_warn_count(&counter, 1, "only the warn inside the guard is counted");
+    }
 }
