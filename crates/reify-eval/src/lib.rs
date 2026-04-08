@@ -2902,6 +2902,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -2981,6 +2982,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3101,6 +3103,7 @@ impl Engine {
                         &step_handles[handle_start..],
                         &module.functions,
                         meta_map,
+                        diagnostics,
                     );
                     match geom_op {
                         Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3346,21 +3349,26 @@ fn compile_geometry_op(
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> reify_types::Value {
+                match args.iter().find(|(n, _)| n == name) {
+                    Some((_, expr)) => reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                    ),
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "missing required geometry argument '{}' for {:?}",
+                            name, kind
+                        )));
+                        reify_types::Value::Undef
+                    }
+                }
             };
 
             match kind {
@@ -3407,16 +3415,20 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> reify_types::Value {
+                match args.iter().find(|(n, _)| n == name) {
+                    Some((_, expr)) => reify_expr::eval_expr(
+                        expr,
+                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+                    ),
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "missing required geometry argument '{}' for {:?}",
+                            name, kind
+                        )));
+                        reify_types::Value::Undef
+                    }
+                }
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
@@ -4278,7 +4290,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(2.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Scale");
 
         match result {
@@ -4309,7 +4321,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for RotateAround");
 
         match result {
@@ -4345,7 +4357,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Loft");
 
         match result {
@@ -4371,7 +4383,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.05))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4420,7 +4432,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'ox' arg, got {:?}",
@@ -4439,7 +4451,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'distance' arg, got {:?}",
@@ -4459,7 +4471,7 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN extrude distance should return None");
     }
 
@@ -4475,7 +4487,7 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::INFINITY))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "Inf extrude distance should return None");
     }
 
@@ -4499,7 +4511,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "zero-length rotation axis should return None"
@@ -4526,7 +4538,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN rotation axis should return None");
     }
 
@@ -4549,7 +4561,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result =
             result.expect("compile_geometry_op should return Some for Revolve with valid axis");
 
@@ -4584,7 +4596,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.03))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4619,7 +4631,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(-1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "negative scale factor should return None (inside-out geometry)"
@@ -4638,7 +4650,7 @@ mod tests {
             args: vec![("dx".into(), literal_f64(1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing dy/dz should return None, not silently default to 0.0"
@@ -4656,7 +4668,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN scale factor should return None");
     }
 
@@ -4680,7 +4692,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "missing axis_z should return None");
     }
 
@@ -4702,7 +4714,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing spacing should return None, not silently default to Value::Undef"
@@ -4730,7 +4742,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing angle should return None, not silently default to Value::Undef"
@@ -4754,7 +4766,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::LinearPattern {
                 target,
@@ -4795,7 +4807,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::CircularPattern {
                 target,
@@ -4836,7 +4848,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::Mirror {
                 target,
@@ -4849,6 +4861,196 @@ mod tests {
             }
             other => panic!("expected Some(Mirror), got {:?}", other),
         }
+    }
+
+    // ── compile_geometry_op diagnostic tests ─────────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_primitive_missing_arg_emits_diagnostic() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Box with height and depth present, but 'width' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+                // width deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The op is still constructed (Some), not aborted
+        assert!(
+            result.is_some(),
+            "compile_geometry_op should return Some even when an arg is missing"
+        );
+
+        // The missing 'width' arg should produce Value::Undef
+        match result.unwrap() {
+            reify_types::GeometryOp::Box { width, .. } => {
+                assert_eq!(
+                    width,
+                    reify_types::Value::Undef,
+                    "missing arg should default to Value::Undef"
+                );
+            }
+            other => panic!("expected GeometryOp::Box, got {:?}", other),
+        }
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("width"),
+            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Box"),
+            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_missing_arg_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Fillet with target but 'radius' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                // radius deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The op is still constructed (Some), not aborted
+        assert!(
+            result.is_some(),
+            "compile_geometry_op should return Some even when an arg is missing"
+        );
+
+        // The missing 'radius' arg should produce Value::Undef
+        match result.unwrap() {
+            reify_types::GeometryOp::Fillet { radius, .. } => {
+                assert_eq!(
+                    radius,
+                    reify_types::Value::Undef,
+                    "missing arg should default to Value::Undef"
+                );
+            }
+            other => panic!("expected GeometryOp::Fillet, got {:?}", other),
+        }
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'radius'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Fillet"),
+            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Primitive::Box with all required args present
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), literal_length(0.10)),
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &box_op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Box with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Primitive args are present, got: {:?}",
+            diagnostics
+        );
+
+        // Modify::Fillet with target and radius present
+        let fillet_op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("radius".into(), literal_length(0.005))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &fillet_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Fillet with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Modify args are present, got: {:?}",
+            diagnostics
+        );
     }
 
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
