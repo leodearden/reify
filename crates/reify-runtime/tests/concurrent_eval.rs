@@ -1613,10 +1613,10 @@ fn assert_poison_recovers<T: Send + 'static>(
     expected_warns: usize,
     message_substring: &str,
 ) -> T {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::catch_unwind;
     let (subscriber, capture) = warn_capturing_subscriber();
     let result = tracing::subscriber::with_default(subscriber, || {
-        catch_unwind(AssertUnwindSafe(action))
+        catch_unwind(action)
     });
     assert!(
         result.is_ok(),
