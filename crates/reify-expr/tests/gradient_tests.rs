@@ -2843,7 +2843,7 @@ fn gradient_single_point_param_quadratic() {
                     .as_f64()
                     .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
                 assert!(
-                    (val - exp).abs() < 1e-3,
+                    (val - exp).abs() < 1e-9,
                     "gradient component {} of dot(p,p) at (2,3,5) should be ~{}, got {}",
                     i,
                     exp,
