@@ -212,6 +212,16 @@ impl tracing::Subscriber for WarnCountingSubscriber {
         // true; our enabled() accepts only WARN, so only WARN events reach
         // here. The debug_assert catches direct misuse (called outside the
         // dispatcher) loudly in debug builds.
+        //
+        // Release-mode asymmetry (intentional): unlike `CountingSubscriber::event()`
+        // which defensively filters via `counters.get()`, this subscriber relies
+        // entirely on the dispatcher contract enforced by `enabled()`.  In release
+        // builds `debug_assert_eq!` is compiled out, so a contract violation would
+        // silently miscount.  This is deliberate: `enabled()` is the sole runtime
+        // gate in all build profiles, and the silent-defaults alignment established
+        // by task 972 favours minimal branches in the hot path over defensive
+        // double-checks.  The `debug_assert_eq!` backstop catches violations during
+        // development and testing.
         debug_assert_eq!(
             event.metadata().level(),
             &tracing::Level::WARN,
