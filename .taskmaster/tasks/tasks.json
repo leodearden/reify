@@ -24219,6 +24219,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1190,
+        "title": "Harden test_build_rs_reads_use_manifest_dir meta-test detection",
+        "description": "Strengthen the meta-test in tree-sitter-reify/tests/build_logic_tests.rs that guards against bare-relative `read_to_string(\"build.rs\")` calls. Three small improvements were suggested in review of Task 1040:\n\n1. **Inline comments not stripped (line 1281-1284)**: The current filter only skips lines whose trimmed text starts with `//`. A trailing inline comment like `let x = 0; // example: read_to_string(\"build.rs\")` would be misflagged. Fix: strip everything after `//` before doing `contains`, e.g.:\n   ```rust\n   let code = line.split(\"//\").next().unwrap_or(line);\n   code.contains(bare_pattern)\n   ```\n   Also consider `/* ... */` block comments.\n\n2. **Detection too narrow (line 1276)**: Only matches the literal `read_to_string(\"build.rs\")`. Variants such as `read_to_string( \"build.rs\" )`, `read_to_string(\"./build.rs\")`, or `File::open(\"build.rs\")` would silently bypass the guard. Fix: use a regex (the `regex` dev-dep is already used elsewhere in the crate) like `read_to_string\\s*\\(\\s*\"\\.?\\/?build\\.rs\"\\s*\\)` or scan for any `\"build.rs\"` literal outside the BUILD_RS doc string.\n\n3. **Test name awkward (line 1259)**: Rename `test_build_rs_reads_use_manifest_dir` → `test_no_bare_relative_build_rs_reads` (or `test_build_rs_reads_use_const_path`) to match the descriptive style of nearby tests (`test_no_redundant_rerun_if_changed`, `test_out_dir_no_silent_fallback`). Update the doc comment accordingly.\n\nAll three are quality-of-life hardening. None are urgent — the meta-test currently catches the actual regression it was created for. Source: review_suggestions on Task 1040 by reviewer_comprehensive.\n\nmemory_hints: search \"Task 1040 CARGO_MANIFEST_DIR build_logic_tests\" in reify project",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24231,7 +24242,7 @@
       ],
       "created": "2026-04-08T23:36:48.952Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T23:38:32.498Z"
+      "updated": "2026-04-08T23:38:33.964Z"
     }
   }
 }
