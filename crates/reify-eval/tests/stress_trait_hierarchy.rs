@@ -403,3 +403,98 @@ fn multi_trait_impl_three_independent() {
         );
     }
 }
+
+// ── step-11/12: Constrained diamond (constraints at every level) ──────────────
+
+/// Verify ConstrainedDiamond : LeftC + RightC (both via BaseC) collects all
+/// constraints as a conjunction.
+///
+/// BaseC contributes: x > 0mm AND x < 1000mm
+/// LeftC contributes: l_val > 0mm
+/// RightC contributes: r_val > 0mm
+/// ConstrainedDiamond itself: x < 100mm
+///
+/// With defaults x=10mm, l_val=5mm, r_val=5mm all should be Satisfied.
+/// The 2 BaseC constraints should appear only once (diamond deduplication).
+#[test]
+fn diamond_with_extra_constraints() {
+    let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
+        .expect("trait_hierarchy.ri should exist");
+    let parsed = reify_syntax::parse(&source, ModulePath::single("trait_hierarchy"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.eval(&compiled);
+
+    // x = 10mm = 0.01 m SI
+    let x_id = ValueCellId::new("ConstrainedDiamond", "x");
+    let x_val = result.values.get(&x_id)
+        .unwrap_or_else(|| panic!("ConstrainedDiamond.x not found"));
+    match x_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.01).abs() < 1e-12,
+                "ConstrainedDiamond.x should be 0.01 m (10mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ConstrainedDiamond.x should be Scalar, got {:?}", other),
+    }
+
+    // l_val = 5mm = 0.005 m SI
+    let l_id = ValueCellId::new("ConstrainedDiamond", "l_val");
+    let l_val = result.values.get(&l_id)
+        .unwrap_or_else(|| panic!("ConstrainedDiamond.l_val not found"));
+    match l_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.005).abs() < 1e-12,
+                "ConstrainedDiamond.l_val should be 0.005 m (5mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ConstrainedDiamond.l_val should be Scalar, got {:?}", other),
+    }
+
+    // r_val = 5mm = 0.005 m SI
+    let r_id = ValueCellId::new("ConstrainedDiamond", "r_val");
+    let r_val = result.values.get(&r_id)
+        .unwrap_or_else(|| panic!("ConstrainedDiamond.r_val not found"));
+    match r_val {
+        reify_types::Value::Scalar { si_value, .. } => {
+            assert!(
+                (si_value - 0.005).abs() < 1e-12,
+                "ConstrainedDiamond.r_val should be 0.005 m (5mm), got {}",
+                si_value
+            );
+        }
+        other => panic!("ConstrainedDiamond.r_val should be Scalar, got {:?}", other),
+    }
+
+    // All constraints from BaseC (deduplicated), LeftC, RightC, and ConstrainedDiamond itself
+    // Expected at minimum: x>0mm, x<1000mm, l_val>0mm, r_val>0mm, x<100mm = 5 constraints
+    let check_result = engine.check(&compiled);
+    let cd_constraints: Vec<_> = check_result.constraint_results.iter()
+        .filter(|e| e.id.entity == "ConstrainedDiamond")
+        .collect();
+
+    assert!(
+        cd_constraints.len() >= 5,
+        "expected >= 5 constraints for ConstrainedDiamond (x>0mm, x<1000mm, l_val>0mm, r_val>0mm, x<100mm), got {}",
+        cd_constraints.len()
+    );
+    for entry in &cd_constraints {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "ConstrainedDiamond constraint {} should be Satisfied",
+            entry.id
+        );
+    }
+}
