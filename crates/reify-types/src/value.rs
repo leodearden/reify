@@ -2272,7 +2272,18 @@ mod tests {
                 "PartialEq↔Ord contract: expected a.cmp(b) == Equal when a == b"
             );
         } else {
-            todo!("non-equal branch not yet implemented")
+            assert_ne!(a, b, "PartialEq↔Ord contract: expected a != b");
+            assert_ne!(
+                a.cmp(b),
+                std::cmp::Ordering::Equal,
+                "PartialEq↔Ord contract: expected a.cmp(b) != Equal when a != b"
+            );
+            assert_eq!(
+                a.cmp(b),
+                b.cmp(a).reverse(),
+                "PartialEq↔Ord contract: antisymmetry violated"
+            );
+            assert!(a < b, "PartialEq↔Ord contract: expected a < b (caller must pass smaller value first)");
         }
     }
 
