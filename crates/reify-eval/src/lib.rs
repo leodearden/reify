@@ -1782,6 +1782,15 @@ impl Engine {
                 }
 
                 // Recompute topology fingerprint including guard states
+                //
+                // EXEMPTION: unwrap_or(Value::Undef) is intentionally kept here (Site 1).
+                // Guard cells are guaranteed present — the re-elaboration loop above (line 1707)
+                // inserts each guard_val into `values` before this fingerprint computation runs.
+                // However, this is the initial eval() path where defensive coding is acceptable:
+                // if a guard cell were hypothetically absent, Undef IS the semantically correct
+                // representation of an undetermined guard state during initial evaluation.
+                // Compare with Sites 2 and 3 in edit_param(), which use expect() because the
+                // invariant is stronger there (eval() has already completed and populated all cells).
                 let guard_state_hash = {
                     let hashes = graph.guarded_groups.iter().map(|g| {
                         let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
@@ -1984,10 +1993,12 @@ impl Engine {
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
                 for group in new_snapshot.graph.guarded_groups.clone() {
+                    // Site 3: guard cell must be present — eval() has completed and populated all
+                    // guard cells into the values map. A missing guard cell here is a logic error.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
-                        .unwrap_or(Value::Undef);
+                        .expect("guard cell must have a value after initial evaluation");
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
@@ -2062,14 +2073,22 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint to include guard states
+                // Recompute topology fingerprint to include guard states.
+                // Site 2: guard cells must be present — eval() has completed and populated all
+                // guard cells into the values map before any edit_param() call. The incremental
+                // re-evaluation may update guard cell values but never removes them.
+                // A missing guard cell here would silently produce a wrong fingerprint (by hashing
+                // Undef instead of the actual guard value), causing stale incremental caches.
                 let base_fingerprint = new_snapshot.graph.topology_fingerprint();
                 let guard_state_hashes: Vec<ContentHash> = new_snapshot
                     .graph
                     .guarded_groups
                     .iter()
                     .map(|g| {
-                        let val = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
+                        let val = values
+                            .get(&g.guard_cell)
+                            .cloned()
+                            .expect("guard cell must have a value after initial evaluation");
                         ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
                     })
                     .collect();
