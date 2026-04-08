@@ -89,13 +89,22 @@ portable_timeout() {
             # Enable job control temporarily so the timer subshell is placed in its
             # own process group, making 'kill -- -$timer_pid' safe and effective.
             set -m 2>/dev/null || true
-            ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
+            ( sleep "$seconds" && {
+                touch "$timeout_flag" 2>/dev/null
+                kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
+              } ) &
             set +m 2>/dev/null || true
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
             set -m 2>/dev/null || true
-            ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+            ( sleep "$seconds" && {
+                kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -0 "$cmd_pid" 2>/dev/null && kill -9 "$cmd_pid" 2>/dev/null || true
+              } ) &
             set +m 2>/dev/null || true
         fi
         local timer_pid=$!
