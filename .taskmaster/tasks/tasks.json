@@ -24264,6 +24264,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1193,
+        "title": "sanitize_value: update doc inventory and add Complex arm unit tests in reify-expr",
+        "description": "Two related follow-ups to task 864 for the reify-expr copy of sanitize_value (crates/reify-expr/src/lib.rs ~line 1030-1071):\n\nS1 (stale_documentation): The doc comment still claims \"only the Value::Real and Value::Scalar arms are reachable from current call sites; the Value::Orientation arm is unreachable today but is included for structural parity\". After the recent diff, Value::Complex is also present in the match. Update the comment to list Complex alongside Orientation as an arm that is currently unreachable from reify-expr call sites but kept for structural parity with reify-stdlib::sanitize_value (defense-in-depth). E.g.: \"the Value::Complex and Value::Orientation arms are unreachable today but are included for structural parity...\".\n\nS2 (test_coverage_gap): reify-expr has direct sanitize_value unit tests for the Real, Scalar, and Orientation arms (lib.rs:4451-4615) but no equivalent direct tests for the newly-added Value::Complex arm. The reify-stdlib copy tests Complex through eval_builtin overflow paths; reify-expr should mirror its existing Orientation-style direct tests for Complex (NaN re, NaN im, +Inf re, -Inf im, finite passthrough). Without these, a future edit that breaks the Complex arm in only one crate would only be caught by the shell-level body-diff guard (added in task 864), not by Rust unit tests.\n\nAdd a new \"── sanitize_value Complex arm tests ──\" section adjacent to the Orientation arm tests in reify-expr/src/lib.rs, exercising NaN re, NaN im, +Inf re, -Inf im, and a finite passthrough. Use Value::Complex { re, im, dimension: DimensionVector::DIMENSIONLESS }.\n\nSource: review of task 864 (esc-864-918).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24276,7 +24287,7 @@
       ],
       "created": "2026-04-08T23:41:31.593Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T23:41:31.602Z"
+      "updated": "2026-04-08T23:41:35.611Z"
     }
   }
 }
