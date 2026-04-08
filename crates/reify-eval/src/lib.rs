@@ -4851,6 +4851,75 @@ mod tests {
         }
     }
 
+    // ── compile_geometry_op diagnostic tests ─────────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_primitive_missing_arg_emits_diagnostic() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Box with height and depth present, but 'width' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+                // width deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The op is still constructed (Some), not aborted
+        assert!(
+            result.is_some(),
+            "compile_geometry_op should return Some even when an arg is missing"
+        );
+
+        // The missing 'width' arg should produce Value::Undef
+        match result.unwrap() {
+            reify_types::GeometryOp::Box { width, .. } => {
+                assert_eq!(
+                    width,
+                    reify_types::Value::Undef,
+                    "missing arg should default to Value::Undef"
+                );
+            }
+            other => panic!("expected GeometryOp::Box, got {:?}", other),
+        }
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("width"),
+            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Box"),
+            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
