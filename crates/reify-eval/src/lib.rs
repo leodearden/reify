@@ -4998,6 +4998,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Primitive::Box with all required args present
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), literal_length(0.10)),
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &box_op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Box with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Primitive args are present, got: {:?}",
+            diagnostics
+        );
+
+        // Modify::Fillet with target and radius present
+        let fillet_op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("radius".into(), literal_length(0.005))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &fillet_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Fillet with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Modify args are present, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
