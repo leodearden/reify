@@ -23611,7 +23611,7 @@
         "description": "The `textDocument/didOpen` preamble (opening `file:///test.ri` with `bracket_source()`) is duplicated ~9 times across tests in `crates/reify-lsp/tests/in_process_bridge.rs`. Extract a shared helper like `async fn open_bracket_doc(lsp: &InProcessLsp)` that performs the didOpen call, and replace the duplicated blocks across all tests that use this pattern. This reduces boilerplate and makes each test easier to read.\n\nmemory_hints: search for \"in_process_bridge test helpers\" and \"didOpen test pattern reify-lsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23620,7 +23620,7 @@
             "crates/reify-lsp"
           ]
         },
-        "updatedAt": "2026-04-08T22:47:05.393Z"
+        "updatedAt": "2026-04-08T23:01:28.729Z"
       },
       {
         "id": "1153",
@@ -24013,9 +24013,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:59:34.046Z",
+      "lastModified": "2026-04-08T23:01:28.729Z",
       "taskCount": 1174,
-      "completedCount": 857,
+      "completedCount": 858,
       "tags": [
         "master"
       ]
