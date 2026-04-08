@@ -23928,6 +23928,17 @@
             "crates/reify-lsp"
           ]
         }
+      },
+      {
+        "id": 1170,
+        "title": "Rename try_serialize_event to push_serialized_event in diff.rs",
+        "description": "The `try_` prefix in Rust idiomatically denotes functions returning `Result` (e.g. `try_from`, `try_into`). `try_serialize_event` in gui/src-tauri/src/diff.rs:204 mutates `events` in-place and never returns an error — it always succeeds by pushing either a normal or error event. Rename to `push_serialized_event` (or `push_event_or_error`) to accurately convey semantics. Update all call sites in diff.rs and test references in tests/diff_tests.rs.\n\nmemory_hints: search \"Rust try_ prefix naming convention in reify\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23939,7 +23950,8 @@
         "master"
       ],
       "created": "2026-04-08T22:48:05.065Z",
-      "description": "Tasks for master context"
+      "description": "Tasks for master context",
+      "updated": "2026-04-08T22:48:34.937Z"
     }
   }
 }
