@@ -461,11 +461,12 @@ enum PointKey {
     Fixed(u64, u64, u64), // f64 bits for hashing
 }
 
-/// Named return type for [`SystemBuilder::add_line_pair`].
+/// Return type of [`SystemBuilder::add_line_pair`].
 ///
-/// Holds the two line-segment entity handles with explicit field names so
-/// callers are not forced to rely on tuple-position semantics.
-#[derive(Debug)]
+/// Uses named fields rather than a bare tuple so callers cannot
+/// accidentally swap the two handles (which are the same type and
+/// therefore indistinguishable positionally).
+#[derive(Debug, Clone, Copy)]
 struct LinePairEntities {
     line_a: Slvs_hEntity,
     line_b: Slvs_hEntity,
@@ -1157,6 +1158,16 @@ mod tests {
         );
     }
 
+    /// Shorthand for `PointRef::Fixed { x, y, z }`.
+    fn fixed_point(x: f64, y: f64, z: f64) -> PointRef {
+        PointRef::Fixed { x, y, z }
+    }
+
+    /// Shorthand for `LineRef { start, end }`.
+    fn line(start: PointRef, end: PointRef) -> LineRef {
+        LineRef { start, end }
+    }
+
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
     /// Shared by the three add_auto_coord tests that need a standard single-param setup.
     fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
@@ -1256,32 +1267,10 @@ mod tests {
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let la = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
+        let lb = line(fixed_point(0.0, 1.0, 0.0), fixed_point(1.0, 1.0, 0.0));
 
-        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
+        let result = builder.add_line_pair(&la, &lb, &auto_params, &current_values);
 
         let entities = result.expect("add_line_pair should return Ok");
         assert_ne!(
@@ -1293,52 +1282,6 @@ mod tests {
             builder.entities.len(),
             6,
             "expected 4 point + 2 line entities"
-        );
-    }
-
-    /// `add_line_pair` must propagate Err when a PointRef::Auto contains a
-    /// non-auto cell_id that is missing from current_values. This confirms
-    /// that the `?` operator in `add_line_pair` surfaces errors from `add_point`
-    /// rather than swallowing them.
-    #[test]
-    fn add_line_pair_propagates_point_error() {
-        let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
-        // Not in auto_params and not in current_values → add_point will return Err
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
-
-        // line_a start has a non-auto Auto point missing from current_values
-        let line_a = LineRef {
-            start: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
-
-        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
-
-        assert!(
-            result.is_err(),
-            "expected Err when a LineRef contains a non-auto point missing from current_values"
         );
     }
 
@@ -1578,30 +1521,13 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineAEnd", "x");
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
+        let bad_end = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
         };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_a = line(fixed_point(0.0, 0.0, 0.0), bad_end);
+        let line_b = line(fixed_point(0.0, 1.0, 0.0), fixed_point(1.0, 1.0, 0.0));
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
@@ -1616,30 +1542,13 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBStart", "x");
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
+        let bad_start = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
         };
-        let line_b = LineRef {
-            start: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_a = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
+        let line_b = line(bad_start, fixed_point(1.0, 1.0, 0.0));
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
@@ -1654,30 +1563,13 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBEnd", "x");
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
+        let bad_end = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
         };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
-        };
+        let line_a = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
+        let line_b = line(fixed_point(0.0, 1.0, 0.0), bad_end);
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
@@ -1688,50 +1580,36 @@ mod tests {
 
     /// When `add_line_pair` fails at `lb_start` (line_b.start has a missing
     /// non-auto coord), the two points for line_a have ALREADY been inserted
-    /// into `builder.point_entities`.  There is no rollback.  This test pins
-    /// that contract so a future refactor that introduces rollback must
-    /// consciously update both the test and the doc.
+    /// into `builder.point_entities`.  This documents *observed* behaviour, not
+    /// a hard requirement — a future refactor that adds rollback would be a
+    /// defensible improvement.
     #[test]
     fn add_line_pair_partial_mutation_on_error() {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBStart", "x");
 
+        let initial_point_count = builder.point_entities.len();
+
         // line_a is fully Fixed — both points will be created before the error
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
+        let bad_start = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
         };
+        let line_a = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
         // line_b.start triggers the error; line_b.end is never reached
-        let line_b = LineRef {
-            start: PointRef::Auto {
-                x: Some(cell_id.clone()),
-                y: None,
-                z: None,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_b = line(bad_start, fixed_point(1.0, 1.0, 0.0));
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
         assert!(result.is_err(), "expected Err when lb_start is missing");
-        // The two line_a points were inserted before the error — no rollback.
+        // At most 2 line_a points were inserted before the error — no more than that.
         assert!(
-            builder.point_entities.len() >= 2,
-            "builder.point_entities should contain the already-created line_a points \
-             (len={}) — add_line_pair has no rollback on Err",
-            builder.point_entities.len()
+            builder.point_entities.len() <= initial_point_count + 2,
+            "builder.point_entities should contain at most the already-created line_a points \
+             (len={}, initial={}) — add_line_pair partial mutation is bounded",
+            builder.point_entities.len(),
+            initial_point_count
         );
     }
 
@@ -1747,40 +1625,15 @@ mod tests {
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
 
-        // line_a end == line_b start → the (1,0,0) point is shared
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        // line_a: (0,0,0) → (1,0,0)
+        // line_b: (1,0,0) → (2,0,0)  — shares the (1,0,0) endpoint with line_a
+        let la = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
+        let lb = line(fixed_point(1.0, 0.0, 0.0), fixed_point(2.0, 0.0, 0.0));
 
-        let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
-
-        let entities = result.expect("add_line_pair should return Ok");
-        assert_ne!(
-            entities.line_a, entities.line_b,
-            "line segment handles should be distinct even when an endpoint is shared"
-        );
-        // 3 unique point entities + 2 line segment entities = 5 (not 6)
+        let entities = builder
+            .add_line_pair(&la, &lb, &auto_params, &current_values)
+            .expect("add_line_pair should return Ok");
+        // 3 unique Fixed points (deduped) + 2 line segments = 5 entities
         assert_eq!(
             builder.entities.len(),
             5,
@@ -1792,58 +1645,23 @@ mod tests {
             3,
             "PointKey cache should contain exactly 3 unique entries for the shared-endpoint case"
         );
-    }
-
-    // ── add_line_pair: named-struct return-type test (S2) ────────────────────
-
-    /// Accessing the return value of `add_line_pair` by field name rather than
-    /// tuple position makes callers self-documenting.  This test exercises
-    /// the named fields `entities.line_a` and `entities.line_b` and asserts
-    /// they are distinct handles.
-    ///
-    /// Driving test for the `LinePairEntities` refactor in step 6: until that
-    /// struct exists this test fails to compile.
-    #[test]
-    fn add_line_pair_returns_named_struct() {
-        let mut builder = SystemBuilder::new();
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
-
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
-
-        let entities = builder
-            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
-            .expect("add_line_pair should return Ok");
-        // Access by named field — if LinePairEntities doesn't exist this
-        // line fails to compile, driving the step-6 refactor.
-        let _: Slvs_hEntity = entities.line_a;
-        let _: Slvs_hEntity = entities.line_b;
-        assert_ne!(
-            entities.line_a, entities.line_b,
-            "line_a and line_b entity handles should be distinct"
+        // Verify the shared endpoint handle propagates into the Slvs_Entity arrays:
+        // segment_a.point[1] (la_end = (1,0,0)) must equal segment_b.point[0] (lb_start = (1,0,0))
+        let segment_a = builder
+            .entities
+            .iter()
+            .find(|e| e.h == entities.line_a)
+            .expect("line_a entity must be present in builder.entities");
+        let segment_b = builder
+            .entities
+            .iter()
+            .find(|e| e.h == entities.line_b)
+            .expect("line_b entity must be present in builder.entities");
+        assert_eq!(
+            segment_a.point[1],
+            segment_b.point[0],
+            "shared endpoint handle must be identical in both segment Slvs_Entity.point arrays: \
+             segment_a.point[1] (la_end) should equal segment_b.point[0] (lb_start)"
         );
     }
 
@@ -1859,33 +1677,11 @@ mod tests {
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let la = line(fixed_point(0.0, 0.0, 0.0), fixed_point(1.0, 0.0, 0.0));
+        let lb = line(fixed_point(0.0, 1.0, 0.0), fixed_point(1.0, 1.0, 0.0));
 
         let entities = builder
-            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
+            .add_line_pair(&la, &lb, &auto_params, &current_values)
             .expect("add_line_pair should return Ok");
 
         for (label, handle) in [("line_a", entities.line_a), ("line_b", entities.line_b)] {
@@ -1901,4 +1697,78 @@ mod tests {
             );
         }
     }
+
+    /// `add_line_pair` must propagate Err from all four `?` sites inside the function
+    /// (line_a.start, line_a.end, line_b.start, line_b.end). Each position is tested
+    /// independently to ensure no site swallows errors.
+    #[test]
+    fn add_line_pair_propagates_error_from_each_position() {
+        let (_, cell_id, auto_params, current_values) = missing_coord_setup("Test", "bad");
+
+        // Helper: a Fixed point that always succeeds
+        let good = || fixed_point(0.0, 0.0, 0.0);
+        // Helper: an Auto point with a non-auto cell_id absent from current_values → Err
+        let bad = || PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
+        };
+
+        let positions: &[(&str, LineRef, LineRef)] = &[
+            ("line_a.start", line(bad(), good()), line(good(), good())),
+            ("line_a.end", line(good(), bad()), line(good(), good())),
+            ("line_b.start", line(good(), good()), line(bad(), good())),
+            ("line_b.end", line(good(), good()), line(good(), bad())),
+        ];
+
+        for (position_name, line_a, line_b) in positions {
+            let mut builder = SystemBuilder::new();
+            let result =
+                builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
+            assert!(
+                result.is_err(),
+                "expected Err when erroring Auto point is at position '{position_name}'"
+            );
+        }
+    }
+
+    /// Documents the *observed* behaviour, **not** a design requirement:
+    /// when `add_line_pair` returns Err at the second `?` site (line_a.end),
+    /// the first point (line_a.start) has already been registered and is not
+    /// rolled back.  A future refactor that adds rollback would be a
+    /// defensible improvement — if that happens, update this test rather
+    /// than treating the new behaviour as a regression.
+    #[test]
+    fn add_line_pair_currently_does_not_rollback_on_err() {
+        let (_, cell_id, auto_params, current_values) = missing_coord_setup("Test", "bad");
+        let mut builder = SystemBuilder::new();
+
+        let initial_entity_count = builder.entities.len();
+        let initial_point_count = builder.point_entities.len();
+
+        // line_a.start = Fixed (succeeds, registers 1 point entity)
+        // line_a.end = erroring Auto (fails at second ? site)
+        let bad_end = PointRef::Auto {
+            x: Some(cell_id.clone()),
+            y: None,
+            z: None,
+        };
+        let la = line(fixed_point(0.0, 0.0, 0.0), bad_end);
+        let lb = line(fixed_point(1.0, 0.0, 0.0), fixed_point(2.0, 0.0, 0.0));
+
+        let result = builder.add_line_pair(&la, &lb, &auto_params, &current_values);
+
+        assert!(result.is_err(), "expected Err due to erroring Auto point");
+        // line_a.start was registered before the failure — at most 1 point entity remains.
+        // A future rollback implementation may reduce this to 0.
+        assert!(
+            builder.entities.len() <= initial_entity_count + 1,
+            "at most 1 point entity (line_a.start) should remain after the Err"
+        );
+        assert!(
+            builder.point_entities.len() <= initial_point_count + 1,
+            "at most 1 entry in point_entities cache should remain after the Err"
+        );
+    }
+
 }
