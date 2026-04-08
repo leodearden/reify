@@ -22146,10 +22146,11 @@
         "description": "In `crates/reify-types/src/value.rs` lines 981-984, the NaN-payload asymmetry paragraph states that NaN-payload differences \"affect only PartialEq, not content-addressing\" but doesn't acknowledge this is a deliberate violation of the hash-equality invariant (a != b yet content_hash(a) == content_hash(b)).\n\nAdd documentation that:\n1. Explicitly names this as an exception to the hash-equality invariant enforced elsewhere (see `scalar_neg_zero_hash_differs_from_pos_zero` at ~line 1868, `hash_equality_invariant_real` at ~line 1884)\n2. Explains the rationale: NaN payloads are collapsed so semantically-equivalent NaNs from different sources deduplicate in content-addressed storage\n3. Provides caller guidance: content-addressed lookups for NaN-bearing values should treat hash-hits as \"possibly equal\" and re-check PartialEq if exact identity matters\n4. Cross-references the existing -0.0/+0.0 invariant tests\n\nMemory hints: search \"Value PartialEq content_hash NaN canonicalization hash-equality invariant\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:54:45.252Z"
       },
       {
         "id": "1078",
@@ -22166,7 +22167,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:54:43.469Z",
+      "lastModified": "2026-04-08T11:54:45.252Z",
       "taskCount": 1078,
       "completedCount": 753,
       "tags": [
