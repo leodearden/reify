@@ -644,6 +644,31 @@ async fn shutdown_before_initialize() {
     );
 }
 
+/// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
+/// initialize/initialized handshake should not panic and should return `Ok(Value::Null)`.
+///
+/// This covers the canonical parameterless shutdown call (`params: null` per the LSP spec)
+/// on a pre-handshake server, paralleling the `json!({})` variant in
+/// `shutdown_before_initialize` above. Both variants must be safe on the pre-handshake
+/// path because the shutdown arm in the bridge ignores params entirely.
+#[tokio::test]
+async fn shutdown_before_initialize_with_null_params() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp.handle_request("shutdown", json!(null)).await;
+
+    assert!(
+        result.is_ok(),
+        "shutdown before initialize with null params should return Ok, got: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        serde_json::Value::Null,
+        "shutdown before initialize with null params should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
