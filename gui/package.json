@@ -2,10 +2,9 @@
   "name": "@reify/gui",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "npm@10.9.4",
   "type": "module",
-  "workspaces": ["packages/*"],
   "packageManager": "npm@10.9.7",
+  "workspaces": ["packages/*"],
   "scripts": {
     "build:grammar": "lezer-generator src/editor/reify.grammar -o src/editor/reifyParser.js",
     "dev": "vite",
