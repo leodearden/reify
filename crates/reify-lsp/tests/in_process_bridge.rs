@@ -64,6 +64,23 @@ async fn initialized_lsp() -> InProcessLsp {
     lsp
 }
 
+/// Return the canonical `textDocument/didOpen` params JSON for the bracket
+/// document fixture.
+///
+/// Centralizes the `textDocument` payload used in tests that open
+/// `file:///test.ri` with the bracket source so the URI, languageId,
+/// version, and text never drift across call sites.
+fn open_bracket_doc_params() -> serde_json::Value {
+    json!({
+        "textDocument": {
+            "uri": "file:///test.ri",
+            "languageId": "reify",
+            "version": 1,
+            "text": reify_test_support::bracket_source()
+        }
+    })
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
