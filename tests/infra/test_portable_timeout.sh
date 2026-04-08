@@ -278,18 +278,67 @@ echo ""
 echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 
 # This test verifies that the timer's inner 'sleep 31337' (a distinctive
-# sentinel duration) is fully cleaned up when the command exits before the
-# timeout fires.
+# sentinel duration) is actually spawned and properly cleaned up when the
+# command exits before the timeout fires.
+#
+# Test 16a (positive spawn check): proves the test setup is valid — the timer
+# must actually start its inner 'sleep 31337' before Test 16b's cleanup check
+# is meaningful.  Runs portable_timeout in the background, waits 0.5s, and
+# asserts the sentinel sleep is visible in ps.
+#
+# Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
+# after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
+# command, giving the timer time to spawn its sentinel before cleanup fires.
+# (With 'true', the timer subshell may not have started 'sleep 31337' before
+# the main shell kills it, so the orphan check would pass vacuously.)
 #
 # Subtlety: timer subshells inherit EXIT traps from the calling shell.
-# If POSIX_FALLBACK_SETUP's "rm -rf $rescue_dir" EXIT trap is inherited,
-# it cleans up the rescue dir when the timer subshell is killed, removing
-# 'grep' and 'sleep' from PATH.  Workaround: save absolute paths BEFORE
-# PATH manipulation and use them for the post-timeout orphan check.
+# Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
+
+assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Background portable_timeout with a 2s command so the timer has time
+        # to spawn its inner "sleep 31337" before we check.
+        portable_timeout 31337 sleep 2 &
+        pt_pid=$!
+
+        # Give the timer subshell time to spawn its inner "sleep 31337".
+        "$_abs_sleep" 0.5
+
+        # Capture whether the sentinel is present before cleanup.
+        found=1
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" && found=0 || true
+
+        # Cleanup: kill the background portable_timeout.
+        kill "$pt_pid" 2>/dev/null || true
+        wait "$pt_pid" 2>/dev/null || true
+
+        exit $found
+    '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
     env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
-        # Save absolute paths before PATH is stripped of timeout directories.
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -312,10 +361,10 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         hash -r
         source "$LIB_PORTABLE"
 
-        # Run a fast command under a long timeout (31337s sentinel).
-        # Timer subshell starts "sleep 31337" which must be cleaned up when
-        # the command exits before the timeout fires.
-        portable_timeout 31337 true || true
+        # Run a 0.3s command under a long timeout (31337s sentinel).
+        # Using sleep 0.3 instead of "true" gives the timer time to spawn
+        # its inner "sleep 31337" before the command exits.
+        portable_timeout 31337 "$_abs_sleep" 0.3 || true
 
         # Use saved absolute paths — rescue_dir may be gone if the timer
         # subshell ran its inherited EXIT trap when killed.
