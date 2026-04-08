@@ -23025,6 +23025,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1123,
+        "title": "tree-sitter-generate.sh: rename _lock_attempts to _lock_elapsed_secs for naming consistency",
+        "description": "In scripts/tree-sitter-generate.sh, the local variable `_lock_attempts` (lines 86, 88, 89, 101) still uses the old \"attempts\" naming, while the constant it's compared against was renamed to `MAX_LOCK_WAIT_SECS` to emphasize wall-time seconds. Rename `_lock_attempts` to `_lock_elapsed_secs` (or `_lock_wait_secs`) to align with the constant naming and make the mapping explicit.\n\nSource: review suggestions from esc-1091-20 and esc-1091-801 (S1, deduplicated).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23037,7 +23048,7 @@
       ],
       "created": "2026-04-08T21:04:09.960Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:04:09.977Z"
+      "updated": "2026-04-08T21:04:11.224Z"
     }
   }
 }
