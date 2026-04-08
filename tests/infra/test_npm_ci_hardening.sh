@@ -109,4 +109,16 @@ echo "--- S3: check-pm-standardization.sh runs successfully ---"
 assert "check-pm-standardization.sh runs successfully in repo context" \
     bash "$REPO_ROOT/scripts/check-pm-standardization.sh"
 
+# -- Test 7: build artifact tracking hygiene ----------------------------------
+echo ""
+echo "--- Test 7: build artifact tracking hygiene ---"
+
+# tree-sitter-reify/src/.grammar_hash.stamp is listed at .gitignore:34 but was
+# previously tracked (pre-dated the gitignore entry). While tracked, every
+# tree-sitter build regenerates it and dirties main's working tree, causing
+# advance_main to fail with stash_failed (task 1005 blocker). The fix is
+# `git rm --cached` to remove the stale index entry so the existing rule applies.
+assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
+    bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
+
 test_summary
