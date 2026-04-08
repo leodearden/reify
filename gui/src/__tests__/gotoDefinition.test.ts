@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { flushMacrotasks } from './test-utils';
+import { flushMacrotasks, withSuppressedRejectionsAndWarnSpy } from './test-utils';
 
 // Mock Tauri API modules
 vi.mock('@tauri-apps/api/core', () => ({
@@ -178,75 +178,6 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
     });
   });
 
-  it('bare-path currentUri with file:// location.uri for same file dispatches cursor movement', async () => {
-    // currentUri is a bare path; LSP returns a file:// URI for the same physical file.
-    // isSameFile() should normalize both to the same bare path and recognize them as equal,
-    // so the handler dispatches cursor movement instead of calling onNavigate.
-    const currentUri = '/project/src/foo.ri';
-    const sameFileLocation = {
-      uri: 'file:///project/src/foo.ri',
-      range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
-    };
-    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
-
-    const onNavigate = vi.fn();
-    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
-    const mousedownHandler = ext.handlers.mousedown;
-
-    const mockEvent = makeMouseEvent();
-
-    const mockView = makeMockView({
-      state: { doc: { line: (n: number) => ({ from: (n - 1) * 20 }) } },
-    });
-
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
-
-    // onNavigate should NOT be called — it is the same file after URI normalization
-    expect(onNavigate).not.toHaveBeenCalled();
-    // view.dispatch SHOULD be called for same-file cursor movement
-    // anchor = doc.line(8).from + 4 = (8-1)*20 + 4 = 140 + 4 = 144
-    expect(mockView.dispatch).toHaveBeenCalledWith({
-      selection: { anchor: 144 },
-      scrollIntoView: true,
-    });
-  });
-
-  it('file:// currentUri with bare-path location.uri for same file dispatches cursor movement', async () => {
-    // Inverse of the forward-direction test: currentUri is a file:// URI;
-    // LSP returns a bare-path URI for the same physical file.
-    // isSameFile() should normalize both to the same bare path and recognize them as equal,
-    // so the handler dispatches cursor movement instead of calling onNavigate.
-    const currentUri = 'file:///project/src/foo.ri';
-    const sameFileLocation = {
-      uri: '/project/src/foo.ri',
-      range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
-    };
-    mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
-
-    const onNavigate = vi.fn();
-    const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
-    const mousedownHandler = ext.handlers.mousedown;
-
-    const mockEvent = makeMouseEvent();
-
-    const mockView = makeMockView({
-      state: { doc: { line: (n: number) => ({ from: (n - 1) * 20 }) } },
-    });
-
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
-
-    // onNavigate should NOT be called — it is the same file after URI normalization
-    expect(onNavigate).not.toHaveBeenCalled();
-    // view.dispatch SHOULD be called for same-file cursor movement
-    // anchor = doc.line(8).from + 4 = (8-1)*20 + 4 = 144
-    expect(mockView.dispatch).toHaveBeenCalledWith({
-      selection: { anchor: 144 },
-      scrollIntoView: true,
-    });
-  });
-
   it('does not call onNavigate when LSP line is negative (malformed response)', async () => {
     const currentUri = 'file:///current.ri';
     // Cross-file response with negative line — malformed LSP response.
@@ -264,14 +195,22 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
 
     const mockEvent = makeMouseEvent();
 
-    const mockView = makeMockView();
+    // Throwing doc.line() is defense-in-depth: if the guard moves after a doc.line()
+    // call, the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
 
-    // Negative line must be rejected before delegating to onNavigate
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Negative line must be rejected before delegating to onNavigate
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Guard fires before doc.line(); no warn should be logged
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
   });
 
   it('does not call onNavigate when LSP character is negative (malformed response)', async () => {
@@ -292,15 +231,100 @@ describe('goto-definition routing (same-file vs cross-file)', () => {
 
     const mockEvent = makeMouseEvent();
 
-    const mockView = makeMockView();
+    // Throwing doc.line() is defense-in-depth: if the guard moves after a doc.line()
+    // call, the .catch() would log a warning — caught by warnSpy.
+    const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+    const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
 
-    mousedownHandler(mockEvent, mockView);
-    await flushMacrotasks();
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
 
-    // Negative character must be rejected before delegating to onNavigate
-    expect(onNavigate).not.toHaveBeenCalled();
-    expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Negative character must be rejected before delegating to onNavigate
+      expect(onNavigate).not.toHaveBeenCalled();
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      // Guard fires before doc.line(); no warn should be logged
+      expect(lineSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
   });
+
+  it.each([
+    ['line', { line: NaN, character: 0 }],
+    ['character', { line: 5, character: NaN }],
+  ])(
+    'does not call onNavigate when LSP %s is NaN (non-integer cross-file)',
+    async (field, startPos) => {
+      const currentUri = 'file:///current.ri';
+      // Cross-file response with NaN in the parameterized position field (serialised as null via JSON).
+      // Pre-fix: null < 0 → false, so the old guard would pass null through to onNavigate.
+      // Guard rejects null/non-integer before delegating to onNavigate.
+      const crossFileNanLocation = {
+        uri: 'file:///other.ri',
+        range: { start: startPos, end: startPos },
+      };
+      mockInvoke.mockResolvedValue(JSON.stringify(crossFileNanLocation));
+
+      const onNavigate = vi.fn();
+      const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+      const mousedownHandler = ext.handlers.mousedown;
+
+      const mockEvent = makeMouseEvent();
+
+      // Throwing doc.line() is defense-in-depth: if cross-file guard bypasses and
+      // somehow reaches doc.line(), the .catch() would log a warning — caught by warnSpy.
+      const lineSpy = vi.fn(() => { throw new RangeError('line out of range'); });
+      const mockView = makeMockView({ state: { doc: { line: lineSpy } } });
+
+      await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
+        mousedownHandler(mockEvent, mockView);
+        await flushMacrotasks();
+
+        // NaN (null) field must be rejected; onNavigate must not be called
+        expect(onNavigate).not.toHaveBeenCalled();
+        expect(lineSpy).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it.each([
+    ['bare-path → file://', '/project/src/foo.ri', 'file:///project/src/foo.ri'],
+    ['file:// → bare-path', 'file:///project/src/foo.ri', '/project/src/foo.ri'],
+  ])(
+    '%s: same file dispatches cursor movement',
+    async (_label, currentUri, locationUri) => {
+      // isSameFile() should normalize both URIs to the same bare path and recognize them as
+      // equal, so the handler dispatches cursor movement instead of calling onNavigate.
+      const sameFileLocation = {
+        uri: locationUri,
+        range: { start: { line: 7, character: 4 }, end: { line: 7, character: 11 } },
+      };
+      mockInvoke.mockResolvedValue(JSON.stringify(sameFileLocation));
+
+      const onNavigate = vi.fn();
+      const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+      const mousedownHandler = ext.handlers.mousedown;
+
+      const mockEvent = makeMouseEvent();
+
+      const mockView = makeMockView({
+        state: { doc: { line: (n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }) } },
+      });
+
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // onNavigate should NOT be called — it is the same file after URI normalization
+      expect(onNavigate).not.toHaveBeenCalled();
+      // view.dispatch SHOULD be called for same-file cursor movement
+      // anchor = doc.line(8).from + 4 = (8-1)*20 + 4 = 140 + 4 = 144
+      expect(mockView.dispatch).toHaveBeenCalledWith({
+        selection: { anchor: 144 },
+        scrollIntoView: true,
+      });
+    },
+  );
 
   it('partial suffix overlap (/a/foo.ri vs /b/a/foo.ri) triggers cross-file navigation', async () => {
     // currentUri is '/a/foo.ri'; LSP returns 'file:///b/a/foo.ri'.
@@ -442,8 +466,7 @@ describe('line-bounds guard', () => {
       state: { doc: { line: () => { throw new RangeError('line out of range'); } } },
     });
 
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
+    await withSuppressedRejectionsAndWarnSpy(async (warnSpy) => {
       mousedownHandler(mockEvent, mockView);
       await flushMacrotasks();
 
@@ -451,9 +474,7 @@ describe('line-bounds guard', () => {
       expect(mockView.dispatch).not.toHaveBeenCalled();
       // The guard fires before doc.line(), so no warning should be logged
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    });
   });
 
   it('dispatches when LSP line is exactly at document boundary (start.line=4, doc.lines=5)', async () => {
@@ -618,6 +639,43 @@ describe('character-bounds guard', () => {
   });
 });
 
+describe('NaN position fields (same-file)', () => {
+  it.each([
+    ['line', { line: NaN, character: 0 }],
+    ['character', { line: 5, character: NaN }],
+  ])(
+    'does not dispatch when LSP %s is NaN (non-integer)',
+    async (field, startPos) => {
+      const currentUri = 'file:///current.ri';
+      // NaN bypasses negative and bounds checks (NaN comparisons always return false),
+      // so the guard must explicitly reject non-integer values before dispatch is called.
+      const location = {
+        uri: 'file:///current.ri',
+        range: { start: startPos, end: startPos },
+      };
+      mockInvoke.mockResolvedValue(JSON.stringify(location));
+
+      const onNavigate = vi.fn();
+      const ext = reifyGotoDefinition(currentUri, onNavigate) as any;
+      const mousedownHandler = ext.handlers.mousedown;
+
+      const mockEvent = makeMouseEvent();
+
+      // line 6 (1-based): from=100, to=110 → length 10; NaN field is invalid
+      const mockView = makeMockView({
+        state: { doc: { line: () => ({ from: 100, to: 110 }) } },
+      });
+
+      mousedownHandler(mockEvent, mockView);
+      await flushMacrotasks();
+
+      // NaN field must be rejected; neither dispatch nor onNavigate should be called
+      expect(mockView.dispatch).not.toHaveBeenCalled();
+      expect(onNavigate).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('error recovery', () => {
   it('logs a warning when doc.line() throws RangeError (no unhandled rejection)', async () => {
     const currentUri = 'file:///current.ri';
@@ -639,7 +697,9 @@ describe('error recovery', () => {
       state: { doc: { line: () => { throw rangeError; } } },
     });
 
-    // .catch() handles errors synchronously — a plain warn spy is sufficient (no unhandled rejection possible).
+    const unhandledSpy = vi.fn();
+    window.addEventListener('unhandledrejection', unhandledSpy, { once: true });
+    // No unhandledrejection suppression needed: the production .catch() at gotoDefinition.ts:155 fully consumes this rejection.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       mousedownHandler(mockEvent, mockView);
@@ -648,7 +708,9 @@ describe('error recovery', () => {
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', rangeError);
       // dispatch should not have been called (line() threw before it could be called)
       expect(mockView.dispatch).not.toHaveBeenCalled();
+      expect(unhandledSpy).not.toHaveBeenCalled();
     } finally {
+      window.removeEventListener('unhandledrejection', unhandledSpy);
       warnSpy.mockRestore();
     }
   });
@@ -674,6 +736,9 @@ describe('error recovery', () => {
       dispatch: vi.fn().mockImplementation(() => { throw dispatchError; }),
     });
 
+    const unhandledSpy = vi.fn();
+    window.addEventListener('unhandledrejection', unhandledSpy, { once: true });
+    // No unhandledrejection suppression needed: the production .catch() at gotoDefinition.ts:155 fully consumes this rejection.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       mousedownHandler(mockEvent, mockView);
@@ -682,7 +747,9 @@ describe('error recovery', () => {
       expect(warnSpy).toHaveBeenCalledWith('gotoDefinition: failed to apply result', dispatchError);
       // dispatch WAS called (it just threw)
       expect(mockView.dispatch).toHaveBeenCalled();
+      expect(unhandledSpy).not.toHaveBeenCalled();
     } finally {
+      window.removeEventListener('unhandledrejection', unhandledSpy);
       warnSpy.mockRestore();
     }
   });

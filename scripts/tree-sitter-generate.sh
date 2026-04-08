@@ -18,10 +18,11 @@ TS_DIR="$(cd "$SCRIPT_DIR/../tree-sitter-reify" && pwd)"
 
 # Maximum seconds to wait for lock acquisition (used by flock and stale-age check).
 MAX_WAIT_SECS=120
-# Maximum polling iterations for mkdir-based lock (75 × 1s = 75s < MAX_WAIT_SECS).
-# Keeping these separate preserves the ~45s safety buffer between giving up and
-# treating a lock as stale — the original design intent.
-MAX_LOCK_ATTEMPTS=75
+# Maximum wall-time seconds for the mkdir-based poll loop (relies on the 1s
+# sleep at the bottom of the loop so iteration count == wall-time seconds).
+# Keeping this separate from MAX_WAIT_SECS (120) preserves the ~45s safety
+# buffer between giving up and treating a held lock as stale.
+MAX_LOCK_WAIT_SECS=75
 
 if ! command -v tree-sitter >/dev/null 2>&1; then
     echo "ERROR: tree-sitter CLI not found on PATH." >&2
@@ -82,10 +83,10 @@ if command -v flock >/dev/null 2>&1; then
 else
     # Portable mkdir-based advisory lock (atomic on POSIX).
     # Retry with backoff; stale locks are cleaned up after MAX_WAIT_SECS.
-    _lock_attempts=0
+    _lock_elapsed_secs=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-        _lock_attempts=$((_lock_attempts + 1))
-        if [ "$_lock_attempts" -ge $MAX_LOCK_ATTEMPTS ]; then
+        _lock_elapsed_secs=$((_lock_elapsed_secs + 1))
+        if [ "$_lock_elapsed_secs" -ge $MAX_LOCK_WAIT_SECS ]; then
             # Stale lock detection: if lock dir is older than MAX_WAIT_SECS, remove it.
             # Use empty sentinel when stat fails — refuse to remove a lock
             # we cannot verify as stale (avoids unconditional removal on
@@ -97,7 +98,7 @@ else
                     if [ "$_lock_age" -ge $MAX_WAIT_SECS ]; then
                         echo "WARNING: removing stale lock dir (age=${_lock_age}s)" >&2
                         if rmdir "$LOCK_DIR" 2>/dev/null; then
-                            _lock_attempts=0
+                            _lock_elapsed_secs=0
                             continue
                         fi
                         # rmdir failed (e.g. NFS/uid-mismatch) — sleep to
@@ -107,7 +108,7 @@ else
                     fi
                 fi
             fi
-            echo "ERROR: could not acquire generation lock after $MAX_LOCK_ATTEMPTS attempts" >&2
+            echo "ERROR: could not acquire generation lock after ${MAX_LOCK_WAIT_SECS}s" >&2
             exit 1
         fi
         sleep 1

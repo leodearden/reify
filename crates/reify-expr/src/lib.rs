@@ -123,7 +123,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        ..
+                        codomain_type: grad_codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
@@ -132,10 +132,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             }
                             // Gradient-produced field: lambda slot contains the
                             // original field (with its own lambda inside).
+                            // Pass grad_codomain_type (the gradient field's codomain,
+                            // already R/Q-divided by compute_gradient) instead of the
+                            // inner field's codomain — eliminates the redundant division
+                            // inside compute_numerical_gradient_at_point.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
-                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
@@ -143,7 +146,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                inner_codomain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -751,15 +754,18 @@ fn compute_numerical_gradient_at_point(
         );
     }
 
-    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
-    // The gradient is df/dx, so its dimension is [codomain] / [domain].
+    // Extract per-component gradient dimension from codomain_type.
+    // codomain_type is now the gradient field's codomain (already R/Q-divided by
+    // compute_gradient), so no further division is needed here:
+    //   - 1D field  → Scalar { dimension } or Real
+    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
     let result_dim = match codomain_type {
+        Type::Vector { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            _ => DimensionVector::DIMENSIONLESS,
+        },
         Type::Scalar { dimension } => *dimension,
         _ => DimensionVector::DIMENSIONLESS,
-    };
-    let grad_dim = match domain_dim {
-        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-        _ => result_dim,
     };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
@@ -828,6 +834,36 @@ fn compute_numerical_gradient_at_point(
         // mutate work_args; we pushed exactly one Value::Point, so pop() always
         // succeeds and always yields Value::Point.  The if-let is just destructuring.
 
+        // On the first axis, verify that the lambda's runtime return dimension
+        // matches the declared codomain (via codomain_type). This catches callers
+        // who pass a mismatched codomain_type (e.g., declared MASS but returns Real).
+        //
+        // result_dim is the gradient's per-component dimension (codomain/domain),
+        // but f_plus comes from the original lambda, so its dimension is the
+        // ORIGINAL codomain's dimension. Reconstruct it: for dimensioned domains,
+        // original_codomain = result_dim * domain_dim; for dimensionless domains
+        // (domain_dim = None), original_codomain = result_dim.
+        // Only validate the lambda's runtime return type for dimensionless domains.
+        // When domain_dim is Some, make_arg passes Scalar<domain_dim> to the lambda,
+        // and operations like `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH>
+        // regardless of the declared codomain — the codomain_type is metadata, not a
+        // constraint on the lambda's output type in dimensioned contexts.
+        // For dimensionless domains, make_arg passes Real, so the lambda's return
+        // dimension is unambiguous and can be validated against the declaration.
+        #[cfg(debug_assertions)]
+        if i == 0 && domain_dim.is_none() {
+            let runtime_dim = f_plus.dimension();
+            let expected_codomain_dim = result_dim;
+            assert_eq!(
+                runtime_dim,
+                expected_codomain_dim,
+                "codomain_type does not match runtime return dimension: \
+                 declared codomain expects dimension {:?} but lambda returned {:?}",
+                expected_codomain_dim,
+                runtime_dim,
+            );
+        }
+
         // Swing to backward (−h from original = −2h from current), evaluate
         work_coords[i] -= 2.0 * h;
         work_args.clear();
@@ -876,16 +912,23 @@ fn compute_numerical_gradient_at_point(
             return Value::Undef;
         }
 
-        if grad_dim != DimensionVector::DIMENSIONLESS {
+        if result_dim != DimensionVector::DIMENSIONLESS {
             gradient_components.push(Value::Scalar {
                 si_value: deriv,
-                dimension: grad_dim,
+                dimension: result_dim,
             });
         } else {
             gradient_components.push(Value::Real(deriv));
         }
     }
 
+    // For n==1 the loop above always pushes exactly one component (or returns
+    // early via Undef). The unwrap_or(Undef) fallback is unreachable in practice;
+    // this assert documents and enforces that invariant in debug builds.
+    debug_assert!(
+        n != 1 || !gradient_components.is_empty(),
+        "gradient loop must push exactly one component for n==1"
+    );
     if n == 1 {
         gradient_components
             .into_iter()
