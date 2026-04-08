@@ -134,7 +134,6 @@ structure S {
 // ─── step-3: self in let binding ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_let_binding_compiles() {
     // `self.a + 1mm` in a let binding should compile without errors.
     let source = r#"structure S {
@@ -158,7 +157,6 @@ fn self_in_let_binding_compiles() {
 // ─── step-4: self in constraint ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_compiles() {
     // `constraint self.x > 2mm` should compile without errors.
     let source = r#"structure S {
