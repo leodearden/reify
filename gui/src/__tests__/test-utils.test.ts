@@ -75,6 +75,18 @@ describe('deferred', () => {
     await expect(d.promise).rejects.toThrow('test rejection');
   });
 
+  it('calling reject() with no argument rejects the promise with undefined', async () => {
+    const d = deferred<number>();
+    d.reject();
+    await expect(d.promise).rejects.toBeUndefined();
+  });
+
+  it('calling reject(\'string reason\') rejects the promise with the string primitive', async () => {
+    const d = deferred<number>();
+    d.reject('string reason');
+    await expect(d.promise).rejects.toBe('string reason');
+  });
+
   it('respects generic type parameter', async () => {
     const d = deferred<{ name: string }>();
     const obj = { name: 'test' };
