@@ -17656,11 +17656,11 @@
         "description": "In tree-sitter-reify/src/.grammar_hash.stamp: confirm whether the stamp update was intentional; if not, revert it and land it in a separate commit tied to the actual grammar change. In gui/src-tauri/src/engine.rs: (1) add a comment near line 285 noting 'Assumes all diagnostic spans refer to the single loaded source file — file_path from multi-file diagnostics would need threading here'; (2) add documentation or a Result return to byte_offset_to_line_col (line 682) clarifying that empty spans produce identical start/end coordinates and that offsets beyond source.len() are silently clamped.\n\nmemory_hints: search(\"grammar_hash.stamp tree-sitter-reify byte_offset_to_line_col edge cases\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T10:22:11.976Z",
+        "updatedAt": "2026-04-08T11:27:59.461Z",
         "metadata": {
           "modules": [
             "gui/src-tauri",
@@ -21920,15 +21920,16 @@
         "description": "Follow-up from Task 1001 review triage (esc-1001-81), reviewer_comprehensive S3.\n\nIn `crates/reify-syntax/tests/type_alias_tests.rs` inside `parse_type_alias_empty_rhs_no_panic`, Task 1001 added:\n\n```rust\nassert!(\n    errors.is_empty(),\n    \"expected no parse errors for empty-RHS recovery, got: {errors:?}\"\n);\n```\n\n…at lines 326-329. The existing NOTE comment at lines 331-333 says the same thing:\n```\n// NOTE: Tree-sitter silently recovers `type Foo =` without emitting parse errors.\n// The `errors` vector is empty — this is expected Tree-sitter behavior, not a bug.\n// The test verifies recovery shape, not error detection.\n```\n\nThe assertion now encodes the fact; the explanatory block is redundant. Delete the 3-line NOTE block (lines 331-333).\n\n## Explicit non-goal\nDo NOT weaken the `errors.is_empty()` assertion. Task 1001 explicitly chose to pin this as a contract so that a grammar change emitting parse errors for `type Foo =` would be caught. The reviewer's alternative (b) — weakening to a comment or tolerant form — is rejected by the original task author's intent.\n\n## Verification\n`cargo test -p reify-syntax parse_type_alias_empty_rhs_no_panic` passes.\n\nSource escalation: esc-1001-81.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T11:27:54.884Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T11:27:53.785Z",
+      "lastModified": "2026-04-08T11:27:59.465Z",
       "taskCount": 1064,
       "completedCount": 747,
       "tags": [
