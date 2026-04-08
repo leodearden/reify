@@ -2,6 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
+use reify_lsp::bridge::error_prefix;
 use reify_lsp::bridge::InProcessLsp;
 use reify_test_support::warn_counting_subscriber;
 use serde_json::json;
@@ -302,11 +303,12 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 }
 
 /// Malformed (non-object) params should return an Err containing
-/// "initialize params error".
+/// [`error_prefix::INITIALIZE_PARAMS`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialize", "initialize params error").await;
+    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        .await;
 }
 
 /// Notifications with malformed params should propagate deserialization errors as Err,
@@ -317,8 +319,12 @@ async fn initialize_with_malformed_params_returns_error() {
 #[tokio::test]
 async fn notification_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "textDocument/didOpen", "didOpen params error")
-        .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didOpen",
+        error_prefix::DID_OPEN_PARAMS,
+    )
+    .await;
 }
 
 /// An unknown/unsupported method name should return Err, not panic or silently succeed.
@@ -336,9 +342,11 @@ async fn unsupported_method_returns_error() {
         result
     );
     let err = result.unwrap_err();
+    // The constant covers the prefix; the method name appears as a suffix after the colon.
     assert!(
-        err.contains("unsupported LSP method:"),
-        "error message should contain 'unsupported LSP method:', got: {err}"
+        err.contains(error_prefix::UNSUPPORTED_METHOD),
+        "error message should contain '{}', got: {err}",
+        error_prefix::UNSUPPORTED_METHOD
     );
 }
 
@@ -360,8 +368,9 @@ async fn initialize_with_invalid_field_type_returns_error() {
     );
     let err = result.unwrap_err();
     assert!(
-        err.contains("initialize params error"),
-        "error message should contain 'initialize params error', got: {err}"
+        err.contains(error_prefix::INITIALIZE_PARAMS),
+        "error message should contain '{}', got: {err}",
+        error_prefix::INITIALIZE_PARAMS
     );
 }
 
@@ -399,7 +408,8 @@ async fn valid_notification_returns_ok_null() {
 #[tokio::test]
 async fn initialized_with_malformed_params_returns_error() {
     let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialized", "initialized params error").await;
+    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+        .await;
 }
 
 /// LSP clients (e.g. some VS Code extensions, Neovim) may send `params: null` for
@@ -438,8 +448,12 @@ async fn initialized_with_null_params_returns_ok() {
 #[tokio::test]
 async fn did_change_with_malformed_params_returns_error() {
     let lsp = initialized_lsp().await;
-    assert_malformed_params_returns_error(&lsp, "textDocument/didChange", "didChange params error")
-        .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didChange",
+        error_prefix::DID_CHANGE_PARAMS,
+    )
+    .await;
 }
 
 /// Malformed params for `textDocument/didClose` should return an Err
@@ -450,8 +464,12 @@ async fn did_change_with_malformed_params_returns_error() {
 #[tokio::test]
 async fn did_close_with_malformed_params_returns_error() {
     let lsp = initialized_lsp().await;
-    assert_malformed_params_returns_error(&lsp, "textDocument/didClose", "didClose params error")
-        .await;
+    assert_malformed_params_returns_error(
+        &lsp,
+        "textDocument/didClose",
+        error_prefix::DID_CLOSE_PARAMS,
+    )
+    .await;
 }
 
 /// The `shutdown` request should return exactly `Ok(Value::Null)`.
@@ -485,8 +503,6 @@ async fn shutdown_returns_ok_null() {
 /// otherwise this test will fail at runtime, catching the drift immediately.
 #[tokio::test]
 async fn error_prefix_constants_match_actual_errors() {
-    use reify_lsp::bridge::error_prefix;
-
     let lsp = InProcessLsp::new();
 
     // Verify each constant is contained in the error for its matching method.
