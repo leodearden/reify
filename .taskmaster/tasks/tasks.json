@@ -21525,11 +21525,11 @@
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Replace the bare path on line ~884 in `test_is_root_uses_libc_not_raw_ffi` with `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/build_logic_tests.rs\")`.\n\n2. Refactor `test_self_read_paths_use_manifest_dir` to use a loop over function names instead of duplicated check blocks (covers the new third entry too):\n   ```rust\n   for fn_name in &[\"fn test_unix_...()\", \"fn test_readonly_...()\", \"fn test_is_root_...()\" ] {\n       let body = extract_test_fn_body(&source, fn_name).unwrap_or_else(|| panic!(...));\n       assert!(body.contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\"), ...);\n   }\n   ```\n\n3. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n4. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T17:00:10.311Z",
+        "updatedAt": "2026-04-08T17:00:12.040Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests"
@@ -22341,7 +22341,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T17:00:11.758Z",
+      "lastModified": "2026-04-08T17:00:12.040Z",
       "taskCount": 1083,
       "completedCount": 747,
       "tags": [
