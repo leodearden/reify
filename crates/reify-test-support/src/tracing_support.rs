@@ -319,14 +319,19 @@ mod tests {
 
     /// Non-WARN events (DEBUG, INFO, ERROR) do not affect the warn counter.
     ///
-    /// The subscriber implements two-level filtering as defense in depth:
-    /// `enabled()` is the first gate (rejects non-WARN events before `event()` is
-    /// called), and `event()` is the second gate (only increments the counter when
-    /// the level is WARN).  This test validates end-to-end counting correctness —
-    /// that the counter stays zero when only non-WARN events are emitted.
+    /// Filtering is handled entirely at `enabled()`: it rejects non-WARN events
+    /// before the tracing dispatcher ever calls `event()` on this subscriber,
+    /// so the counter is never incremented for them.  `event()` itself no
+    /// longer carries a runtime level check (see task 972); it relies on the
+    /// dispatcher contract and a `debug_assert_eq!` backstop that panics in
+    /// debug builds if the contract is violated.  This test validates
+    /// end-to-end counting correctness — that the counter stays zero when only
+    /// non-WARN events are emitted.
     ///
     /// See `error_events_rejected_by_enabled_filter` for the test that
-    /// specifically validates the `enabled()` gate.
+    /// specifically validates the `enabled()` gate, and
+    /// `event_panics_on_non_warn_when_dispatcher_contract_violated` for the
+    /// debug-assert backstop.
     #[test]
     fn non_warn_events_are_not_counted() {
         let (subscriber, warn_count) = warn_counting_subscriber();
