@@ -23230,7 +23230,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-lsp/src/bridge.rs",
+            "gui/src-tauri/src/tests/lsp_bridge_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-lsp/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 1132,
@@ -23241,7 +23251,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "crates/reify-constraints/src"
+          ]
+        }
       },
       {
         "id": 1133,
