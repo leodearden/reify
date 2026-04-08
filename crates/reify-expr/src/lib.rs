@@ -804,14 +804,14 @@ fn compute_numerical_gradient_at_point(
     let args_capacity = if single_point_param { 1 } else { n };
     let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
 
-    // point_scratch: reusable inner Vec for the single_point_param path.
+    // work_point: reusable inner Vec for the single_point_param path.
     // Pre-allocated once; only the perturbed element is updated each axis,
     // eliminating the per-axis .collect() allocation on the caller side.
     // (apply_lambda still clones the Vec once per eval when populating its
     // eval_map, so the savings are roughly halving inner-Vec allocations,
     // not reducing to O(1) overall.)
-    // Invariant: point_scratch[j] == make_arg(work_coords[j]) at axis start.
-    let mut point_scratch: Vec<Value> = if single_point_param {
+    // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
+    let mut work_point: Vec<Value> = if single_point_param {
         work_coords.iter().map(|&v| make_arg(v)).collect()
     } else {
         Vec::new()
@@ -834,15 +834,15 @@ fn compute_numerical_gradient_at_point(
         work_args.clear();
         if single_point_param {
             // Update only the perturbed element; transfer ownership via take.
-            point_scratch[i] = make_arg(work_coords[i]);
-            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
+            work_point[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut work_point)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_plus = apply_lambda(lambda, &work_args, ctx);
-        // Recover point_scratch from work_args (single_point_param only).
+        // Recover work_point from work_args (single_point_param only).
         if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
-            point_scratch = inner;
+            work_point = inner;
         }
         // Recovery above is infallible: apply_lambda borrows &[Value] and cannot
         // mutate work_args; we pushed exactly one Value::Point, so pop() always
@@ -900,15 +900,15 @@ fn compute_numerical_gradient_at_point(
         work_coords[i] -= 2.0 * h;
         work_args.clear();
         if single_point_param {
-            point_scratch[i] = make_arg(work_coords[i]);
-            work_args.push(Value::Point(std::mem::take(&mut point_scratch)));
+            work_point[i] = make_arg(work_coords[i]);
+            work_args.push(Value::Point(std::mem::take(&mut work_point)));
         } else {
             work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
         }
         let f_minus = apply_lambda(lambda, &work_args, ctx);
-        // Recover point_scratch from work_args (single_point_param only).
+        // Recover work_point from work_args (single_point_param only).
         if single_point_param && let Some(Value::Point(inner)) = work_args.pop() {
-            point_scratch = inner;
+            work_point = inner;
         }
         // Recovery above is infallible for the same reason as the f_plus recovery:
         // apply_lambda cannot mutate work_args, and exactly one Value::Point was
@@ -919,9 +919,9 @@ fn compute_numerical_gradient_at_point(
         // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
         // drift from x + h - 2h + h ≠ x in floating-point).
         work_coords[i] = coord_i;
-        // Keep point_scratch in sync with the invariant.
+        // Keep work_point in sync with the invariant.
         if single_point_param {
-            point_scratch[i] = make_arg(coord_i);
+            work_point[i] = make_arg(coord_i);
         }
 
         // Extract numeric values, propagate Undef.
