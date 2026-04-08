@@ -2225,4 +2225,27 @@ describe('App serialization-error subscription', () => {
       expect(errorToast).toBeTruthy();
     });
   });
+
+  it('does not leak serialization-error listener when unmounted before onSerializationError resolves', async () => {
+    const unlistenSerialization = vi.fn();
+    const { promise, resolve } = deferred<() => void>();
+    vi.mocked(bridge.onSerializationError).mockReturnValue(promise);
+
+    const { unmount } = render(() => <App />);
+
+    // Wait for initApp to reach the onSerializationError await
+    await flushMacrotasks();
+
+    // Unmount while onSerializationError is still pending
+    unmount();
+
+    // Resolve the deferred promise — alive guard should fire
+    resolve(unlistenSerialization);
+
+    // Flush so the alive guard's unlistenSerialization() call executes
+    await flushMacrotasks();
+
+    // The alive guard (App.tsx:267-269) calls it once; onCleanup's serializationErrorUnsub?.() is a no-op.
+    expect(unlistenSerialization).toHaveBeenCalledTimes(1);
+  });
 });
