@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::types::{ConstraintData, GuiState, MeshData, ValueData};
 
@@ -145,18 +146,30 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
     let mut events = Vec::new();
 
     for mesh in &delta.changed_meshes {
-        if let Ok(val) = serde_json::to_value(mesh) {
-            events.push(("mesh-update".to_string(), val));
+        match serde_json::to_value(mesh) {
+            Ok(val) => events.push(("mesh-update".to_string(), val)),
+            Err(err) => warn!(
+                "failed to serialize mesh {}: {}",
+                mesh.entity_path, err
+            ),
         }
     }
     for value in &delta.changed_values {
-        if let Ok(val) = serde_json::to_value(value) {
-            events.push(("value-update".to_string(), val));
+        match serde_json::to_value(value) {
+            Ok(val) => events.push(("value-update".to_string(), val)),
+            Err(err) => warn!(
+                "failed to serialize value {}: {}",
+                value.cell_id, err
+            ),
         }
     }
     for constraint in &delta.changed_constraints {
-        if let Ok(val) = serde_json::to_value(constraint) {
-            events.push(("constraint-update".to_string(), val));
+        match serde_json::to_value(constraint) {
+            Ok(val) => events.push(("constraint-update".to_string(), val)),
+            Err(err) => warn!(
+                "failed to serialize constraint {}: {}",
+                constraint.node_id, err
+            ),
         }
     }
     for path in &delta.removed_mesh_paths {
