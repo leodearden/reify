@@ -21030,11 +21030,11 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:40:28.415Z",
+        "updatedAt": "2026-04-08T21:27:42.704Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -23398,7 +23398,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:27:40.882Z",
+      "lastModified": "2026-04-08T21:27:42.704Z",
       "taskCount": 1139,
       "completedCount": 810,
       "tags": [
