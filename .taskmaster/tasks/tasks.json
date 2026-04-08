@@ -23102,6 +23102,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1130,
+        "title": "Add debug guard for unexpected Type variants in gradient result_dim extraction",
+        "description": "In crates/reify-expr/src/lib.rs, the `result_dim` match (~lines 762-769) has a catch-all `_ => DimensionVector::DIMENSIONLESS` arm that handles Type::Real correctly but would silently accept any future unexpected Type variant (e.g., a hypothetical Type::Complex).\n\nAdd a `#[cfg(debug_assertions)]` guard in the catch-all arm — either an `eprintln!` warning or a `debug_assert!(matches!(codomain_type, Type::Real | ...))` — to flag unexpected codomain_type variants during development. Follow the existing pattern used in `compute_gradient` around line 576.\n\nMemory hints: search for \"result_dim codomain_type catch-all\" and \"compute_gradient debug_assert type variant\".\nSource: task 1007 review suggestion S3.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23114,7 +23125,7 @@
       ],
       "created": "2026-04-08T21:08:31.236Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:08:37.764Z"
+      "updated": "2026-04-08T21:08:44.979Z"
     }
   }
 }
