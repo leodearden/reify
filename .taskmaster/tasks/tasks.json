@@ -22617,10 +22617,11 @@
         "description": "crates/reify-expr/tests/gradient_tests.rs test-quality fixes from esc-1006-778 review triage. The current tests do not actually guard the exact-restore fix.",
         "details": "(1) Replace gradient_single_point_param_irrational_coords body: drop the ~47-line manual field reconstruction, call make_3d_dot_product_gradient_field() AND switch the underlying field to a nonlinear function (e.g. dot(p,p) with expected gradient 2p) so the test actually exercises exact-restore — linear dot(p,[1,2,3]) provides zero regression protection because its gradient is constant.\n(2) Tighten gradient_single_point_param_quadratic tolerance from 1e-3 to ~1e-9 (or document why a looser tolerance is intentional), since current tolerance is ~13 orders of magnitude above the ~4-ULP arithmetic-vs-exact-restore delta.\n(3) While touching these tests, extract an assert_gradient_vector(result, expected, tol, label) helper and apply it to gradient_single_point_param_quadratic, gradient_single_point_param_irrational_coords, and the pre-existing gradient_3d_field_single_point_param (3 sites with verbatim assertion loops).\n\nSource: review triage of esc-1006-778 (19 suggestions, 5 reviewers). Flagged as misleading_test_coverage and tolerance_too_coarse_for_stated_intent by reviewer_test_analyst.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:32:28.676Z"
       },
       {
         "id": "1100",
@@ -22636,7 +22637,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:32:28.516Z",
+      "lastModified": "2026-04-08T20:32:28.676Z",
       "taskCount": 1100,
       "completedCount": 770,
       "tags": [
