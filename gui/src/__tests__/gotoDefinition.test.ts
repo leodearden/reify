@@ -30,6 +30,37 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+const baseMockEvent = {
+  ctrlKey: true,
+  metaKey: false,
+  clientX: 100,
+  clientY: 50,
+} as MouseEvent;
+
+function makeMockView(overrides?: {
+  connected?: boolean;
+  lines?: number;
+  line?: (n: number) => { from: number; to?: number };
+  lineAt?: () => { number: number; from: number; to: number };
+}) {
+  const connected = overrides?.connected ?? true;
+  const lines = overrides?.lines ?? 100;
+  const line = overrides?.line ?? ((n: number) => ({ from: (n - 1) * 20, to: (n - 1) * 20 + 15 }));
+  const lineAt = overrides?.lineAt ?? (() => ({ number: 1, from: 0, to: 10 }));
+  return {
+    posAtCoords: () => 5,
+    state: {
+      doc: {
+        lines,
+        lineAt,
+        line,
+      },
+    },
+    dispatch: vi.fn(),
+    dom: { isConnected: connected },
+  };
+}
+
 describe('reifyGotoDefinition', () => {
   it('returns an extension', () => {
     const ext = reifyGotoDefinition('file:///test.ri');
