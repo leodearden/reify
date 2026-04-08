@@ -23173,7 +23173,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 1129,
@@ -23184,7 +23192,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 1130,
@@ -23195,7 +23211,15 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-expr/src/lib.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": 1131,
