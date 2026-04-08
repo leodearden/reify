@@ -22949,11 +22949,11 @@
         "description": "The `shutdown_returns_ok_null` test (crates/reify-lsp/tests/in_process_bridge.rs:505-520) only covers the happy path on an initialized server. Add a companion test `shutdown_before_initialize` that calls `handle_request(\"shutdown\", json!({}))` on an `InProcessLsp::new()` instance (before the initialize/initialized handshake) to document the pre-handshake behavior and guard against unexpected panics.\n\nPattern: mirror the malformed-params tests that use `InProcessLsp::new()` directly.\n\nmemory_hints:\n- search: \"Task 996 bridge.rs initialized param validation\"\n- entity: \"InProcessLsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T20:55:13.004Z",
+        "updatedAt": "2026-04-08T22:37:03.960Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -23903,7 +23903,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T22:37:03.701Z",
+      "lastModified": "2026-04-08T22:37:03.960Z",
       "taskCount": 1167,
       "completedCount": 848,
       "tags": [
