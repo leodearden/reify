@@ -22841,17 +22841,18 @@
         "description": "Two test coverage improvements for crates/reify-eval/tests/guard_eval.rs (test_guard_topology_fingerprint_changes_on_guard_transition):\n\n1. **Undef guard state path (S2):** The test covers guard=true and guard=false transitions but never tests Value::Undef as a guard state. Since Site 1 in eval() explicitly handles Undef as a fallback, and Sites 2/3 now use expect(), a test where the guard expression evaluates to Undef (not missing, but actually Undef-valued) would confirm the fingerprint correctly distinguishes Undef from true/false. Investigate whether the expression system can produce Undef guard values.\n\n2. **Phase 4 value assertions (S3):** Phase 4 discards its result as `_result4` (~line 1360) without asserting value consistency with Phase 2. Add assertions: `x == Undef` and `y == Value::length(0.01)` to strengthen the round-trip guarantee.\n\n## Memory hints\n- search: \"guard eval test topology fingerprint\"\n- entity: task 1003 (parent task that added the guard eval test)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1003"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-08T20:45:24.879Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T20:45:23.785Z",
+      "lastModified": "2026-04-08T20:45:24.885Z",
       "taskCount": 1113,
       "completedCount": 784,
       "tags": [
