@@ -267,6 +267,16 @@ describe('Editor active file switching', () => {
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
+  function setupScrollToWithFile2Active() {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file2.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    return { view, setScrollTo };
+  }
+
   it('setting scrollToLocation signal moves cursor to target line/column', () => {
     const store = setupStore();
     const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
@@ -309,12 +319,7 @@ describe('Editor scrollToLocation', () => {
   });
 
   it('scrollToLocation targets active file with deterministic selection', () => {
-    const store = setupStore([file1, file2]);
-    store.setActiveFile(file2.path);
-    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
-    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
-    const container = screen.getByTestId('editor-container');
-    const view = getEditorView(container);
+    const { view, setScrollTo } = setupScrollToWithFile2Active();
 
     // file2 content: 'structure Mount {}' (single line, starts at offset 0)
     // end_column 10 -> head = 9 (0-indexed), column 5 -> anchor = 4 (0-indexed)
@@ -324,12 +329,7 @@ describe('Editor scrollToLocation', () => {
   });
 
   it('scrollToLocation with mismatched file does not move cursor', () => {
-    const store = setupStore([file1, file2]);
-    store.setActiveFile(file2.path);
-    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
-    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
-    const container = screen.getByTestId('editor-container');
-    const view = getEditorView(container);
+    const { view, setScrollTo } = setupScrollToWithFile2Active();
 
     // Establish baseline: target active file2 and confirm cursor moved to head=BASELINE_HEAD
     setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
