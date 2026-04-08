@@ -23157,6 +23157,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1135,
+        "title": "Extract `expectNoUnhandledRejections` helper and remove `{ once: true }` in error-recovery tests",
+        "description": "In `gui/src/__tests__/gotoDefinition.test.ts`, the two error-recovery tests (lines ~642-697) duplicate the unhandledrejection spy setup/teardown pattern. Two improvements from Task 1114's review:\n\n1. **DRY the pattern**: Extract an `expectNoUnhandledRejections(fn)` helper into `gui/src/__tests__/test-utils.ts`. This complements the existing `withSuppressedRejections` (which suppresses expected rejections) with the inverse: assert no rejections occurred. Suggested shape:\n```ts\nexport async function expectNoUnhandledRejections(fn: () => Promise<void>): Promise<void> {\n  const spy = vi.fn();\n  window.addEventListener('unhandledrejection', spy);\n  try {\n    await fn();\n    expect(spy).not.toHaveBeenCalled();\n  } finally {\n    window.removeEventListener('unhandledrejection', spy);\n  }\n}\n```\n\n2. **Remove `{ once: true }`** from both `window.addEventListener('unhandledrejection', unhandledSpy, { once: true })` calls (lines ~643, ~682). Since the assertion is `not.toHaveBeenCalled()`, `once: true` would auto-remove after the first call, masking subsequent rejections in a regression. The `finally` block already handles cleanup.\n\nmemory_hints: search \"withSuppressedRejections test-utils gotoDefinition error recovery\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -23169,7 +23180,7 @@
       ],
       "created": "2026-04-08T21:10:10.379Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T21:10:20.064Z"
+      "updated": "2026-04-08T21:11:57.245Z"
     }
   }
 }
