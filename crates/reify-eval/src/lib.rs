@@ -1527,24 +1527,9 @@ impl Engine {
         // Include guard-cell boolean states in the topology fingerprint so that
         // eval() and edit_param() produce identical fingerprints for the same
         // logical guard configuration.
-        //
-        // Without this, eval()'s fingerprint is the pure structural hash from
-        // graph.topology_fingerprint(), while edit_param()'s fingerprint (Site 2)
-        // combines the structural hash with guard-state hashes. That mismatch
-        // means F1 (from eval) ≠ F3 (from edit_param returning to the same state).
-        //
-        // Uses unwrap_or(Value::Undef) — same defensive style as Site 1 in
-        // edit_param()'s has_dirty_guards branch. Guard cells should always be
-        // present (the third pass above inserts them), but Undef is the correct
-        // semantic fallback for an undetermined guard during initial evaluation.
         if !snapshot.graph.guarded_groups.is_empty() {
-            let guard_state_hash = {
-                let hashes = snapshot.graph.guarded_groups.iter().map(|g| {
-                    let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                    ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, gv))
-                });
-                ContentHash::combine_all(hashes)
-            };
+            let guard_state_hash =
+                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, false);
             snapshot.topology_fingerprint =
                 snapshot.graph.topology_fingerprint().combine(guard_state_hash);
         }
@@ -1839,26 +1824,9 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint including guard states
-                //
-                // EXEMPTION: unwrap_or(Value::Undef) is intentionally kept here (Site 1).
-                // Guard cells are guaranteed present — the re-elaboration loop above (line 1707)
-                // inserts each guard_val into `values` before this fingerprint computation runs.
-                // However, this is the initial eval() path where defensive coding is acceptable:
-                // if a guard cell were hypothetically absent, Undef IS the semantically correct
-                // representation of an undetermined guard state during initial evaluation.
-                // Compare with Sites 2 and 3 in edit_param(), which use expect() because the
-                // invariant is stronger there (eval() has already completed and populated all cells).
-                //
-                // Format unified with Sites 2 and 3: "guard:{}={:?}" includes the guard_cell ID
-                // to disambiguate cells (two guards holding the same value produce different hashes).
-                let guard_state_hash = {
-                    let hashes = graph.guarded_groups.iter().map(|g| {
-                        let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, gv))
-                    });
-                    ContentHash::combine_all(hashes)
-                };
+                // Recompute topology fingerprint including guard states.
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, false);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
             }
@@ -2135,26 +2103,13 @@ impl Engine {
                 }
 
                 // Recompute topology fingerprint to include guard states.
-                // Site 2: guard cells must be present — eval() has completed and populated all
-                // guard cells into the values map before any edit_param() call. The incremental
-                // re-evaluation may update guard cell values but never removes them.
-                // A missing guard cell here would silently produce a wrong fingerprint (by hashing
-                // Undef instead of the actual guard value), causing stale incremental caches.
-                let base_fingerprint = new_snapshot.graph.topology_fingerprint();
-                let guard_state_hashes: Vec<ContentHash> = new_snapshot
-                    .graph
-                    .guarded_groups
-                    .iter()
-                    .map(|g| {
-                        let val = values
-                            .get(&g.guard_cell)
-                            .cloned()
-                            .expect("guard cell must have a value after initial evaluation");
-                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
-                    })
-                    .collect();
-                let guard_states_hash = ContentHash::combine_all(guard_state_hashes);
-                new_snapshot.topology_fingerprint = base_fingerprint.combine(guard_states_hash);
+                let guard_state_hash = guard_state_fingerprint(
+                    &new_snapshot.graph.guarded_groups,
+                    &values,
+                    true,
+                );
+                new_snapshot.topology_fingerprint =
+                    new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
             }
         }
 
