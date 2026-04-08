@@ -23447,11 +23447,16 @@
         "description": "In `crates/reify-constraints/src/solver.rs:790`, the `verify_uniqueness` function uses `.unwrap_or(mid)` when extracting the solved value for perturbation starting point selection. While less dangerous than the comparison bug (it only affects where perturbation starts, not agreement detection), it is inconsistent with the defensive approach added to `solutions_agree` in Task 1132.\n\nAdd a `tracing::warn!` when the fallback to `mid` is used, so that missing/non-numeric values in `solved_values` are visible in tracing output rather than silently absorbed. The `mid` fallback itself is reasonable — just add observability.\n\nmemory_hints: search \"solver uniqueness verification silent default\", get_entity \"DimensionalSolver\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:34:22.702Z"
+        "updatedAt": "2026-04-08T21:37:27.200Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "1144",
@@ -23468,7 +23473,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-08T21:36:55.982Z",
+      "lastModified": "2026-04-08T21:37:27.200Z",
       "taskCount": 1144,
       "completedCount": 816,
       "tags": [
