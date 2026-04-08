@@ -21963,6 +21963,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1067,
+        "title": "Remove redundant `gui/node_modules` line from .gitignore",
+        "description": "In `.gitignore` line 36, delete the explicit `gui/node_modules` entry. Line 11 already contains `node_modules/`, a recursive pattern that matches any `node_modules` directory at any depth (including `gui/node_modules`), so the explicit entry is dead weight. Pure cleanup — no functional change.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -21975,7 +21986,7 @@
       ],
       "created": "2026-04-08T11:31:30.501Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-08T11:31:41.518Z"
+      "updated": "2026-04-08T11:31:46.405Z"
     }
   }
 }
