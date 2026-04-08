@@ -3475,7 +3475,16 @@ fn gradient_decomposed_n3_irrational_coords() {
 /// Sampling a gradient field panics in debug mode when codomain_type does not match
 /// the runtime dimension returned by the lambda.
 ///
-/// This test validates the #[cfg(debug_assertions)] assertion added to
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result.
+/// In debug builds, a hard assertion catches dimensionless-domain mismatches
+/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
+/// This is a deliberate design choice to avoid false positives from dimensioned-domain
+/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
+/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
+/// emitted instead of a hard assertion.
+///
+/// This test validates the #[cfg(debug_assertions)] assertion in
 /// compute_numerical_gradient_at_point. The assertion fires after the first f_plus
 /// evaluation when the declared codomain dimension does not match the actual runtime
 /// return dimension.
@@ -3556,6 +3565,16 @@ fn gradient_runtime_codomain_dim_mismatch_panics() {
 /// the gradient VALUE itself (before sampling) still has correct codomain_type
 /// metadata — it trusts the declaration. This is a non-panicking structural check.
 ///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result,
+/// not the runtime return type of the lambda. This means a misconfigured codomain_type
+/// silently propagates the declared (wrong) dimension into the gradient field's metadata.
+/// In debug builds, a hard assertion catches this for dimensionless domains; for
+/// dimensioned domains, a soft warning (eprintln) is emitted instead. This is
+/// intentional — changing to runtime-driven dimensioning would require propagating
+/// dimension metadata through all arithmetic operations, which is architecturally
+/// expensive and error-prone.
+///
 /// Setup:
 /// - domain_type = Type::Real (1D, dimensionless)
 /// - codomain_type = Type::Scalar { dimension: MASS }
@@ -3619,9 +3638,17 @@ fn gradient_codomain_type_vs_runtime_mismatch_field_structure() {
 /// Sampling a gradient field with declared codomain=MASS but lambda returning Real
 /// panics in debug mode because the runtime dimension does not match the declaration.
 ///
+/// **DESIGN DECISION: trust-the-declaration**
+/// The gradient computation trusts `codomain_type` for dimensioning the result.
+/// In debug builds, a hard assertion catches dimensionless-domain mismatches
+/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
+/// This is a deliberate design choice to avoid false positives from dimensioned-domain
+/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
+/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
+/// emitted instead of a hard assertion.
+///
 /// The debug assertion fires after the first f_plus evaluation when
 /// f_plus.dimension() (DIMENSIONLESS) != expected_codomain_dim (MASS).
-/// This test fails initially (no assertion exists yet).
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "codomain_type does not match")]
