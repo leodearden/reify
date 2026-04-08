@@ -1028,10 +1028,23 @@ fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
 ///
 /// Float-bearing variants (`Real`, `Scalar`, `Complex`, `Orientation`) compare via
 /// `to_bits()`, giving bit-pattern identity: `-0.0 != +0.0` and `NaN == NaN`
-/// (for the same canonical NaN bit pattern). This is deliberate for
-/// content-addressable storage — values with different bit representations must
-/// hash and compare differently, so two `Value`s that differ only in float sign
-/// or NaN payload are distinct keys.
+/// (for the same canonical NaN bit pattern).
+///
+/// **Float-sign and NaN payload behaviour — important caveat:**
+///
+/// - **`-0.0` vs `+0.0`**: `PartialEq` considers them **not equal** (different
+///   `to_bits()`), and `content_hash()` also produces different hashes.  The
+///   hash-equality invariant (`a == b ⟹ same hash`) is **maintained**.
+///
+/// - **NaN payloads**: `PartialEq` considers two NaN values with different
+///   payloads **not equal** (different `to_bits()`).  However, `content_hash()`
+///   canonicalizes all NaN bit patterns to `f64::NAN.to_bits()`, so they
+///   **hash identically**.  This is a **deliberate exception** to the hash-equality
+///   invariant — see `content_hash()` for the rationale and caller guidance.
+///
+/// The earlier claim that "two `Value`s that differ only in float sign or NaN
+/// payload are distinct keys" is only true for `PartialEq`; it does **not** hold
+/// for `content_hash()` in the NaN-payload case.
 ///
 /// **Eq/Ord contract:** this impl and `impl Ord for Value` both define equality
 /// as bit-pattern identity, preserving the invariant: `a == b` iff
