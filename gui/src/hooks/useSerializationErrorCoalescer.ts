@@ -45,8 +45,9 @@ export function createSerializationErrorCoalescer(
   function add(error: SerializationError): void {
     const key = `${error.item_type}:${error.item_id}`;
     buffer.set(key, error);
-    firstArrival ??= Date.now();
-    const elapsed = Date.now() - firstArrival;
+    const now = Date.now();
+    firstArrival ??= now;
+    const elapsed = now - firstArrival;
     const remaining = maxWaitMs - elapsed;
     clearTimeout(timer);
     if (remaining <= 0) {
