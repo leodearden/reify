@@ -20854,7 +20854,7 @@
         "description": "The two-line pattern `let p: T = serde_json::from_value(params).map_err(|e| format!(\"<name> params error: {e}\"))?;` appears 7 times across all match arms in `InProcessLsp::handle_request` (initialize, initialized, didOpen, didChange, didClose, completion, hover, definition).\n\nExtract a module-private helper:\n```rust\nfn parse_params<T: serde::de::DeserializeOwned>(params: serde_json::Value, label: &str) -> Result<T, String> {\n    serde_json::from_value(params).map_err(|e| format!(\"{label} params error: {e}\"))\n}\n```\n\nThen each arm becomes `let p = parse_params::<InitializedParams>(params, \"initialized\")?;` — one line, no format strings scattered across 7 sites. Adding future arms becomes trivially DRY.\n\nMemory hints: search \"bridge.rs handle_request deserialization\", search \"parse_params helper DRY\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20865,7 +20865,8 @@
           "files": [
             "crates/reify-lsp/src/bridge.rs"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:13:48.130Z"
       },
       {
         "id": "984",
@@ -27359,7 +27360,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:13:47.201Z",
+      "lastModified": "2026-04-09T16:13:48.131Z",
       "taskCount": 1317,
       "completedCount": 989,
       "tags": [
