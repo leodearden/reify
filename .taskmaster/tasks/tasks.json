@@ -28093,6 +28093,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1358,
+        "title": "Extend assert_sync_ref_exists behavioral coverage; tighten or drop rc check",
+        "description": "Follow-up to Task 1260. Review flagged that the file-move refactor reduced behavioral coverage of assert_sync_ref_exists (only the empty-ref_fn guard path is tested) and that the rc -eq 0 subshell check is redundant/misleading. S3 + S4 from esc-1260-38.",
+        "details": "Follow-up to Task 1260. Two review suggestions for tests/infra/test_test_helpers.sh in the assert_sync_ref_exists behavioral test region (lines 412-433).\n\n**S3 — rc -eq 0 subshell check is redundant/misleading (test_test_helpers.sh:412-433)**\nThe test asserts `_src_beh_rc -eq 0` on the subshell that runs assert_sync_ref_exists. But assert() in test_helpers.sh is guaranteed to return 0 — both PASS and FAIL branches end with an arithmetic expansion that yields 0 — so this rc check cannot fail for any reason related to assert_sync_ref_exists. Combined with the FAIL-grep on the same output, it advertises robustness it does not provide.\nFix options:\n  (a) Drop the rc check entirely and rely on the anchored `^  FAIL:` grep.\n  (b) Run the subshell under `bash -eu` so a genuine runtime error (unset var, missing command) in assert_sync_ref_exists would change rc and be caught.\n  (c) Capture rc from assert_sync_ref_exists directly (not from the subshell as a whole).\nRecommended: (b) — gives the rc check actual meaning by making it detect unset-var or missing-command regressions in the helper.\n\n**S4 — Behavioral coverage reduction after file-move refactor (test_test_helpers.sh:412-421)**\nThe refactor removed the sed-extraction robustness test (good — the extraction is gone) but did not add back behavioral tests for the happy path or the mismatch path. Net result: only the empty-ref_fn guard is covered behaviorally. The happy-path case in particular protects against future regression of the fn-existence regex itself.\nFix: add two behavioral subshells alongside the existing guard test:\n  1. SYNC marker + matching `pub fn <name>` in target → expect `^  PASS:` anchored.\n  2. SYNC marker + non-matching target fn → expect `^  FAIL:` anchored on the fn-existence assertion (not on the guard line). Verify by grepping for the fn name in the FAIL message or by checking it is not the guard wording.\nApply S3's rc-hardening (bash -eu) uniformly to all three behavioral subshells.\n\n**Suggested order:** Implement S4 (add happy + mismatch subshells) first, then apply S3 uniformly (bash -eu across all three) so the tightened rc check gates the new tests from day one.\n\nmemory_hints: search(\"Task 1260 behavioral test assert_sync_ref_exists\", project_id=\"reify\"); search(\"test_helpers.sh assert return value PASS FAIL\", project_id=\"reify\")",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28105,7 +28116,7 @@
       ],
       "created": "2026-04-09T19:36:17.195Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T19:36:17.251Z"
+      "updated": "2026-04-09T19:37:06.758Z"
     }
   }
 }
