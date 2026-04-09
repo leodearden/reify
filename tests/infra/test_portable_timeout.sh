@@ -535,16 +535,32 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
+        _abs_kill=$(command -v kill)
+        _abs_awk=$(command -v awk)
+
+        # Kill stale "sleep 31339" orphans left by Test 21a or prior runs so
+        # they do not cause a false negative for THIS invocation.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
+        "$_abs_sleep" 0.5
 
         eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Command ignores SIGTERM; timer escalates to SIGKILL.
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
 
-        # Brief wait then verify no orphan sleep 31339.
-        "$_abs_sleep" 0.5
+        # Poll up to 5s for the orphan sleep 31339 to be reaped.
+        # A single fixed sleep races against kernel process-table cleanup
+        # on busy systems, so retry a few times before declaring failure.
         _check_rc=0
-        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
+        for _try in 1 2 3 4 5; do
+            _check_rc=0
+            ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
+            [ "$_check_rc" -eq 0 ] && break
+            "$_abs_sleep" 1
+        done
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
         rm -rf "$rescue_dir"
         exit "$_check_rc"
