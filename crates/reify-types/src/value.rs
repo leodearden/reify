@@ -5333,6 +5333,18 @@ mod tests {
     }
 
     #[test]
+    fn value_axis_partial_eq_different_origin() {
+        let a1 = make_axis(make_point3_origin(), make_direction_z());
+        let alt_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let a2 = make_axis(alt_origin, make_direction_z());
+        assert_ne!(a1, a2);
+    }
+
+    #[test]
     fn value_axis_display() {
         let origin = Value::Point(vec![
             Value::length(0.0),
