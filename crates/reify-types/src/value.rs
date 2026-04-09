@@ -5449,6 +5449,18 @@ mod tests {
     }
 
     #[test]
+    fn value_bbox_partial_eq_different_min() {
+        let b1 = make_bbox(make_point3_min(), make_point3_max());
+        let min2 = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let b2 = make_bbox(min2, make_point3_max());
+        assert_ne!(b1, b2);
+    }
+
+    #[test]
     fn value_bbox_display() {
         let bbox = make_bbox(make_point3_min(), make_point3_max());
         let s = format!("{}", bbox);
