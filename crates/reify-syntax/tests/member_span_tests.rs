@@ -356,3 +356,76 @@ fn depth_limit_returns_none_beyond_limit() {
         "param beyond MAX_MEMBER_NESTING_DEPTH should NOT be found"
     );
 }
+
+/// Minimal tracing subscriber that captures WARN-level messages into a Vec.
+mod warn_capture {
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Level, Metadata, Subscriber};
+
+    pub struct MessageCapture {
+        pub messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct Visitor {
+        message: Option<String>,
+    }
+
+    impl Visit for Visitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                self.message = Some(value.to_string());
+            }
+        }
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = Some(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl Subscriber for MessageCapture {
+        fn enabled(&self, _meta: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &Attributes<'_>) -> Id {
+            // Safety: 1 is non-zero.
+            unsafe { Id::from_u64(1) }
+        }
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+        fn event(&self, event: &Event<'_>) {
+            if *event.metadata().level() == Level::WARN {
+                let mut v = Visitor { message: None };
+                event.record(&mut v);
+                if let Some(msg) = v.message {
+                    self.messages.lock().unwrap().push(msg);
+                }
+            }
+        }
+        fn enter(&self, _span: &Id) {}
+        fn exit(&self, _span: &Id) {}
+    }
+}
+
+#[test]
+fn depth_limit_emits_tracing_warning() {
+    use std::sync::{Arc, Mutex};
+    use warn_capture::MessageCapture;
+
+    let messages: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let subscriber = MessageCapture { messages: Arc::clone(&messages) };
+
+    tracing::subscriber::with_default(subscriber, || {
+        let members =
+            build_nested_guarded_members(MAX_MEMBER_NESTING_DEPTH + 1, "unreachable_param");
+        let _ = find_named_member_span(&members, "unreachable_param");
+    });
+
+    let captured = messages.lock().unwrap();
+    assert!(
+        captured.iter().any(|m| m.contains("depth limit exceeded")),
+        "expected a warning containing 'depth limit exceeded', but captured: {captured:?}"
+    );
+}
