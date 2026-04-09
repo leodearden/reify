@@ -1099,7 +1099,7 @@ pub(crate) fn compile_expr_guarded(
                 content_hash,
             }
         }
-        reify_syntax::ExprKind::Auto => {
+        reify_syntax::ExprKind::Auto { .. } => {
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
             // Undef literal as a safe fallback.
