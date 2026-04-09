@@ -116,6 +116,12 @@ portable_timeout() {
             ( sleep "$seconds" && {
                 touch "$timeout_flag" 2>/dev/null
                 kill "$cmd_pid" 2>/dev/null
+                # Grace period: if SIGTERM is ignored, escalate to SIGKILL via
+                # process-group kill.  Safe: cmd_pid hasn't been wait(2)ed yet
+                # (main shell is blocked), so no PID-reuse risk.  Process-group
+                # kill also cleans up child processes (e.g. nested sleep).
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         else
@@ -124,6 +130,8 @@ portable_timeout() {
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         fi
