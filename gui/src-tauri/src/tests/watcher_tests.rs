@@ -16,7 +16,7 @@ where
 {
     match FileWatcher::new(dir, target_file, callback) {
         Ok(w) => Some(w),
-        Err(e) if e.contains("Too many open files") => {
+        Err(e) if e.contains("Too many open files") || e.contains("OS file watch limit reached") => {
             eprintln!("SKIP: inotify instances exhausted: {e}");
             None
         }
