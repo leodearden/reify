@@ -207,6 +207,99 @@ fn build_nested_guarded_members(depth: usize, target: &str) -> Vec<reify_syntax:
     current
 }
 
+/// Build a member tree: `outer_depth` levels of GuardedGroup, then a Port
+/// whose body contains `port_inner_depth` levels of GuardedGroup wrapping a
+/// leaf Param named `target`.
+///
+/// The depth counter increments once per GuardedGroup and once when entering
+/// the Port body, so the leaf is reached at depth
+/// `outer_depth + 1 + port_inner_depth`.
+fn build_port_in_guarded_members(
+    outer_depth: usize,
+    port_inner_depth: usize,
+    target: &str,
+) -> Vec<reify_syntax::MemberDecl> {
+    use reify_syntax::{Expr, ExprKind, GuardedGroupDecl, MemberDecl, ParamDecl, PortDecl};
+    use reify_types::{ContentHash, PortDirection, SourceSpan};
+
+    let dummy_span = SourceSpan::new(0, 1);
+    let dummy_hash = ContentHash(0);
+    let dummy_expr = Expr {
+        kind: ExprKind::BoolLiteral(true),
+        span: dummy_span,
+    };
+
+    // Innermost leaf: a single Param with the target name
+    let leaf = vec![MemberDecl::Param(ParamDecl {
+        name: target.to_string(),
+        doc: None,
+        type_expr: None,
+        default: None,
+        where_clause: None,
+        span: dummy_span,
+        content_hash: dummy_hash,
+    })];
+
+    // Wrap leaf in `port_inner_depth` GuardedGroups
+    let mut inner = leaf;
+    for _ in 0..port_inner_depth {
+        inner = vec![MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr.clone(),
+            members: inner,
+            else_members: vec![],
+            span: dummy_span,
+            content_hash: dummy_hash,
+        })];
+    }
+
+    // Wrap in a Port
+    let port = vec![MemberDecl::Port(PortDecl {
+        name: "p".to_string(),
+        direction: Some(PortDirection::In),
+        type_name: "T".to_string(),
+        members: inner,
+        frame_expr: None,
+        span: dummy_span,
+        content_hash: dummy_hash,
+    })];
+
+    // Wrap Port in `outer_depth` GuardedGroups
+    let mut current = port;
+    for _ in 0..outer_depth {
+        current = vec![MemberDecl::GuardedGroup(GuardedGroupDecl {
+            condition: dummy_expr.clone(),
+            members: current,
+            else_members: vec![],
+            span: dummy_span,
+            content_hash: dummy_hash,
+        })];
+    }
+    current
+}
+
+#[test]
+fn port_inside_guarded_group_shares_depth_counter() {
+    // The depth counter increments once per GuardedGroup and once when entering
+    // a Port body.  So: 16 outer GuardedGroups + 1 Port entry + 15 inner
+    // GuardedGroups puts the leaf at depth 32 (= MAX_MEMBER_NESTING_DEPTH).
+    // Should succeed.
+    let members = build_port_in_guarded_members(16, 15, "deep_param");
+    let result = find_named_member_span(&members, "deep_param");
+    assert!(
+        result.is_some(),
+        "param at depth 16+1+15=32 (= MAX_MEMBER_NESTING_DEPTH) should be found"
+    );
+
+    // 16 outer GuardedGroups + 1 Port entry + 16 inner GuardedGroups = depth 33
+    // (> MAX_MEMBER_NESTING_DEPTH). Should return None.
+    let members = build_port_in_guarded_members(16, 16, "unreachable_param");
+    let result = find_named_member_span(&members, "unreachable_param");
+    assert!(
+        result.is_none(),
+        "param at depth 16+1+16=33 (> MAX_MEMBER_NESTING_DEPTH) should NOT be found"
+    );
+}
+
 #[test]
 fn depth_limit_succeeds_within_limit() {
     let members = build_nested_guarded_members(5, "deep_param");
