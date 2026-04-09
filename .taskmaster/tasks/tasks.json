@@ -25290,11 +25290,11 @@
         "description": "Three small follow-up improvements to the verify_uniqueness tracing tests in `crates/reify-constraints/src/solver.rs` from Task 1234's review (reviewer_comprehensive S1 + S2 + S3). All three address the same diff and should be done together.\n\n(S1 — drop verdict assertions) The `assert!(!unique, ...)` lines added in Task 1234 at ~line 1126 (`verify_uniqueness_warns_when_param_missing_from_solved_values`) and ~line 1179 (`verify_uniqueness_warns_when_param_is_non_numeric`) are implicitly coupled to `solve_core` converging on the perturbed point so `solutions_agree` runs and returns false. Each test's stated contract (per its name and the `vu_warn_count` assertion) is the *fallback warn count*, not the verdict — the verdict assertion is redundant noise that introduces a real failure mode if `solve_core` is ever changed. Delete both `assert!(!unique, ...)` lines so each test focuses on the single behavior its name advertises. The warn-count assertion is sufficient to cover the None branch in `verify_uniqueness`.\n\n(S2 — comment brittleness, becomes moot if S1 is done) The two NB comments at ~lines 1121-1125 and ~1174-1178 reference `(~line 826)` for the conservative early-return branch. Line-number references rot. If S1 is applied, both NB blocks should be deleted entirely (no verdict assertion → no fragility to document). If for any reason S1 is *not* applied, replace `(~line 826)` with a symbolic reference such as \"the `_ => true` arm of the `match solve_core(...)` in `verify_uniqueness`\" and de-duplicate by extracting the shared NB block.\n\n(S3 — revert misleading binding) In `verify_uniqueness_no_warn_when_param_has_valid_f64` (~line 1222), revert `let _unique = tracing::subscriber::with_default(...)` back to `let _ = tracing::subscriber::with_default(...)`. The binding name `_unique` falsely suggests the value matters, then the comment has to walk that suggestion back. Idiomatic Rust uses `let _ = expr;` for explicit discard. Keep the explanatory comment above the line (it's the rationale; the variable name shouldn't carry it).\n\nAll changes are tiny, single-file, test-only.",
         "details": "memory_hints: search \"Task 1234 review verify_uniqueness verdict assertion fragility\", get_task \"1234\", get_task \"1227\"\n\nParent: Task 1234. Reviewer: reviewer_comprehensive (S1 + S2 + S3).\n\nFile: crates/reify-constraints/src/solver.rs\nApproximate line ranges (from current main as of 2026-04-09):\n- 1117-1127  (warn test 1: drop assert!(!unique, ...) and the NB comment block above it)\n- 1170-1180  (warn test 2: same)\n- 1216-1224  (happy-path test: revert _unique → _, keep the comment)\n\nVerification: cargo test -p reify-constraints verify_uniqueness",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:58:58.243Z",
+        "updatedAt": "2026-04-09T03:37:43.834Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25627,7 +25627,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:37:43.010Z",
+      "lastModified": "2026-04-09T03:37:43.834Z",
       "taskCount": 1269,
       "completedCount": 942,
       "tags": [
