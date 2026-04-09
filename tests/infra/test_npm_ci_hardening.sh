@@ -144,4 +144,11 @@ echo "--- Test 12: build artifact tracking hygiene ---"
 assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
     bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
 
+# -- Test 13: script has rev-parse --is-inside-work-tree preflight -----------
+echo ""
+echo "--- Test 13: script has rev-parse --is-inside-work-tree preflight ---"
+
+assert "script contains 'rev-parse --is-inside-work-tree' preflight" \
+    grep -q 'rev-parse --is-inside-work-tree' "$SCRIPT"
+
 test_summary
