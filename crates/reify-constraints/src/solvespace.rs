@@ -1682,9 +1682,11 @@ mod tests {
 
         assert!(result.is_err(), "expected Err when lb_start is missing");
         // The two line_a points were inserted before the error — no rollback.
-        assert!(
-            builder.point_entities.len() >= 2,
-            "builder.point_entities should contain the already-created line_a points \
+        // Exactly 2: both Fixed, distinct coords (no dedup), line_b never reached.
+        assert_eq!(
+            builder.point_entities.len(),
+            2,
+            "builder.point_entities should contain exactly the 2 line_a points \
              (len={}) — add_line_pair has no rollback on Err",
             builder.point_entities.len()
         );
