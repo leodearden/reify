@@ -27487,11 +27487,11 @@
         "description": "Review suggestions S3+S4 from task 1039 review, both in tests/infra/test_portable_timeout.sh.\n\nS4 (robustness, lines 541-547): The pre-cleanup kills every host process whose args end in `sleep 31339`, regardless of owner. On a shared CI host or dev workstation this can race with another concurrent run of this same test (e.g., parallel worktrees running `cargo test`) — one run's pre-cleanup can kill the orphan the other run is about to assert on, producing cross-test flakes. It also silently masks the case where a real regression in Test 21a leaves an orphan behind.\n\nS3 (performance, lines 558-563): The new poll loop runs `ps | grep` with no initial wait, so on the common path where the orphan is reaped in ~50-500ms the test now incurs a full 1s sleep before the second check (rather than the old 0.5s). After the 5th iteration fails the test still executes `sleep 1` that is never followed by another check — ~1s of pure waste when the test is about to fail anyway.\n\nRequired changes:\n1. Scope the pre-cleanup scan to the current user: `ps -o pid,user,args` filtered by `$(id -un)`, and/or bump the sentinel to include `$$` (per-run uniqueness). Preferred: fix Test 21a at the source so Test 21b does not need defensive pre-cleanup. Document whichever path is taken in an inline comment.\n2. Short-circuit the poll loop to avoid the trailing wasted sleep: `[ \"$_try\" -lt 5 ] && \"$_abs_sleep\" 1` (minimal change, preserves the ~5s upper bound the comment advertises). Optionally back off (0.2/0.4/0.8/1.6/2.0) if the author prefers faster common-path.\n3. Verify: run `tests/infra/test_portable_timeout.sh` and ensure Tests 21a/21b pass; confirm no stray `sleep 31339` processes remain after completion.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:59:57.911Z",
+        "updatedAt": "2026-04-09T16:59:59.949Z",
         "metadata": {
           "modules": [
             "tests/infra/test_portable_timeout.sh"
@@ -27518,7 +27518,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:59:59.332Z",
+      "lastModified": "2026-04-09T16:59:59.949Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
