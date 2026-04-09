@@ -27673,10 +27673,11 @@
         "description": "LSP hover at crates/reify-lsp/src/hover.rs:33 displays \"auto\" for all Auto variants via `ValueCellKind::Auto { .. } => \"auto\"`. Now that `auto(free)` is a distinct concept (skips uniqueness verification), users hovering over an `auto(free)` param will see just \"auto\", losing the distinction.",
         "details": "In crates/reify-lsp/src/hover.rs around line 33, split the match on `ValueCellKind::Auto` to emit different hover text based on the `free` flag:\n```rust\nValueCellKind::Auto { free: true } => \"auto(free)\",\nValueCellKind::Auto { free: false } => \"auto\",\n```\nAdd a hover test that verifies both variants produce the expected hover text for a param declared with `auto` vs `auto(free)`.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T17:24:39.270Z"
       },
       {
         "id": "1335",
@@ -27714,7 +27715,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:24:38.628Z",
+      "lastModified": "2026-04-09T17:24:39.270Z",
       "taskCount": 1337,
       "completedCount": 1007,
       "tags": [
