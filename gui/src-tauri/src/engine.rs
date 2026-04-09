@@ -103,15 +103,15 @@ impl EngineSession {
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
 
-        // Store source with normalized key; clear stale entries
+        // Evaluate + check constraints (borrows compiled by shared ref, so all
+        // field mutations can safely be deferred until after check() returns).
+        let check_result = self.engine.check(&compiled);
+
+        // Atomically commit all state after check() succeeds.
         self.source_map.clear();
         self.source_map
             .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
-
-        // Evaluate + check constraints
-        let check_result = self.engine.check(&compiled);
-
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
 
@@ -171,8 +171,9 @@ impl EngineSession {
     /// Source changes can alter topology, so we create a fresh parse/compile/eval cycle.
     /// The existing engine state (snapshot, caches) is reused where possible via check().
     ///
-    /// On error (parse or compile failure), the session state is left completely unchanged —
-    /// source_map, module_name, compiled, and last_check all retain their previous values.
+    /// On any error (parse, compile, or a panic in check()), the session state is left
+    /// completely unchanged — source_map, module_name, compiled, and last_check all
+    /// retain their previous values. All mutations are deferred until after check() returns.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
@@ -204,14 +205,15 @@ impl EngineSession {
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
 
-        // Parse+compile succeeded — now atomically update all state
+        // Parse+compile succeeded — run check() before mutating any state, so
+        // that a panic in check() leaves the session completely unchanged.
+        let check_result = self.engine.check(&compiled);
+
+        // Atomically commit all state after check() succeeds.
         let normalized_key = module_key(module_name);
         self.source_map.clear();
         self.source_map.insert(normalized_key, content.to_string());
         self.module_name = Some(module_name.to_string());
-
-        let check_result = self.engine.check(&compiled);
-
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
 
