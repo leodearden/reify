@@ -27665,6 +27665,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1334,
+        "title": "feat(lsp): distinguish auto(free) from auto in hover text",
+        "description": "LSP hover at crates/reify-lsp/src/hover.rs:33 displays \"auto\" for all Auto variants via `ValueCellKind::Auto { .. } => \"auto\"`. Now that `auto(free)` is a distinct concept (skips uniqueness verification), users hovering over an `auto(free)` param will see just \"auto\", losing the distinction.",
+        "details": "In crates/reify-lsp/src/hover.rs around line 33, split the match on `ValueCellKind::Auto` to emit different hover text based on the `free` flag:\n```rust\nValueCellKind::Auto { free: true } => \"auto(free)\",\nValueCellKind::Auto { free: false } => \"auto\",\n```\nAdd a hover test that verifies both variants produce the expected hover text for a param declared with `auto` vs `auto(free)`.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -27677,7 +27688,7 @@
       ],
       "created": "2026-04-09T17:24:04.313Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T17:24:04.325Z"
+      "updated": "2026-04-09T17:24:10.704Z"
     }
   }
 }
