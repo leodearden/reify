@@ -28650,10 +28650,11 @@
         "description": "Follow-up from task 985 review. The current mcp_passthrough_types_satisfy_ipc_contract test (gui/src-tauri/src/tests/types_tests.rs:515) only proves Rust-to-Rust round-trip self-consistency via serde_json::to_value -> from_value. That does NOT guard against a future `#[serde(rename_all = \"camelCase\")]` or field rename on DiagnosticInfo/SelectionInfo silently breaking the GUI<->frontend IPC wire contract.\n\nScope:\n1. After each round-trip in the test, add explicit assertions against the serde_json::Value keys — matching the style at line 84-89 of source_location_serializes_with_expected_fields. E.g. `assert_eq!(v[\"file_path\"], json!(\"src/main.ri\"))`, `assert!(v.get(\"filePath\").is_none())`, `assert_eq!(v[\"selected_entity\"], ...)`.\n2. Cover both Option variants for DiagnosticInfo.code (Some and None) and SelectionInfo.hovered_entity (Some and None) — currently only one variant of each is exercised, so any future `#[serde(skip_serializing_if = ...)]` change would slip through.\n3. Hoist `use serde::{Deserialize, Serialize}` (or `serde::de::DeserializeOwned`) to the top of types_tests.rs alongside the other imports, since the inner `use` inside the test body is only there for the local helper bound.\n4. Soften the \"~50 lines of boilerplate\" estimate in gui/src-tauri/src/types.rs:21 — closer reality is 15-25 lines per type. Rewording to something like \"a struct definition plus a From impl per type with zero behavioral benefit\" is more accurate.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:14:43.787Z"
       },
       {
         "id": "1386",
@@ -28669,7 +28670,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:14:42.370Z",
+      "lastModified": "2026-04-09T22:14:43.787Z",
       "taskCount": 1386,
       "completedCount": 1068,
       "tags": [
