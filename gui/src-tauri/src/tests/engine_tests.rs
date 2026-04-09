@@ -1655,7 +1655,6 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
 #[test]
 #[should_panic(expected = "compiled")]
 fn resolve_source_panics_without_loaded_module() {
-    use reify_constraints::SimpleConstraintChecker;
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
     // No load — compiled is None. debug_assert should fire.
