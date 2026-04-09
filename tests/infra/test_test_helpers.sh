@@ -260,20 +260,26 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
-# _has_if_n_guard catches any 'if [ -n' conditional regardless of
-# the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
-# count as prohibited defensive guards.
+# _has_if_n_guard detects defensive non-empty guards in all supported forms:
+#   bracket variants:  [ -n ... ]  [[ -n ... ]]  test -n ...
+#   negated-zero form: [ ! -z ... ]  [[ ! -z ... ]]  test ! -z ...
+#   trigger keywords:  if / && / ||
+# Comment lines (leading #) are stripped before matching to avoid false
+# positives from explanatory comments. Split-line variants (newline between
+# `if` and `[`) are not handled (grep is line-oriented; see design decisions).
+# Variable names are not constrained — $marker, $fn_name, $ref_fn,
+# $_expr_ref_fn, etc. all count as prohibited defensive guards.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
 _has_if_n_guard() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null | grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)'; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
-# (a) file has NO defensive if [ -n ] guard (defensive guards removed)
+# (a) file has NO defensive non-empty guard (defensive guards removed)
 if ! _has_if_n_guard "$SYNC_FILE"; then
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
+    check "sync_comments_test.sh has no defensive non-empty guard" "true"
 else
-    check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
+    check "sync_comments_test.sh has no defensive non-empty guard" "false"
 fi
 
 # (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
