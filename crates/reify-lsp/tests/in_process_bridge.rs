@@ -654,7 +654,7 @@ async fn shutdown_before_initialize_with_null_params() {
 /// unexpected values: an object with extra fields (`{"foo": 42}`) and a wrong JSON
 /// type entirely (`"oops"`). Both must return `Ok(Value::Null)`.
 ///
-/// See bridge.rs lines 177–183: the `"shutdown"` arm calls `server.shutdown().await`
+/// The `"shutdown"` arm in `InProcessLsp::handle_request` calls `server.shutdown().await`
 /// and returns `Ok(Value::Null)` without touching `params`. If a future change adds
 /// strict param validation, this test will fail — making the behavior change
 /// inescapable rather than accidental.
