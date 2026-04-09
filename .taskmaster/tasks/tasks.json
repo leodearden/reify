@@ -26246,7 +26246,10 @@
         "updatedAt": "2026-04-09T03:31:03.896Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
@@ -26263,7 +26266,10 @@
         "updatedAt": "2026-04-09T03:31:58.208Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/deprecated_use_tests.rs"
           ]
         }
       },
