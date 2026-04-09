@@ -3585,22 +3585,6 @@ fn compile_geometry_op(
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            let eval_arg = |name: &str| -> Option<reify_types::Value> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                Some(reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                ))
-            };
-            let eval_arg_f64 = |name: &str| -> Option<f64> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                )
-                .as_f64()
-                .filter(|v| v.is_finite())
-            };
             // Pattern operations resolve target via step index
             let target_id = match target {
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
@@ -3608,47 +3592,47 @@ fn compile_geometry_op(
             };
             match kind {
                 reify_compiler::PatternKind::Linear => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
+                    let count = f64_arg("count")? as usize;
+                    drop(f64_arg);
+                    let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
-                        direction: [
-                            eval_arg_f64("dx")?,
-                            eval_arg_f64("dy")?,
-                            eval_arg_f64("dz")?,
-                        ],
-                        count: eval_arg_f64("count")? as usize,
-                        spacing: eval_arg("spacing")?,
+                        direction,
+                        count,
+                        spacing,
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                    let count = f64_arg("count")? as usize;
+                    drop(f64_arg);
+                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
-                        axis_origin: [
-                            eval_arg_f64("ox")?,
-                            eval_arg_f64("oy")?,
-                            eval_arg_f64("oz")?,
-                        ],
-                        axis_dir: [
-                            eval_arg_f64("ax")?,
-                            eval_arg_f64("ay")?,
-                            eval_arg_f64("az")?,
-                        ],
-                        count: eval_arg_f64("count")? as usize,
-                        angle: eval_arg("angle")?,
+                        axis_origin,
+                        axis_dir,
+                        count,
+                        angle,
                     })
                 }
-                reify_compiler::PatternKind::Mirror => Some(reify_types::GeometryOp::Mirror {
-                    target: target_id,
-                    plane_origin: [
-                        eval_arg_f64("ox")?,
-                        eval_arg_f64("oy")?,
-                        eval_arg_f64("oz")?,
-                    ],
-                    plane_normal: [
-                        eval_arg_f64("nx")?,
-                        eval_arg_f64("ny")?,
-                        eval_arg_f64("nz")?,
-                    ],
-                }),
+                reify_compiler::PatternKind::Mirror => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Mirror {
+                        target: target_id,
+                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                    })
+                }
             }
         }
         CompiledGeometryOp::Sweep {
