@@ -25890,14 +25890,17 @@
         "updatedAt": "2026-04-09T09:17:35.662Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
           ],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Strengthen divergence_gradient_field_returns_undef to isolate source-kind whitelist check"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
+          ]
         }
       },
       {
@@ -25942,7 +25945,7 @@
         "updatedAt": "2026-04-09T02:50:51.231Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
+            "crates/reify-expr/tests",
             "crates/reify-test-support"
           ],
           "memory_hints": {
@@ -25955,7 +25958,11 @@
               "make_analytical_field reify-test-support Task 413 reconciliation",
               "field_calculus_tests boilerplate helper extraction pattern"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs",
+            "crates/reify-test-support/src/builders/field.rs"
+          ]
         }
       },
       {
@@ -26006,6 +26013,9 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
