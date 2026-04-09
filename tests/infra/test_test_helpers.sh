@@ -445,13 +445,14 @@ mk_fixture() { local f; f=$(mktemp); _robust_fixtures+=("$f"); echo "$f"; }
 echo ""
 echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
 
-fixture=$(mk_fixture)
-printf 'assert_sync_ref_exists () {\n  : trivial body\n}\n' > "$fixture"
-if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then
-    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "true"
-else
-    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "false"
-fi
+for ws in '' ' ' '  ' $'\t'; do
+    fixture=$(mk_fixture)
+    printf 'assert_sync_ref_exists%s() {\n  : trivial body\n}\n' "$ws" > "$fixture"
+    _ws_label="${ws:-(empty)}"
+    case "$ws" in $'\t') _ws_label='(tab)' ;; esac
+    if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then ok=true; else ok=false; fi
+    check "_has_assert_sync_ref_exists accepts whitespace variant: ${_ws_label}" "$ok"
+done
 
 echo ""
 echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
