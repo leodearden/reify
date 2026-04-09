@@ -47,6 +47,19 @@ pub fn warning_source() -> &'static str {
 }"#
 }
 
+/// Same as [`warning_source`] but with an additional `param width : Length = 80mm`.
+///
+/// Used by tests that need both an unknown-port-type warning AND a `width` field
+/// for `get_source_location` lookup.
+pub fn warning_source_with_width() -> &'static str {
+    r#"structure def S {
+    param width : Length = 80mm
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
+}
+
 /// Return the bracket source with thickness set to 1mm, which violates the
 /// `thickness > 2mm` constraint.
 pub fn bracket_source_violating() -> String {
