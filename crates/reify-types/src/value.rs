@@ -5625,12 +5625,7 @@ mod tests {
             f_eq, f_diff_origin,
             "Frame: different origin must be unequal"
         );
-        let alt_basis = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let alt_basis = orient(0.0, 1.0, 0.0, 0.0);
         let f_diff_basis = make_frame(make_point3_length(), alt_basis);
         assert_ne!(f_eq, f_diff_basis, "Frame: different basis must be unequal");
 
@@ -5641,12 +5636,7 @@ mod tests {
             tr_eq, tr_eq2,
             "Transform: structurally equal transforms must be equal"
         );
-        let alt_rot = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        };
+        let alt_rot = orient(0.0, 0.0, 1.0, 0.0);
         let tr_diff_rot = make_transform(alt_rot, make_vector3_length());
         assert_ne!(
             tr_eq, tr_diff_rot,
@@ -5806,77 +5796,29 @@ mod tests {
 
         // (5) Value::Orientation — w field
         assert_eq!(
-            Value::Orientation {
-                w: f64::NAN,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: non_canon_nan,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(f64::NAN, 0.0, 0.0, 0.0).content_hash(),
+            orient(non_canon_nan, 0.0, 0.0, 0.0).content_hash(),
             "Orientation w: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (6) Value::Orientation — x field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: f64::NAN,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: non_canon_nan,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(1.0, f64::NAN, 0.0, 0.0).content_hash(),
+            orient(1.0, non_canon_nan, 0.0, 0.0).content_hash(),
             "Orientation x: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (7) Value::Orientation — y field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: f64::NAN,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: non_canon_nan,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(1.0, 0.0, f64::NAN, 0.0).content_hash(),
+            orient(1.0, 0.0, non_canon_nan, 0.0).content_hash(),
             "Orientation y: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (8) Value::Orientation — z field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: f64::NAN,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: non_canon_nan,
-            }
-            .content_hash(),
+            orient(1.0, 0.0, 0.0, f64::NAN).content_hash(),
+            orient(1.0, 0.0, 0.0, non_canon_nan).content_hash(),
             "Orientation z: non-canonical NaN must hash equal to canonical NaN"
         );
     }
@@ -5949,36 +5891,18 @@ mod tests {
                     dimension: dim.clone(),
                 },
             ),
-            (
-                "Orientation",
-                Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-            ),
+            ("Orientation", orient(1.0, 0.0, 0.0, 0.0)),
             (
                 "Frame",
                 Value::Frame {
                     origin: Box::new(Value::Point(vec![])),
-                    basis: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
+                    basis: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
                 },
             ),
             (
                 "Transform",
                 Value::Transform {
-                    rotation: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
+                    rotation: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
                     translation: Box::new(Value::Vector(vec![])),
                 },
             ),
