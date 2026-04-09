@@ -1560,6 +1560,50 @@ mod tests {
 
     // ---- end solutions_agree None/non-numeric tests ----
 
+    // ---- solutions_agree: edge case tests ----
+
+    #[test]
+    fn solutions_agree_nan_value_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Perturbed has NaN — as_f64() returns Some(NaN), which slips through
+        // the None guard; NaN comparisons in the tolerance check are always
+        // false, so the function incorrectly returns true without this fix.
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "NaN in perturbed solution should be non-agreeing"
+        );
+    }
+
     #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
