@@ -23058,7 +23058,7 @@
         "description": "In `add_line_pair_propagates_error_from_each_position` (crates/reify-constraints/src/solvespace.rs), replace the bare `assert!(result.is_err(), ...)` with `assert_missing_err(result, &cell_id)` inside the loop. The helper already exists in the test module and confirms both that the result is Err and that the error message contains the expected cell_id. This guards against a regression where the right position fails but for the wrong reason.\n\nmemory_hints: search(\"assert_missing_err helper solvespace tests\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23070,7 +23070,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-04-09T01:24:11.914Z"
+        "updatedAt": "2026-04-09T01:29:55.255Z"
       },
       {
         "id": "1123",
@@ -24881,9 +24881,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:28:43.572Z",
+      "lastModified": "2026-04-09T01:29:55.255Z",
       "taskCount": 1224,
-      "completedCount": 909,
+      "completedCount": 910,
       "tags": [
         "master"
       ]
