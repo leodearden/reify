@@ -38,7 +38,7 @@ echo "--- Test 2: test_helpers.sh excluded from discovery ---"
 if [ -f "$RUN_ALL" ]; then
     TMPDIR_T2="$(mktemp -d)"
     cp "$SCRIPT_DIR/test_helpers.sh" "$TMPDIR_T2/test_helpers.sh"
-    t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" && t2_rc=0 || t2_rc=$?
+    t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" || true
     rm -rf "$TMPDIR_T2"
 
     if ! echo "$t2_output" | grep -q "Running: test_helpers\.sh"; then
@@ -156,7 +156,7 @@ echo "--- Test 6: structural self-checks ---"
 THIS_FILE="${BASH_SOURCE[0]}"
 
 assert "t2_rc dead variable removed" \
-    bash -c "! grep -qE 't2_rc=' '$THIS_FILE'"
+    bash -c "! grep -qE 't2_rc=[0\$]' '$THIS_FILE'"
 
 # -- Summary --------------------------------------------------------------------
 test_summary
