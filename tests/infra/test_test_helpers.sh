@@ -532,6 +532,13 @@ printf 'if test -n "$var"; then echo guard; fi\n' > "$fixture_test_keyword"
 if _has_if_n_guard "$fixture_test_keyword" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects test-keyword form: if test -n" "$ok"
 
+# Negated zero-length form: `if [ ! -z "$var" ]`
+# Requires regex to match `! -z` as an alternate to `-n`.
+fixture_not_z=$(mk_fixture)
+printf 'if [ ! -z "$var" ]; then echo guard; fi\n' > "$fixture_not_z"
+if _has_if_n_guard "$fixture_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects negated zero-length form: if [ ! -z" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
