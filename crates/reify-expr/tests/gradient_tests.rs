@@ -3878,68 +3878,19 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
 /// assertion there would produce false positives in legitimate use cases. Instead,
 /// a soft eprintln! warning is emitted (see the implementation) without blocking execution.
 ///
-/// Setup:
-/// - domain_type = Type::length() = Scalar{LENGTH}
-/// - codomain_type = Type::Scalar { dimension: MASS } (declared mass)
-/// - lambda body: |x| 2*x — at runtime returns Scalar{LENGTH} (not MASS)
-/// - Sample point: Scalar{si_value: 1.0, dimension: LENGTH}
-///
+/// Setup: see `make_dimensioned_domain_mismatch_gradient`.
+/// Sample point: Scalar{si_value: 1.0, dimension: LENGTH}.
 /// Expected: completes without panic; result is Scalar{≈2.0, MASS/LENGTH}.
-/// The derivative 2.0 is computed numerically from the lambda (which correctly
-/// evaluates d(2x)/dx = 2), and MASS/LENGTH comes from the declared codomain
-/// (MASS) divided by the domain dimension (LENGTH).
 #[cfg(debug_assertions)]
 #[test]
 fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-
-    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH}
-    let body = CompiledExpr::binop(
-        BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::length()),
-        Type::length(),
-    );
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
-    let domain_type = Type::length();
-    let codomain_type = Type::Scalar {
-        dimension: DimensionVector::MASS,
-    };
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type.clone()),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::length()),
-            codomain: Box::new(codomain_type.clone()),
-        },
-    );
-
+    let (grad_result, domain_type, grad_codomain_type) =
+        make_dimensioned_domain_mismatch_gradient();
     let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
 
-    // Gradient codomain is Scalar{MASS/LENGTH}
-    let grad_codomain = Type::Scalar {
-        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
-    };
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(grad_codomain.clone()),
+        codomain: Box::new(grad_codomain_type.clone()),
     };
 
     // Sample at Scalar{1.0, LENGTH} — must NOT panic (unlike the dimensionless-domain case)
@@ -3953,7 +3904,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
             CompiledExpr::literal(grad_result, grad_field_type),
             CompiledExpr::literal(point, Type::length()),
         ],
-        grad_codomain,
+        grad_codomain_type,
     );
 
     // This must not panic (contrast: gradient_codomain_type_vs_runtime_mismatch does panic)
