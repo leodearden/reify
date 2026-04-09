@@ -143,10 +143,12 @@ portable_timeout() {
         wait "$timer_pid" 2>/dev/null || true
         # Kill any orphaned children in the command's process group.  When the timer
         # escalates to SIGKILL it kills the command wrapper (e.g. a bash -c) but not
-        # its children (e.g. a nested sleep).  'kill -- -$cmd_pid' sends SIGTERM to
+        # its children (e.g. a nested sleep).  'kill -9 -- -$cmd_pid' sends SIGKILL to
         # every process in the command's process group, cleaning up those orphans.
-        # Safe after wait: if the group is already empty the signal is ignored.
-        kill -- -$cmd_pid 2>/dev/null || true
+        # SIGKILL matches the timer's escalation: if we reached this point the command
+        # already ignored SIGTERM, so re-sending SIGTERM here would be ineffective.
+        # Safe after wait: a stale PGID returns ESRCH harmlessly (|| true handles it).
+        kill -9 -- -$cmd_pid 2>/dev/null || true
 
         if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && { [ "$cmd_exit" -eq 143 ] || [ "$cmd_exit" -eq 137 ]; }; then
             # Timer fired and killed the process — genuine timeout.  Two cases:
