@@ -970,3 +970,26 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
     .await
     .expect("downstream_ops test body must not hang");
 }
+
+/// Unit tests for the `with_hang_guard` helper.
+mod hang_guard_tests {
+    use super::*;
+
+    /// A future that completes immediately should not panic.
+    #[tokio::test]
+    async fn completes_fast_future() {
+        with_hang_guard(5, "completes_fast_future", async {}).await;
+    }
+
+    /// A future that exceeds the timeout should panic with "must not hang".
+    #[tokio::test]
+    #[should_panic(expected = "must not hang")]
+    async fn panics_on_timeout() {
+        with_hang_guard(
+            0,
+            "panics_on_timeout",
+            tokio::time::sleep(Duration::from_secs(60)),
+        )
+        .await;
+    }
+}
