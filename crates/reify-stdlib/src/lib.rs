@@ -4,6 +4,7 @@ mod common;
 use crate::common::*;
 
 mod numeric;
+mod trig;
 
 #[cfg(test)]
 mod test_helpers;
