@@ -1589,3 +1589,38 @@ fn test_no_bare_relative_build_rs_reads() {
             .join("\n")
     );
 }
+
+#[test]
+fn test_no_bare_relative_self_path_reads() {
+    // Source-level regression guard: this file must not contain any bare
+    // "tests/build_logic_tests.rs" string literals in non-comment code.  Every
+    // source-inspection test that reads this file must use the `THIS_FILE`
+    // constant (resolved at compile time via CARGO_MANIFEST_DIR) rather than a
+    // fragile relative path.
+    //
+    // Detection uses find_bare_self_path_violations, which strips `//` and
+    // `/* */` comments before scanning each line — so describing comments that
+    // mention the path (e.g. using escaped form \"tests/build_logic_tests.rs\")
+    // are ignored.
+    //
+    // Note: pattern strings in this file use escaped quotes in Rust string
+    // literals, so the raw source text contains \" rather than an unescaped ",
+    // and the helper finds no self-match.
+    let source = std::fs::read_to_string(THIS_FILE)
+        .expect("should be able to read this test file via THIS_FILE");
+
+    let violations = find_bare_self_path_violations(&source);
+
+    assert!(
+        violations.is_empty(),
+        "Found {} bare \"tests/build_logic_tests.rs\" literal(s) in non-comment code. \
+         Use the THIS_FILE constant instead (defined via CARGO_MANIFEST_DIR). \
+         Violations:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(|(n, l)| format!("  line {}: {}", n, l.trim()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
