@@ -204,3 +204,76 @@ fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
         errors
     );
 }
+
+// ─── step-9: cross-module pub unit visible via ModuleDag ──────────────────────
+
+#[test]
+fn cross_module_pub_unit_visible_via_module_dag() {
+    let dir = test_dir("cross_module_pub_unit");
+
+    fs::write(
+        dir.join("units_lib.ri"),
+        "pub unit mil : Length = 0.0000254",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("user.ri"),
+        "import units_lib\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+    let result = dag.compile_module("user", &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let user_module = dag.modules.get("user").expect("user module not in dag");
+    let errors = errors_only(user_module);
+    assert!(
+        errors.is_empty(),
+        "expected no errors in user module, got: {:?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ─── step-11: cross-module private unit NOT visible via ModuleDag ─────────────
+
+#[test]
+fn cross_module_private_unit_not_visible_via_module_dag() {
+    let dir = test_dir("cross_module_private_unit");
+
+    // Private unit (no `pub`)
+    fs::write(
+        dir.join("units_lib.ri"),
+        "unit privmil : Length = 0.0000254",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("user.ri"),
+        "import units_lib\nstructure S { param w : Length = 5privmil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let mut dag = reify_compiler::module_dag::ModuleDag::new();
+    // compile_module succeeds (parse is fine), but user module has semantic errors
+    let result = dag.compile_module("user", &resolver);
+    assert!(
+        result.is_ok(),
+        "compile_module should succeed (no parse errors): {:?}",
+        result
+    );
+
+    let user_module = dag.modules.get("user").expect("user module not in dag");
+    let errors = errors_only(user_module);
+    assert!(
+        !errors.is_empty(),
+        "expected error for private unit 'privmil' used across module boundary"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
