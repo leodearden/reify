@@ -4005,6 +4005,17 @@ mod tests {
     }
 
     #[test]
+    fn value_orientation_ord_equal_wxy_different_z() {
+        // Equal w, x, and y, different z — catches implementations that drop the z comparison.
+        // Correct Ord (w→x→y→z): w=0.5,x=0.5,y=0.5,z=1.0 > w=0.5,x=0.5,y=0.5,z=0.5
+        // because z=1.0 > z=0.5 when w, x, and y are all tied.
+        // A wrong impl that drops z comparison entirely would say greater_z == lesser_z, not greater_z > lesser_z.
+        let greater_z = orient(0.5, 0.5, 0.5, 1.0);
+        let lesser_z = orient(0.5, 0.5, 0.5, 0.5);
+        assert!(greater_z > lesser_z);
+    }
+
+    #[test]
     fn value_ord_orientation_negative_components() {
         // Negative component values must order correctly via total_cmp().
         // to_bits() would give wrong ordering here — see module-level doc.
