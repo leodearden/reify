@@ -12,47 +12,6 @@ use reify_types::{
 };
 
 // ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// ---------------------------------------------------------------------------
-
-/// A mock geometry kernel whose `execute` always fails.
-/// Other methods return Ok with dummy data (intentionally — to demonstrate
-/// the current bug where export succeeds with a never-created handle).
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        // Intentionally succeeds — exposes the bug where export runs on a bogus handle
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
-    }
-
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helper: build a CompiledModule with one box primitive realization
 // ---------------------------------------------------------------------------
 
