@@ -1534,4 +1534,33 @@ mod tests {
             "assert_any_event_field_contains must panic when substring is absent"
         );
     }
+
+    /// Documents the Debug-decoration invariant for fields captured via
+    /// `record_debug`.
+    ///
+    /// A `?Debug` field is stored as `format!("{:?}", value)`.  For a
+    /// `Vec<i32>`, that is `"[1, 2, 3]"` — the brackets are part of the stored
+    /// value.  This test verifies:
+    ///
+    /// (a) `assert_any_event_has_fields` exact match against `"[1, 2, 3]"` succeeds,
+    ///     demonstrating that the Debug representation is stored verbatim.
+    /// (b) `assert_any_event_field_contains` substring match against `"1, 2, 3"`
+    ///     also succeeds, showing the safer alternative.
+    #[test]
+    fn debug_field_captured_with_debug_decoration() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let v = vec![1i32, 2, 3];
+            tracing::warn!(info = ?v, "debug field event");
+        });
+
+        // (a) Exact match requires the full Debug representation.
+        capture.assert_any_event_has_fields(&[("info", "[1, 2, 3]")]);
+
+        // (b) Substring match works for the inner content without brackets.
+        capture.assert_any_event_field_contains("info", "1, 2, 3");
+    }
 }
