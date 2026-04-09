@@ -355,6 +355,42 @@ assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout c
         esac
     '
 
+# -- Test 18b: degraded-path monitor mode (set -m) preserved ------------------
+echo ""
+echo "--- Test 18b: degraded path (mktemp fails): monitor mode (set -m) preserved ---"
+
+# Symmetric to Test 18 but exercises the degraded path (mktemp failure) so
+# that lines 116-120 of lib_portable.sh have explicit coverage.  Completes
+# the 2x2 matrix: {normal, degraded} x {monitor-on, monitor-off}.
+assert "degraded path: monitor mode (set -m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        set -m 2>/dev/null || true
+        portable_timeout 5 true 2>/dev/null || true
+        # $- must still contain "m" (monitor mode active).
+        case $- in
+            *m*) ;;
+            *) echo "monitor mode was clobbered by portable_timeout (degraded path)"; exit 1 ;;
+        esac
+    '
+
+# -- Test 18c: degraded-path no-monitor mode (set +m) preserved ---------------
+echo ""
+echo "--- Test 18c: degraded path (mktemp fails): no-monitor mode (set +m) preserved ---"
+
+# Symmetric to Test 19 on the degraded path: when the caller has no job
+# control, portable_timeout must leave it disabled after the call.
+assert "degraded path: no-monitor mode (set +m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        set +m 2>/dev/null || true
+        portable_timeout 5 true 2>/dev/null || true
+        # $- must NOT contain "m" (monitor mode inactive).
+        case $- in
+            *m*) echo "portable_timeout unexpectedly enabled monitor mode (degraded path)"; exit 1 ;;
+        esac
+    '
+
 # -- Test 19: no-monitor mode (set +m, default) preserved after POSIX fallback -
 echo ""
 echo "--- Test 19: POSIX fallback: no-monitor mode (set +m) preserved ---"
