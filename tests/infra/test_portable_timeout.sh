@@ -317,8 +317,8 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 #
 # Test 16a (positive spawn check): proves the test setup is valid — the timer
 # must actually start its inner 'sleep 31337' before Test 16b's cleanup check
-# is meaningful.  Runs portable_timeout in the background, waits 0.5s, and
-# asserts the sentinel sleep is visible in ps.
+# is meaningful.  Runs portable_timeout in the background, polls up to 5×200ms
+# (1s total) for the sentinel sleep to appear, then asserts it was found.
 #
 # Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
 # after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
@@ -342,17 +342,26 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         portable_timeout 31337 sleep 2 &
         pt_pid=$!
 
-        # Give the timer subshell time to spawn its inner "sleep 31337".
-        "$_abs_sleep" 0.5
-
-        # Capture whether the sentinel is present before cleanup.
+        # Poll up to 5×200ms for the sentinel to appear (robust under CI load).
+        # On fast systems this returns on the first iteration (~0ms wait).
         found=1
-        "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" && found=0 || true
+        for _attempt in 1 2 3 4 5; do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                    | "$_abs_grep" -qE "[[:space:]]sleep 31337$"; then
+                found=0
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
 
         # Cleanup: kill the background portable_timeout.
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
+
+        # Safety-net: kill any lingering sentinel sleep 31337 processes.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
         exit $found
     '
