@@ -501,6 +501,16 @@ else
 fi
 rm -f "$fixture_historical"
 
+# Self-check: file-local helpers use symmetric positive _has_ naming.
+if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
+    && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
+    && ! grep -qE '^_check_(defines|has)' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "file-local helpers use symmetric positive _has_ naming" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
