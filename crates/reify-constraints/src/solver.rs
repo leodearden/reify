@@ -1118,6 +1118,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
@@ -1166,6 +1171,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
@@ -1203,8 +1213,14 @@ mod tests {
         );
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        // NB: the return value is captured but NOT asserted on. With no constraints,
+        // `solve_core` early-returns the perturbed initial (0.9) unchanged; `solutions_agree`
+        // finds a 0.65 disagreement vs. the original 0.25, so `verify_uniqueness` returns
+        // `false`. This test's contract is the *absence* of the fallback warn (the happy-path
+        // branch where `as_f64()` returns `Some`), not a uniqueness verdict. `_unique` keeps
+        // captured-value symmetry with the sibling tests without asserting the verdict.
+        let _unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
         capture.assert_count(0);
