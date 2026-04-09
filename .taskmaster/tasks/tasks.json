@@ -7921,11 +7921,12 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/tests/determinacy_compile_tests.rs",
-            "crates/reify-expr/src/lib.rs"
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/tests/field_eval_tests.rs"
           ],
           "modules": [
             "crates/reify-compiler/tests",
-            "crates/reify-expr/src"
+            "crates/reify-expr"
           ]
         }
       },
@@ -7942,7 +7943,12 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
+          ]
         },
         "subtasks": []
       },
