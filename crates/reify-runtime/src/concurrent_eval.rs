@@ -12,12 +12,12 @@
 //! `snapshot_values()`, `take_results()`, `build_result_shared()`, `into_result()`,
 //! and the `AsyncNodeEvaluator::evaluate()` implementation all guarantee that they
 //! will not panic when an internal lock is poisoned by a prior evaluation task that
-//! panicked while holding it. Each recovery emits a `tracing::warn!` so that
-//! cascading panics in a concurrent batch can be detected and diagnosed. Recovered
-//! data may reflect a partially-completed write from the panicking task. Without this
-//! graceful recovery, one panicking task would cascade to every concurrent task
-//! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
-//! just the faulting node.
+//! panicked while holding it. Each recovery emits a structured `tracing::warn!`
+//! (see maintainer note below) so that cascading panics in a concurrent batch can
+//! be detected and diagnosed. Recovered data may reflect a partially-completed write
+//! from the panicking task. Without this graceful recovery, one panicking task would
+//! cascade to every concurrent task sharing the adapter via `Arc`, taking down the
+//! entire evaluation batch instead of just the faulting node.
 //!
 //! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
 //! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
@@ -26,6 +26,14 @@
 //! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
 //! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
 //! the receiver; see `into_result()`'s doc comment for the full rationale.
+//!
+//! Each recovery warning is emitted with structured fields:
+//! `lock = <"values"|"snapshot_values"|"results">`,
+//! `access = <"read"|"write"|"exclusive">` (for helper methods) or
+//! `path = <"into_inner"|"shared_fallback">` (for `into_result()` inline sites),
+//! and `error = %e`, with fixed message `"lock poisoned, recovering"`.
+//! New helpers must follow this schema so operators can filter by `lock` and `access`
+//! in Datadog/Jaeger without updating alerting rules.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
