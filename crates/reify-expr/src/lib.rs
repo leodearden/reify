@@ -1361,6 +1361,18 @@ fn compute_numerical_divergence_at_point(
         _ => false,
     };
 
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] divergence: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
+
     let make_arg = |val: f64| -> Value {
         match domain_dim {
             Some(dim) => Value::Scalar {
