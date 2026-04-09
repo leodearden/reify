@@ -1505,69 +1505,82 @@ fn test_find_bare_literal_violations_generic() {
     );
 }
 
+/// Shared test helper for bare-literal violation detection functions.
+///
+/// For each `(source_line, description)` pair in `positive_cases`: asserts that
+/// `finder_fn` returns at least one violation, using `description` in the failure
+/// message.
+/// For each `(source_line, description)` pair in `negative_cases`: asserts that
+/// `finder_fn` returns no violations.
+fn assert_bare_literal_detection(
+    finder_fn: fn(&str) -> Vec<(usize, &str)>,
+    positive_cases: &[(&str, &str)],
+    negative_cases: &[(&str, &str)],
+) {
+    for (input, label) in positive_cases {
+        assert!(
+            !finder_fn(input).is_empty(),
+            "{label}: expected a violation in {input:?}"
+        );
+    }
+    for (input, label) in negative_cases {
+        assert!(
+            finder_fn(input).is_empty(),
+            "{label}: expected no violations in {input:?}"
+        );
+    }
+}
+
 #[test]
 fn test_find_bare_self_path_violations() {
-    // Helper: returns true if find_bare_self_path_violations finds a violation.
-    fn detected(line: &str) -> bool {
-        !find_bare_self_path_violations(line).is_empty()
-    }
+    // Use escaped quotes so the raw source contains \" rather than a bare ".
+    // At runtime the values contain bare quotes, so the helper detects them.
+    assert_bare_literal_detection(
+        find_bare_self_path_violations,
+        &[
+            (
+                "read_to_string(\"tests/build_logic_tests.rs\")",
+                "bare path without ./ should be detected",
+            ),
+            (
+                "read_to_string(\"./tests/build_logic_tests.rs\")",
+                "bare ./relative path should be detected",
+            ),
+            (
+                "File::open(\"tests/build_logic_tests.rs\")",
+                "File::open variant should be detected",
+            ),
+            (
+                "read_to_string( \"tests/build_logic_tests.rs\" )",
+                "whitespace variant should be detected",
+            ),
+        ],
+        &[
+            ("read_to_string(THIS_FILE)", "constant usage must not be detected"),
+            (
+                "// read_to_string(\"tests/build_logic_tests.rs\")",
+                "full-line // comment must not be detected",
+            ),
+            (
+                "let x = 0; // read_to_string(\"tests/build_logic_tests.rs\")",
+                "inline // comment must not be detected",
+            ),
+            (
+                "/* read_to_string(\"tests/build_logic_tests.rs\") */",
+                "/* */ block comment must not be detected",
+            ),
+        ],
+    );
 
-    // ── Should be detected ────────────────────────────────────────────────────
-    // All string literals below use escaped quotes so the raw source contains
-    // \"tests/build_logic_tests.rs\" (backslash+quote) rather than an unescaped
-    // quote.  At runtime the values contain bare quotes, so the helper detects them.
-    //
-    // exact read_to_string call (no ./ prefix)
-    assert!(
-        detected("read_to_string(\"tests/build_logic_tests.rs\")"),
-        "bare path without ./ should be detected"
-    );
-    // relative path prefix — the S1 completeness fix
-    assert!(
-        detected("read_to_string(\"./tests/build_logic_tests.rs\")"),
-        "bare ./relative path should be detected"
-    );
-    // File::open variant
-    assert!(
-        detected("File::open(\"tests/build_logic_tests.rs\")"),
-        "File::open variant should be detected"
-    );
-    // whitespace inside parentheses
-    assert!(
-        detected("read_to_string( \"tests/build_logic_tests.rs\" )"),
-        "whitespace variant should be detected"
-    );
-
-    // ── Should NOT be detected ────────────────────────────────────────────────
-    // named constant — no string literal
-    assert!(
-        !detected("read_to_string(THIS_FILE)"),
-        "constant usage must not be detected"
-    );
-    // full-line // comment
-    assert!(
-        !detected("// read_to_string(\"tests/build_logic_tests.rs\")"),
-        "full-line // comment must not be detected"
-    );
-    // inline // comment
-    assert!(
-        !detected("let x = 0; // read_to_string(\"tests/build_logic_tests.rs\")"),
-        "inline // comment must not be detected"
-    );
-    // /* */ block comment
-    assert!(
-        !detected("/* read_to_string(\"tests/build_logic_tests.rs\") */"),
-        "/* */ block comment must not be detected"
-    );
     // self-avoidance: escaped quotes in a string literal definition do not
     // form the bare-quote pattern the helper searches for.
     let self_ref = r#"let p = "\"tests/build_logic_tests.rs\"";"#;
     assert!(
-        !detected(self_ref),
+        find_bare_self_path_violations(self_ref).is_empty(),
         "escaped-quote self-reference must not be detected"
     );
 
-    // ── Multi-line 1-based line numbering ─────────────────────────────────────
+    // Multi-line 1-based line numbering check.
     let src = "ok\nread_to_string(\"tests/build_logic_tests.rs\")\nok";
     let hits = find_bare_self_path_violations(src);
     assert_eq!(hits.len(), 1, "should detect exactly one violation");
@@ -1576,62 +1589,41 @@ fn test_find_bare_self_path_violations() {
 
 #[test]
 fn test_find_bare_build_rs_violations() {
-    // Helpers that verify detection and non-detection.
-    fn detected(line: &str) -> bool {
-        !find_bare_build_rs_violations(line).is_empty()
-    }
+    // Use escaped quotes so the raw source contains \" rather than a bare ".
+    // At runtime the values contain bare quotes, so the helper detects them.
+    assert_bare_literal_detection(
+        find_bare_build_rs_violations,
+        &[
+            ("read_to_string(\"build.rs\")", "exact call should be detected"),
+            ("read_to_string( \"build.rs\" )", "whitespace variant should be detected"),
+            ("read_to_string(\"./build.rs\")", "relative path variant should be detected"),
+            ("File::open(\"build.rs\")", "File::open variant should be detected"),
+        ],
+        &[
+            ("read_to_string(BUILD_RS)", "constant usage must not be detected"),
+            (
+                "// read_to_string(\"build.rs\")",
+                "full-line // comment must not be detected",
+            ),
+            (
+                "let x = 0; // read_to_string(\"build.rs\")",
+                "inline // comment must not be detected",
+            ),
+            (
+                "/* read_to_string(\"build.rs\") */",
+                "/* */ block comment must not be detected",
+            ),
+        ],
+    );
 
-    // ── Should be detected ────────────────────────────────────────────────
-    // Use escaped quotes in these string literals so that the raw source text
-    // contains \"build.rs\" (backslash + quote) rather than unescaped "build.rs",
-    // preventing test_no_bare_relative_build_rs_reads from flagging this test body.
-    // The runtime *value* of each string still has unescaped quotes, so the helper
-    // correctly detects them.
-    //
-    // exact read_to_string call
-    assert!(
-        detected("read_to_string(\"build.rs\")"),
-        "exact call should be detected"
-    );
-    // whitespace inside parentheses
-    assert!(
-        detected("read_to_string( \"build.rs\" )"),
-        "whitespace variant should be detected"
-    );
-    // relative path prefix
-    assert!(
-        detected("read_to_string(\"./build.rs\")"),
-        "relative path variant should be detected"
-    );
-    // different function, same path
-    assert!(detected("File::open(\"build.rs\")"), "File::open variant should be detected");
-
-    // ── Should NOT be detected ─────────────────────────────────────────────
-    // uses a named constant (no string literal)
-    assert!(!detected("read_to_string(BUILD_RS)"), "constant usage must not be detected");
-    // full-line // comment
-    assert!(
-        !detected("// read_to_string(\"build.rs\")"),
-        "full-line // comment must not be detected"
-    );
-    // trailing // comment after code
-    assert!(
-        !detected("let x = 0; // read_to_string(\"build.rs\")"),
-        "inline // comment must not be detected"
-    );
-    // block comment containing the pattern
-    assert!(
-        !detected("/* read_to_string(\"build.rs\") */"),
-        "/* */ block comment must not be detected"
-    );
     // self-avoidance: escaped quotes in string literal definition.
-    // The runtime value of this string is: let p = "\"build.rs\"";
-    // (backslash + quote chars). find_bare_build_rs_violations checks for an
-    // unescaped " immediately before build.rs, which is absent here.
     let self_reference = r#"let p = "\"build.rs\"";"#;
-    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+    assert!(
+        find_bare_build_rs_violations(self_reference).is_empty(),
+        "escaped-quote self-reference must not be detected"
+    );
 
-    // Multi-line input: verify 1-based line numbering
+    // Multi-line input: verify 1-based line numbering.
     let hits = find_bare_build_rs_violations("ok\nread_to_string(\"build.rs\")\nok");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].0, 2);
