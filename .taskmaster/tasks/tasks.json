@@ -25663,11 +25663,11 @@
         "description": "Finish the refactor begun in task 959 (orient() helper extraction) and extended in task 1137. The helper is still not applied uniformly across the `mod tests` block in crates/reify-types/src/value.rs. Replace the remaining `Value::Orientation { w, x, y, z }` literal sites with `orient(w, x, y, z)` calls to reduce verbosity and eliminate split style.\n\nRemaining sites to convert (line numbers approximate, in crates/reify-types/src/value.rs):\n- value_orientation_construction (~3558)\n- value_orientation_eq_same (~3570, 3576)\n- value_orientation_eq_different (~3587, 3593)\n- value_orientation_eq_nan_bitwise (~3605, 3611)\n- value_orientation_eq_neg_zero (~3623, 3629)\n- value_orientation_bit_identity_nan_and_neg_zero_consistent (~3644, 3650, 3662, 3668, 3683, 3689)\n- value_orientation_display (~3747)\n- value_orientation_display_fractional (~3759)\n- value_orientation_content_hash_deterministic (~3772, 3778)\n- value_orientation_content_hash_nan_canonical (~3789, 3795)\n- value_orientation_content_hash_distinct_from_complex (~3807)\n- value_orientation_content_hash_neg_zero (~3823, 3829)\n- value_orientation_as_f64_none (~3840)\n- value_orientation_dimension_dimensionless (~3851)\n- value_range_content_hash_no_collision_with_orientation (~3947) — also rename local `orient` binding\n- value_range_ord_cross_type_after_orientation (~3969) — also rename local `orient` binding\n\nAdditional cleanups to include in the same PR:\n1. **Shadow elimination** — Two pre-existing tests declare `let orient = Value::Orientation { .. }` at ~3947 and ~3969, which now shadow the new `orient()` helper in scope. Converting these to `let orient_v = orient(1.0, 0.0, 0.0, 0.0);` both uses the helper AND removes the shadow.\n2. **Stale comment fix** — The doc comment in `value_orientation_ord_equal_w_different_x` (~3720-3723) still references names `e` and `f` that no longer exist in the source after task 1137's refactor. Either restore `let e = orient(..); let f = orient(..);` bindings or rewrite the comment to describe the literal tuples directly (e.g., \"w=0.5,x=1.0 > w=0.5,x=0.5 once y is tied\").\n\nVerification: `cargo test -p reify-types value_orientation` should pass unchanged. `cargo clippy -p reify-types -- -D warnings` should stay green. A grep for `\\bValue::Orientation \\{` within crates/reify-types/src/value.rs should find zero remaining sites inside `mod tests` after the sweep.\n\nmemory_hints:\n- search: \"orient helper value.rs sweep follow-up\"\n- search: \"task 1137 Orientation Ord refactor\"\n- search: \"task 959 orient helper extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:11:43.862Z",
+        "updatedAt": "2026-04-09T04:21:28.317Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -25929,7 +25929,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:21:27.547Z",
+      "lastModified": "2026-04-09T04:21:28.317Z",
       "taskCount": 1285,
       "completedCount": 952,
       "tags": [
