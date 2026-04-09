@@ -20458,6 +20458,10 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp"
+          ],
+          "files": [
+            "crates/reify-lsp/src/bridge.rs",
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         }
       },
@@ -20641,6 +20645,9 @@
         "metadata": {
           "modules": [
             "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-types/src/value.rs"
           ]
         }
       },
@@ -20665,7 +20672,10 @@
               "Value Set Map float ordering total_cmp NaN BTreeSet BTreeMap serialization",
               "reify-types value ordering invariants documentation"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ]
         }
       },
       {
