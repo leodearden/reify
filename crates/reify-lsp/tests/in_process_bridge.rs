@@ -663,10 +663,11 @@ async fn shutdown_before_initialize_with_null_params() {
 /// shutdown arm does not consult initialization state.
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params() {
-    let lsp = InProcessLsp::new();
     // Object with unexpected extra fields — bridge must not reject this.
+    let lsp = InProcessLsp::new();
     assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
     // Wrong JSON type entirely — bridge must not reject this either.
+    let lsp = InProcessLsp::new();
     assert_shutdown_returns_null(&lsp, &json!("oops")).await;
 }
 
