@@ -2773,12 +2773,17 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-eval",
-            "examples"
+            "examples",
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/m8_option_match.ri",
+            "crates/reify-compiler/tests/option_compile_tests.rs",
+            "crates/reify-eval/tests/m9_trait_conformance.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -3063,11 +3068,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
             "examples"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/m8_combined.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
