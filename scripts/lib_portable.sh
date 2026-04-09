@@ -39,14 +39,13 @@ portable_sha256() {
 #   true  — the command was killed by the timeout mechanism
 #   false — the command exited on its own (any exit code, including 124)
 #
-# POSIX fallback termination guarantee:
-#   The POSIX fallback terminates via SIGTERM only; it does not escalate to
-#   SIGKILL.  Removing SIGKILL escalation avoids a PID-reuse race: by the time
-#   the escalation would fire, the main shell has already wait(2)ed on cmd_pid
-#   and the kernel may have recycled that PID to an unrelated process.  The
-#   main shell's process-group kill (kill -- -$timer_pid) handles cleanup of
-#   the timer and its children atomically without this risk.  If the wrapped
-#   command ignores SIGTERM, the caller is responsible for handling escalation.
+# POSIX fallback termination strategy:
+#   The POSIX fallback sends SIGTERM first, then waits a 2-second grace period.
+#   If the command has not exited, it escalates to SIGKILL via process-group
+#   kill (kill -9 -- -$cmd_pid).  Process-group kill is PID-reuse safe: the
+#   command has not been wait(2)ed on yet (the main shell is blocked), so the
+#   PID cannot have been recycled.  The process-group kill also terminates any
+#   orphaned child processes (e.g. a nested sleep inside a bash -c wrapper).
 #
 # Ambiguity note (GNU timeout / gtimeout paths):
 #   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
@@ -82,6 +81,14 @@ portable_timeout() {
         local timeout_flag
         timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
 
+        # Save caller's monitor-mode state BEFORE any set -m/set +m manipulation.
+        # Placing this save/restore BEFORE the first set -m ensures that $- still
+        # reflects the caller's original state; the subsequent set +m would clear
+        # 'm' from $- if we saved after it.  Without this, portable_timeout
+        # silently disables the caller's job control when they had set -m active.
+        local _pt_had_monitor=0
+        case $- in *m*) _pt_had_monitor=1 ;; esac
+
         # Start the command in its own process group (PGID=cmd_pid) so that
         # a later 'kill -- -$cmd_pid' can clean up any orphaned children (e.g.
         # if the timer escalates to SIGKILL, killing the command wrapper but
@@ -91,13 +98,6 @@ portable_timeout() {
         "$@" &
         local cmd_pid=$!
         set +m 2>/dev/null || true
-
-        # Save caller's monitor-mode state so we can restore it after temporarily
-        # enabling job control (set -m) to place the timer subshell in its own
-        # process group.  Without this save/restore, portable_timeout silently
-        # disables the caller's job control when they had set -m active.
-        local _pt_had_monitor=0
-        case $- in *m*) _pt_had_monitor=1 ;; esac
 
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
@@ -115,6 +115,12 @@ portable_timeout() {
             ( sleep "$seconds" && {
                 touch "$timeout_flag" 2>/dev/null
                 kill "$cmd_pid" 2>/dev/null
+                # Grace period: if SIGTERM is ignored, escalate to SIGKILL via
+                # process-group kill.  Safe: cmd_pid hasn't been wait(2)ed yet
+                # (main shell is blocked), so no PID-reuse risk.  Process-group
+                # kill also cleans up child processes (e.g. nested sleep).
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         else
@@ -123,6 +129,8 @@ portable_timeout() {
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
               } ) &
             [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
         fi
