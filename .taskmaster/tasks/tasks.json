@@ -26475,15 +26475,16 @@
         "description": "The `complex_with(re, im)` helper in `crates/reify-types/src/value.rs` (line ~3666) was introduced by task 890 but only adopted in 2 of ~10 tests that construct dimensionless `Value::Complex`. Refactor the remaining inline constructions to use the helper for consistency:\n\n- `value_complex_sorts_after_tensor` (line ~3677)\n- `value_complex_sorts_before_undef` (line ~3695)\n- `value_complex_ord_re_second` (lines ~3728, 3733)\n- `value_complex_ord_im_third` (lines ~3744, 3749)\n- `value_complex_partial_ord_consistent` (lines ~3759, 3764)\n- `value_complex_hash_determinism` (lines ~3804, 3809)\n\nNote: `value_complex_ord_dimension_first` intentionally uses both DIMENSIONLESS and LENGTH, so it should NOT be refactored.\n\nOptionally remove the trivial `complex_with_produces_expected_value` test (line ~3774) which only verifies a struct literal pass-through — the helper is exercised implicitly by the Ord tests.\n\nMemory hints: search \"complex_with helper DRY task 890 review\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T09:54:31.825Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:54:31.592Z",
+      "lastModified": "2026-04-09T09:54:31.825Z",
       "taskCount": 1313,
       "completedCount": 980,
       "tags": [
