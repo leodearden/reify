@@ -396,6 +396,13 @@ else
     check "behavioral block does NOT source SYNC_FILE directly (no full-file side effects)" "false"
 fi
 
+# (c) trap-based cleanup: region registers a trap for EXIT to remove tmp files
+if echo "$beh_region" | grep -qE 'trap[[:space:]]+.*rm[[:space:]]*-f.*EXIT'; then
+    check "behavioral block registers trap-based cleanup on EXIT" "true"
+else
+    check "behavioral block registers trap-based cleanup on EXIT" "false"
+fi
+
 # ==============================================================================
 # Robustness tests for sync_comments_test.sh structural checks
 # ==============================================================================
