@@ -546,6 +546,13 @@ printf 'if [[ ! -z "$var" ]]; then echo guard; fi\n' > "$fixture_double_not_z"
 if _has_if_n_guard "$fixture_double_not_z" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects double-bracket + ! -z: if [[ ! -z" "$ok"
 
+# Comment-only file: guard pattern appears ONLY inside a comment.
+# _has_if_n_guard must NOT fire on commented-out guards (false positive).
+fixture_comment=$(mk_fixture)
+printf '# if [ -n "$x" ]; then echo guard; fi\n' > "$fixture_comment"
+if ! _has_if_n_guard "$fixture_comment" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard ignores guard pattern inside comment line" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
