@@ -806,7 +806,6 @@ fn verify_uniqueness(
         .collect();
     if !missing.is_empty() {
         tracing::warn!(
-            missing_params = ?missing,
             "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
              using midpoint as comparison anchor \
              (perturbation start defaults to lower-half side)",
@@ -933,8 +932,10 @@ mod tests {
     ///
     /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
     /// 2. Every substring in `expected_param_substrings` appears in the joined WARN messages
-    ///    (verifies that the relevant `ValueCellId`s were included in the event via the
-    ///    `missing_params = ?missing` field).
+    ///    (verifies that the relevant `ValueCellId`s were rendered into the message body via
+    ///    the `{:?}` placeholder; `WarnCapturingSubscriber`'s `MessageVisitor` only captures
+    ///    the `message` field and ignores all structured fields — see
+    ///    `crates/reify-test-support/src/tracing_support.rs`).
     ///
     /// Returns the `unique` flag so each call site can assert the verdict with its own
     /// descriptive message, consistent with the named-local style of the sibling tests.
@@ -974,6 +975,16 @@ mod tests {
                 "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
             );
         }
+
+        // Pin the rendered count placeholder ({} via missing.len()) so a future cleanup
+        // cannot silently drop it from the format-string body without test failure.
+        let expected_count_fragment =
+            format!("{} solved value(s)", expected_param_substrings.len());
+        assert!(
+            all_msgs.contains(&expected_count_fragment),
+            "expected WARN messages to contain rendered count {expected_count_fragment:?} \
+             (via the {{}} placeholder in the format-string body); messages: {msgs:?}"
+        );
 
         unique
     }
