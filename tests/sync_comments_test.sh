@@ -8,8 +8,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
-STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
+EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
+STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/helpers.rs"
 
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$REPO_ROOT/tests/infra/test_helpers.sh"
@@ -44,12 +44,15 @@ assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the /^fn/
-# anchor, so doc comments and SYNC markers (which may legitimately differ between
+# at column 0.  Content above the fn keyword is naturally excluded by the anchor,
+# so doc comments and SYNC markers (which may legitimately differ between
 # the two copies) do not affect the body comparison.
+# Handles optional visibility modifiers: fn, pub fn, pub(crate) fn, etc.
+# Pattern: ^(pub[^f]*)? skips optional visibility prefix (pub, pub(crate), etc.)
+# without consuming the 'f' in 'fn'.
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '/^fn '"$fn_name"'[(<]/,/^}/' "$file"
+    awk '/^(pub[^f]*)?fn '"$fn_name"'[(<]/,/^}/' "$file"
 }
 
 # Both copies of sanitize_value must have identical function bodies.
