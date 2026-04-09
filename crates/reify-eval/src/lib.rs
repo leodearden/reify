@@ -5464,6 +5464,130 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_translate_nan_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is NaN — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::NAN)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "NaN dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_infinity_dx_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is +Infinity — non-finite, should trigger a diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(f64::INFINITY)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "Infinity dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_translate_finite_args_no_false_positive_warning() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // All finite args — should succeed with no non-numeric/non-finite warning
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(2.0)),
+                ("dz".into(), literal_f64(3.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_some(),
+            "finite Translate args should return Some, got None; diagnostics: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("non-numeric/non-finite")),
+            "no 'non-numeric/non-finite' warning expected for finite args, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
