@@ -26492,11 +26492,11 @@
         "description": "Line 33 of tests/sync_comments_test.sh has a stale assert description string: `\"reify-stdlib/src/lib.rs has SYNC marker...\"` but the actual file being checked ($STDLIB_FILE) may now be `helpers.rs` after the task-1304 submodule split. Update the assert message to reference the actual variable or current file name so failure diagnostics point to the correct file.\n\nSource: review suggestion from task 416 (esc-416-133, S1).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T10:01:00.353Z"
+        "updatedAt": "2026-04-09T10:11:51.882Z"
       },
       {
         "id": "1315",
@@ -26535,9 +26535,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T10:08:19.257Z",
+      "lastModified": "2026-04-09T10:11:51.882Z",
       "taskCount": 1316,
-      "completedCount": 984,
+      "completedCount": 985,
       "tags": [
         "master"
       ]
