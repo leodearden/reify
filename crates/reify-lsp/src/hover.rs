@@ -30,7 +30,8 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
-            reify_compiler::ValueCellKind::Auto { .. } => "auto",
+            reify_compiler::ValueCellKind::Auto { free: true } => "auto(free)",
+            reify_compiler::ValueCellKind::Auto { free: false } => "auto",
         };
         let type_str = info.cell_type.to_string();
 
