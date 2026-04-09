@@ -24472,11 +24472,11 @@
         "description": "Three small documentation/comment fixes in `crates/reify-test-support/src/tracing_support.rs`, all surfaced by review of Task 1182. Pure docs/comment changes — no behavior change, no new tests required beyond running existing ones.\n\nS1 — Stale docstring on `assert_warn_count_delta_panics_when_counter_went_backwards` (lines 1247-1250):\nThe docstring still describes the OLD `saturating_sub` behavior (\"this test will not panic … the test fails — confirming the gap that step-2 closes\"). The same diff replaced `saturating_sub` with the panicking subtraction, so the prose now contradicts the actual behavior — the test does panic and pass. Leftover scaffolding from a TDD step-1/step-2 split that was collapsed before merge. Rewrite to describe only the post-fix invariant, e.g.:\n\"Verifies `assert_warn_count_delta` panics with the `warn counter went backwards` message when `before` exceeds the current counter, which catches stale-snapshot bugs that the old `saturating_sub` implementation silently swallowed.\"\n\nS2 — Non-obvious `_subscriber` binding in the same test (line 1259):\n`let (_subscriber, counter) = warn_counting_subscriber();` constructs a subscriber but never installs it via `with_default`. Casual readers may worry the test forgot the install. Add a one-line inline comment on the binding itself stating that the subscriber is intentionally unused — we only need the zero-valued counter handle. (A `fresh_warn_counter()` test helper is an alternative, but a comment is the smaller change.)\n\nS3 — Document `before` parameter contract on `assert_warn_count_delta` (lines 30-47, doc lines 19-20):\nTightening from `saturating_sub` to a hard panic on `before > after` is a stricter contract change. Today all call sites use `before=0`, but a future caller passing a `before` snapshot from another thread without an `Acquire` fence could legitimately observe `after < before` due to load reordering. Extend the `before` parameter doc with a sentence such as:\n\"Must be a snapshot of `counter` taken earlier in happens-before order (e.g., via `counter.load(Ordering::Acquire)` on the current thread). Passing a value greater than the counter's current load — including a stale snapshot from a reordered or unrelated read — will panic.\"\n\nVerify: `cargo test -p reify-test-support tracing_support` (existing test names: `assert_warn_count_delta_panics_when_counter_went_backwards`, `assert_warn_count_passes_on_correct_count`, `warn_counting_guard_stops_counting_after_drop`).\n\nmemory_hints:\n- search: \"warn counter Acquire ordering convention Task 937\"\n- entity: \"WarnCountingSubscriber\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:57:05.115Z"
+        "updatedAt": "2026-04-09T00:08:03.800Z"
       },
       {
         "id": "1203",
@@ -24521,9 +24521,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:07:57.123Z",
+      "lastModified": "2026-04-09T00:08:03.800Z",
       "taskCount": 1205,
-      "completedCount": 884,
+      "completedCount": 885,
       "tags": [
         "master"
       ]
