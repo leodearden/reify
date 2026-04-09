@@ -963,6 +963,12 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         "expected at least one diagnostic for unknown port type"
     );
     assert_eq!(
+        diags[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags[0].file_path, "testmod.ri",
         "get_diagnostics file_path"
     );
