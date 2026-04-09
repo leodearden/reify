@@ -1522,6 +1522,15 @@ fn test_find_bare_self_path_violations() {
         detected("File::open(\"tests/build_logic_tests.rs\")"),
         "File::open variant should be detected"
     );
+    // dot-slash prefix variant (reviewer S1: helper must also detect \"./tests/build_logic_tests.rs\")
+    assert!(
+        detected("read_to_string(\"./tests/build_logic_tests.rs\")"),
+        "dot-slash relative path variant should be detected"
+    );
+    assert!(
+        detected("File::open(\"./tests/build_logic_tests.rs\")"),
+        "dot-slash File::open variant should be detected"
+    );
 
     // ── Should NOT be detected ─────────────────────────────────────────────
     // uses a named constant (no string literal)
