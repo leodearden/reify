@@ -19865,7 +19865,11 @@
         "updatedAt": "2026-04-04T09:03:35.911Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/tolerancing_tests.rs",
+            "crates/reify-compiler/tests/boundary1_consumer.rs"
           ]
         }
       },
@@ -19882,8 +19886,11 @@
         "updatedAt": "2026-04-04T09:10:51.310Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-types"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/conformance.rs"
           ]
         }
       },
