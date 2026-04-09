@@ -527,3 +527,49 @@ fn e2e_meta_access_in_constraint() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// --- meta.key value resolves to the expected string (companion to constraint test) ---
+// ---------------------------------------------------------------------------
+
+/// Companion to e2e_meta_access_in_constraint: verifies that `meta.tag` resolves
+/// to the expected `Value::String("valid")` at the eval boundary.
+///
+/// Uses a plain `let` binding (no constraint) so the resolved value is directly
+/// observable via `result.values`.  This proves the value handed to the constraint
+/// checker is the expected string rather than a coerced or default value.
+#[test]
+fn e2e_meta_access_in_constraint_value_resolves() {
+    let source = r#"
+        structure def S {
+            meta {
+                tag = "valid"
+            }
+            let tag_value : String = meta.tag
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+
+    // Eval
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // Assert meta.tag resolves to the expected string — proves the value
+    // handed to the constraint checker is Value::String("valid"), not a
+    // coerced or default value.
+    let tag_value_id = ValueCellId::new("S", "tag_value");
+    assert_eq!(
+        result.values.get(&tag_value_id),
+        Some(&Value::String("valid".to_string())),
+        "S.tag_value should resolve to 'valid' via meta.tag"
+    );
+}
