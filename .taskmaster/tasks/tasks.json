@@ -24901,11 +24901,16 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs, two tests are functionally identical:\n\n- `gradient_runtime_codomain_dim_mismatch_panics` (line ~3542)\n- `gradient_codomain_type_vs_runtime_mismatch` (line ~3695)\n\nBoth are gated by `#[cfg(debug_assertions)]`, both use `#[should_panic(expected = \"codomain_type does not match\")]`, both build a `|x| 2*x` lambda with `domain_type = Type::Real` and `codomain_type = Scalar[MASS]`, both call `gradient` and sample at `Real(1.0)`. Only the doc-comments and the `grad_field_type` extraction style differ.\n\nDelete one of the two duplicates. A reasonable choice is to keep `gradient_codomain_type_vs_runtime_mismatch` (it uses the refactored `grad_field_type` binding from Task 1010 and sits adjacent to its companion `gradient_codomain_type_vs_runtime_mismatch_field_structure`) and delete `gradient_runtime_codomain_dim_mismatch_panics`. Alternatively keep the other and apply the `grad_field_type` extraction simplification.\n\nAfter consolidation verify the Step-8 section remains correctly scoped and all tests still pass (`cargo test -p reify-expr --test gradient_tests`).\n\nNote: distinct from Task 1160, which addresses the dimensioned-domain test pair and the repeated trust-the-declaration doc block.\n\nMemory hints: search for \"gradient codomain mismatch test\" and \"trust-the-declaration design decision gradient\".",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:41:36.892Z"
+        "updatedAt": "2026-04-09T01:43:49.469Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1227",
@@ -24934,7 +24939,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:43:42.941Z",
+      "lastModified": "2026-04-09T01:43:49.470Z",
       "taskCount": 1228,
       "completedCount": 914,
       "tags": [
