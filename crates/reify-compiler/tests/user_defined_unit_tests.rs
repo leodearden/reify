@@ -50,3 +50,36 @@ fn test_dir(name: &str) -> PathBuf {
     fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+// ─── step-1: user-declared unit works in a let binding expression ─────────────
+
+#[test]
+fn user_unit_in_let_binding() {
+    // Declare `thou`, use it in a param default and a let binding.
+    // Verifies that QuantityLiteral resolution works in all expression contexts,
+    // not only param defaults.
+    let module = parse_and_compile(
+        "unit thou : Length = 0.0000254\n\
+         structure S {\n\
+             param w : Length = 10thou\n\
+             let w_thou = w + 5thou\n\
+         }",
+    );
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    // Let binding should have produced a value cell
+    let w_thou = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "w_thou")
+        .expect("w_thou value cell not found");
+    assert!(
+        w_thou.default_expr.is_some(),
+        "w_thou should have a computed expression"
+    );
+}
