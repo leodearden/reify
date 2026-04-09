@@ -21035,16 +21035,15 @@
         }
       },
       {
-        "id": 1013,
+        "id": "1013",
         "title": "Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests",
-        "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\".",
-        "details": "",
-        "testStrategy": "",
+        "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\". When unblocking, check whether the block stems from task 1304's reify-expr/src/lib.rs split (merged at 08:16Z, same session). That split moved sanitize.rs and complex.rs out of lib.rs; any in-flight branch touching types from those areas may have import-path merge conflicts. gradient_tests.rs imports Value types from reify-expr — verify import paths still resolve against the new submodule structure.",
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
+        "details": "",
+        "testStrategy": "",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:29:56.263Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -21054,7 +21053,8 @@
             "queries": [
               "resolution for: Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests"
             ]
-          }
+          },
+          "_causation_id": "498666c7-2e80-4ac4-a25e-ef5dadd03974"
         }
       },
       {
@@ -21548,7 +21548,7 @@
         }
       },
       {
-        "id": "1039",
+        "id": 1039,
         "title": "Fix incomplete CARGO_MANIFEST_DIR coverage in build_logic_tests and strengthen meta-test",
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n2. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nVerification: `cargo test -p tree-sitter-reify test_self_read_paths_use_manifest_dir`\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
         "status": "in-progress",
