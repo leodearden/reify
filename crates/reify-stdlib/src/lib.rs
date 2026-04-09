@@ -8,6 +8,7 @@ mod geometry;
 mod linalg;
 mod numeric;
 mod orientation;
+mod stubs;
 mod trig;
 mod vector;
 
