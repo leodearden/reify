@@ -1298,14 +1298,30 @@ mod tests {
             .iter()
             .find(|t| t.name == "S")
             .expect("expected S template in compiled module");
+        let width_cell = s_template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "width")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected S template to have a value_cell with member 'width', got: {:?}",
+                    s_template
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            width_cell.cell_type,
+            Type::length(),
+            "expected width cell to be Length-typed (Scalar{{dimension=LENGTH}}), got: {:?}",
+            width_cell.cell_type
+        );
         assert!(
-            s_template.value_cells.iter().any(|vc| vc.id.member == "width"),
-            "expected S template to have a value_cell with member 'width', got: {:?}",
-            s_template
-                .value_cells
-                .iter()
-                .map(|vc| &vc.id.member)
-                .collect::<Vec<_>>()
+            !width_cell.span.is_empty(),
+            "expected width cell to have a non-empty source span, got: {:?}",
+            width_cell.span
         );
     }
 }
