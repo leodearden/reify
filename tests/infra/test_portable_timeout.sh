@@ -12,6 +12,44 @@ LIB_PORTABLE="$REPO_ROOT/scripts/lib_portable.sh"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# -- Helper: _build_posix_fallback_env ----------------------------------------
+# Generates an eval-string that creates a rescue dir, symlinks commands, strips
+# timeout/gtimeout from PATH, and sources LIB_PORTABLE for POSIX fallback tests.
+# Args: $1=extra_cmds  space-separated commands beyond the base set
+#                      (sleep kill grep rm mktemp ln)
+#       $2=trap_mode   "trap"   — install EXIT trap to clean up rescue_dir
+#                      "notrap" — no trap; caller must rm -rf "$rescue_dir"
+#       $3=tmpdir_mode "normal" — leave TMPDIR alone
+#                      "broken" — set TMPDIR=/dev/null/nope to force mktemp failure
+_build_posix_fallback_env() {
+    local extra_cmds="$1"
+    local trap_mode="$2"
+    local tmpdir_mode="$3"
+    local all_cmds="sleep kill grep rm mktemp ln${extra_cmds:+ $extra_cmds}"
+
+    printf '    rescue_dir=$(mktemp -d)\n'
+    printf '    for cmd in %s; do\n' "$all_cmds"
+    printf '        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"\n'
+    printf '    done\n'
+    if [ "$trap_mode" = "trap" ]; then
+        printf '    trap "rm -rf \"$rescue_dir\"" EXIT\n'
+    fi
+    printf '    new_path="$rescue_dir"\n'
+    printf '    IFS=: read -ra dirs <<< "$PATH"\n'
+    printf '    for d in "${dirs[@]}"; do\n'
+    printf '        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then\n'
+    printf '            continue\n'
+    printf '        fi\n'
+    printf '        new_path="${new_path:+$new_path:}$d"\n'
+    printf '    done\n'
+    printf '    export PATH="$new_path"\n'
+    if [ "$tmpdir_mode" = "broken" ]; then
+        printf '    export TMPDIR=/dev/null/nope\n'
+    fi
+    printf '    hash -r\n'
+    printf '    source "$LIB_PORTABLE"\n'
+}
+
 echo "=== portable_timeout unit tests ==="
 
 # -- Test 1: portable_timeout is defined after sourcing -----------------------
@@ -116,25 +154,7 @@ echo "--- Test 10: mktemp failure + genuine timeout still enforced ---"
 # Helper: set up POSIX fallback + broken mktemp environment.
 # Exports: PATH (no timeout/gtimeout, with rescue), TMPDIR (broken), LIB_PORTABLE.
 # Usage: eval "$MKTEMP_FAIL_SETUP"
-MKTEMP_FAIL_SETUP='
-    rescue_dir=$(mktemp -d)
-    for cmd in sleep kill grep rm mktemp ln; do
-        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-    done
-    trap "rm -rf $rescue_dir" EXIT
-    new_path="$rescue_dir"
-    IFS=: read -ra dirs <<< "$PATH"
-    for d in "${dirs[@]}"; do
-        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-            continue
-        fi
-        new_path="${new_path:+$new_path:}$d"
-    done
-    export PATH="$new_path"
-    export TMPDIR=/dev/null/nope
-    hash -r
-    source "$LIB_PORTABLE"
-'
+MKTEMP_FAIL_SETUP=$(_build_posix_fallback_env "" trap broken)
 
 assert "mktemp failure: timeout still enforced (exit 124)" \
     env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
@@ -185,47 +205,16 @@ echo "--- Test 12: POSIX flag-file genuine timeout (happy path) ---"
 # Linux), we first create a rescue dir with symlinks to essential commands so they
 # remain available after stripping that directory.  Unlike MKTEMP_FAIL_SETUP we do
 # NOT override TMPDIR, so mktemp succeeds and the flag-file happy-path is exercised.
-POSIX_FALLBACK_SETUP='
-    rescue_dir=$(mktemp -d)
-    for cmd in sleep kill grep rm mktemp ln touch; do
-        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-    done
-    trap "rm -rf \"$rescue_dir\"" EXIT
-    new_path="$rescue_dir"
-    IFS=: read -ra dirs <<< "$PATH"
-    for d in "${dirs[@]}"; do
-        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-            continue
-        fi
-        new_path="${new_path:+$new_path:}$d"
-    done
-    export PATH="$new_path"
-    hash -r
-    source "$LIB_PORTABLE"
-'
+POSIX_FALLBACK_SETUP=$(_build_posix_fallback_env "touch" trap normal)
 
-# POSIX_FALLBACK_SETUP_NO_TRAP — eval-string helper for tests that require POSIX fallback
-# WITHOUT an EXIT trap. Timer subshells inherit EXIT traps, which would prematurely
-# clean up rescue_dir and produce false-positive passes in orphan-detection tests
-# (16b, 21b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 21a/b)
-# share a single helper. Callers must clean up rescue_dir explicitly.
-POSIX_FALLBACK_SETUP_NO_TRAP='
-    rescue_dir=$(mktemp -d)
-    for cmd in sleep kill grep rm mktemp ln touch ps bash; do
-        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-    done
-    new_path="$rescue_dir"
-    IFS=: read -ra dirs <<< "$PATH"
-    for d in "${dirs[@]}"; do
-        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-            continue
-        fi
-        new_path="${new_path:+$new_path:}$d"
-    done
-    export PATH="$new_path"
-    hash -r
-    source "$LIB_PORTABLE"
-'
+# POSIX_FALLBACK_SETUP_NO_TRAP — generated by _build_posix_fallback_env.
+# Eval-string for tests requiring POSIX fallback WITHOUT an EXIT trap.
+# Timer subshells inherit EXIT traps, which would prematurely clean up
+# rescue_dir and produce false-positive passes in orphan-detection tests
+# (16b, 21b). Uses the superset of commands (ps + bash) so all 4 tests
+# (16a/b, 21a/b) share a single helper.
+# Callers must clean up rescue_dir explicitly (no EXIT trap to auto-clean).
+POSIX_FALLBACK_SETUP_NO_TRAP=$(_build_posix_fallback_env "touch ps bash" notrap normal)
 
 # -- Helper self-test: POSIX_FALLBACK_SETUP_NO_TRAP ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
@@ -233,11 +222,15 @@ POSIX_FALLBACK_SETUP_NO_TRAP='
 assert "POSIX_FALLBACK_SETUP_NO_TRAP helper strips timeout from PATH and creates rescue_dir" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
         eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
+        _check_rc=0
         ! command -v timeout >/dev/null 2>&1 &&
         ! command -v gtimeout >/dev/null 2>&1 &&
         [ -d "$rescue_dir" ] &&
         declare -f portable_timeout >/dev/null &&
-        [ -z "$(trap -p EXIT)" ]
+        [ -z "$(trap -p EXIT)" ] || _check_rc=$?
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
+        exit "$_check_rc"
     '
 
 # -- Builder self-test: _build_posix_fallback_env --------------------------------
@@ -388,6 +381,8 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
             | "$_abs_grep" -qE "[[:space:]]sleep 31337$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
         exit $found
     '
 
@@ -407,7 +402,11 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         # Use saved absolute paths — rescue_dir may be gone if the timer
         # subshell ran its inherited EXIT trap when killed.
         "$_abs_sleep" 0.5
-        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
+        _check_rc=0
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$" || _check_rc=$?
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
+        exit "$_check_rc"
     '
 
 # -- Test 17: structural: SIGKILL escalation uses PID-reuse-safe process-group kill ----
@@ -551,7 +550,11 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
         rc=0
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || rc=$?
-        [ "$rc" -eq 124 ]
+        _check_rc=0
+        [ "$rc" -eq 124 ] || _check_rc=$?
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
+        exit "$_check_rc"
     '
 
 assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
