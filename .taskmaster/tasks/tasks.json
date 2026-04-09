@@ -27838,15 +27838,16 @@
         "description": "Follow-up cleanup for crates/reify-eval/tests/e2e_meta.rs after Task 1044 strengthened its assertions. Three related improvements (all in the same file):\n\n1. **Extract shared helper (suggestion 1, code_reuse_duplication).** The 5-line pattern `let eval_errors: Vec<_> = result.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect(); assert!(eval_errors.is_empty(), ...)` is now duplicated 4 times (lines ~96-101, 138-143, 498-503, 558-564). Add a private helper at the top of the file:\n\n```rust\nfn assert_no_error_diagnostics(diagnostics: &[reify_types::Diagnostic], phase: &str) {\n    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();\n    assert!(errors.is_empty(), \"{} errors: {:?}\", phase, errors);\n}\n```\n\nReplace each duplicated block with `assert_no_error_diagnostics(&result.diagnostics, \"eval\");` (or `\"check\"` in the constraint test). Also update `parse_and_compile` (lines ~24-32) to reuse it for the compile-phase check.\n\n2. **Remove subsumed assertion (suggestion 2, test_redundancy).** In `e2e_meta_access_in_constraint` (lines ~507-517), the `assert_eq!(result.constraint_results.len(), 1, ...)` strictly subsumes the earlier `assert!(!result.constraint_results.is_empty(), ...)`. Drop the `!is_empty()` assert and fold its diagnostic message into the `len == 1` message, e.g. `\"expected exactly one constraint result for the single `constraint meta.tag == \\\"valid\\\"` declaration; engine may have dropped or duplicated the MetaAccess constraint expression\"`.\n\n3. **Merge companion value-check into constraint test (suggestion 3, test_overlap).** `e2e_meta_access_in_constraint_value_resolves` (lines ~541-575) is structurally a near-duplicate of `e2e_meta_access_let_binding` and does not observe the same compiled module as `e2e_meta_access_in_constraint`. Merge the value check into the constraint test by adding `let tag_value : String = meta.tag` to the source of `e2e_meta_access_in_constraint`, then asserting `result.values.get(&ValueCellId::new(\"S\", \"tag_value\"))` after `engine.check(...)`. Delete the standalone `e2e_meta_access_in_constraint_value_resolves` test (or retarget it if a simpler observation is still useful).\n\nAfter these changes, run `cargo test -p reify-eval --test e2e_meta` to verify all tests still pass.\n\nmemory_hints: search for \"e2e_meta diagnostic guard helper\" and \"constraint test assertion conventions\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:15:01.993Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:15:01.754Z",
+      "lastModified": "2026-04-09T19:15:01.993Z",
       "taskCount": 1340,
       "completedCount": 1015,
       "tags": [
