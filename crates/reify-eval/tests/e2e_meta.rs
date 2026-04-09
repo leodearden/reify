@@ -34,6 +34,12 @@ fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
     compiled
 }
 
+/// Create a new Engine backed by a fresh MockConstraintChecker.
+fn make_engine() -> reify_eval::Engine {
+    let checker = MockConstraintChecker::new();
+    reify_eval::Engine::new(Box::new(checker), None)
+}
+
 // ---------------------------------------------------------------------------
 // step-13: E2E — let binding using meta.key resolves to Value::String
 // ---------------------------------------------------------------------------
@@ -54,8 +60,7 @@ fn e2e_meta_access_let_binding() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -89,8 +94,7 @@ fn e2e_meta_access_multiple_keys() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert both keys
@@ -140,8 +144,7 @@ fn e2e_meta_access_on_occurrence() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -183,8 +186,7 @@ fn e2e_meta_access_on_structure_resolves() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -304,8 +306,7 @@ fn e2e_meta_sub_structure_child_meta() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert Part's own label resolves
@@ -339,8 +340,7 @@ fn e2e_meta_let_binding_downstream() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -379,8 +379,7 @@ fn e2e_meta_string_eq_match() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -412,8 +411,7 @@ fn e2e_meta_string_eq_mismatch() {
     let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -530,8 +528,7 @@ fn e2e_meta_access_in_constraint() {
 
     // Check (eval + constraint evaluation) — must not panic when meta.key
     // appears in a constraint expression
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.check(&compiled);
 
     // Assert constraint_results is non-empty so the loop below is not vacuous.
