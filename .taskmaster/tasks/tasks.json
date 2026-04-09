@@ -25376,7 +25376,12 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:53:46.556Z"
+        "updatedAt": "2026-04-09T02:53:46.556Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": 1256,
