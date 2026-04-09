@@ -28586,15 +28586,16 @@
         "description": "crates/reify-cli/tests/mcp_integration.rs around line 752 — the get_parameters integration test asserts each parameter exists individually via `.find()` (width, tolerance, offset) but never checks the total count. If the fixture produced unexpected extra parameters, the test would pass silently.\n\nAdd `assert_eq!(params.len(), 3, \"expected exactly 3 parameters\");` right after the `serde_json::from_str(text)` line (before the individual parameter lookups at line 754). Run the test to confirm it still passes.\n\nSource: reviewer_comprehensive on Task 1365.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:04:58.426Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:04:51.167Z",
+      "lastModified": "2026-04-09T22:04:58.427Z",
       "taskCount": 1382,
       "completedCount": 1062,
       "tags": [
