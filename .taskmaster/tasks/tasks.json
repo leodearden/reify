@@ -20963,11 +20963,11 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs, replace two hardcoded implementation line numbers with semantic anchors:\n- Line 2829-2830: 'Tensor is matched alongside Point/Vector at line 699' → name the function/match arm (e.g. 'in compute_numerical_gradient_at_point, the match point arm')\n- Line 3037-3038: 'lib.rs line 754' → reference the variable/function name (e.g. 'the result_dim extraction in compute_gradient')\n\nMemory hints: search for \"semantic anchors vs line numbers convention\" and \"gradient test doc comments\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T15:41:10.796Z",
+        "updatedAt": "2026-04-09T00:13:29.886Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -24569,7 +24569,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:13:29.139Z",
+      "lastModified": "2026-04-09T00:13:29.886Z",
       "taskCount": 1208,
       "completedCount": 889,
       "tags": [
