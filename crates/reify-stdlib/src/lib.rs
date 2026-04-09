@@ -3,6 +3,8 @@ use reify_types::{DimensionVector, Value};
 mod common;
 use crate::common::*;
 
+mod numeric;
+
 #[cfg(test)]
 mod test_helpers;
 
