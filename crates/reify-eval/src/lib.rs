@@ -5401,6 +5401,311 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_primitive_cylinder_missing_radius_emits_diagnostic() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Cylinder with height present, but 'radius' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Cylinder,
+            args: vec![
+                ("height".into(), literal_length(0.05)),
+                // radius deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'radius' is missing for Cylinder"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Cylinder"),
+            "diagnostic message should mention 'Cylinder', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_primitive_sphere_missing_radius_emits_diagnostic() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Sphere with no args (radius omitted)
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Sphere,
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'radius' is missing for Sphere"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Sphere"),
+            "diagnostic message should mention 'Sphere', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_chamfer_missing_distance_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Chamfer with target but 'distance' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'distance' is missing for Chamfer"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'distance', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("distance"),
+            "diagnostic message should mention 'distance', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Chamfer"),
+            "diagnostic message should mention 'Chamfer', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_shell_missing_thickness_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Shell with face_0 present, but 'thickness' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("face_0".into(), literal_f64(2.0)),
+                // thickness deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'thickness' is missing for Shell"
+        );
+        // Only one diagnostic: for the missing 'thickness'. No spurious face_* diagnostics.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'thickness', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("thickness"),
+            "diagnostic message should mention 'thickness', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Shell"),
+            "diagnostic message should mention 'Shell', got: {}",
+            diagnostics[0].message
+        );
+        // Confirm the short-circuit runs before the face_* collection path
+        assert!(
+            !diagnostics[0].message.contains("face"),
+            "no diagnostic should mention 'face' (short-circuit before face collection), got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_draft_missing_angle_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Draft with target but 'angle' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'angle' is missing for Draft"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'angle', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("angle"),
+            "diagnostic message should mention 'angle', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Draft"),
+            "diagnostic message should mention 'Draft', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_thicken_missing_offset_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Thicken with target but 'offset' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Thicken,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'offset' is missing for Thicken"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'offset', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("offset"),
+            "diagnostic message should mention 'offset', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Thicken"),
+            "diagnostic message should mention 'Thicken', got: {}",
+            diagnostics[0].message
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
