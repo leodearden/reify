@@ -391,6 +391,18 @@ mod tests {
             result.diagnostics.len(),
             parse_error_count
         );
+        assert!(
+            result.geometry_output.is_none(),
+            "geometry_output should be None when parse errors exist (eval must be skipped)"
+        );
+        for diag in &result.diagnostics {
+            assert_eq!(
+                diag.severity,
+                Some(DiagnosticSeverity::ERROR),
+                "all parse-error diagnostics must have severity ERROR, got: {:?}",
+                diag.severity
+            );
+        }
     }
 
     // --- constraint violation diagnostic range tests (step-31) ---
