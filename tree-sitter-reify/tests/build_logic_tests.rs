@@ -876,18 +876,24 @@ fn find_bare_build_rs_violations(source: &str) -> Vec<(usize, &str)> {
         .collect()
 }
 
-/// Scans `source` for lines that contain a bare `"tests/build_logic_tests.rs"` string
-/// literal (with literal double-quote characters) in non-comment code, and returns the
-/// matching lines as `(1-based line number, original line)` pairs.
+/// Scans `source` for lines that contain a bare `"tests/build_logic_tests.rs"` or
+/// `"./tests/build_logic_tests.rs"` string literal (with literal double-quote characters)
+/// in non-comment code, and returns the matching lines as `(1-based line number, original
+/// line)` pairs.
+///
+/// Both the unprefixed and dot-slash-prefixed forms are detected so that a contributor
+/// cannot bypass the guard by writing `"./tests/build_logic_tests.rs"` instead of
+/// `"tests/build_logic_tests.rs"`.  This mirrors the behaviour of the sibling helper
+/// [`find_bare_build_rs_violations`], which detects both `"build.rs"` and `"./build.rs"`.
 ///
 /// Each line is first passed through [`strip_line_comments`] so that the patterns inside
 /// `//` or `/* */` comments are ignored.  Only the code portion is checked.
 ///
 /// **Self-avoidance**: pattern strings defined in this file use escaped quotes
-/// (`\"tests/build_logic_tests.rs\"`) in Rust string literals, which in the raw source
-/// text appear as the two-character sequence `\"` — that does NOT match the unescaped
-/// `"` used as the search boundary, so this helper's own source does not trigger a false
-/// positive.
+/// (`\"tests/build_logic_tests.rs\"` / `\"./tests/build_logic_tests.rs\"`) in Rust string
+/// literals, which in the raw source text appear as the two-character sequence `\"` — that
+/// does NOT match the unescaped `"` used as the search boundary, so this helper's own
+/// source does not trigger a false positive.
 fn find_bare_self_path_violations(source: &str) -> Vec<(usize, &str)> {
     source
         .lines()
@@ -895,6 +901,7 @@ fn find_bare_self_path_violations(source: &str) -> Vec<(usize, &str)> {
         .filter(|(_i, line)| {
             let code = strip_line_comments(line);
             code.contains("\"tests/build_logic_tests.rs\"")
+                || code.contains("\"./tests/build_logic_tests.rs\"")
         })
         .map(|(i, line)| (i + 1, line))
         .collect()
