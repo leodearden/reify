@@ -486,6 +486,21 @@ else
 fi
 rm -f "$fixture_marker"
 
+# Historical regression pin: this fixture reproduces the exact guard that was
+# removed from tests/sync_comments_test.sh in commit ff0880bfe
+# ('if [ -n "$_expr_ref_fn" ]').  If a future change tightens the regex back
+# to something narrower (e.g. requiring 'ref' in the variable name), this
+# fixture will fail while the broader $marker test still passes, making the
+# regression visible rather than silent.
+fixture_historical=$(mktemp)
+printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
+if _check_has_no_if_n_guard "$fixture_historical" 2>/dev/null; then
+    check "historical pin: if-guard on \$_expr_ref_fn detected (should FAIL)" "false"
+else
+    check "historical pin: if-guard on \$_expr_ref_fn detected (ff0880bfe regression)" "true"
+fi
+rm -f "$fixture_historical"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
