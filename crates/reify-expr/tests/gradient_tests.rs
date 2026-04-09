@@ -2722,54 +2722,21 @@ fn make_gradient_field(
 /// `gradient_sample_with_inf_point_returns_undef`,
 /// `gradient_tensor_single_point_param_returns_undef`.
 fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    // Lambda: |p| dot(p, Point3(1.0, 2.0, 3.0))
+    // Delegates shared scaffolding to make_gradient_field; only the body differs.
     let weight_point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+    make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                    CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+                ],
+                Type::Real,
+            )
         },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "make_3d_dot_product_gradient_field: gradient should return a Field, got {:?}",
-        grad_result
-    );
-
-    (grad_result, domain_type, Type::vec3(Type::Real))
+        "make_3d_dot_product_gradient_field",
+    )
 }
 
 /// Build a gradient field for `|p: Point3<Real>| dot(p, p)` = x²+y²+z².
