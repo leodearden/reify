@@ -379,3 +379,48 @@ fn task_272_deprecated_entity_emits_warning_on_use() {
         use_site_offset
     );
 }
+
+// Scenario (2): defining a deprecated entity (structure, fn, trait) without using
+// it must produce zero deprecation warnings.
+#[test]
+fn task_272_no_warning_on_definition_alone() {
+    // (a) deprecated structure — no use-site
+    let module = compile_module(r#"@deprecated("old") structure Only { param x : Real = 0.0 }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "structure: errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        deprecation_warnings(&module, "Only").is_empty(),
+        "structure: expected no deprecation warning for definition-only, got: {:?}",
+        deprecation_warnings(&module, "Only")
+    );
+
+    // (b) deprecated fn — no call-site
+    let module = compile_module(r#"@deprecated("old") fn only_fn(x: Real) -> Real { x }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fn: errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        deprecation_warnings(&module, "only_fn").is_empty(),
+        "fn: expected no deprecation warning for definition-only, got: {:?}",
+        deprecation_warnings(&module, "only_fn")
+    );
+
+    // (c) deprecated trait — no implementor
+    let module =
+        compile_module(r#"@deprecated("old") trait OnlyTrait { param w : Real }"#);
+    assert!(
+        errors_only(&module).is_empty(),
+        "trait: errors: {:?}",
+        errors_only(&module)
+    );
+    assert!(
+        deprecation_warnings(&module, "OnlyTrait").is_empty(),
+        "trait: expected no deprecation warning for definition-only, got: {:?}",
+        deprecation_warnings(&module, "OnlyTrait")
+    );
+}
