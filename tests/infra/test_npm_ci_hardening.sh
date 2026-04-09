@@ -80,6 +80,9 @@ echo "--- Test 6: script has cross-file packageManager consistency check ---"
 assert "script contains 'sort -u' for cross-file consistency comparison" \
     grep -q 'sort -u' "$SCRIPT"
 
+assert "script references 'packageManager' in consistency logic" \
+    grep -q 'packageManager' "$SCRIPT"
+
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
