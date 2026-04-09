@@ -2634,6 +2634,19 @@ mod tests {
     }
 
     #[test]
+    fn test_assert_ord_consistent_real_nan_distinct_payloads() {
+        // Meta-test: exercises the to_bits()-based PartialEq path for bare
+        // Value::Real with two distinct NaN bit patterns.
+        // Canonical NaN (0x7ff8_0000_0000_0000) vs payload NaN (0x7ff8_0000_0000_0001).
+        // PartialEq uses to_bits(): distinct bit patterns → not equal.
+        // Under f64::total_cmp(), canonical NaN < payload NaN (compared by bit representation),
+        // so pass the canonical NaN as the smaller value first.
+        let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+        let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
+        assert_ord_consistent(&canonical_nan, &payload_nan, false);
+    }
+
+    #[test]
     fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
         // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
         // for the Scalar variant's bit-identity edge cases.
