@@ -1,0 +1,2108 @@
+use reify_types::{DimensionVector, Value};
+
+use crate::helpers::tensor_components_f64;
+
+pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
+    Some(match name {
+        // --- Determinacy predicates (stubs) ---
+        "determined" => Value::Undef,
+        "undetermined" => Value::Undef,
+        "constrained" => Value::Undef,
+        "partially_determined" => Value::Undef,
+
+        // --- Frame constructors ---
+        "frame3_identity" => {
+            if args.is_empty() {
+                Value::Frame {
+                    origin: Box::new(Value::Point(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ])),
+                    basis: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                }
+            } else {
+                Value::Undef
+            }
+        }
+        "frame3" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let origin = &args[0];
+            let basis = &args[1];
+            match origin {
+                Value::Point(components) if components.len() == 3 => {}
+                _ => return Some(Value::Undef),
+            }
+            if !matches!(basis, Value::Orientation { .. }) {
+                return Some(Value::Undef);
+            }
+            Value::Frame {
+                origin: Box::new(origin.clone()),
+                basis: Box::new(basis.clone()),
+            }
+        }
+
+        // --- Transform constructors ---
+        "transform3" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let rotation = &args[0];
+            let translation = &args[1];
+            if !matches!(rotation, Value::Orientation { .. }) {
+                return Some(Value::Undef);
+            }
+            match translation {
+                Value::Vector(components) if components.len() == 3 => {}
+                _ => return Some(Value::Undef),
+            }
+            Value::Transform {
+                rotation: Box::new(rotation.clone()),
+                translation: Box::new(translation.clone()),
+            }
+        }
+        "transform3_identity" => {
+            if args.is_empty() {
+                Value::Transform {
+                    rotation: Box::new(Value::Orientation {
+                        w: 1.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                    translation: Box::new(Value::Vector(vec![
+                        Value::length(0.0),
+                        Value::length(0.0),
+                        Value::length(0.0),
+                    ])),
+                }
+            } else {
+                Value::Undef
+            }
+        }
+
+        // --- Transform operations ---
+        "frame_to_frame" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let (origin_from, basis_from) = match &args[0] {
+                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
+                _ => return Some(Value::Undef),
+            };
+            let (origin_to, basis_to) = match &args[1] {
+                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
+                _ => return Some(Value::Undef),
+            };
+            let q_from = match basis_from {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let q_to = match basis_to {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
+            let (fx, fy, fz, f_dim) = match origin_from {
+                Value::Point(comps) if comps.len() == 3 => {
+                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Some(Value::Undef);
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Some(Value::Undef);
+                            }
+                            (x, y, z, dim)
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            let (tx, ty, tz, t_dim) = match origin_to {
+                Value::Point(comps) if comps.len() == 3 => {
+                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
+                        (Some(x), Some(y), Some(z)) => {
+                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                                return Some(Value::Undef);
+                            }
+                            let dim = comps[0].dimension();
+                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
+                                return Some(Value::Undef);
+                            }
+                            (x, y, z, dim)
+                        }
+                        _ => return Some(Value::Undef),
+                    }
+                }
+                _ => return Some(Value::Undef),
+            };
+            // R = R_to * conj(R_from)
+            let r = quat_mul(q_to, quat_conj(q_from));
+            match normalize_quaternion(r.0, r.1, r.2, r.3) {
+                Some(rot_val) => {
+                    // t = origin_to - R * origin_from
+                    if f_dim != t_dim {
+                        return Some(Value::Undef);
+                    }
+                    let dim = f_dim;
+                    let r_norm = match &rot_val {
+                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                        _ => unreachable!(),
+                    };
+                    let (rfx, rfy, rfz) = quat_rotate(r_norm, fx, fy, fz);
+                    let trans = Value::Vector(vec![
+                        Value::Scalar {
+                            si_value: tx - rfx,
+                            dimension: dim,
+                        },
+                        Value::Scalar {
+                            si_value: ty - rfy,
+                            dimension: dim,
+                        },
+                        Value::Scalar {
+                            si_value: tz - rfz,
+                            dimension: dim,
+                        },
+                    ]);
+                    Value::Transform {
+                        rotation: Box::new(rot_val),
+                        translation: Box::new(trans),
+                    }
+                }
+                None => Value::Undef,
+            }
+        }
+
+        // --- Plane constructors ---
+        "plane_xy" => make_plane(args, 2, [0.0, 0.0, 1.0]),
+        "plane_xz" => make_plane(args, 1, [0.0, 1.0, 0.0]),
+        "plane_yz" => make_plane(args, 0, [1.0, 0.0, 0.0]),
+
+        // --- Axis constructors ---
+        "axis_x" => make_axis(args, [1.0, 0.0, 0.0]),
+        "axis_y" => make_axis(args, [0.0, 1.0, 0.0]),
+        "axis_z" => make_axis(args, [0.0, 0.0, 1.0]),
+
+        // --- BoundingBox constructors ---
+        "bbox" => {
+            if args.len() != 2 {
+                return Some(Value::Undef);
+            }
+            let min = &args[0];
+            let max = &args[1];
+            let min_comps = match min {
+                Value::Point(comps) if comps.len() == 3 => comps,
+                _ => return Some(Value::Undef),
+            };
+            let max_comps = match max {
+                Value::Point(comps) if comps.len() == 3 => comps,
+                _ => return Some(Value::Undef),
+            };
+            let min_dim = min_comps
+                .first()
+                .map(|v| v.dimension())
+                .unwrap_or(DimensionVector::DIMENSIONLESS);
+            let max_dim = max_comps
+                .first()
+                .map(|v| v.dimension())
+                .unwrap_or(DimensionVector::DIMENSIONLESS);
+            if min_dim != max_dim {
+                return Some(Value::Undef);
+            }
+            Value::BoundingBox {
+                min: Box::new(min.clone()),
+                max: Box::new(max.clone()),
+            }
+        }
+
+        // --- BoundingBox accessors ---
+        "bbox_size" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::BoundingBox { min, max } => {
+                    let (min_vals, dim) = match tensor_components_f64(min) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let (max_vals, _) = match tensor_components_f64(max) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    if min_vals.len() != 3 || max_vals.len() != 3 {
+                        return Some(Value::Undef);
+                    }
+                    let make_component = |v: f64| -> Value {
+                        if dim.is_dimensionless() {
+                            Value::Real(v)
+                        } else {
+                            Value::Scalar {
+                                si_value: v,
+                                dimension: dim,
+                            }
+                        }
+                    };
+                    Value::Vector(vec![
+                        make_component(max_vals[0] - min_vals[0]),
+                        make_component(max_vals[1] - min_vals[1]),
+                        make_component(max_vals[2] - min_vals[2]),
+                    ])
+                }
+                _ => Value::Undef,
+            }
+        }
+        "bbox_center" => {
+            if args.len() != 1 {
+                return Some(Value::Undef);
+            }
+            match &args[0] {
+                Value::BoundingBox { min, max } => {
+                    let (min_vals, dim) = match tensor_components_f64(min) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    let (max_vals, _) = match tensor_components_f64(max) {
+                        Some(v) => v,
+                        None => return Some(Value::Undef),
+                    };
+                    if min_vals.len() != 3 || max_vals.len() != 3 {
+                        return Some(Value::Undef);
+                    }
+                    let make_component = |v: f64| -> Value {
+                        if dim.is_dimensionless() {
+                            Value::Real(v)
+                        } else {
+                            Value::Scalar {
+                                si_value: v,
+                                dimension: dim,
+                            }
+                        }
+                    };
+                    Value::Point(vec![
+                        make_component((min_vals[0] + max_vals[0]) / 2.0),
+                        make_component((min_vals[1] + max_vals[1]) / 2.0),
+                        make_component((min_vals[2] + max_vals[2]) / 2.0),
+                    ])
+                }
+                _ => Value::Undef,
+            }
+        }
+
+        // --- Point/Vector constructors ---
+        "point2" => construct_point_or_vector(args, 2, true),
+        "point3" => construct_point_or_vector(args, 3, true),
+        "vec2" => construct_point_or_vector(args, 2, false),
+        "vec3" => construct_point_or_vector(args, 3, false),
+
+        // --- Field operations (stubs) ---
+        "sample" => Value::Undef,
+        "gradient" => Value::Undef,
+        "divergence" => Value::Undef,
+        "curl" => Value::Undef,
+
+        _ => return None,
+    })
+}
+
+/// Validate args for a point/vector constructor and return `Value::Point` or `Value::Vector`.
+fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) -> Value {
+    if args.len() != expected_n {
+        return Value::Undef;
+    }
+    if !args.iter().all(|a| a.as_f64().is_some()) {
+        return Value::Undef;
+    }
+    let first_dim = match args.first() {
+        Some(v) => v.dimension(),
+        None => return Value::Undef,
+    };
+    if !args.iter().all(|a| a.dimension() == first_dim) {
+        return Value::Undef;
+    }
+    if is_point {
+        Value::Point(args.to_vec())
+    } else {
+        Value::Vector(args.to_vec())
+    }
+}
+
+/// Build a Plane from a single offset argument.
+fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let offset_val = &args[0];
+    let offset_f = match offset_val.as_f64() {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    if !offset_f.is_finite() {
+        return Value::Undef;
+    }
+    let dim = offset_val.dimension();
+    let make_zero = || -> Value {
+        if dim.is_dimensionless() {
+            Value::Real(0.0)
+        } else {
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: dim,
+            }
+        }
+    };
+    let offset_component = offset_val.clone();
+    let zero = make_zero();
+    let mut comps = [zero.clone(), zero.clone(), zero];
+    comps[offset_index] = offset_component;
+    let origin = Value::Point(comps.to_vec());
+    let normal_vec = Value::Vector(vec![
+        Value::Real(normal[0]),
+        Value::Real(normal[1]),
+        Value::Real(normal[2]),
+    ]);
+    Value::Plane {
+        origin: Box::new(origin),
+        normal: Box::new(normal_vec),
+    }
+}
+
+/// Build an Axis from a single Point3 origin argument.
+fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    match &args[0] {
+        Value::Point(comps) if comps.len() == 3 => {}
+        _ => return Value::Undef,
+    }
+    let dir_vec = Value::Vector(vec![
+        Value::Real(direction[0]),
+        Value::Real(direction[1]),
+        Value::Real(direction[2]),
+    ]);
+    Value::Axis {
+        origin: Box::new(args[0].clone()),
+        direction: Box::new(dir_vec),
+    }
+}
+
+// Quaternion helpers used by frame_to_frame — re-imported from orientation module.
+use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
+
+#[cfg(test)]
+mod tests {
+    use crate::eval_builtin;
+    use super::construct_point_or_vector;
+    use reify_types::{DimensionVector, Value};
+
+    // --- Determinacy predicate stubs (step-7) ---
+
+    #[test]
+    fn determined_stub_returns_undef() {
+        // determined() is handled at the eval layer where DeterminacyState is available.
+        // The stdlib stub returns Undef as a fallback.
+        let result = eval_builtin("determined", &[Value::Real(42.0)]);
+        assert!(
+            result.is_undef(),
+            "determined stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn undetermined_stub_returns_undef() {
+        let result = eval_builtin("undetermined", &[Value::Real(42.0)]);
+        assert!(
+            result.is_undef(),
+            "undetermined stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn constrained_stub_returns_undef() {
+        let result = eval_builtin("constrained", &[Value::Real(42.0)]);
+        assert!(
+            result.is_undef(),
+            "constrained stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn partially_determined_stub_returns_undef() {
+        let result = eval_builtin("partially_determined", &[Value::Real(42.0)]);
+        assert!(
+            result.is_undef(),
+            "partially_determined stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    // --- Field operation stubs (step-25) ---
+
+    #[test]
+    fn gradient_scalar_field_returns_undef() {
+        // gradient(field) on a scalar field should return Undef (stub).
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::length(),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("gradient", &[field]);
+        assert!(
+            result.is_undef(),
+            "gradient stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn divergence_field_returns_undef() {
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("divergence", &[field]);
+        assert!(
+            result.is_undef(),
+            "divergence stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn curl_field_returns_undef() {
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::StructureRef("Vector3".into()),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("curl", &[field]);
+        assert!(
+            result.is_undef(),
+            "curl stub should return Undef, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn sample_in_stdlib_returns_undef() {
+        // sample() in stdlib returns Undef because lambda application
+        // needs an EvalContext (handled in reify-expr instead).
+        let field = Value::Field {
+            domain_type: reify_types::Type::StructureRef("Point3".into()),
+            codomain_type: reify_types::Type::length(),
+            source: reify_types::FieldSourceKind::Analytical,
+            lambda: Box::new(Value::Undef),
+        };
+        let result = eval_builtin("sample", &[field, Value::Int(42)]);
+        assert!(
+            result.is_undef(),
+            "sample in stdlib should return Undef (handled in eval_expr), got {:?}",
+            result
+        );
+    }
+
+    // --- non-numeric args → Undef ---
+
+    #[test]
+    fn point3_non_numeric_undef() {
+        // point3(String, Scalar, Scalar) → Undef
+        let args = vec![
+            Value::String("hello".to_string()),
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        assert!(
+            eval_builtin("point3", &args).is_undef(),
+            "non-numeric first arg must return Undef"
+        );
+    }
+
+    #[test]
+    fn vec2_non_numeric_undef() {
+        // vec2(Bool, Bool) → Undef
+        let args = vec![Value::Bool(true), Value::Bool(false)];
+        assert!(
+            eval_builtin("vec2", &args).is_undef(),
+            "Bool args must return Undef"
+        );
+    }
+
+    // --- wrong arg count → Undef ---
+
+    #[test]
+    fn point3_wrong_arg_count_undef() {
+        // point3 with 2 args → Undef
+        let args2 = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        assert!(
+            eval_builtin("point3", &args2).is_undef(),
+            "point3 with 2 args must be Undef"
+        );
+        // point3 with 0 args → Undef
+        assert!(
+            eval_builtin("point3", &[]).is_undef(),
+            "point3 with 0 args must be Undef"
+        );
+        // point3 with 4 args → Undef
+        let args4 = vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(4.0),
+        ];
+        assert!(
+            eval_builtin("point3", &args4).is_undef(),
+            "point3 with 4 args must be Undef"
+        );
+    }
+
+    #[test]
+    fn point2_wrong_arg_count_undef() {
+        // point2 with 3 args → Undef
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(
+            eval_builtin("point2", &args3).is_undef(),
+            "point2 with 3 args must be Undef"
+        );
+        // point2 with 1 arg → Undef
+        assert!(
+            eval_builtin("point2", &[Value::Real(1.0)]).is_undef(),
+            "point2 with 1 arg must be Undef"
+        );
+    }
+
+    #[test]
+    fn vec3_wrong_arg_count_undef() {
+        assert!(
+            eval_builtin("vec3", &[]).is_undef(),
+            "vec3 with 0 args must be Undef"
+        );
+        let args2 = vec![Value::Real(1.0), Value::Real(2.0)];
+        assert!(
+            eval_builtin("vec3", &args2).is_undef(),
+            "vec3 with 2 args must be Undef"
+        );
+    }
+
+    #[test]
+    fn vec2_wrong_arg_count_undef() {
+        assert!(
+            eval_builtin("vec2", &[]).is_undef(),
+            "vec2 with 0 args must be Undef"
+        );
+        let args3 = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        assert!(
+            eval_builtin("vec2", &args3).is_undef(),
+            "vec2 with 3 args must be Undef"
+        );
+    }
+
+    // --- dimension mismatch → Undef ---
+
+    #[test]
+    fn point3_dimension_mismatch_undef() {
+        // point3(Scalar(1,LENGTH), Scalar(2,MASS), Scalar(3,LENGTH)) → Undef
+        let args = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        assert!(
+            eval_builtin("point3", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
+    }
+
+    #[test]
+    fn vec3_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::MASS,
+            },
+        ];
+        assert!(
+            eval_builtin("vec3", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
+    }
+
+    #[test]
+    fn point2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::MASS,
+            },
+        ];
+        assert!(
+            eval_builtin("point2", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
+    }
+
+    #[test]
+    fn vec2_dimension_mismatch_undef() {
+        let args = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        assert!(
+            eval_builtin("vec2", &args).is_undef(),
+            "mixed dimensions must return Undef"
+        );
+    }
+
+    // --- dimensionless components ---
+
+    #[test]
+    fn point3_dimensionless() {
+        // point3(Real(1.0), Real(2.0), Real(3.0)) → Value::Point with Real components preserved
+        let args = vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 1.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 2.0).abs() < 1e-12));
+                assert!(matches!(&items[2], Value::Real(v) if (*v - 3.0).abs() < 1e-12));
+            }
+            other => panic!("expected Point with Real components, got {:?}", other),
+        }
+    }
+
+    // --- vec2 ---
+
+    #[test]
+    fn vec2_basic() {
+        // vec2(9.0, 10.0) → Value::Vector([Real(9.0), Real(10.0)])
+        let args = vec![Value::Real(9.0), Value::Real(10.0)];
+        let result = eval_builtin("vec2", &args);
+        match result {
+            Value::Vector(ref items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::Real(v) if (*v - 9.0).abs() < 1e-12));
+                assert!(matches!(&items[1], Value::Real(v) if (*v - 10.0).abs() < 1e-12));
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    // --- point2 ---
+
+    #[test]
+    fn point2_basic() {
+        // point2(7m, 8m) → Value::Point([Scalar(7,L), Scalar(8,L)])
+        let args = vec![
+            Value::Scalar {
+                si_value: 7.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 8.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        let result = eval_builtin("point2", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 2);
+                assert_scalar_approx!(items[0].clone(), 7.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 8.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // --- vec3 ---
+
+    #[test]
+    fn vec3_basic() {
+        // vec3(4m, 5m, 6m) → Value::Vector([Scalar(4,L), Scalar(5,L), Scalar(6,L)])
+        let args = vec![
+            Value::Scalar {
+                si_value: 4.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 5.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 6.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        let result = eval_builtin("vec3", &args);
+        match result {
+            Value::Vector(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 4.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 5.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 6.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    // --- point3 ---
+
+    #[test]
+    fn point3_basic() {
+        // point3(1m, 2m, 3m) → Value::Point([Scalar(1,L), Scalar(2,L), Scalar(3,L)])
+        let args = vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            },
+        ];
+        let result = eval_builtin("point3", &args);
+        match result {
+            Value::Point(ref items) => {
+                assert_eq!(items.len(), 3);
+                assert_scalar_approx!(items[0].clone(), 1.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[1].clone(), 2.0, DimensionVector::LENGTH);
+                assert_scalar_approx!(items[2].clone(), 3.0, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // --- Semantic distinction: point vs vector ---
+
+    #[test]
+    fn point_vector_semantic_distinction() {
+        // point2 and vec2 with identical args must produce distinct Value variants
+        let a = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let b = Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        };
+
+        let p2 = eval_builtin("point2", &[a.clone(), b.clone()]);
+        let v2 = eval_builtin("vec2", &[a.clone(), b.clone()]);
+
+        // point2 must produce Value::Point
+        assert!(
+            matches!(&p2, Value::Point(items) if items.len() == 2),
+            "expected Value::Point(2), got {:?}",
+            p2
+        );
+
+        // vec2 must produce Value::Vector
+        assert!(
+            matches!(&v2, Value::Vector(items) if items.len() == 2),
+            "expected Value::Vector(2), got {:?}",
+            v2
+        );
+
+        // point2(a,b) != vec2(a,b) — different variants
+        assert_ne!(p2, v2, "point2 and vec2 with identical args must differ");
+
+        // point3 vs vec3
+        let c = Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let p3 = eval_builtin("point3", &[a.clone(), b.clone(), c.clone()]);
+        let v3 = eval_builtin("vec3", &[a.clone(), b.clone(), c.clone()]);
+
+        assert!(
+            matches!(&p3, Value::Point(items) if items.len() == 3),
+            "expected Value::Point(3), got {:?}",
+            p3
+        );
+        assert!(
+            matches!(&v3, Value::Vector(items) if items.len() == 3),
+            "expected Value::Vector(3), got {:?}",
+            v3
+        );
+        assert_ne!(p3, v3, "point3 and vec3 with identical args must differ");
+
+        // content_hash: Point and Vector with same components produce different hashes
+        assert_ne!(
+            p2.content_hash(),
+            v2.content_hash(),
+            "point2 and vec2 content_hash must differ"
+        );
+        assert_ne!(
+            p3.content_hash(),
+            v3.content_hash(),
+            "point3 and vec3 content_hash must differ"
+        );
+
+        // Display: point(...) vs vec(...)
+        let p2_display = format!("{}", p2);
+        let v2_display = format!("{}", v2);
+        assert!(
+            p2_display.starts_with("point("),
+            "Point2 Display should start with 'point(', got {:?}",
+            p2_display
+        );
+        assert!(
+            v2_display.starts_with("vec("),
+            "Vector2 Display should start with 'vec(', got {:?}",
+            v2_display
+        );
+    }
+
+    // ── construct_point_or_vector edge cases (task 398, step-11) ──────────────
+
+    #[test]
+    fn construct_point_or_vector_empty_args_returns_undef() {
+        // When expected_n=0 and args=[], should return Undef, not panic.
+        let result = construct_point_or_vector(&[], 0, true);
+        assert!(
+            result.is_undef(),
+            "expected Undef for empty args with expected_n=0, got {:?}",
+            result
+        );
+
+        let result = construct_point_or_vector(&[], 0, false);
+        assert!(
+            result.is_undef(),
+            "expected Undef for empty vector args with expected_n=0, got {:?}",
+            result
+        );
+    }
+
+    // ── frame3 tests (step-5) ────────────────────────────────────────────────
+
+    fn make_point3_len() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_identity_orientation() -> Value {
+        Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+
+    #[test]
+    fn frame3_valid_args_returns_frame() {
+        let origin = make_point3_len();
+        let basis = make_identity_orientation();
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        match result {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
+                assert_eq!(*o, origin);
+                assert_eq!(*b, basis);
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_stores_origin_and_basis_correctly() {
+        let origin = Value::Point(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+            Value::length(7.0),
+        ]);
+        let basis = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        match result {
+            Value::Frame {
+                origin: o,
+                basis: b,
+            } => {
+                assert_eq!(*o, origin, "origin should be stored exactly");
+                assert_eq!(*b, basis, "basis should be stored exactly");
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_no_args_returns_undef() {
+        assert!(eval_builtin("frame3", &[]).is_undef());
+    }
+
+    #[test]
+    fn frame3_one_arg_returns_undef() {
+        assert!(eval_builtin("frame3", &[make_point3_len()]).is_undef());
+    }
+
+    #[test]
+    fn frame3_three_args_returns_undef() {
+        let o = make_point3_len();
+        let b = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[o.clone(), b.clone(), Value::Real(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn frame3_non_point_first_arg_returns_undef() {
+        let basis = make_identity_orientation();
+        // First arg is Real, not Point
+        assert!(eval_builtin("frame3", &[Value::Real(1.0), basis]).is_undef());
+    }
+
+    #[test]
+    fn frame3_non_orientation_second_arg_returns_undef() {
+        let origin = make_point3_len();
+        // Second arg is Real, not Orientation
+        assert!(eval_builtin("frame3", &[origin, Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn frame3_point2_origin_returns_undef() {
+        // Point2 (wrong component count) should be rejected
+        let origin_2d = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_2d, basis]).is_undef());
+    }
+
+    #[test]
+    fn frame3_point4_origin_returns_undef() {
+        // Point4 (wrong component count) should be rejected
+        let origin_4d = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+            Value::length(4.0),
+        ]);
+        let basis = make_identity_orientation();
+        assert!(eval_builtin("frame3", &[origin_4d, basis]).is_undef());
+    }
+
+    #[test]
+    fn frame3_dimensionless_point3_is_accepted() {
+        // Point3 with dimensionless (Real) components is accepted
+        let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let basis = make_identity_orientation();
+        let result = eval_builtin("frame3", &[origin.clone(), basis.clone()]);
+        assert!(
+            matches!(&result, Value::Frame { .. }),
+            "expected Value::Frame for dimensionless Point3 origin, got {:?}",
+            result
+        );
+    }
+
+    // ── frame3_identity tests (step-7) ────────────────────────────────────────
+
+    #[test]
+    fn frame3_identity_no_args_returns_frame() {
+        let result = eval_builtin("frame3_identity", &[]);
+        assert!(
+            matches!(&result, Value::Frame { .. }),
+            "expected Value::Frame, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn frame3_identity_origin_is_zero_length_point3() {
+        let result = eval_builtin("frame3_identity", &[]);
+        match result {
+            Value::Frame { origin, .. } => {
+                let expected_origin = Value::Point(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]);
+                assert_eq!(
+                    *origin, expected_origin,
+                    "identity origin should be zero Point3<Length>"
+                );
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_identity_basis_is_identity_quaternion() {
+        let result = eval_builtin("frame3_identity", &[]);
+        match result {
+            Value::Frame { basis, .. } => {
+                let expected_basis = Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                };
+                assert_eq!(
+                    *basis, expected_basis,
+                    "identity basis should be (w:1,x:0,y:0,z:0)"
+                );
+            }
+            other => panic!("expected Value::Frame, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frame3_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("frame3_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("frame3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef());
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]
+            )
+            .is_undef()
+        );
+        assert!(
+            eval_builtin(
+                "frame3_identity",
+                &[
+                    Value::Real(1.0),
+                    Value::Real(2.0),
+                    Value::Real(3.0),
+                    Value::Real(4.0)
+                ]
+            )
+            .is_undef()
+        );
+    }
+
+    // ── transform3 tests (step-5) ─────────────────────────────────────────────
+
+    fn make_vec3_length() -> Value {
+        Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    #[test]
+    fn transform3_valid_args_returns_transform() {
+        let rotation = make_identity_orientation();
+        let translation = make_vec3_length();
+        let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
+        match result {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
+                assert_eq!(*r, rotation);
+                assert_eq!(*t, translation);
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_stores_rotation_and_translation_correctly() {
+        let rotation = Value::Orientation {
+            w: 0.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let translation = Value::Vector(vec![
+            Value::length(5.0),
+            Value::length(6.0),
+            Value::length(7.0),
+        ]);
+        let result = eval_builtin("transform3", &[rotation.clone(), translation.clone()]);
+        match result {
+            Value::Transform {
+                rotation: r,
+                translation: t,
+            } => {
+                assert_eq!(*r, rotation, "rotation should be stored exactly");
+                assert_eq!(*t, translation, "translation should be stored exactly");
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_no_args_returns_undef() {
+        assert!(eval_builtin("transform3", &[]).is_undef());
+    }
+
+    #[test]
+    fn transform3_one_arg_returns_undef() {
+        assert!(eval_builtin("transform3", &[make_identity_orientation()]).is_undef());
+    }
+
+    #[test]
+    fn transform3_three_args_returns_undef() {
+        let r = make_identity_orientation();
+        let t = make_vec3_length();
+        assert!(eval_builtin("transform3", &[r.clone(), t.clone(), Value::Real(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn transform3_non_orientation_first_arg_returns_undef() {
+        // First arg is Real, not Orientation
+        assert!(eval_builtin("transform3", &[Value::Real(1.0), make_vec3_length()]).is_undef());
+    }
+
+    #[test]
+    fn transform3_non_vector_second_arg_returns_undef() {
+        // Second arg is Real, not Vector
+        assert!(
+            eval_builtin(
+                "transform3",
+                &[make_identity_orientation(), Value::Real(1.0)]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn transform3_point3_second_arg_returns_undef() {
+        // Second arg is Point3, not Vector3
+        let pt3 = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), pt3]).is_undef());
+    }
+
+    #[test]
+    fn transform3_orientation_second_arg_returns_undef() {
+        // Second arg is Orientation, not Vector3
+        assert!(
+            eval_builtin(
+                "transform3",
+                &[make_identity_orientation(), make_identity_orientation()]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn transform3_vector2_translation_returns_undef() {
+        // Vector2 (wrong component count) should be rejected
+        let vec2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        assert!(eval_builtin("transform3", &[make_identity_orientation(), vec2]).is_undef());
+    }
+
+    #[test]
+    fn transform3_dimensionless_vector3_is_accepted() {
+        // Vector3 with dimensionless (Real) components is accepted
+        let translation = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin(
+            "transform3",
+            &[make_identity_orientation(), translation.clone()],
+        );
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "expected Value::Transform for dimensionless Vector3 translation, got {:?}",
+            result
+        );
+    }
+
+    // ── transform3_identity tests (step-7) ────────────────────────────────────
+
+    #[test]
+    fn transform3_identity_no_args_returns_transform() {
+        let result = eval_builtin("transform3_identity", &[]);
+        assert!(
+            matches!(&result, Value::Transform { .. }),
+            "expected Value::Transform, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn transform3_identity_rotation_is_identity_quaternion() {
+        let result = eval_builtin("transform3_identity", &[]);
+        match result {
+            Value::Transform { rotation, .. } => {
+                let expected = Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                };
+                assert_eq!(
+                    *rotation, expected,
+                    "identity rotation should be (w:1,x:0,y:0,z:0)"
+                );
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_identity_translation_is_zero_length_vector3() {
+        let result = eval_builtin("transform3_identity", &[]);
+        match result {
+            Value::Transform { translation, .. } => {
+                let expected = Value::Vector(vec![
+                    Value::length(0.0),
+                    Value::length(0.0),
+                    Value::length(0.0),
+                ]);
+                assert_eq!(
+                    *translation, expected,
+                    "identity translation should be zero Vector3<Length>"
+                );
+            }
+            other => panic!("expected Value::Transform, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn transform3_identity_with_any_args_returns_undef() {
+        assert!(eval_builtin("transform3_identity", &[Value::Real(1.0)]).is_undef());
+        assert!(
+            eval_builtin("transform3_identity", &[Value::Real(1.0), Value::Real(2.0)]).is_undef()
+        );
+    }
+
+    // ── axis_z tests (step-5) ────────────────────────────────────────────────
+
+    fn make_point3_length() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_point2_length() -> Value {
+        Value::Point(vec![Value::length(1.0), Value::length(2.0)])
+    }
+
+    #[test]
+    fn axis_z_with_point3_returns_axis() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
+        assert!(
+            matches!(result, Value::Axis { .. }),
+            "expected Value::Axis, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn axis_z_stores_origin_correctly() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_z", std::slice::from_ref(&origin));
+        match result {
+            Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
+            other => panic!("expected Value::Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn axis_z_direction_is_z() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_z", &[origin]);
+        match result {
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps.len(), 3);
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(1.0));
+                }
+                other => panic!("expected Vector, got {:?}", other),
+            },
+            other => panic!("expected Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn axis_z_no_args_returns_undef() {
+        assert!(eval_builtin("axis_z", &[]).is_undef());
+    }
+
+    #[test]
+    fn axis_z_real_arg_returns_undef() {
+        assert!(eval_builtin("axis_z", &[Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn axis_z_point2_returns_undef() {
+        assert!(eval_builtin("axis_z", &[make_point2_length()]).is_undef());
+    }
+
+    #[test]
+    fn axis_z_vector3_returns_undef() {
+        let vec3 = Value::Vector(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        assert!(eval_builtin("axis_z", &[vec3]).is_undef());
+    }
+
+    // ── axis_x / axis_y tests (step-7) ───────────────────────────────────────
+
+    #[test]
+    fn axis_x_direction_is_x() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_x", &[origin]);
+        match result {
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps[0], Value::Real(1.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
+                }
+                other => panic!("expected Vector, got {:?}", other),
+            },
+            other => panic!("expected Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn axis_y_direction_is_y() {
+        let origin = make_point3_length();
+        let result = eval_builtin("axis_y", &[origin]);
+        match result {
+            Value::Axis { direction, .. } => match *direction {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(1.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
+                }
+                other => panic!("expected Vector, got {:?}", other),
+            },
+            other => panic!("expected Axis, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn axis_x_no_args_returns_undef() {
+        assert!(eval_builtin("axis_x", &[]).is_undef());
+    }
+
+    #[test]
+    fn axis_y_two_args_returns_undef() {
+        assert!(eval_builtin("axis_y", &[make_point3_length(), make_point3_length()]).is_undef());
+    }
+
+    #[test]
+    fn axis_x_with_dimensionless_point3() {
+        let origin = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+        let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
+        match result {
+            Value::Axis { origin: o, .. } => assert_eq!(*o, origin),
+            other => panic!("expected Axis, got {:?}", other),
+        }
+    }
+
+    // ── bbox tests (step-9) ──────────────────────────────────────────────────
+
+    fn make_point3_min() -> Value {
+        Value::Point(vec![
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ])
+    }
+
+    fn make_point3_max() -> Value {
+        Value::Point(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ])
+    }
+
+    #[test]
+    fn bbox_with_two_point3_returns_bounding_box() {
+        let result = eval_builtin("bbox", &[make_point3_min(), make_point3_max()]);
+        assert!(
+            matches!(result, Value::BoundingBox { .. }),
+            "expected BoundingBox, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn bbox_stores_min_and_max() {
+        let min = make_point3_min();
+        let max = make_point3_max();
+        let result = eval_builtin("bbox", &[min.clone(), max.clone()]);
+        match result {
+            Value::BoundingBox { min: mn, max: mx } => {
+                assert_eq!(*mn, min);
+                assert_eq!(*mx, max);
+            }
+            other => panic!("expected BoundingBox, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_mismatched_dimensions_returns_undef() {
+        let min = Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let max = Value::Point(vec![
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+            Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            },
+        ]);
+        assert!(eval_builtin("bbox", &[min, max]).is_undef());
+    }
+
+    #[test]
+    fn bbox_non_point_arg_returns_undef() {
+        let vec3 = Value::Vector(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let pt3 = make_point3_min();
+        assert!(eval_builtin("bbox", &[vec3, pt3]).is_undef());
+    }
+
+    #[test]
+    fn bbox_point2_returns_undef() {
+        let pt2 = make_point2_length();
+        let pt3 = make_point3_min();
+        assert!(eval_builtin("bbox", &[pt2, pt3]).is_undef());
+    }
+
+    #[test]
+    fn bbox_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("bbox", &[]).is_undef());
+        assert!(eval_builtin("bbox", &[make_point3_min()]).is_undef());
+        assert!(
+            eval_builtin(
+                "bbox",
+                &[make_point3_min(), make_point3_max(), make_point3_min()]
+            )
+            .is_undef()
+        );
+    }
+
+    #[test]
+    fn bbox_one_point_one_vector_returns_undef() {
+        let pt3 = make_point3_min();
+        let vec3 = Value::Vector(vec![
+            Value::length(4.0),
+            Value::length(6.0),
+            Value::length(9.0),
+        ]);
+        assert!(eval_builtin("bbox", &[pt3, vec3]).is_undef());
+    }
+
+    // ── bbox_size / bbox_center tests (step-11) ──────────────────────────────
+
+    fn make_bbox() -> Value {
+        Value::BoundingBox {
+            min: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::length(2.0),
+                Value::length(3.0),
+            ])),
+            max: Box::new(Value::Point(vec![
+                Value::length(4.0),
+                Value::length(6.0),
+                Value::length(9.0),
+            ])),
+        }
+    }
+
+    #[test]
+    fn bbox_size_returns_correct_vector() {
+        // min=(1m,2m,3m), max=(4m,6m,9m) → size=(3m,4m,6m)
+        let result = eval_builtin("bbox_size", &[make_bbox()]);
+        match result {
+            Value::Vector(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(3.0));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_center_returns_correct_point() {
+        // min=(1m,2m,3m), max=(4m,6m,9m) → center=(2.5m,4m,6m)
+        let result = eval_builtin("bbox_center", &[make_bbox()]);
+        match result {
+            Value::Point(ref comps) => {
+                assert_eq!(comps.len(), 3);
+                assert_eq!(comps[0], Value::length(2.5));
+                assert_eq!(comps[1], Value::length(4.0));
+                assert_eq!(comps[2], Value::length(6.0));
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bbox_size_non_bounding_box_returns_undef() {
+        assert!(eval_builtin("bbox_size", &[Value::Real(1.0)]).is_undef());
+        assert!(eval_builtin("bbox_size", &[make_point3_min()]).is_undef());
+    }
+
+    #[test]
+    fn bbox_center_non_bounding_box_returns_undef() {
+        assert!(eval_builtin("bbox_center", &[Value::Undef]).is_undef());
+        assert!(eval_builtin("bbox_center", &[make_point3_min()]).is_undef());
+    }
+
+    #[test]
+    fn bbox_size_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("bbox_size", &[]).is_undef());
+        assert!(eval_builtin("bbox_size", &[make_bbox(), make_bbox()]).is_undef());
+    }
+
+    #[test]
+    fn bbox_center_wrong_arg_count_returns_undef() {
+        assert!(eval_builtin("bbox_center", &[]).is_undef());
+        assert!(eval_builtin("bbox_center", &[make_bbox(), make_bbox()]).is_undef());
+    }
+
+    #[test]
+    fn bbox_size_dimensionless_bbox() {
+        let bbox = Value::BoundingBox {
+            min: Box::new(Value::Point(vec![
+                Value::Real(0.0),
+                Value::Real(0.0),
+                Value::Real(0.0),
+            ])),
+            max: Box::new(Value::Point(vec![
+                Value::Real(2.0),
+                Value::Real(4.0),
+                Value::Real(6.0),
+            ])),
+        };
+        let result = eval_builtin("bbox_size", &[bbox]);
+        match result {
+            Value::Vector(ref comps) => {
+                assert_eq!(comps[0], Value::Real(2.0));
+                assert_eq!(comps[1], Value::Real(4.0));
+                assert_eq!(comps[2], Value::Real(6.0));
+            }
+            other => panic!("expected Vector of Reals, got {:?}", other),
+        }
+    }
+
+    // ── plane_xz / plane_yz tests (step-3) ───────────────────────────────────
+
+    #[test]
+    fn plane_xz_with_length_offset_returns_plane() {
+        let result = eval_builtin("plane_xz", &[Value::length(0.003)]);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn plane_xz_correct_origin_and_normal() {
+        // plane_xz(3mm) → origin=(0m, 3mm, 0m), normal=(0,1,0)
+        let result = eval_builtin("plane_xz", &[Value::length(0.003)]);
+        match result {
+            Value::Plane { origin, normal } => {
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3);
+                        assert_eq!(comps[0], Value::length(0.0), "x should be 0m");
+                        assert_eq!(comps[1], Value::length(0.003), "y should be 3mm");
+                        assert_eq!(comps[2], Value::length(0.0), "z should be 0m");
+                    }
+                    other => panic!("expected Point, got {:?}", other),
+                }
+                match *normal {
+                    Value::Vector(ref comps) => {
+                        assert_eq!(comps[0], Value::Real(0.0));
+                        assert_eq!(comps[1], Value::Real(1.0));
+                        assert_eq!(comps[2], Value::Real(0.0));
+                    }
+                    other => panic!("expected Vector, got {:?}", other),
+                }
+            }
+            other => panic!("expected Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plane_yz_with_length_offset_returns_plane() {
+        let result = eval_builtin("plane_yz", &[Value::length(0.007)]);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn plane_yz_correct_origin_and_normal() {
+        // plane_yz(7mm) → origin=(7mm, 0m, 0m), normal=(1,0,0)
+        let result = eval_builtin("plane_yz", &[Value::length(0.007)]);
+        match result {
+            Value::Plane { origin, normal } => {
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3);
+                        assert_eq!(comps[0], Value::length(0.007), "x should be 7mm");
+                        assert_eq!(comps[1], Value::length(0.0), "y should be 0m");
+                        assert_eq!(comps[2], Value::length(0.0), "z should be 0m");
+                    }
+                    other => panic!("expected Point, got {:?}", other),
+                }
+                match *normal {
+                    Value::Vector(ref comps) => {
+                        assert_eq!(comps[0], Value::Real(1.0));
+                        assert_eq!(comps[1], Value::Real(0.0));
+                        assert_eq!(comps[2], Value::Real(0.0));
+                    }
+                    other => panic!("expected Vector, got {:?}", other),
+                }
+            }
+            other => panic!("expected Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plane_xz_no_args_returns_undef() {
+        assert!(eval_builtin("plane_xz", &[]).is_undef());
+    }
+
+    #[test]
+    fn plane_yz_no_args_returns_undef() {
+        assert!(eval_builtin("plane_yz", &[]).is_undef());
+    }
+
+    #[test]
+    fn plane_xz_nan_returns_undef() {
+        assert!(eval_builtin("plane_xz", &[Value::Real(f64::NAN)]).is_undef());
+    }
+
+    #[test]
+    fn plane_yz_two_args_returns_undef() {
+        assert!(eval_builtin("plane_yz", &[Value::length(0.0), Value::length(0.0)]).is_undef());
+    }
+
+    // ── plane_xy tests (step-1) ───────────────────────────────────────────────
+
+    #[test]
+    fn plane_xy_with_length_offset_returns_plane() {
+        // plane_xy(5mm) → Plane with origin=(0m,0m,5mm) and normal=(0,0,1)
+        let offset = Value::length(0.005); // 5mm in SI (meters)
+        let result = eval_builtin("plane_xy", &[offset]);
+        assert!(
+            matches!(result, Value::Plane { .. }),
+            "expected Value::Plane, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn plane_xy_with_length_offset_correct_origin() {
+        let offset = Value::length(0.005); // 5mm
+        let result = eval_builtin("plane_xy", &[offset]);
+        match result {
+            Value::Plane { origin, .. } => {
+                match *origin {
+                    Value::Point(ref comps) => {
+                        assert_eq!(comps.len(), 3, "origin should be 3D");
+                        // x=0m, y=0m, z=5mm
+                        assert_eq!(comps[0], Value::length(0.0), "origin.x should be 0m");
+                        assert_eq!(comps[1], Value::length(0.0), "origin.y should be 0m");
+                        assert_eq!(comps[2], Value::length(0.005), "origin.z should be 5mm");
+                    }
+                    other => panic!("origin should be Point, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plane_xy_with_length_offset_correct_normal() {
+        let offset = Value::length(0.005);
+        let result = eval_builtin("plane_xy", &[offset]);
+        match result {
+            Value::Plane { normal, .. } => match *normal {
+                Value::Vector(ref comps) => {
+                    assert_eq!(comps.len(), 3, "normal should be 3D");
+                    assert_eq!(comps[0], Value::Real(0.0), "normal.x should be 0");
+                    assert_eq!(comps[1], Value::Real(0.0), "normal.y should be 0");
+                    assert_eq!(comps[2], Value::Real(1.0), "normal.z should be 1");
+                }
+                other => panic!("normal should be Vector, got {:?}", other),
+            },
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plane_xy_no_args_returns_undef() {
+        assert!(eval_builtin("plane_xy", &[]).is_undef());
+    }
+
+    #[test]
+    fn plane_xy_bool_arg_returns_undef() {
+        assert!(eval_builtin("plane_xy", &[Value::Bool(true)]).is_undef());
+    }
+
+    #[test]
+    fn plane_xy_two_args_returns_undef() {
+        assert!(eval_builtin("plane_xy", &[Value::length(0.0), Value::length(0.0)]).is_undef());
+    }
+
+    #[test]
+    fn plane_xy_nan_returns_undef() {
+        assert!(eval_builtin("plane_xy", &[Value::Real(f64::NAN)]).is_undef());
+    }
+
+    #[test]
+    fn plane_xy_inf_returns_undef() {
+        assert!(eval_builtin("plane_xy", &[Value::Real(f64::INFINITY)]).is_undef());
+    }
+
+    #[test]
+    fn plane_xy_real_zero_produces_dimensionless_origin() {
+        // plane_xy(Real(0.0)) → dimensionless origin with Real(0.0) components
+        let result = eval_builtin("plane_xy", &[Value::Real(0.0)]);
+        match result {
+            Value::Plane { origin, .. } => match *origin {
+                Value::Point(ref comps) => {
+                    assert_eq!(comps.len(), 3);
+                    assert_eq!(comps[0], Value::Real(0.0));
+                    assert_eq!(comps[1], Value::Real(0.0));
+                    assert_eq!(comps[2], Value::Real(0.0));
+                }
+                other => panic!("expected Point, got {:?}", other),
+            },
+            other => panic!("expected Value::Plane, got {:?}", other),
+        }
+    }
+
+    // ── step-7: frame_to_frame tests ─────────────────────────────────────────
+
+    /// Helper: build a Frame with given origin (LENGTH) and orientation.
+    fn make_frame(ox: f64, oy: f64, oz: f64, orientation: Value) -> Value {
+        Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(ox),
+                Value::length(oy),
+                Value::length(oz),
+            ])),
+            basis: Box::new(orientation),
+        }
+    }
+
+    /// Helper: 90-degree Z rotation quaternion.
+    fn make_rot90z() -> Value {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        Value::Orientation {
+            w: s,
+            x: 0.0,
+            y: 0.0,
+            z: s,
+        }
+    }
+
+    /// frame_to_frame(F, F) should return an identity transform.
+    #[test]
+    fn frame_to_frame_same_gives_identity() {
+        let f = make_frame(5.0, 3.0, 1.0, make_identity_orientation());
+        let result = eval_builtin("frame_to_frame", &[f.clone(), f]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                // Identity rotation
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
+                // Zero translation
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame(origin_frame, translated_frame) gives pure translation.
+    #[test]
+    fn frame_to_frame_translated() {
+        let from = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(5.0, 0.0, 0.0, make_identity_orientation());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                // Identity rotation
+                assert_orientation_approx!(*rotation, 1.0, 0.0, 0.0, 0.0, sign_insensitive = 1e-10);
+                // Translation = (5,0,0)
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!((tx - 5.0).abs() < 1e-10, "tx = {tx}, expected 5");
+                        assert!(ty.abs() < 1e-10, "ty = {ty}, expected 0");
+                        assert!(tz.abs() < 1e-10, "tz = {tz}, expected 0");
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame(identity_frame, rotated_frame) gives pure rotation.
+    #[test]
+    fn frame_to_frame_rotated() {
+        let from = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                // 90Z rotation
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-10);
+                // Zero translation
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        for (i, item) in items.iter().enumerate() {
+                            let v = item.as_f64().unwrap();
+                            assert!(v.abs() < 1e-10, "translation[{i}] = {v}, expected ~0");
+                        }
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// frame_to_frame with both rotation and translation.
+    /// From: origin=(1,0,0), identity rotation
+    /// To: origin=(0,0,0), 90Z rotation
+    /// R = R_to * conj(R_from) = 90Z * identity = 90Z
+    /// t = origin_to - R * origin_from = (0,0,0) - 90Z*(1,0,0) = (0,0,0) - (0,1,0) = (0,-1,0)
+    #[test]
+    fn frame_to_frame_general() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = make_frame(0.0, 0.0, 0.0, make_rot90z());
+        let result = eval_builtin("frame_to_frame", &[from, to]);
+        match result {
+            Value::Transform {
+                rotation,
+                translation,
+            } => {
+                let s = std::f64::consts::FRAC_1_SQRT_2;
+                assert_orientation_approx!(*rotation, s, 0.0, 0.0, s, sign_insensitive = 1e-10);
+                match *translation {
+                    Value::Vector(ref items) if items.len() == 3 => {
+                        let tx = items[0].as_f64().unwrap();
+                        let ty = items[1].as_f64().unwrap();
+                        let tz = items[2].as_f64().unwrap();
+                        assert!(tx.abs() < 1e-10, "tx = {tx}, expected 0");
+                        assert!((ty + 1.0).abs() < 1e-10, "ty = {ty}, expected -1");
+                        assert!(tz.abs() < 1e-10, "tz = {tz}, expected 0");
+                    }
+                    ref other => panic!("expected Vector3, got {:?}", other),
+                }
+            }
+            other => panic!("expected Transform, got {:?}", other),
+        }
+    }
+
+    /// Wrong argument count or non-Frame args return Undef.
+    #[test]
+    fn frame_to_frame_wrong_args_undef() {
+        // No args
+        assert!(eval_builtin("frame_to_frame", &[]).is_undef());
+        // One arg
+        let f = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(eval_builtin("frame_to_frame", std::slice::from_ref(&f)).is_undef());
+        // Three args
+        assert!(eval_builtin("frame_to_frame", &[f.clone(), f.clone(), f.clone()]).is_undef());
+        // Non-Frame args
+        assert!(eval_builtin("frame_to_frame", &[Value::Real(1.0), f.clone()]).is_undef());
+        assert!(eval_builtin("frame_to_frame", &[f, Value::Real(1.0)]).is_undef());
+    }
+
+    /// frame_to_frame with NaN in origin_from x-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_from_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_from should return Undef"
+        );
+    }
+
+    /// frame_to_frame with NaN in origin_to y-component should return Undef.
+    #[test]
+    fn frame_to_frame_nan_origin_to_returns_undef() {
+        let from = make_frame(1.0, 0.0, 0.0, make_identity_orientation());
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::Scalar {
+                    si_value: f64::NAN,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "NaN in origin_to should return Undef"
+        );
+    }
+
+    /// frame_to_frame with mixed-dimension origin (length, angle, length) should return Undef.
+    #[test]
+    fn frame_to_frame_mixed_dimension_origin_returns_undef() {
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::angle(0.0), // dimension mismatch within same origin
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        let to = make_frame(0.0, 0.0, 0.0, make_identity_orientation());
+        assert!(
+            eval_builtin("frame_to_frame", &[from, to]).is_undef(),
+            "mixed-dimension origin should return Undef"
+        );
+    }
+
+    /// frame_to_frame with mismatched origin dimensions (LENGTH vs ANGLE) returns Undef.
+    #[test]
+    fn frame_to_frame_mismatched_origin_dimensions_undef() {
+        // from-frame: LENGTH-dimensioned origin
+        let from = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(1.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        // to-frame: ANGLE-dimensioned origin
+        let to = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::angle(1.0),
+                Value::angle(0.0),
+                Value::angle(0.0),
+            ])),
+            basis: Box::new(make_identity_orientation()),
+        };
+        assert!(eval_builtin("frame_to_frame", &[from, to]).is_undef());
+    }
+
+}

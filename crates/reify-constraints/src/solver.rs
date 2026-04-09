@@ -912,11 +912,11 @@ impl ConstraintSolver for DimensionalSolver {
 mod tests {
     use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
 
-    // ---- solutions_agree test helpers ----
+    // ---- shared solver test helpers ----
 
     /// Returns a canonical single-param tuple: (`ValueCellId::new("Part","x")`, one-element
     /// `Vec<AutoParam>` with `Type::length()`, bounds `(0.0, 1.0)`, `free: false`).
-    /// Used by all `solutions_agree_*` tests that work with one parameter.
+    /// Used by `solutions_agree_*` and `build_perturbation_anchors_*` tests that work with one parameter.
     fn test_param() -> (reify_types::ValueCellId, Vec<reify_types::AutoParam>) {
         use reify_types::{AutoParam, Type, ValueCellId};
         let id = ValueCellId::new("Part", "x");
@@ -930,8 +930,8 @@ mod tests {
     }
 
     /// Returns a `Value::Scalar` with the given `si_value` and `DimensionVector::LENGTH`.
-    /// All `solutions_agree_*` tests use `Type::length()`, so a fixed-dimension helper
-    /// avoids repeating the dimension on every call site.
+    /// `solutions_agree_*` and `build_perturbation_anchors_*` tests use `Type::length()`, so a
+    /// fixed-dimension helper avoids repeating the dimension on every call site.
     fn scalar(v: f64) -> reify_types::Value {
         use reify_types::{DimensionVector, Value};
         Value::Scalar {
@@ -940,7 +940,7 @@ mod tests {
         }
     }
 
-    // ---- end solutions_agree test helpers ----
+    // ---- end shared solver test helpers ----
 
     // ---- verify_uniqueness test helpers ----
 
@@ -1157,7 +1157,7 @@ mod tests {
 
     // ---- verify_uniqueness integration test ----
     // None-branch data logic is tested in isolation by the build_perturbation_anchors
-    // unit tests above. This single end-to-end test verifies that warn emission actually
+    // unit tests below. This single end-to-end test verifies that warn emission actually
     // fires through verify_uniqueness when params are missing.
 
     #[test]
@@ -1274,6 +1274,81 @@ mod tests {
         );
     }
 
+    /// Proves that `verify_uniqueness` takes the early-return path when a param
+    /// value is non-numeric (e.g. `Value::Undef`) — i.e. it does NOT call `solve_core`.
+    ///
+    /// Observable contract:
+    /// - returns false (no change)
+    /// - exactly 1 WARN event (the aggregated missing-or-non-numeric early-return warn)
+    /// - exactly 0 DEBUG events from `reify_constraints` target
+    ///
+    /// The DEBUG-count assertion is the key TDD signal: if the early-return is
+    /// absent, at least the `"verifying uniqueness via perturbation"` debug event
+    /// fires (DEBUG ≥ 1), plus additional debug events from inside `solve_core`'s
+    /// no-constraint / no-objective early-return path (DEBUG ≥ 2).  Zero DEBUG
+    /// events proves both were skipped.
+    #[test]
+    fn verify_uniqueness_skips_solve_core_when_param_non_numeric() {
+        use std::collections::HashMap;
+        use std::sync::atomic::Ordering;
+
+        use reify_test_support::CountingSubscriberBuilder;
+        use reify_types::{AutoParam, Type, Value, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Value::Undef: as_f64() returns None → early-return path should fire
+        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
+        solved_values.insert(param_id.clone(), Value::Undef);
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
+        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
+        });
+
+        assert!(
+            !unique,
+            "verify_uniqueness must return false when param value is non-numeric"
+        );
+
+        let warn_n = warn_count.load(Ordering::Acquire);
+        assert_eq!(
+            warn_n, 1,
+            "expected exactly 1 WARN (the aggregated missing-or-non-numeric early-return warn); \
+             got {warn_n}"
+        );
+
+        let debug_n = debug_count.load(Ordering::Acquire);
+        assert_eq!(
+            debug_n, 0,
+            "expected 0 DEBUG events (early-return skips both the \
+             'verifying uniqueness via perturbation' debug and all solve_core debug events); \
+             got {debug_n}"
+        );
+    }
+
     // ---- build_perturbation_anchors unit tests ----
 
     #[test]
@@ -1289,6 +1364,9 @@ mod tests {
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
         assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        // Empty `missing` means verify_uniqueness will not emit a WARN for this input.
+        // The explicit tracing-silence integration test was removed during the Task 1250
+        // refactor; coverage of the no-warn path is now implicit via this assertion.
         assert_eq!(perturbed.len(), 1);
         // solution 0.25 < mid 0.5 → lo + 0.9*(hi-lo) = 0.0 + 0.9*1.0 = 0.9
         assert!(

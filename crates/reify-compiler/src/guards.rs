@@ -394,8 +394,33 @@ pub(crate) fn compile_guarded_members(
                     constraint_index,
                 );
             }
+            reify_syntax::MemberDecl::Sub(s) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sub declarations in guarded blocks are not yet supported",
+                    )
+                    .with_label(DiagnosticLabel::new(s.span, "not yet supported")),
+                );
+            }
+            reify_syntax::MemberDecl::Minimize(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "minimize declarations in guarded blocks are not yet supported",
+                    )
+                    .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
+                );
+            }
+            reify_syntax::MemberDecl::Maximize(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "maximize declarations in guarded blocks are not yet supported",
+                    )
+                    .with_label(DiagnosticLabel::new(m.span, "not yet supported")),
+                );
+            }
             _ => {
-                // Sub, Minimize, Maximize within guarded blocks: not yet handled
+                // Port, Connect, Chain, AssociatedType, MetaBlock, ConstraintInst
+                // within guarded blocks: not yet handled
             }
         }
     }

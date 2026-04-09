@@ -232,3 +232,122 @@ purpose ok(subject : Structure) {
         errors
     );
 }
+
+// ── Step 1 (task-416): purpose constraint with user-declared unit ─────────────
+
+#[test]
+fn purpose_constraint_with_user_declared_unit() {
+    // 'thou' (thousandth of an inch) is NOT in the hardcoded unit_to_scalar
+    // table, so resolving it requires the unit registry to be threaded into
+    // the purpose scope via scope.set_unit_registry().  Without the fix in
+    // traits.rs (compile_purpose calls scope.set_unit_registry()), 'thou'
+    // would silently fail to resolve and emit an "unknown unit" error.
+    let source = r#"
+unit thou : Length = 0.0000254
+
+structure Part {
+    param diameter : Length = 500thou
+}
+
+purpose machining_tolerance(subject : Structure) {
+    constraint 1thou > 0mm
+}
+"#;
+
+    let module = compile_module(source);
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+}
+
+// ── Step 3 (task-416): unknown unit in purpose constraint emits error ─────────
+
+#[test]
+fn purpose_constraint_with_unknown_unit_emits_error() {
+    // A unit name that is neither in the hardcoded unit_to_scalar table nor
+    // declared in the module should emit a Severity::Error diagnostic
+    // containing "unknown unit".
+    let source = r#"
+structure Part {
+    param x : Length = 1mm
+}
+
+purpose check(subject : Structure) {
+    constraint 1parsec > 0mm
+}
+"#;
+
+    let module = compile_module_with_diagnostics(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected an error for unknown unit 'parsec', but got none"
+    );
+    let has_unknown_unit = errors
+        .iter()
+        .any(|d| d.message.contains("unknown unit"));
+    assert!(
+        has_unknown_unit,
+        "expected 'unknown unit' in error message, got: {:?}",
+        errors
+    );
+}
+
+// ── Step 5 (task-416): affine user-declared unit in purpose applies offset ────
+
+#[test]
+fn purpose_constraint_with_affine_unit_applies_offset() {
+    // Declares affine unit degC (offset 273.15) and uses '100degC' in a
+    // purpose constraint.  The compiled literal must have si_value ≈ 373.15
+    // (100 × 1 + 273.15), proving the offset IS applied via
+    // lookup_unit_in_registry() in the purpose scope.
+    let source = r#"
+unit degC : Temperature = 1 offset 273.15
+
+structure Furnace {
+    param setpoint : Temperature = 25degC
+}
+
+purpose hot_enough(subject : Structure) {
+    constraint 100degC > 200degC
+}
+"#;
+
+    let module = compile_module(source);
+    assert_eq!(
+        module.compiled_purposes.len(),
+        1,
+        "expected 1 compiled purpose"
+    );
+    let purpose = &module.compiled_purposes[0];
+    assert_eq!(purpose.constraints.len(), 1, "expected 1 constraint");
+    let constraint = &purpose.constraints[0];
+
+    // The constraint is: 100degC > 200degC
+    // Left side should be Literal(Scalar { si_value ≈ 373.15 }).
+    if let CompiledExprKind::BinOp { left, .. } = &constraint.expr.kind {
+        if let CompiledExprKind::Literal(Value::Scalar { si_value, .. }) = &left.kind {
+            assert!(
+                (si_value - 373.15).abs() < 1e-9,
+                "100degC should compile to 373.15K, got {}",
+                si_value
+            );
+        } else {
+            panic!(
+                "expected Scalar literal for '100degC' left side, got {:?}",
+                left.kind
+            );
+        }
+    } else {
+        panic!(
+            "expected BinOp constraint expression, got {:?}",
+            constraint.expr.kind
+        );
+    }
+}
