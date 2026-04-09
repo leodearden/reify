@@ -26849,6 +26849,9 @@
         "metadata": {
           "modules": [
             "tests/infra"
+          ],
+          "files": [
+            "tests/infra/test_run_all.sh"
           ]
         }
       },
@@ -26864,7 +26867,10 @@
         "subtasks": [],
         "metadata": {
           "modules": [
-            "crates/reify-lsp"
+            "crates/reify-lsp/tests"
+          ],
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         },
         "updatedAt": "2026-04-09T10:34:59.000Z"
@@ -26911,9 +26917,12 @@
         "updatedAt": "2026-04-09T08:22:02.039Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/termination.rs",
+            "crates/reify-compiler/tests/termination_check_tests.rs"
           ]
         }
       },
