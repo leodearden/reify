@@ -20750,8 +20750,7 @@
         "updatedAt": "2026-04-04T19:07:18.707Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-test-support"
+            "crates/reify-compiler"
           ],
           "memory_hints": {
             "entities": [],
@@ -20759,7 +20758,10 @@
               "SCC detect_recursive_structures duplicate template name error diagnostic span labels",
               "reify-compiler scc duplicate name early return"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/scc.rs"
+          ]
         }
       },
       {
@@ -20776,6 +20778,9 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/scc.rs"
           ]
         }
       },
@@ -20792,7 +20797,10 @@
         "updatedAt": "2026-04-04T19:05:23.436Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
           ]
         }
       },
