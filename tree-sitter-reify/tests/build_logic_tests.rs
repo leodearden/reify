@@ -828,6 +828,59 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     result
 }
 
+/// Strips line-level comments from a single source line and returns the code portion.
+///
+/// Algorithm (line-level only — multi-line `/* */` tracking is not supported):
+/// 1. Iteratively find `/*` … `*/` pairs on this line and remove them.
+///    Unclosed `/*` (no matching `*/` on the same line) is left unchanged.
+/// 2. Split on `//` and take the first segment (strips trailing `//` comments).
+/// 3. Return the result.
+fn strip_line_comments(line: &str) -> String {
+    // Step 1: remove all complete /* ... */ pairs on this line.
+    let mut s = line.to_string();
+    loop {
+        if let Some(open) = s.find("/*") {
+            // Search for */ starting after the opening /*
+            if let Some(rel_close) = s[open + 2..].find("*/") {
+                let close_end = open + 2 + rel_close + 2; // byte index past "*/"
+                s.replace_range(open..close_end, "");
+            } else {
+                break; // unclosed block comment on this line — leave unchanged
+            }
+        } else {
+            break;
+        }
+    }
+    // Step 2: strip trailing // comment.
+    if let Some(idx) = s.find("//") {
+        s.truncate(idx);
+    }
+    s
+}
+
+/// Scans `source` for lines that contain a bare `"build.rs"` or `"./build.rs"` string
+/// literal (with literal double-quote characters) in non-comment code, and returns the
+/// matching lines as `(1-based line number, original line)` pairs.
+///
+/// Each line is first passed through [`strip_line_comments`] so that the patterns inside
+/// `//` or `/* */` comments are ignored.  Only the code portion is checked.
+///
+/// **Self-avoidance**: pattern strings defined in this file use escaped quotes
+/// (`\"build.rs\"`) in Rust string literals, which in the raw source text appear as
+/// the two-character sequence `\"` — that does NOT match the unescaped `"` used as the
+/// search boundary, so this helper's own source does not trigger a false positive.
+fn find_bare_build_rs_violations(source: &str) -> Vec<(usize, &str)> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_i, line)| {
+            let code = strip_line_comments(line);
+            code.contains("\"build.rs\"") || code.contains("\"./build.rs\"")
+        })
+        .map(|(i, line)| (i + 1, line))
+        .collect()
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: every #[cfg(unix)] test function that
@@ -1310,38 +1363,110 @@ fn test_drop_logs_error_check_is_form_agnostic() {
 }
 
 #[test]
-fn test_build_rs_reads_use_manifest_dir() {
-    // Meta-test / regression guard: each source-inspection test that reads build.rs
-    // must use the `BUILD_RS` constant rather than the bare relative path
-    // `read_to_string("build.rs")`.
-    // A bare relative path is fragile — it depends on the working directory from which
-    // `cargo test` is invoked, causing failures when tests are run from outside the
-    // crate root (e.g., workspace-level `cargo test -p tree-sitter-reify`).
+fn test_strip_line_comments() {
+    // Full-line `// comment` → empty string (split on `//` yields "")
+    assert_eq!(strip_line_comments("// this is a comment"), "");
+
+    // Code with trailing `// comment` → code portion only (with trailing space)
+    assert_eq!(
+        strip_line_comments("    let x = 1; // comment"),
+        "    let x = 1; "
+    );
+
+    // Code with closed `/* inline comment */` → comment block removed
+    assert_eq!(strip_line_comments("a /* x */ b"), "a  b");
+
+    // Unclosed `/*` with no matching `*/` on same line → left unchanged (line-level only)
+    assert_eq!(strip_line_comments("/* unclosed"), "/* unclosed");
+
+    // Line with no comments → returned unchanged
+    assert_eq!(strip_line_comments("let x = 1;"), "let x = 1;");
+
+    // Code before and after `/* comment */` are both preserved
+    assert_eq!(strip_line_comments("foo(/* polling */ bar)"), "foo( bar)");
+}
+
+#[test]
+fn test_find_bare_build_rs_violations() {
+    // Helpers that verify detection and non-detection.
+    fn detected(line: &str) -> bool {
+        !find_bare_build_rs_violations(line).is_empty()
+    }
+
+    // ── Should be detected ────────────────────────────────────────────────
+    // Use escaped quotes in these string literals so that the raw source text
+    // contains \"build.rs\" (backslash + quote) rather than unescaped "build.rs",
+    // preventing test_no_bare_relative_build_rs_reads from flagging this test body.
+    // The runtime *value* of each string still has unescaped quotes, so the helper
+    // correctly detects them.
     //
-    // BUILD_RS resolves to an absolute path via CARGO_MANIFEST_DIR at compile time,
-    // so it is safe regardless of invocation directory.
+    // exact read_to_string call
+    assert!(
+        detected("read_to_string(\"build.rs\")"),
+        "exact call should be detected"
+    );
+    // whitespace inside parentheses
+    assert!(
+        detected("read_to_string( \"build.rs\" )"),
+        "whitespace variant should be detected"
+    );
+    // relative path prefix
+    assert!(
+        detected("read_to_string(\"./build.rs\")"),
+        "relative path variant should be detected"
+    );
+    // different function, same path
+    assert!(detected("File::open(\"build.rs\")"), "File::open variant should be detected");
+
+    // ── Should NOT be detected ─────────────────────────────────────────────
+    // uses a named constant (no string literal)
+    assert!(!detected("read_to_string(BUILD_RS)"), "constant usage must not be detected");
+    // full-line // comment
+    assert!(
+        !detected("// read_to_string(\"build.rs\")"),
+        "full-line // comment must not be detected"
+    );
+    // trailing // comment after code
+    assert!(
+        !detected("let x = 0; // read_to_string(\"build.rs\")"),
+        "inline // comment must not be detected"
+    );
+    // block comment containing the pattern
+    assert!(
+        !detected("/* read_to_string(\"build.rs\") */"),
+        "/* */ block comment must not be detected"
+    );
+    // self-avoidance: escaped quotes in string literal definition.
+    // The runtime value of this string is: let p = "\"build.rs\"";
+    // (backslash + quote chars). find_bare_build_rs_violations checks for an
+    // unescaped " immediately before build.rs, which is absent here.
+    let self_reference = r#"let p = "\"build.rs\"";"#;
+    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+}
+
+#[test]
+fn test_no_bare_relative_build_rs_reads() {
+    // Source-level regression guard: this file must not contain any bare
+    // "build.rs" or "./build.rs" string literals in non-comment code. Every
+    // source-inspection test that reads build.rs must use the `BUILD_RS`
+    // constant (resolved at compile time via CARGO_MANIFEST_DIR) rather than a
+    // fragile relative path.
     //
-    // Note: this meta-test's own source references use escaped quotes
-    // (\"build.rs\") in the literal pattern definition below, so it does not
-    // self-match when scanning for the unescaped bare pattern.
+    // Detection uses find_bare_build_rs_violations, which strips `//` and
+    // `/* */` comments before scanning each line — catching inline comments
+    // that the old full-line-only filter missed.
+    //
+    // Note: pattern strings in this file use escaped quotes (\"build.rs\") in
+    // Rust string literals, so the raw source text contains \" rather than an
+    // unescaped ", and the helper finds no self-match.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
-    let bare_pattern = "read_to_string(\"build.rs\")";
-
-    let violations: Vec<(usize, &str)> = source
-        .lines()
-        .enumerate()
-        .filter(|(_i, line)| {
-            let trimmed = line.trim();
-            !trimmed.starts_with("//") && line.contains(bare_pattern)
-        })
-        .map(|(i, line)| (i + 1, line))
-        .collect();
+    let violations = find_bare_build_rs_violations(&source);
 
     assert!(
         violations.is_empty(),
-        "Found {} bare read_to_string(\"build.rs\") call(s) on non-comment lines. \
+        "Found {} bare \"build.rs\" or \"./build.rs\" literal(s) in non-comment code. \
          Use the BUILD_RS constant instead (defined via CARGO_MANIFEST_DIR). \
          Violations:\n{}",
         violations.len(),
