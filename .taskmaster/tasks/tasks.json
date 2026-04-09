@@ -28885,6 +28885,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1400,
+        "title": "Pin expected-panic prefix on warn_capture_assert_any_message_equals partial-substring test",
+        "description": "The `warn_capture_assert_any_message_equals_panics_on_partial_substring` test uses a bare `#[should_panic]`, so any unrelated panic (mutex poisoning, subscriber panic-on-emit, format overflow) would silently keep it green. Pin the expected prefix.",
+        "details": "Location: crates/reify-test-support/src/tracing_support.rs:1579-1593 (`warn_capture_assert_any_message_equals_panics_on_partial_substring`).\n\nCurrent:\n```rust\n#[test]\n#[should_panic]\nfn warn_capture_assert_any_message_equals_panics_on_partial_substring() {\n    ...\n    capture.assert_any_message_equals(\"lock poisoned, recovering\");\n}\n```\n\nFix: Change to\n```rust\n#[test]\n#[should_panic(expected = \"no WARN message equaled\")]\nfn warn_capture_assert_any_message_equals_panics_on_partial_substring() {\n    ...\n}\n```\nmatching the sibling test `warn_capture_assert_any_message_equals_panics_on_missing` at line 1559-1571. This ensures the panic originates from the strict-equality check, not from an unrelated failure.\n\nVerify: `cd /home/leo/src/reify && cargo test -p reify-test-support warn_capture_assert_any_message_equals_panics_on_partial_substring -- --exact`\n\nDerived from Task 1350 reviewer suggestion #3 (test_precision), reviewer_comprehensive.\n\nmemory_hints:\n  search: \"WarnCapture assert_any_message_equals should_panic partial substring\"\n  entities: [\"WarnCapture\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28897,7 +28908,7 @@
       ],
       "created": "2026-04-09T22:28:33.978Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T22:28:51.176Z"
+      "updated": "2026-04-09T22:28:58.301Z"
     }
   }
 }
