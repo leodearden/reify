@@ -129,6 +129,29 @@ fn test_command_on_mixed_file_aligns_labels() {
     );
 }
 
+// S1: violated constraint details appear nested under FAIL line
+#[test]
+fn test_command_on_failing_file_shows_violated_constraint_details() {
+    let (status, stdout, stderr) = run_test(&common::fixture_path("test_one_fail.ri"));
+    let _ = (status, stderr); // exit code already covered by another test
+
+    // (a) sanity: FAIL line for TestNegative is present
+    assert!(
+        stdout.contains("FAIL") && stdout.contains("TestNegative"),
+        "stdout should show the FAIL line for TestNegative, got: {stdout}"
+    );
+    // (b) "    VIOLATED " with 4-space indent appears after the FAIL line
+    assert!(
+        stdout.contains("    VIOLATED "),
+        "stdout should contain nested '    VIOLATED ' line, got: {stdout}"
+    );
+    // (c) unlabeled constraint falls back to ConstraintNodeId display
+    assert!(
+        stdout.contains("TestNegative#constraint"),
+        "stdout should contain the id fallback 'TestNegative#constraint', got: {stdout}"
+    );
+}
+
 // Step 11: no-tests file exits success (vacuously passing)
 #[test]
 fn test_command_on_no_tests_file_exits_success() {
