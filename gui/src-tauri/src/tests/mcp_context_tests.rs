@@ -525,7 +525,7 @@ fn get_diagnostics_clean_source_returns_empty() {
     let ctx = make_tauri_context();
     let diags = ctx
         .get_diagnostics()
-        .expect("get_diagnostics should not fail for a healthy lock");
+        .expect("get_diagnostics should succeed for a clean source");
 
     // bracket_source() compiles cleanly → no diagnostics expected
     assert!(
