@@ -25921,15 +25921,16 @@
         "description": "Three small cleanups in `crates/reify-types/src/value.rs` assert_ord_consistent meta-tests (from task 1158 review):\n\n1. **Remove `test_assert_ord_consistent_equal_symmetric`** (lines ~2604-2616): Redundant with `test_assert_ord_consistent_equal` — both call `assert_ord_consistent(&Value::Int(5), &Value::Int(5), true)`. The direct `a.cmp(&b)`/`b.cmp(&a)` assertions duplicate what the strengthened helper already checks. The stale \"after step-2\" comment is also resolved by deletion.\n\n2. **Add Real edge-case pairs to meta-tests** (near line ~2623): Add `assert_ord_consistent` calls for:\n   - `Value::Real(-0.0)` vs `Value::Real(0.0)` with `expect_equal: false` (bit-distinct but IEEE-equal)\n   - `Value::Real(f64::NAN)` vs `Value::Real(f64::NAN)` with `expect_equal: true` (bit-identical, to_bits equality)\n   \n   These exercise the `to_bits()`-based PartialEq path for bare Real variants — currently only covered for Scalar in `value_scalar_bit_identity_neg_zero_and_nan_consistent`.\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\", search \"Real Scalar to_bits neg_zero NaN edge case\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:21:28.527Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:21:28.317Z",
+      "lastModified": "2026-04-09T04:21:28.527Z",
       "taskCount": 1285,
       "completedCount": 952,
       "tags": [
