@@ -734,31 +734,33 @@ mod tests {
     // ── method regression: finite conjugate still works ──────────────────────
 
     #[test]
-    fn conjugate_finite_dimensioned_correct() {
-        // Complex{re:3.0, im:4.0, LENGTH}.conjugate == Complex{re:3.0, im:-4.0, LENGTH}
+    fn conjugate_pure_imaginary_correct() {
+        // Complex{re:0.0, im:5.0, DIMENSIONLESS}.conjugate == Complex{re:0.0, im:-5.0, DIMENSIONLESS}
         // Guards against the pre-guard accidentally rejecting finite values.
-        // Uses a dimensioned (LENGTH) Complex to add coverage beyond the dimensionless
-        // path already tested in tests/complex_eval_tests.rs::method_conjugate.
+        // Uses a pure-imaginary (re=0.0) DIMENSIONLESS input — orthogonal to
+        // tests/complex_eval_tests.rs::method_conjugate which uses (3.0, 4.0, LENGTH).
+        // Exercises: re=0.0 (IEEE-754 sign-of-zero preservation), pure-imaginary
+        // degenerate case, and DIMENSIONLESS (complements the LENGTH case in the sibling test).
         let complex_val = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::LENGTH,
+            re: 0.0,
+            im: 5.0,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
+            lit(complex_val, Type::complex(Type::Real)),
             "conjugate".to_string(),
             vec![],
-            Type::complex(Type::length()),
+            Type::complex(Type::Real),
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Complex { re, im, dimension } => {
-                assert!((re - 3.0).abs() < 1e-12, "expected re=3.0, got {}", re);
-                assert!((im - (-4.0)).abs() < 1e-12, "expected im=-4.0, got {}", im);
-                assert_eq!(dimension, DimensionVector::LENGTH);
+                assert!((re - 0.0).abs() < 1e-12, "expected re=0.0, got {}", re);
+                assert!((im - (-5.0)).abs() < 1e-12, "expected im=-5.0, got {}", im);
+                assert_eq!(dimension, DimensionVector::DIMENSIONLESS);
             }
             other => panic!(
-                "expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}",
+                "expected Complex{{re:0.0, im:-5.0, DIMENSIONLESS}}, got {:?}",
                 other
             ),
         }
