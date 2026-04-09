@@ -26315,7 +26315,12 @@
         "updatedAt": "2026-04-09T03:38:34.835Z",
         "metadata": {
           "modules": [
-            "tests/infra"
+            "tests/infra",
+            "tests"
+          ],
+          "files": [
+            "tests/infra/test_test_helpers.sh",
+            "tests/sync_comments_test.sh"
           ]
         }
       },
@@ -26333,6 +26338,9 @@
         "metadata": {
           "modules": [
             "tests/infra"
+          ],
+          "files": [
+            "tests/infra/test_test_helpers.sh"
           ]
         }
       },
