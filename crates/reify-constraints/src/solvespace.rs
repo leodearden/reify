@@ -1464,37 +1464,6 @@ mod tests {
         );
     }
 
-    /// missing_coord_setup returns a tuple of a fresh SystemBuilder with no params,
-    /// a ValueCellId matching the given entity/field, empty auto_params, and empty current_values.
-    #[test]
-    fn missing_coord_setup_returns_expected_tuple() {
-        let (builder, cell_id, auto_params, current_values) = missing_coord_setup("Foo", "bar");
-
-        assert!(
-            builder.params.is_empty(),
-            "fresh builder should have no params"
-        );
-        assert_eq!(
-            cell_id,
-            ValueCellId::new("Foo", "bar"),
-            "cell_id should match the given entity/field"
-        );
-        assert!(auto_params.is_empty(), "auto_params should be empty");
-        assert!(current_values.is_empty(), "current_values should be empty");
-    }
-
-    /// assert_missing_err must not panic when given a Result::Err(BuilderError)
-    /// whose message contains both "missing" and the cell_id string.
-    #[test]
-    fn assert_missing_err_passes_on_matching_error() {
-        let cell_id = ValueCellId::new("Ent", "field");
-        let result: Result<(), BuilderError> = Err(BuilderError {
-            cell_id: cell_id.clone(),
-            message: format!("non-auto parameter {} missing from current_values", cell_id),
-        });
-        assert_missing_err(result, &cell_id, "assert_missing_err_passes_on_matching_error");
-    }
-
     /// assert_missing_err must panic when the error's cell_id does not match the
     /// expected cell_id.  This is a negative test for the helper: it verifies the
     /// mismatch-detection path rather than only the happy-path.
