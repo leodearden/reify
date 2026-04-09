@@ -17,6 +17,7 @@ echo "=== check-pm-standardization ==="
 
 # ── Preflight: required tools ────────────────────────────────────────
 assert "git is available" command -v git
+assert "running inside a git repository" git -C "$ROOT" rev-parse --is-inside-work-tree
 
 # ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
