@@ -1223,6 +1223,12 @@ fn test_self_read_paths_use_manifest_dir() {
     // automatically checked without updating a hardcoded list.
     // This test excludes itself from the discovered set to avoid circularity
     // (its body contains (THIS_FILE) in both the read call and assertion code).
+    //
+    // The loop below is a genuine cross-property check: find_self_reading_test_fns
+    // uses a broadened criterion (THIS_FILE call-form OR bare relative-path literal),
+    // while the loop asserts only the THIS_FILE criterion. A test discovered via the
+    // bare-path criterion would pass the scanner but fail this assertion, catching
+    // the exact regression the guard is designed to prevent.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
@@ -1234,12 +1240,15 @@ fn test_self_read_paths_use_manifest_dir() {
         .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
         .collect();
 
-    // Sanity-check: the scanner must find at least 3 self-reading tests (the ones
-    // we know about). This catches a broken scanner that silently returns empty.
+    // Sanity-check: the scanner must find at least 5 self-reading tests (the actual
+    // count after self-filter on this codebase is 6). This catches a broken scanner
+    // that silently returns empty or near-empty. The threshold is strictly above the
+    // previous stale value of 3 while leaving slack for one test to be temporarily
+    // removed without immediate breakage.
     assert!(
-        self_reading_fns.len() >= 3,
-        "find_self_reading_test_fns should discover at least 3 self-reading test functions, \
-         but found {:?}",
+        self_reading_fns.len() >= 5,
+        "find_self_reading_test_fns should discover at least 5 self-reading test functions \
+         after excluding this meta-test (actual count is ~6); but found {:?}",
         self_reading_fns
     );
 
