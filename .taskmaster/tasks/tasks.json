@@ -26512,7 +26512,10 @@
         "updatedAt": "2026-04-09T03:48:08.108Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/test_runner.rs"
           ]
         }
       },
@@ -26532,6 +26535,10 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/tests_runner.rs",
+            "crates/reify-eval/tests/test_runner.rs"
           ]
         }
       },
@@ -26552,7 +26559,11 @@
             "tests/infra"
           ],
           "parent_escalation": "esc-1174-1043",
-          "parent_task": 1174
+          "parent_task": 1174,
+          "files": [
+            "tests/sync_comments_test.sh",
+            "tests/infra/test_sync_comments_grep.sh"
+          ]
         }
       },
       {
