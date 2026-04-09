@@ -27534,10 +27534,11 @@
         "description": "In scripts/check-pm-standardization.sh Check 2 (lines 31-37): (1) Require exactly 3 pre-dedup grep lines before asserting uniqueness, e.g. require both `[ \"$(grep ... | wc -l | tr -d ' ')\" = '3' ]` AND `[ \"$(grep ... | sort -u | wc -l | tr -d ' ')\" = '1' ]`, so that a file missing the packageManager field entirely causes Check 2 to fail rather than silently pass. (2) Propagate grep's exit code inside the bash -c subshell by adding `set -e` or explicit existence checks before the grep call, so a missing package.json file doesn't produce a false PASS.\n\nMemory hints: search \"check-pm-standardization Check 2 consistency packageManager\" for context on original task 931 changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T17:12:07.532Z"
       },
       {
         "id": "1327",
@@ -27564,7 +27565,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:12:07.250Z",
+      "lastModified": "2026-04-09T17:12:07.533Z",
       "taskCount": 1328,
       "completedCount": 1000,
       "tags": [
