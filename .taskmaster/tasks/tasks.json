@@ -12911,7 +12911,7 @@
         "description": "Replace plain format-string tracing::warn! calls in ConcurrentEvalAdapter lock helpers and into_result() with structured fields for production observability.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs, all 11 tracing::warn! calls (5 helper methods + 6 into_result paths) use plain format strings like `tracing::warn!(\"values RwLock poisoned, recovering: {e}\")`.\n\nReplace with structured fields for better querying in production tracing backends (Jaeger, Datadog, etc.):\n\n```rust\n// Helper methods (5 sites):\ntracing::warn!(lock = \"values\", access = \"read\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"values\", access = \"write\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"snapshot_values\", access = \"read\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"snapshot_values\", access = \"write\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"results\", access = \"exclusive\", error = %e, \"lock poisoned, recovering\");\n\n// into_result() paths (6 sites):\ntracing::warn!(lock = \"values\", path = \"into_inner\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"values\", path = \"shared_fallback\", error = %e, \"lock poisoned, recovering\");\n// ... etc for snapshot_values and results\n```\n\nThis enables operators to filter/alert on specific locks or access patterns.\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12923,7 +12923,8 @@
           "modules": [
             "crates/reify-runtime"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:32:52.824Z"
       },
       {
         "id": "601",
@@ -27456,7 +27457,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:32:52.102Z",
+      "lastModified": "2026-04-09T16:32:52.824Z",
       "taskCount": 1323,
       "completedCount": 996,
       "tags": [
