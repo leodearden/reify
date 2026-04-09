@@ -125,3 +125,82 @@ fn user_unit_overrides_hardcoded_fallback() {
         panic!("w has no default_expr");
     }
 }
+
+// ─── step-5: cross-module pub unit visible via compile_with_prelude ───────────
+
+#[test]
+fn cross_module_pub_unit_visible_via_compile_with_prelude() {
+    // Compile a "library" module that exports `pub unit mil`.
+    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
+    assert!(
+        errors_only(&prelude_module).is_empty(),
+        "prelude errors: {:?}",
+        errors_only(&prelude_module)
+    );
+
+    // User module references `mil` — should resolve from the seeded prelude.
+    let module =
+        compile_with_prelude_helper("structure S { param w : Length = 5mil }", &[prelude_module]);
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S not found");
+    let w_cell = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "w")
+        .expect("w not found");
+    if let Some(expr) = &w_cell.default_expr {
+        if let reify_types::CompiledExprKind::Literal(reify_types::Value::Scalar {
+            si_value, ..
+        }) = &expr.kind
+        {
+            let expected = 5.0 * 0.0000254;
+            assert!(
+                (si_value - expected).abs() < 1e-10,
+                "expected si_value≈{} (5 * 0.0000254), got {}",
+                expected,
+                si_value
+            );
+        } else {
+            panic!("expected scalar literal, got {:?}", expr.kind);
+        }
+    } else {
+        panic!("w has no default_expr");
+    }
+}
+
+// ─── step-7: cross-module private unit NOT visible via compile_with_prelude ───
+
+#[test]
+fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
+    // Compile a module with a PRIVATE unit (no `pub`).
+    let prelude_module = parse_and_compile("unit privmil : Length = 0.0000254");
+    assert!(
+        errors_only(&prelude_module).is_empty(),
+        "prelude errors: {:?}",
+        errors_only(&prelude_module)
+    );
+
+    // User source tries to reference `privmil` — should fail with unknown unit.
+    let module = compile_with_prelude_helper(
+        "structure S { param w : Length = 5privmil }",
+        &[prelude_module],
+    );
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected error for private unit 'privmil' used across module boundary"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("unknown") || d.message.contains("privmil")),
+        "error should mention unknown unit; got: {:?}",
+        errors
+    );
+}
