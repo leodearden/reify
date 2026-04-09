@@ -25293,6 +25293,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1250,
+        "title": "Refactor verify_uniqueness fallback-warn tests to test the None-branch in isolation",
+        "description": "Follow-up from Task 1234's review (reviewer_comprehensive S4, marked explicitly out of scope for the comments-only diff).\n\nThe three `verify_uniqueness_*` tracing tests in `crates/reify-constraints/src/solver.rs` (~lines 1078-1227) all exercise `verify_uniqueness` end-to-end, transitively invoking `solve_core` and `solutions_agree`, just to assert behavior of the local None-branch warn at `verify_uniqueness` lines ~792-799 (`unwrap_or_else(|| { missing.push(...); mid })` followed by the `tracing::warn!(...)` block). This end-to-end coupling is what produced the implicit-coupling problem Task 1234 documented and Task [S1 follow-up] cleaned up.\n\nTwo refactor options to consider:\n(a) Construct a problem whose perturbed solve is provably stable so the implicit coupling becomes intentional/asserted (e.g. a single-param problem with a tight bound that reliably converges).\n(b) Factor the `as_f64()` / mid-fallback / `missing` collection logic out of `verify_uniqueness` into a tiny private helper (e.g. `build_perturbation_anchors` returning `(Vec<f64>, Vec<String>)`) so the missing-collection + warn-emission can be unit-tested in isolation, leaving `verify_uniqueness` as a thin orchestration layer.\n\n`solutions_agree` already has its own dedicated tests, and `verify_uniqueness` is module-private, so both options are open. Option (b) is preferred because it eliminates the coupling rather than working around it.",
+        "details": "memory_hints: search \"verify_uniqueness perturbation None branch fallback warn\", search \"Task 1234 verify_uniqueness review\", get_task \"1234\"\n\nParent: Task 1234. Reviewer: reviewer_comprehensive (S4). Should be sequenced AFTER the S1+S2+S3 cleanup task to avoid merge churn on the same lines.\n\nVerification: cargo test -p reify-constraints verify_uniqueness; ensure no end-to-end coverage is lost (the existing aggregated test at ~line 1230 already covers the multi-missing case).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25305,7 +25316,7 @@
       ],
       "created": "2026-04-09T02:51:50.404Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T02:51:50.413Z"
+      "updated": "2026-04-09T02:52:04.285Z"
     }
   }
 }
