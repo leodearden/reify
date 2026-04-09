@@ -4,6 +4,7 @@ use reify_compiler::{
     CompiledConstraint, CompiledGeometryOp, CompiledGuardedGroup, EntityKind, RealizationDecl,
     SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
 };
+use reify_syntax;
 use reify_types::{
     CompiledExpr, ConstraintNodeId, ContentHash, RealizationNodeId, SourceSpan, Type, TypeParam,
     ValueCellId,
@@ -26,6 +27,7 @@ pub struct TopologyTemplateBuilder {
     meta: std::collections::HashMap<String, String>,
     is_recursive: bool,
     annotations: Vec<reify_types::Annotation>,
+    pragmas: Vec<reify_syntax::Pragma>,
 }
 
 impl TopologyTemplateBuilder {
@@ -46,6 +48,7 @@ impl TopologyTemplateBuilder {
             meta: std::collections::HashMap::new(),
             is_recursive: false,
             annotations: Vec::new(),
+            pragmas: Vec::new(),
         }
     }
 
@@ -351,6 +354,7 @@ impl TopologyTemplateBuilder {
             content_hash,
             is_recursive: self.is_recursive,
             annotations: self.annotations,
+            pragmas: self.pragmas,
         }
     }
 }

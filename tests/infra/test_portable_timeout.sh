@@ -278,18 +278,67 @@ echo ""
 echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 
 # This test verifies that the timer's inner 'sleep 31337' (a distinctive
-# sentinel duration) is fully cleaned up when the command exits before the
-# timeout fires.
+# sentinel duration) is actually spawned and properly cleaned up when the
+# command exits before the timeout fires.
+#
+# Test 16a (positive spawn check): proves the test setup is valid — the timer
+# must actually start its inner 'sleep 31337' before Test 16b's cleanup check
+# is meaningful.  Runs portable_timeout in the background, waits 0.5s, and
+# asserts the sentinel sleep is visible in ps.
+#
+# Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
+# after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
+# command, giving the timer time to spawn its sentinel before cleanup fires.
+# (With 'true', the timer subshell may not have started 'sleep 31337' before
+# the main shell kills it, so the orphan check would pass vacuously.)
 #
 # Subtlety: timer subshells inherit EXIT traps from the calling shell.
-# If POSIX_FALLBACK_SETUP's "rm -rf $rescue_dir" EXIT trap is inherited,
-# it cleans up the rescue dir when the timer subshell is killed, removing
-# 'grep' and 'sleep' from PATH.  Workaround: save absolute paths BEFORE
-# PATH manipulation and use them for the post-timeout orphan check.
+# Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
+
+assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Background portable_timeout with a 2s command so the timer has time
+        # to spawn its inner "sleep 31337" before we check.
+        portable_timeout 31337 sleep 2 &
+        pt_pid=$!
+
+        # Give the timer subshell time to spawn its inner "sleep 31337".
+        "$_abs_sleep" 0.5
+
+        # Capture whether the sentinel is present before cleanup.
+        found=1
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" && found=0 || true
+
+        # Cleanup: kill the background portable_timeout.
+        kill "$pt_pid" 2>/dev/null || true
+        wait "$pt_pid" 2>/dev/null || true
+
+        exit $found
+    '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
     env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
-        # Save absolute paths before PATH is stripped of timeout directories.
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -312,10 +361,10 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         hash -r
         source "$LIB_PORTABLE"
 
-        # Run a fast command under a long timeout (31337s sentinel).
-        # Timer subshell starts "sleep 31337" which must be cleaned up when
-        # the command exits before the timeout fires.
-        portable_timeout 31337 true || true
+        # Run a 0.3s command under a long timeout (31337s sentinel).
+        # Using sleep 0.3 instead of "true" gives the timer time to spawn
+        # its inner "sleep 31337" before the command exits.
+        portable_timeout 31337 "$_abs_sleep" 0.3 || true
 
         # Use saved absolute paths — rescue_dir may be gone if the timer
         # subshell ran its inherited EXIT trap when killed.
@@ -323,15 +372,160 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
     '
 
-# -- Test 17: structural: timer subshell has SIGKILL escalation ---------------
+# -- Test 17: structural: SIGKILL escalation uses PID-reuse-safe process-group kill ----
 echo ""
-echo "--- Test 17: lib_portable.sh timer subshell has SIGKILL escalation ---"
+echo "--- Test 17: lib_portable.sh SIGKILL escalation uses process-group kill ---"
 
-# After the initial SIGTERM to the command, the timer subshell should escalate
-# to SIGKILL (kill -9) if the process is still running after a grace period.
-# Grep for 'kill -9' or 'kill -KILL' in the timer subshell section of lib_portable.sh.
-assert "lib_portable.sh timer subshell contains SIGKILL escalation (kill -9)" \
-    grep -qE 'kill -9[[:space:]]|kill -KILL[[:space:]]' "$LIB_PORTABLE"
+# SIGKILL escalation was re-added to the timer subshell using process-group kill
+# ('kill -9 -- -$cmd_pid') rather than individual PID kill ('kill -9 $cmd_pid').
+# Process-group kill is PID-reuse safe: the SIGKILL fires BEFORE the main shell's
+# wait(2) returns (the main shell is blocked precisely because SIGTERM was ignored),
+# so cmd_pid cannot have been recycled.  The process-group syntax adds a second
+# safety layer: a stale PGID returns ESRCH harmlessly rather than hitting an
+# unrelated process.
+assert "lib_portable.sh SIGKILL escalation uses process-group kill (PID-reuse safe)" \
+    grep -qF 'kill -9 -- -$cmd_pid' "$LIB_PORTABLE"
+
+assert "lib_portable.sh SIGKILL does NOT use individual PID kill (PID-reuse unsafe)" \
+    bash -c '! grep -qE "kill -(9|KILL) [^-]" "$1"' _ "$LIB_PORTABLE"
+
+# -- Test 18: monitor mode (set -m) preserved after POSIX fallback call --------
+echo ""
+echo "--- Test 18: POSIX fallback: monitor mode (set -m) preserved ---"
+
+# If the caller has job control enabled (set -m), portable_timeout must restore
+# it after using set -m internally.  Current code unconditionally runs set +m
+# after launching the timer subshell (lines 98/108), which silently disables
+# the caller's monitor mode.  This test FAILS on unpatched code.
+assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        set -m 2>/dev/null || true
+        portable_timeout 5 true
+        # $- must still contain "m" (monitor mode active).
+        case $- in
+            *m*) ;;
+            *) echo "monitor mode was clobbered by portable_timeout"; exit 1 ;;
+        esac
+    '
+
+# -- Test 19: no-monitor mode (set +m, default) preserved after POSIX fallback -
+echo ""
+echo "--- Test 19: POSIX fallback: no-monitor mode (set +m) preserved ---"
+
+# Symmetric case: when the caller did NOT have job control enabled, portable_timeout
+# must leave it disabled after the call.  This is the default condition and already
+# passes (the bug is only visible when set -m was active), but it provides regression
+# coverage so future patches cannot accidentally enable monitor mode for the caller.
+assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP"
+        set +m 2>/dev/null || true
+        portable_timeout 5 true
+        # $- must NOT contain "m" (monitor mode inactive).
+        case $- in
+            *m*) echo "portable_timeout unexpectedly enabled monitor mode"; exit 1 ;;
+        esac
+    '
+
+# -- Test 20: structural: header documents SIGKILL escalation via process-group kill ----
+echo ""
+echo "--- Test 20: portable_timeout header documents SIGKILL escalation ---"
+
+# The portable_timeout doc comment must describe the SIGTERM-first,
+# SIGKILL-escalation strategy using process-group kill.  The old SIGTERM-only
+# language must be replaced.  This test FAILS until step-6 updates the doc comment.
+assert "portable_timeout header documents SIGKILL escalation via process-group kill" \
+    grep -qiE 'escalat.*SIGKILL.*via.*process.group|SIGKILL.*via.*process.group' "$LIB_PORTABLE"
+
+# -- Test 21: behavioral: SIGKILL escalation — exit 124 and no orphan --------
+echo ""
+echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
+
+# This test exercises the full SIGKILL escalation path in the POSIX fallback:
+#   1. Timer fires after 1s, sends SIGTERM to the command (bash wrapper).
+#   2. Command ignores SIGTERM (trap "" TERM).
+#   3. Timer escalates after 2s grace: sends SIGKILL to the command (bash).
+#   4. Bash wrapper is killed; its child 'sleep 31339' is an orphan candidate.
+#
+# Asserts: (a) exit code is 124 (genuine timeout recognized despite SIGKILL),
+#          (b) no 'sleep 31339' process remains after portable_timeout returns.
+#
+# This test FAILS against unpatched lib_portable.sh:
+#   - Exit code is 137 (128+9) because flag-file check only accepts 143 (SIGTERM).
+#   - 'sleep 31339' survives because kill -9 $cmd_pid kills only the bash
+#     wrapper, not its child sleep.
+# These failures confirm the test catches real SIGKILL path regressions.
+#
+# Sentinel duration 31339 is distinct from 31337 (Test 16) to avoid ps conflicts.
+# Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
+#
+# Regression guard (verified manually, step-5): temporarily commenting out the
+# 'kill -9' line in lib_portable.sh causes Test 21a to FAIL (exit 143 never
+# arrives, process stays alive, flag check never triggers, returns 143 not 124).
+# This confirms the test has discriminating power and is not vacuous.
+
+assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+        _abs_bash=$(command -v bash)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
+        rc=0
+        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || rc=$?
+        [ "$rc" -eq 124 ]
+    '
+
+assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
+    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_grep=$(command -v grep)
+        _abs_bash=$(command -v bash)
+
+        rescue_dir=$(mktemp -d)
+        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+        done
+        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
+        # would clean up the rescue dir on exit, causing false-positive passes.
+        new_path="$rescue_dir"
+        IFS=: read -ra dirs <<< "$PATH"
+        for d in "${dirs[@]}"; do
+            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+                continue
+            fi
+            new_path="${new_path:+$new_path:}$d"
+        done
+        export PATH="$new_path"
+        hash -r
+        source "$LIB_PORTABLE"
+
+        # Command ignores SIGTERM; timer escalates to SIGKILL.
+        portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
+
+        # Brief wait then verify no orphan sleep 31339.
+        "$_abs_sleep" 0.5
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$"
+    '
 
 # -- Summary ------------------------------------------------------------------
 test_summary

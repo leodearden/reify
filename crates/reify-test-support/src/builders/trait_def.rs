@@ -114,6 +114,7 @@ impl TraitDefBuilder {
             defaults: self.defaults,
             content_hash,
             annotations: self.annotations,
+            pragmas: Vec::new(),
         }
     }
 }
@@ -240,6 +241,7 @@ impl CompiledTraitBuilder {
             defaults: self.defaults,
             content_hash,
             annotations: self.annotations,
+            pragmas: Vec::new(),
         }
     }
 }

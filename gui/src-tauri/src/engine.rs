@@ -19,6 +19,27 @@ use crate::types::{
 /// Session wrapping an Engine with its compiled module and source text.
 ///
 /// Provides higher-level operations for the GUI: load, update, set parameter, export.
+///
+/// # Invariant: compiled / module_name / source_map must stay in sync
+///
+/// Whenever `compiled` is `Some`, **all three** of the following must hold:
+///
+/// 1. `module_name` is `Some(name)`.
+/// 2. `source_map` contains the key `module_key(name)` (i.e. `"{name}.ri"`).
+/// 3. The value stored at that key is the source text that produced the current
+///    `CompiledModule`.
+///
+/// Any code path that sets one of these fields without setting the others puts
+/// the session in an inconsistent state and will cause a panic in
+/// `get_diagnostics` or `get_source_location` (via `resolve_source`).
+///
+/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
+/// `update_source` (lines ~189–198) — both defer all field writes until after
+/// parse and compile succeed, so they maintain the invariant atomically.
+///
+/// **Future callers** that acquire partial state through serialization,
+/// snapshotting, or test injection **must** restore all three fields together
+/// before any subsequent `get_*` call.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -26,6 +47,16 @@ pub struct EngineSession {
     file_path: Option<PathBuf>,
     last_check: Option<CheckResult>,
     module_name: Option<String>,
+}
+
+/// Build the normalized source-map key for a module name: `"{name}.ri"`.
+///
+/// This is the single authoritative point for key derivation, replacing three
+/// formerly-identical `format!("{}.ri", ...)` call sites in
+/// `load_from_source`, `update_source`, and `resolve_source`.
+pub(crate) fn module_key(name: &str) -> String {
+    debug_assert!(!name.is_empty(), "module_key called with empty name");
+    format!("{}.ri", name)
 }
 
 impl EngineSession {
@@ -79,7 +110,7 @@ impl EngineSession {
         // Store source with normalized key; clear stale entries
         self.source_map.clear();
         self.source_map
-            .insert(format!("{}.ri", module_name), source.to_string());
+            .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
 
         // Evaluate + check constraints
@@ -178,7 +209,7 @@ impl EngineSession {
         }
 
         // Parse+compile succeeded — now atomically update all state
-        let normalized_key = format!("{}.ri", module_name);
+        let normalized_key = module_key(module_name);
         self.source_map.clear();
         self.source_map.insert(normalized_key, content.to_string());
         self.module_name = Some(module_name.to_string());
@@ -218,35 +249,35 @@ impl EngineSession {
 
     /// Resolve the canonical source key and text for the currently loaded module.
     ///
-    /// Returns `Some((key, source_text))` where `key` is `"{module_name}.ri"` and
-    /// `source_text` is the stored source for that key.  Returns `None` when the
-    /// key is not present in `source_map` (should not happen in practice once a
-    /// module is loaded, but guards against any inconsistency).
+    /// Returns `(key, source_text)` where `key` is `"{module_name}.ri"` (a
+    /// reference into the map's owned key) and `source_text` is the stored
+    /// source for that key (a reference into the map's owned value).  Both
+    /// references borrow from `self` and require no allocation on the return path.
     ///
-    /// # Caller precondition
+    /// # Precondition
     ///
-    /// Callers **must** verify `self.compiled.is_some()` before calling this
-    /// method.  `load_from_source` and `update_source` always set `module_name`
-    /// atomically with `compiled` (they fail before mutating state on parse/compile
-    /// errors), so `compiled.is_some()` implies `module_name.is_some()`.  The
-    /// `None` arm of the `match` below is therefore unreachable under that
-    /// precondition.
-    fn resolve_source(&self) -> Option<(String, &str)> {
-        match self.module_name {
-            Some(ref name) => {
-                let key = format!("{}.ri", name);
-                let src = self.source_map.get(&key)?;
-                Some((key, src.as_str()))
-            }
-            None => {
-                // compiled.is_some() implies module_name.is_some() — this branch
-                // is dead whenever callers gate on compiled being present.
-                unreachable!(
-                    "resolve_source called with module_name = None; \
-                     callers must verify compiled.is_some() first"
-                )
-            }
-        }
+    /// Callers **must** verify `self.compiled.is_some()` before calling.
+    /// `load_from_source` and `update_source` set `module_name`, `source_map`,
+    /// and `compiled` atomically (they fail before mutating state on
+    /// parse/compile errors), so `compiled.is_some()` implies
+    /// `module_name.is_some()` AND `source_map` contains the derived key.
+    /// Violation of this precondition is a programming error caught by
+    /// `debug_assert` in debug/test builds.
+    fn resolve_source(&self) -> (&str, &str) {
+        debug_assert!(
+            self.compiled.is_some(),
+            "resolve_source: compiled must be Some — callers must verify compiled.is_some() first"
+        );
+        let name = self
+            .module_name
+            .as_deref()
+            .expect("resolve_source: module_name is None but compiled is Some — invariant violated");
+        let key = module_key(name);
+        let (k, v) = self
+            .source_map
+            .get_key_value(&key)
+            .expect("resolve_source: source_map missing key — load/update_source invariant violated");
+        (k.as_str(), v.as_str())
     }
 
     /// Look up source location for an entity path (e.g., "Bracket.width").
@@ -262,16 +293,22 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Resolve the source file key and text via the shared helper.
-        // NOTE: Assumes all diagnostic spans refer to the single loaded source
-        // file — file_path from multi-file diagnostics would need threading here.
-        let (file, source) = self.resolve_source()?;
+        // Fallible source_map lookup — returns None when the invariant is broken
+        // (e.g., in tests via break_source_map_for_test) rather than panicking.
+        // resolve_source() is not used here because get_source_location returns
+        // Option and can propagate None gracefully; callers that require the
+        // invariant guarantee (get_diagnostics with non-empty diagnostics) still
+        // use resolve_source() to get a loud panic on violation.
+        let name = self.module_name.as_deref()?;
+        let key = module_key(name);
+        let (file, source) = self.source_map.get_key_value(key.as_str())?;
+        let (file, source) = (file.as_str(), source.as_str());
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
 
         Some(SourceLocationInfo {
-            file_path: file.clone(),
+            file_path: file.to_owned(),
             line: line as u32,
             column: col as u32,
             end_line: end_line as u32,
@@ -294,18 +331,22 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Early-exit when there is nothing to map — avoids calling resolve_source
+        // (which panics on a broken invariant) when no work is needed.
+        if compiled.diagnostics.is_empty() {
+            return Vec::new();
+        }
+
         // Resolve file_path and source text via the shared helper.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
-        let (file_path, source) = match self.resolve_source() {
-            Some(pair) => pair,
-            None => return Vec::new(),
-        };
+        let (file_path, source) = self.resolve_source();
 
         // Build the newline table once (O(M)) so each span lookup is O(log M).
         let line_offsets = build_line_offsets(source);
-        // Clone file_path once; move it into the closure to avoid re-cloning the source String.
-        let file_path = file_path.to_string();
+        // Allocate an owned String once; move it into the closure to avoid
+        // re-allocating per diagnostic.
+        let file_path = file_path.to_owned();
 
         compiled
             .diagnostics
@@ -472,6 +513,37 @@ impl EngineSession {
             .expect("inject_diagnostic_for_test: no compiled module loaded")
             .diagnostics
             .push(diag);
+    }
+
+    /// Thin wrapper around `resolve_source` for use in tests.
+    ///
+    /// Exposes the private method so tests can call it directly and verify
+    /// that the `debug_assert!(self.compiled.is_some())` precondition fires
+    /// when no module is loaded.
+    pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
+        self.resolve_source()
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `module_name` while leaving `compiled` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on module_name fires correctly.
+    pub(crate) fn break_module_name_for_test(&mut self) {
+        self.module_name.take();
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `source_map` while leaving `compiled` and `module_name` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on source_map.get_key_value() fires correctly.
+    pub(crate) fn break_source_map_for_test(&mut self) {
+        self.source_map.clear();
     }
 }
 
@@ -783,13 +855,16 @@ pub(crate) fn offset_to_line_col_fast(
 ///
 /// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
 ///   body never executes.
-/// - **Offset beyond `source.len()`**: the loop exhausts all characters
-///   without reaching the break condition and returns the position *after* the
-///   last character (silent clamping — no panic or error).
+/// - **Offset beyond `source.len()`**: panics in debug builds via
+///   `debug_assert!(offset <= source.len())`; in release builds the
+///   `debug_assert` is a no-op, so the loop exhausts all characters without
+///   reaching the break condition and returns the position *after* the last
+///   character (silent clamping).
 /// - **Empty spans** (`start == end`): calling this function twice with the
 ///   same offset produces identical `(line, col)` coordinates, as expected for
 ///   zero-length diagnostic spans.
 pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    debug_assert!(offset <= source.len());
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {

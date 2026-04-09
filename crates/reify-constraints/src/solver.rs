@@ -709,6 +709,60 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
     }
 }
 
+/// Compare two solution maps across the given auto params.
+///
+/// Returns `true` if every param value in `solved_values` and
+/// `perturbed_values` matches within the project tolerance constants.
+///
+/// If either map is missing a param or contains a non-numeric value
+/// (e.g. `Value::Undef`, `Value::Bool`), emits a `tracing::warn!` and
+/// returns `false` — the caller treats false as non-unique → Infeasible,
+/// producing a noisy user-facing error rather than silently masking the bug.
+fn solutions_agree(
+    auto_params: &[AutoParam],
+    solved_values: &HashMap<ValueCellId, Value>,
+    perturbed_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    for param in auto_params {
+        let s1 = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    param = %param.id,
+                    "uniqueness check: original solution has missing or non-numeric value; \
+                     cannot verify uniqueness"
+                );
+                return false;
+            }
+        };
+        let s2 = match perturbed_values.get(&param.id).and_then(|v| v.as_f64()) {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    param = %param.id,
+                    "uniqueness check: perturbed solution has missing or non-numeric value; \
+                     cannot verify uniqueness"
+                );
+                return false;
+            }
+        };
+        let diff = (s1 - s2).abs();
+        let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
+        if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
+            tracing::debug!(
+                param = %param.id,
+                s1,
+                s2,
+                diff,
+                "uniqueness check failed: solutions differ"
+            );
+            return false;
+        }
+    }
+    tracing::debug!("uniqueness check passed: perturbed solution matches");
+    true
+}
+
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
 ///
 /// Creates a perturbed initial point by reflecting each parameter to the
@@ -756,30 +810,7 @@ fn verify_uniqueness(
             ..
         } => {
             // Compare solutions: all params must match within tolerance
-            for param in &problem.auto_params {
-                let s1 = solved_values
-                    .get(&param.id)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let s2 = perturbed_values
-                    .get(&param.id)
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let diff = (s1 - s2).abs();
-                let scale = s1.abs().max(s2.abs()).max(UNIQUENESS_ABS_TOL);
-                if diff > UNIQUENESS_REL_TOL * scale && diff > UNIQUENESS_ABS_TOL {
-                    tracing::debug!(
-                        param = %param.id,
-                        s1,
-                        s2,
-                        diff,
-                        "uniqueness check failed: solutions differ"
-                    );
-                    return false;
-                }
-            }
-            tracing::debug!("uniqueness check passed: perturbed solution matches");
-            true
+            solutions_agree(&problem.auto_params, solved_values, &perturbed_values)
         }
         _ => {
             // If the perturbed solve fails (Infeasible/NoProgress), we can't
@@ -1184,6 +1215,228 @@ mod tests {
             other => panic!("expected Solved, got {:?}", other),
         }
     }
+
+    // ---- solutions_agree tests ----
+
+    #[test]
+    fn solutions_agree_matching_values_returns_true() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.5,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.5000001, // within tolerance
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            solutions_agree(&params, &solved, &perturbed),
+            "nearly-identical values should be considered agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_different_values_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.1,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.9,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "significantly different values should not agree"
+        );
+    }
+
+    // ---- solutions_agree: None/non-numeric handling tests (TDD red) ----
+    //
+    // These tests exercise the bug: `unwrap_or(0.0)` silently substitutes 0.0
+    // for missing or non-numeric values. When both sides are None, diff=0.0
+    // and the function incorrectly returns true (agrees). After the fix these
+    // tests must return false.
+
+    #[test]
+    fn solutions_agree_both_params_missing_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Both maps are empty — neither contains the param
+        let solved: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+        let perturbed: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "both params missing should be non-agreeing (cannot verify uniqueness)"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_original_param_is_undef_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original solution has Undef for the param.
+        // Perturbed has a value very close to zero — the bug: unwrap_or(0.0) on the Undef
+        // produces s1=0.0, and s2≈0.0, so diff≈0 and the function incorrectly returns true.
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(param_id.clone(), Value::Undef);
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15, // near zero — exposes the unwrap_or(0.0) bug
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "Undef in original solution should be non-agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_perturbed_param_is_bool_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original has a value near zero; perturbed has Bool(true) (non-numeric).
+        // The bug: unwrap_or(0.0) on Bool(true) → 0.0, and original ≈ 0.0,
+        // so diff ≈ 0.0 and the function incorrectly returns true.
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15, // near zero — exposes the unwrap_or(0.0) bug
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // Perturbed solution has a Bool (non-numeric) for the param
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(param_id.clone(), Value::Bool(true));
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "Bool in perturbed solution should be non-agreeing"
+        );
+    }
+
+    #[test]
+    fn solutions_agree_original_missing_perturbed_near_zero_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: param_id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+
+        // Original map doesn't contain the param at all
+        let solved: HashMap<ValueCellId, Value> = HashMap::new();
+
+        // Perturbed has a value very close to zero (so the old unwrap_or(0.0) bug
+        // would produce diff ≈ 0 and incorrectly report agreement)
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 1e-15,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "missing original param should be non-agreeing even when perturbed is near zero"
+        );
+    }
+
+    // ---- end solutions_agree None/non-numeric tests ----
 
     #[test]
     fn single_param_feasibility() {

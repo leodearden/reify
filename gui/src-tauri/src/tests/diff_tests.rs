@@ -1,4 +1,4 @@
-use crate::diff::{StateDelta, diff_gui_state};
+use crate::diff::{StateDelta, delta_to_events, diff_gui_state, push_serialized_event};
 use crate::types::*;
 
 fn sample_value(cell_id: &str, value: &str) -> ValueData {
@@ -294,8 +294,6 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
 
 #[test]
 fn delta_to_events_returns_empty_vec_for_empty_delta() {
-    use crate::diff::delta_to_events;
-
     let delta = StateDelta {
         changed_meshes: vec![],
         changed_values: vec![],
@@ -308,3 +306,210 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
     let events = delta_to_events(&delta);
     assert!(events.is_empty(), "empty delta should produce no events");
 }
+
+/// A mesh with f32::NAN vertices should produce a "serialization-error" event
+/// with a structured payload containing item_type, item_id, and error fields.
+/// This test fails because step-2 only logs, it doesn't emit an error event.
+#[test]
+fn delta_to_events_emits_serialization_error_event_on_failure() {
+    let delta = StateDelta {
+        changed_meshes: vec![sample_mesh("Bad.body", vec![f32::NAN, 0.0, 0.0])],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = delta_to_events(&delta);
+
+    // Should have exactly one "serialization-error" event
+    let error_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "serialization-error")
+        .collect();
+    assert_eq!(
+        error_events.len(),
+        1,
+        "expected exactly one serialization-error event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    // The payload must have item_type, item_id, and error fields
+    let payload = &error_events[0].1;
+    assert_eq!(payload["item_type"], "mesh", "item_type must be \"mesh\"");
+    assert_eq!(
+        payload["item_id"], "Bad.body",
+        "item_id must be the entity_path"
+    );
+    assert!(
+        payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
+        "error must be a non-empty string"
+    );
+
+    // No mesh-update event should have been emitted for the failed mesh
+    assert!(
+        events.iter().all(|(n, _)| n != "mesh-update"),
+        "no mesh-update event should be emitted for a mesh that failed serialization"
+    );
+}
+
+/// A mesh with f32::NAN in vertices causes serde_json::to_value to fail.
+/// The function must log a tracing::warn! for the failure and NOT emit a
+/// "mesh-update" event for the bad mesh, while still emitting events for
+/// valid items in the same delta.
+#[test]
+fn delta_to_events_warns_and_skips_on_serialization_failure() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+
+    let delta = StateDelta {
+        changed_meshes: vec![
+            // NaN vertices — serde_json::to_value will return Err
+            sample_mesh("Bad.body", vec![f32::NAN, 0.0, 0.0]),
+            // Valid mesh — should still produce a "mesh-update" event
+            sample_mesh("Good.body", vec![1.0, 2.0, 3.0]),
+        ],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
+
+    // One warn should have been emitted for the NaN mesh serialization failure
+    reify_test_support::assert_warn_count(
+        &warn_count,
+        1,
+        "expected exactly one tracing::warn for the NaN mesh",
+    );
+
+    // The valid mesh should still produce its event
+    let mesh_update_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-update")
+        .collect();
+    assert_eq!(
+        mesh_update_events.len(),
+        1,
+        "expected exactly one mesh-update event for the valid mesh"
+    );
+    assert_eq!(mesh_update_events[0].1["entity_path"], "Good.body");
+
+    // No mesh-update event for the NaN mesh
+    let nan_events: Vec<_> = events
+        .iter()
+        .filter(|(name, val)| name == "mesh-update" && val["entity_path"] == "Bad.body")
+        .collect();
+    assert!(
+        nan_events.is_empty(),
+        "expected no mesh-update event for the NaN mesh"
+    );
+}
+
+/// Two NaN meshes in the same delta both get their own warn and their own
+/// "serialization-error" event. A valid value in the same delta is unaffected.
+#[test]
+fn delta_to_events_multiple_failures_warn_for_each() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+
+    let delta = StateDelta {
+        changed_meshes: vec![
+            sample_mesh("Bad1.body", vec![f32::NAN, 0.0, 0.0]),
+            sample_mesh("Bad2.body", vec![0.0, f32::INFINITY, 0.0]),
+        ],
+        changed_values: vec![sample_value("Good.width", "42")],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+    };
+
+    let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
+
+    // Two warnings, one per failing mesh
+    reify_test_support::assert_warn_count(
+        &warn_count,
+        2,
+        "expected exactly two tracing::warn calls",
+    );
+
+    // Two serialization-error events
+    let error_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "serialization-error")
+        .collect();
+    assert_eq!(
+        error_events.len(),
+        2,
+        "expected two serialization-error events; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    // The error events reference the correct item ids
+    let error_ids: Vec<&str> = error_events
+        .iter()
+        .map(|(_, v)| v["item_id"].as_str().unwrap())
+        .collect();
+    assert!(
+        error_ids.contains(&"Bad1.body"),
+        "Bad1.body must appear in error events"
+    );
+    assert!(
+        error_ids.contains(&"Bad2.body"),
+        "Bad2.body must appear in error events"
+    );
+
+    // The valid value still produces its event
+    let value_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "value-update")
+        .collect();
+    assert_eq!(
+        value_events.len(),
+        1,
+        "the valid value must still produce a value-update event"
+    );
+    assert_eq!(value_events[0].1["cell_id"], "Good.width");
+
+    // No mesh-update events at all (both meshes failed)
+    assert!(
+        events.iter().all(|(n, _)| n != "mesh-update"),
+        "no mesh-update events should be emitted when all meshes failed serialization"
+    );
+}
+
+/// push_serialized_event: on Ok, a single (event_name, val) tuple is pushed.
+#[test]
+fn push_serialized_event_pushes_update_on_ok() {
+    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
+    let val = serde_json::json!({"x": 1});
+    push_serialized_event(&mut events, "mesh-update", "mesh", "A.body", Ok(val.clone()));
+    assert_eq!(events.len(), 1, "expected exactly one event");
+    assert_eq!(events[0].0, "mesh-update");
+    assert_eq!(events[0].1, val);
+}
+
+/// push_serialized_event: on Err, emits exactly one warn! and pushes a
+/// serialization-error event with the correct item_type, item_id, and error fields.
+#[test]
+fn push_serialized_event_pushes_error_and_warns_on_err() {
+    let (subscriber, warn_count) = reify_test_support::warn_counting_subscriber();
+    let err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+    let mut events: Vec<(String, serde_json::Value)> = Vec::new();
+    tracing::subscriber::with_default(subscriber, || {
+        push_serialized_event(&mut events, "value-update", "value", "V.x", Err(err));
+    });
+    reify_test_support::assert_warn_count(&warn_count, 1, "expected exactly 1 warn");
+    assert_eq!(events.len(), 1, "expected exactly one serialization-error event");
+    let (name, payload) = &events[0];
+    assert_eq!(name, "serialization-error");
+    assert_eq!(payload["item_type"], "value", "item_type must be \"value\"");
+    assert_eq!(payload["item_id"], "V.x", "item_id must be \"V.x\"");
+    assert!(
+        payload["error"].is_string() && !payload["error"].as_str().unwrap().is_empty(),
+        "error must be a non-empty string"
+    );
+}
+

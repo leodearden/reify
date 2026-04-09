@@ -26,6 +26,7 @@ import {
   refreshFullState,
   onMeshUpdate,
   onEvaluationStatus,
+  onSerializationError,
   pickOpenPath,
 } from '../bridge';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -239,6 +240,31 @@ describe('bridge event listeners', () => {
     expect(Array.from(received.vertices)).toEqual([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
     expect(Array.from(received.indices)).toEqual([0, 1, 2]);
     expect(Array.from(received.normals)).toEqual([0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+  });
+
+  it('onSerializationError subscribes to serialization-error event', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onSerializationError(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('serialization-error', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onSerializationError passes payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = { item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32' };
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onSerializationError(callback);
+
+    expect(callback).toHaveBeenCalledWith({ item_type: 'mesh', item_id: 'Bracket.body', error: 'non-finite f32' });
   });
 
   it('onMeshUpdate converts null normals correctly', async () => {
