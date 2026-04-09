@@ -25500,6 +25500,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1263,
+        "title": "Strengthen div/lap sample tests: numeric asserts + mixed-case coverage",
+        "description": "Follow-up from Task 1235 review (esc-1235-1032), two test gaps in crates/reify-expr/tests/field_calculus_tests.rs.\n\nS5 (test_quality, lines 1723-1734, 2040-2051): `divergence_sample_dimensionless_returns_real` and `laplacian_sample_dimensionless_returns_real` only assert on the Value variant, not the numeric value. Both test lambdas have a known analytical answer (divergence of vec3(1,1,1) ≡ 0, laplacian of x+2y+3z ≡ 0). Destructure the Value::Real(v) arm and assert `v.abs() < 1e-4` against the analytical value. Zero fixture cost, catches numerics regressions as well.\n\nS6 (test_coverage_gap, lines 1746-1878, 2063-2206): The two new dimensional-correctness tests only cover both-sides-dimensioned cases (Length→Velocity, Length→Temperature). The mixed cases — dimensioned domain + dimensionless codomain (Point{3,Length}→Vector{3,Real}), and dimensionless domain + dimensioned codomain (Point{3,Real}→Vector{3,Velocity}) — are never exercised at the sample level. Both currently hit compute_divergence/compute_laplacian's `_ => Type::Real` fallback and end up in the dimensionless runtime branch. A divergence of Length→Real field should physically be 1/Length but no test documents this. Either add `#[test] #[ignore]` placeholders or TODO tests for the two mixed cases, or add a code comment on compute_divergence/compute_laplacian explaining the fallback intentionally loses dimensional information, so future readers don't \"fix\" the fallback without also updating the numerical call sites.\n\nMemory hints:\n- search \"Task 1235 metadata runtime dimension drift\" — parent task\n- The existing tests to enhance are in field_calculus_tests.rs around the line ranges above",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25512,7 +25523,7 @@
       ],
       "created": "2026-04-09T03:12:21.287Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T03:12:33.678Z"
+      "updated": "2026-04-09T03:12:47.521Z"
     }
   }
 }
