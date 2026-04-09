@@ -25816,11 +25816,11 @@
         "description": "Apply four quality improvements to the robustness section of tests/infra/test_test_helpers.sh (lines ~261-327) added by Task 1154:\n\n1. **Stable check descriptions (lines 312-316).** Both branches of the non-underscore ref-guard test currently use different `check` descriptions (\"...should FAIL\" vs \"...guard present → false\"), which makes log grepping inconsistent and the \"should FAIL\" phrasing is misleading inside a runner that prints `FAIL:` for genuine failures. Use a single stable description and let `check` decide PASS/FAIL from a boolean — e.g. `if _check_has_no_ref_guard \"$fixture_guard\"; then ok=false; else ok=true; fi; check \"_check_has_no_ref_guard rejects non-underscore ref variable\" \"$ok\"`.\n\n2. **Trap-based fixture cleanup (lines 295-327).** Three temp fixtures (`fixture`, `fixture_guard`, `fixture_clean`) are removed only on the linear success path, so under `set -euo pipefail` an early failure leaks them. Register cleanup once with `trap`, e.g. `_robust_fixtures=(); cleanup_robust() { rm -f \"${_robust_fixtures[@]}\"; }; trap cleanup_robust EXIT` plus a small `mk_fixture` helper that appends to the array. Collapses three `mktemp`/`rm` blocks and guarantees cleanup on early exit.\n\n3. **Parameterize whitespace-tolerance fixture (line 296).** The `assert_sync_ref_exists` whitespace fixture only covers a single space. Loop over realistic variants the relaxed `\\s*` is meant to admit — at minimum `''`, `' '`, `'  '`, `$'\\t'` — so the relaxed contract is locked in.\n\n4. **Symmetric helper names (lines 261-262).** Rename the file-local helpers from asymmetric `_check_defines_assert_sync_ref_exists` (positive) / `_check_has_no_ref_guard` (negative) to consistent positive form, e.g. `_has_assert_sync_ref_exists` and `_has_ref_guard`, and invert at the call site (`if ! _has_ref_guard \"$SYNC_FILE\"; then ...`). Robustness tests then read more uniformly.\n\nAll four are localized polish in the same robustness section; they should be bundled.\n\nVerification: run `bash tests/infra/test_test_helpers.sh` and confirm 53+ tests pass.\n\nmemory_hints: search(\"test_test_helpers structural checks sync_comments_test robustness\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:41.047Z",
+        "updatedAt": "2026-04-09T16:50:38.152Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -26822,11 +26822,11 @@
         "description": "The dimension-extraction pattern (match on Scalar/Real/Int/Point→inner) is duplicated across compute_gradient, compute_divergence, and compute_laplacian with ~9 match blocks after Task 1236 added Real/Int arms. Extract two helpers:\n\n1. `fn scalar_dimension(ty: &Type) -> Option<DimensionVector>` — handles Scalar→Some(dim), Real|Int→Some(DIMENSIONLESS), _→None\n2. `fn domain_dimension(ty: &Type) -> Option<DimensionVector>` — additionally unwraps Point{quantity}\n\nReplace the repeated match blocks in all three operators with calls to these helpers.\n\nAdditionally:\n- Replace the dead `_ => Type::Real` arm at lib.rs:861 (divergence fallback for non-Vector codomain) with `unreachable!()` or `debug_assert!`, since validation already guarantees codomain is Vector at that point.\n- The structural style difference between gradient (matches scalar codomain directly) and divergence (unwraps Vector then matches quantity) is inherently resolved by the shared helpers.\n\nFrom Task 1236 review suggestions S1, S2, S5.\n\nMemory hints:\n- search \"compute_gradient gradient_quantity dimensionless fallback\" for the canonical pattern\n- search \"scalar_dimension domain_dimension helper extraction\" for this task's origin",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:36.487Z",
+        "updatedAt": "2026-04-09T16:50:38.238Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -27513,7 +27513,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:50:38.083Z",
+      "lastModified": "2026-04-09T16:50:38.238Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
