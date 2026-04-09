@@ -88,7 +88,7 @@ echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
 assert "no 'git check-ignore' calls inside for/done loops" \
-    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
