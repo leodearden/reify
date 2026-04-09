@@ -20192,6 +20192,11 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/complex.rs",
+            "crates/reify-expr/tests/complex_eval_tests.rs"
           ]
         }
       },
@@ -20209,6 +20214,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/complex.rs"
           ]
         }
       },
@@ -20283,6 +20292,9 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
