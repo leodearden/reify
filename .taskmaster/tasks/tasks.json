@@ -27661,10 +27661,11 @@
         "description": "The auto_free extraction pattern `param.default.as_ref().and_then(|expr| if let ExprKind::Auto { free } = &expr.kind { Some(*free) } else { None })` is copy-pasted identically in three locations: crates/reify-compiler/src/entity.rs lines 528-535, entity.rs lines 859-866, and crates/reify-compiler/src/guards.rs lines 274-281. Each occurrence has identical surrounding logic for constructing ValueCellDecl. This is a maintenance hazard — if the Auto variant changes again, three sites must be updated.",
         "details": "Extract a helper such as `fn extract_auto_free(default: Option<&reify_syntax::Expr>) -> Option<bool>` into a shared location (e.g. a new `auto_helpers` module in reify-compiler, or as an `impl Expr` method in reify-syntax). Consider a second helper that builds the full `ValueCellDecl` given auto_free, id, cell_type, and span. Update all 3 sites. Ensure existing tests in crates/reify-compiler/tests/boundary2_producer.rs (the `compile_auto_free_*` tests) still pass.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T17:24:38.627Z"
       },
       {
         "id": "1334",
@@ -27713,7 +27714,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:24:38.042Z",
+      "lastModified": "2026-04-09T17:24:38.628Z",
       "taskCount": 1337,
       "completedCount": 1007,
       "tags": [
