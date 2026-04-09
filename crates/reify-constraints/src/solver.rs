@@ -1446,15 +1446,9 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{Value, ValueCellId};
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (param_id, params) = test_param();
 
         // Original solution has Undef for the param.
         // Perturbed has a value very close to zero — the bug: unwrap_or(0.0) on the Undef
@@ -1462,14 +1456,8 @@ mod tests {
         let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
         solved.insert(param_id.clone(), Value::Undef);
 
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
-        perturbed.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 1e-15, // near zero — exposes the unwrap_or(0.0) bug
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(1e-15)); // near zero — exposes the unwrap_or(0.0) bug
 
         assert!(
             !solutions_agree(&params, &solved, &perturbed),
