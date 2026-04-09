@@ -1,5 +1,5 @@
 use reify_compiler::{CompiledModule, TopologyTemplate};
-use reify_types::{Diagnostic, Satisfaction};
+use reify_types::{ConstraintChecker, Diagnostic, Satisfaction};
 
 use crate::ConstraintCheckEntry;
 
