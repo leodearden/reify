@@ -28462,15 +28462,16 @@
         "description": "Two improvements to `trust_the_declaration_tests` in `crates/reify-expr/tests/gradient_tests.rs`:\n\n1. **Fix redundant characterization test (from review S1):** `test_make_dimensioned_domain_mismatch_gradient` currently asserts (a) Value is a Field (already checked inside helper), (b) domain_type == Type::length() (trivially true by construction), (c) grad_codomain_type == Scalar{MASS/LENGTH} (trivially true by construction). Either remove the test entirely (the two consumer tests exercise the helper), or make it useful by asserting on the *gradient field's actual codomain_type* — i.e., match on `grad_result` to extract `codomain_type` and assert it equals `grad_codomain_type`. This validates the helper's evaluated result, not just its return-value types.\n\n2. **Add ungated release-mode coverage (from review S3):** `gradient_codomain_mismatch_dimensioned_domain_no_panic` is gated with `#[cfg(debug_assertions)]`. The debug_assert is trivially absent in release mode, but the *numerical result* (derivative ≈ 2.0, dimension MASS/LENGTH) is meaningful in all build profiles. Consider adding an ungated version of the sampling test, or removing the cfg gate, so the derivative value and dimension are validated in release builds too.\n\nMemory hints: search for \"trust-the-declaration design decision gradient\" and \"task 1160 gradient codomain mismatch DRY\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:11:09.103Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:11:08.558Z",
+      "lastModified": "2026-04-09T21:11:09.104Z",
       "taskCount": 1376,
       "completedCount": 1050,
       "tags": [
