@@ -1572,3 +1572,139 @@ fn laplacian_dimensional_correctness() {
         }
     }
 }
+
+/// Divergence of a dimensionless Point{3,Real} → Vector{3,Real} field still
+/// returns Type::Real as the result codomain (regression guard).
+///
+/// Ensures the fallback path in compute_divergence does not break the existing
+/// behaviour for dimensionless fields now that the dimensioned path is wired up.
+#[test]
+fn divergence_dimensionless_still_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x, y, z| vec3(x, y, z)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of dimensionless field should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "divergence of dimensionless Point{{3,Real}}→Vector{{3,Real}} should have codomain Type::Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Laplacian of a dimensionless Point{3,Real} → Real field still returns
+/// Type::Real as the result codomain (regression guard).
+///
+/// Ensures the fallback path in compute_laplacian does not break the existing
+/// behaviour for dimensionless fields now that the dimensioned path is wired up.
+#[test]
+fn laplacian_dimensionless_still_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of dimensionless field should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "laplacian of dimensionless Point{{3,Real}}→Real should have codomain Type::Real, got {:?}",
+            codomain_type
+        );
+    }
+}
