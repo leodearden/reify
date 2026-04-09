@@ -494,6 +494,14 @@ fn e2e_meta_access_in_constraint() {
     let mut engine = make_engine();
     let result = engine.check(&compiled);
 
+    // Guard: no check-phase errors
+    let check_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(check_errors.is_empty(), "check errors: {:?}", check_errors);
+
     // Assert constraint_results is non-empty so the loop below is not vacuous.
     // If the engine silently drops the constraint expression, this will fail.
     assert!(
