@@ -21,6 +21,21 @@ fn scalar_dimension(ty: &Type) -> Option<DimensionVector> {
     }
 }
 
+/// Domain-side analog of `scalar_dimension`, handling the `Point{quantity}` wrapper.
+///
+/// For multi-dimensional domains (`Type::Point { quantity, .. }`), delegates to
+/// `scalar_dimension(quantity)` to extract the inner quantity's dimension.
+/// For all other types (including direct scalars, Real, Int), delegates directly
+/// to `scalar_dimension`.
+///
+/// Returns `None` for non-scalar, non-Point types (e.g., Vector, Bool).
+fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
+    match ty {
+        Type::Point { quantity, .. } => scalar_dimension(quantity),
+        _ => scalar_dimension(ty),
+    }
+}
+
 /// Extract the physical dimension from a type, if present.
 ///
 /// Returns `Some(dim)` for:
