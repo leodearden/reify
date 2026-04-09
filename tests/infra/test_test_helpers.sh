@@ -368,6 +368,22 @@ else
 fi
 
 # ==============================================================================
+# Robustness tests for sync_comments_test.sh structural checks
+# ==============================================================================
+
+echo ""
+echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
+
+fixture=$(mktemp)
+printf 'assert_sync_ref_exists () {\n  : trivial body\n}\n' > "$fixture"
+if _check_defines_assert_sync_ref_exists "$fixture" 2>/dev/null; then
+    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "true"
+else
+    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "false"
+fi
+rm -f "$fixture"
+
+# ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
 # richer assert API and is intentionally excluded from this shared module.
