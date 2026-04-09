@@ -17982,11 +17982,11 @@
         "description": "The existing add_pattern_to_builder_propagates_coord_error test only exercises the Coincident variant with an error on pt_a. Two gaps remain:\n\n1. Line-based variants (Parallel, Angle, Perpendicular) call add_point 4 times per pattern (once per endpoint). None of these propagation sites are tested. Add a test using e.g. GeometricPattern::Parallel where one of the 4 endpoint PointRef::Auto coords has a missing cell_id, confirming errors from the 3rd/4th add_point call propagate correctly.\n\n2. Within Coincident, only pt_a (line 974) is exercised. The pt_b path (line 975) is never triggered because pt_b is always PointRef::Fixed in the test. Add a sub-case where pt_a is Fixed and pt_b is Auto with a missing cell_id.\n\nThese cover structurally different code paths in the match arms.\n\nmemory_hints: search(\"solvespace builder error propagation layer separation convention\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:56.945Z",
+        "updatedAt": "2026-04-09T09:48:23.973Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -26472,7 +26472,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:48:20.880Z",
+      "lastModified": "2026-04-09T09:48:23.979Z",
       "taskCount": 1312,
       "completedCount": 979,
       "tags": [
