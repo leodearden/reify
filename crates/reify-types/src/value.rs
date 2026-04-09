@@ -2566,6 +2566,11 @@ mod tests {
                 std::cmp::Ordering::Equal,
                 "PartialEq↔Ord contract: expected a.cmp(b) == Equal when a == b"
             );
+            assert_eq!(
+                b.cmp(a),
+                std::cmp::Ordering::Equal,
+                "PartialEq↔Ord contract: expected b.cmp(a) == Equal when a == b"
+            );
         } else {
             assert_ne!(a, b, "PartialEq↔Ord contract: expected a != b");
             assert_ne!(
