@@ -26582,7 +26582,10 @@
             "tests/infra"
           ],
           "parent_escalation": "esc-1174-1043",
-          "parent_task": 1174
+          "parent_task": 1174,
+          "files": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ]
         }
       },
       {
@@ -26599,6 +26602,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-compiler/tests/self_keyword_tests.rs"
           ]
         }
       },
