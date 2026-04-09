@@ -1,0 +1,8 @@
+// CLI test fixture: one @test structure with a violated constraint.
+// param x is negative, violating x > 0mm.
+// Used by test_command_on_failing_file_exits_failure.
+
+@test structure TestNegative {
+    param x: Length = -5mm
+    constraint x > 0mm
+}

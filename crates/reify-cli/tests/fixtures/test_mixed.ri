@@ -1,0 +1,20 @@
+// CLI test fixture: three @test structures with mixed outcomes.
+//   TestPass     — satisfied constraint (PASS)
+//   TestFail     — violated constraint  (FAIL)
+//   TestIndet    — auto param           (INDETERMINATE)
+// Used by test_command_on_mixed_file_shows_summary.
+
+@test structure TestPass {
+    param x: Length = 5mm
+    constraint x > 0mm
+}
+
+@test structure TestFail {
+    param y: Length = -3mm
+    constraint y > 0mm
+}
+
+@test structure TestIndet {
+    param z: Scalar = auto
+    constraint z > 0
+}

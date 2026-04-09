@@ -1,0 +1,10 @@
+// CLI test fixture: a file with no @test annotations at all.
+// The test runner should return an empty result set (vacuously passing).
+// Used by test_command_on_no_tests_file_exits_success.
+
+structure def Bracket {
+    param width: Length = 80mm
+    param height: Length = 100mm
+    constraint width > 0mm
+    constraint height > 0mm
+}
