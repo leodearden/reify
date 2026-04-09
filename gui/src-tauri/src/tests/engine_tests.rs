@@ -1405,6 +1405,53 @@ fn byte_offset_to_line_col_at_source_len() {
     assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
 }
 
+// --- Task 497: step-1 — byte_offset_to_line_col returns 1-based columns ---
+
+/// Explicitly verify that byte_offset_to_line_col returns 1-based (line, col)
+/// at every byte offset of a known multi-line string "ab\ncd".
+///
+/// Byte layout:
+///   0:'a'  1:'b'  2:'\n'  3:'c'  4:'d'
+///
+/// Expected results:
+///   offset 0 → line 1, col 1  (start of 'a')
+///   offset 1 → line 1, col 2  (start of 'b')
+///   offset 2 → line 1, col 3  (start of '\n', still on line 1)
+///   offset 3 → line 2, col 1  (start of 'c')
+///   offset 4 → line 2, col 2  (start of 'd')
+///   offset 5 → line 2, col 3  (EOF position, one past last char)
+#[test]
+fn byte_offset_to_line_col_returns_one_based_columns() {
+    use crate::engine::byte_offset_to_line_col;
+
+    let source = "ab\ncd";
+    assert_eq!(source.len(), 5, "sanity-check byte length");
+
+    // Every byte offset in the string plus EOF
+    let expected: &[(usize, (usize, usize))] = &[
+        (0, (1, 1)),
+        (1, (1, 2)),
+        (2, (1, 3)),
+        (3, (2, 1)),
+        (4, (2, 2)),
+        (5, (2, 3)), // EOF
+    ];
+
+    for &(offset, expected_pos) in expected {
+        let actual = byte_offset_to_line_col(source, offset);
+        assert_eq!(
+            actual, expected_pos,
+            "offset {}: expected {:?} got {:?} — columns must be 1-based",
+            offset, expected_pos, actual
+        );
+    }
+
+    // Spot-check: smallest possible col value is 1, never 0
+    for &(_, (_, col)) in expected {
+        assert!(col >= 1, "column must be >= 1 (1-based), got {}", col);
+    }
+}
+
 // --- Task 837: offset_to_line_col_fast unit tests ---
 
 /// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
