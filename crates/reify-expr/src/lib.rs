@@ -1502,7 +1502,7 @@ fn compute_numerical_curl_at_point(
     };
 
     let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1,
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
 
