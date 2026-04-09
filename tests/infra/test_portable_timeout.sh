@@ -566,5 +566,46 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         exit "$_check_rc"
     '
 
+# -- Test 22: structural: post-wait orphan cleanup uses SIGKILL not SIGTERM ---
+echo ""
+echo "--- Test 22: post-wait orphan cleanup uses SIGKILL not SIGTERM ---"
+
+# After the timer escalates to SIGKILL because the command ignored SIGTERM,
+# the post-wait orphan cleanup (line 149) must also use SIGKILL.  Sending
+# SIGTERM at that point is internally inconsistent — the whole reason we
+# reached this code path is that SIGTERM was ineffective.  The '|| true'
+# suffix is unique to this line, distinguishing it from the timer subshell
+# SIGKILL lines.
+assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)" \
+    grep -qF 'kill -9 -- -$cmd_pid 2>/dev/null || true' "$LIB_PORTABLE"
+
+assert "no remaining line sends SIGTERM (plain kill) to the command process group" \
+    bash -c '! grep -qF "kill -- -\$cmd_pid 2>/dev/null || true" "$1"' _ "$LIB_PORTABLE"
+
+# -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
+echo ""
+echo "--- Test 23: timer subshells use quoted PGID argument for SIGKILL ---"
+
+# Both timer subshells (flag-file branch and degraded branch) must quote the
+# PGID argument: 'kill -9 -- "-$cmd_pid"' rather than 'kill -9 -- -$cmd_pid'.
+# Defensive quoting prevents word-splitting if the value is ever non-numeric.
+# Exactly 2 occurrences are required — one per timer subshell branch.
+assert "both timer subshells use quoted PGID in SIGKILL: exactly 2 occurrences" \
+    bash -c 'count=$(grep -cF "kill -9 -- \"-\$cmd_pid\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
+# -- Test 24: structural: grace period is a named variable (DRY) (S4) ---------
+echo ""
+echo "--- Test 24: grace period DRY — local _pt_kill_grace variable used in both timer subshells ---"
+
+# The hardcoded 'sleep 2' in both timer subshells must be replaced by a single
+# named local variable '_pt_kill_grace=2' declared once in portable_timeout.
+# Two assertions: (a) the local declaration exists, (b) exactly 2 uses of
+# 'sleep "$_pt_kill_grace"' appear — one per timer subshell branch.
+assert "portable_timeout declares local _pt_kill_grace=2" \
+    grep -qE 'local[[:space:]]+_pt_kill_grace=2' "$LIB_PORTABLE"
+
+assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
+    bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

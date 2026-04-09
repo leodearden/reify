@@ -209,13 +209,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" if evaluated_args.len() == 1 => calculus::compute_gradient(&evaluated_args[0]),
+                "gradient" if evaluated_args.len() == 1 => {
+                    calculus::compute_gradient(&evaluated_args[0])
+                }
                 "divergence" if evaluated_args.len() == 1 => {
                     calculus::compute_divergence(&evaluated_args[0])
                 }
-                "curl" if evaluated_args.len() == 1 => {
-                    calculus::compute_curl(&evaluated_args[0])
-                }
+                "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
                 }
@@ -3413,5 +3413,4 @@ mod tests {
             other => panic!("expected Complex, got {:?}", other),
         }
     }
-
 }

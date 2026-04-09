@@ -1,30 +1,38 @@
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
-use super::{apply_lambda, EvalContext};
+use super::{EvalContext, apply_lambda};
 
-/// Extract the physical dimension from a type, if present.
+/// Unify scalar-quantity validation with dimension extraction.
 ///
-/// Returns `Some(dim)` for:
-/// - `Scalar { dimension }` — direct scalar
-/// - `Point { quantity: Scalar { dimension }, .. }` — point with scalar quantity
-/// - `Vector { quantity: Scalar { dimension }, .. }` — vector with scalar quantity
+/// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
+/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`,
+/// since those are inherently dimensionless scalars.
 ///
-/// Returns `None` for all other types (Real, Int, dimensionless wrappers, etc.).
-/// The callers each validate their types before reaching the dimension-extraction
-/// block, so the broader match here is safe and allows this helper to be reused
-/// across gradient, divergence, and laplacian.
-fn extract_dim(ty: &Type) -> Option<DimensionVector> {
+/// Returns `None` for all other types (Point, Vector, Bool, etc.).
+///
+/// Using `scalar_dimension(ty).is_some()` replaces `matches!(ty, Type::Real | Type::Int |
+/// Type::Scalar { .. })` at every call site, yielding both the validation result and the
+/// dimension in a single call.
+fn scalar_dimension(ty: &Type) -> Option<DimensionVector> {
     match ty {
         Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
+        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
         _ => None,
+    }
+}
+
+/// Domain-side analog of `scalar_dimension`, handling the `Point{quantity}` wrapper.
+///
+/// For multi-dimensional domains (`Type::Point { quantity, .. }`), delegates to
+/// `scalar_dimension(quantity)` to extract the inner quantity's dimension.
+/// For all other types (including direct scalars, Real, Int), delegates directly
+/// to `scalar_dimension`.
+///
+/// Returns `None` for non-scalar, non-Point types (e.g., Vector, Bool).
+fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
+    match ty {
+        Type::Point { quantity, .. } => scalar_dimension(quantity),
+        _ => scalar_dimension(ty),
     }
 }
 
@@ -55,7 +63,9 @@ fn dim_quotient_type(
                 cd.div(&dd.pow(domain_exponent))
             };
             if result_dim != DimensionVector::DIMENSIONLESS {
-                Type::Scalar { dimension: result_dim }
+                Type::Scalar {
+                    dimension: result_dim,
+                }
             } else {
                 Type::Real
             }
@@ -100,16 +110,8 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 
     // Determine dimensionality and validate scalar domain quantity
     let n = match domain_type {
-        Type::Real | Type::Int | Type::Scalar { .. } => 1,
-        Type::Point { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
-        }
+        _ if scalar_dimension(domain_type).is_some() => 1,
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
         _ => return Value::Undef,
     };
 
@@ -119,8 +121,12 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
         _ => codomain_type.clone(),
     };
-    let gradient_quantity =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 1, gradient_fallback);
+    let gradient_quantity = dim_quotient_type(
+        scalar_dimension(codomain_type),
+        domain_dimension(domain_type),
+        1,
+        gradient_fallback,
+    );
 
     // Construct result codomain type:
     // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
@@ -185,15 +191,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     // Domain must be a Point with scalar quantity
     let n = match domain_type {
-        Type::Point { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
-        }
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -204,16 +202,10 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
         }
     };
 
-    // Codomain must be Vector{n, scalar}
-    let vec_n = match codomain_type {
-        Type::Vector { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
+    // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
+    let (vec_n, codomain_quantity) = match codomain_type {
+        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
+            (*n, quantity.as_ref())
         }
         _ => {
             #[cfg(debug_assertions)]
@@ -227,25 +219,23 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     if vec_n != n {
         #[cfg(debug_assertions)]
-        eprintln!(
-            "[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}"
-        );
+        eprintln!("[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}");
         return Value::Undef;
     }
 
     // Compute result codomain type: codomain_component_dim / domain_dim.
     // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
-    let divergence_fallback = match codomain_type {
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {
-                Type::Real
-            }
-            _ => quantity.as_ref().clone(),
-        },
-        _ => Type::Real,
+    // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
+    let divergence_fallback = match codomain_quantity {
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        _ => codomain_quantity.clone(),
     };
-    let result_codomain =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 1, divergence_fallback);
+    let result_codomain = dim_quotient_type(
+        scalar_dimension(codomain_quantity),
+        domain_dimension(domain_type),
+        1,
+        divergence_fallback,
+    );
 
     // Result: scalar field with dimensionally-correct codomain
     Value::Field {
@@ -377,12 +367,8 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 
     // Domain can be 1D scalar or nD Point
     match domain_type {
-        Type::Real | Type::Int | Type::Scalar { .. } => {}
-        Type::Point { quantity, .. }
-            if matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) => {}
+        _ if scalar_dimension(domain_type).is_some() => {}
+        Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -394,7 +380,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     }
 
     // Codomain must be scalar
-    if !matches!(codomain_type, Type::Real | Type::Int | Type::Scalar { .. }) {
+    if scalar_dimension(codomain_type).is_none() {
         #[cfg(debug_assertions)]
         eprintln!(
             "[reify-expr] laplacian: codomain must be scalar, got {:?}",
@@ -409,8 +395,12 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
         Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
         _ => codomain_type.clone(),
     };
-    let result_codomain =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 2, laplacian_fallback);
+    let result_codomain = dim_quotient_type(
+        scalar_dimension(codomain_type),
+        domain_dimension(domain_type),
+        2,
+        laplacian_fallback,
+    );
 
     // Result: scalar field with dimensionally-correct codomain
     Value::Field {
@@ -675,26 +665,25 @@ pub(crate) fn compute_numerical_gradient_at_point(
             let runtime_dim = f_plus.dimension();
             let expected_codomain_dim = result_dim;
             assert_eq!(
-                runtime_dim,
-                expected_codomain_dim,
+                runtime_dim, expected_codomain_dim,
                 "codomain_type does not match runtime return dimension: \
                  declared codomain expects dimension {:?} but lambda returned {:?}",
-                expected_codomain_dim,
-                runtime_dim,
+                expected_codomain_dim, runtime_dim,
             );
         }
         // Tier 2: soft warning for dimensioned-domain mismatches.
         // original_codomain = result_dim * domain_dim; compare with f_plus dimension.
         #[cfg(debug_assertions)]
-        if i == 0 && let Some(dom_dim) = domain_dim {
+        if i == 0
+            && let Some(dom_dim) = domain_dim
+        {
             let expected_original_codomain = result_dim.mul(&dom_dim);
             let runtime_dim = f_plus.dimension();
             if runtime_dim != expected_original_codomain {
                 eprintln!(
                     "[reify-expr] gradient: codomain_type mismatch (non-fatal): \
                      declared original codomain dimension {:?} but lambda returned {:?}",
-                    expected_original_codomain,
-                    runtime_dim,
+                    expected_original_codomain, runtime_dim,
                 );
             }
         }
@@ -1279,48 +1268,113 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 mod tests {
     use super::*;
 
-    // --- extract_dim unit tests ---
+    // --- scalar_dimension unit tests ---
 
     #[test]
-    fn extract_dim_scalar_length_returns_length() {
-        let ty = Type::length();
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::LENGTH));
+    fn scalar_dimension_scalar_length_returns_length() {
+        assert_eq!(
+            scalar_dimension(&Type::length()),
+            Some(DimensionVector::LENGTH)
+        );
     }
 
     #[test]
-    fn extract_dim_point3_scalar_length_returns_length() {
-        let ty = Type::point3(Type::length());
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::LENGTH));
+    fn scalar_dimension_scalar_dimensionless_returns_dimensionless() {
+        let ty = Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(scalar_dimension(&ty), Some(DimensionVector::DIMENSIONLESS));
     }
 
     #[test]
-    fn extract_dim_vec3_scalar_mass_returns_mass() {
-        let ty = Type::vec3(Type::Scalar {
+    fn scalar_dimension_real_returns_dimensionless() {
+        assert_eq!(
+            scalar_dimension(&Type::Real),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    fn scalar_dimension_int_returns_dimensionless() {
+        assert_eq!(
+            scalar_dimension(&Type::Int),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    fn scalar_dimension_point3_real_returns_none() {
+        assert_eq!(scalar_dimension(&Type::point3(Type::Real)), None);
+    }
+
+    #[test]
+    fn scalar_dimension_vec3_real_returns_none() {
+        assert_eq!(scalar_dimension(&Type::vec3(Type::Real)), None);
+    }
+
+    #[test]
+    fn scalar_dimension_bool_returns_none() {
+        assert_eq!(scalar_dimension(&Type::Bool), None);
+    }
+
+    // --- domain_dimension unit tests ---
+
+    #[test]
+    fn domain_dimension_scalar_length_returns_length() {
+        assert_eq!(
+            domain_dimension(&Type::length()),
+            Some(DimensionVector::LENGTH)
+        );
+    }
+
+    #[test]
+    fn domain_dimension_real_returns_dimensionless() {
+        assert_eq!(
+            domain_dimension(&Type::Real),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    fn domain_dimension_int_returns_dimensionless() {
+        assert_eq!(
+            domain_dimension(&Type::Int),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
+    }
+
+    #[test]
+    fn domain_dimension_point3_scalar_mass_returns_mass() {
+        let ty = Type::point3(Type::Scalar {
             dimension: DimensionVector::MASS,
         });
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::MASS));
+        assert_eq!(domain_dimension(&ty), Some(DimensionVector::MASS));
     }
 
     #[test]
-    fn extract_dim_real_returns_none() {
-        assert_eq!(extract_dim(&Type::Real), None);
+    fn domain_dimension_point3_real_returns_dimensionless() {
+        assert_eq!(
+            domain_dimension(&Type::point3(Type::Real)),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
-    fn extract_dim_int_returns_none() {
-        assert_eq!(extract_dim(&Type::Int), None);
+    fn domain_dimension_point3_int_returns_dimensionless() {
+        assert_eq!(
+            domain_dimension(&Type::point3(Type::Int)),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
-    fn extract_dim_point3_real_returns_none() {
-        let ty = Type::point3(Type::Real);
-        assert_eq!(extract_dim(&ty), None);
+    fn domain_dimension_vec3_real_returns_none() {
+        assert_eq!(domain_dimension(&Type::vec3(Type::Real)), None);
     }
 
     #[test]
-    fn extract_dim_vec3_real_returns_none() {
-        let ty = Type::vec3(Type::Real);
-        assert_eq!(extract_dim(&ty), None);
+    fn domain_dimension_bool_returns_none() {
+        assert_eq!(domain_dimension(&Type::Bool), None);
     }
 
     // --- dim_quotient_type unit tests ---
@@ -1335,7 +1389,12 @@ mod tests {
             1,
             Type::Real,
         );
-        assert_eq!(result, Type::Scalar { dimension: expected_dim });
+        assert_eq!(
+            result,
+            Type::Scalar {
+                dimension: expected_dim
+            }
+        );
     }
 
     #[test]
@@ -1393,7 +1452,12 @@ mod tests {
             2,
             Type::Real,
         );
-        assert_eq!(result, Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            result,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
+        );
     }
 
     #[test]

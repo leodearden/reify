@@ -1374,8 +1374,9 @@ impl<'a> Lowering<'a> {
 
         let default = node.child_by_field_name("default").and_then(|d| {
             if d.kind() == "auto_keyword" {
+                let free = d.child_by_field_name("modifier").is_some();
                 Some(Expr {
-                    kind: ExprKind::Auto,
+                    kind: ExprKind::Auto { free },
                     span: self.span(d),
                 })
             } else {

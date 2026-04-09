@@ -26,9 +26,9 @@ assert "scripts/check-pm-standardization.sh is executable" \
 assert "tests/check-pm-standardization.sh does NOT exist" \
     bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
 
-# -- Test 2: script has only checks 1-3 (no 4-9) ----------------------------
+# -- Test 2: script has only checks 1-4 (no 5-9) ----------------------------
 echo ""
-echo "--- Test 2: script contains only checks 1-3 ---"
+echo "--- Test 2: script contains only checks 1-4 ---"
 
 SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
 
@@ -80,12 +80,15 @@ echo "--- Test 6: script has cross-file packageManager consistency check ---"
 assert "script contains 'sort -u' for cross-file consistency comparison" \
     grep -q 'sort -u' "$SCRIPT"
 
+assert "script references 'packageManager' in consistency logic" \
+    grep -q 'packageManager' "$SCRIPT"
+
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
-    bash -c "! awk '/^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -93,6 +96,9 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
+
+assert "script uses 'tr -d' to strip wc whitespace" \
+    grep -q 'tr -d' "$SCRIPT"
 
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""

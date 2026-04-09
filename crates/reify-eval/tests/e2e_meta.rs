@@ -7,7 +7,70 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 // ---------------------------------------------------------------------------
-// step-13: E2E — let binding using meta.key resolves to Value::String
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Parse `source`, assert no parse errors, compile, assert no compile errors.
+/// Returns the compiled module ready for eval.
+fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "compile errors: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+
+    compiled
+}
+
+/// Create a new Engine backed by a fresh MockConstraintChecker.
+fn make_engine() -> reify_eval::Engine {
+    let checker = MockConstraintChecker::new();
+    reify_eval::Engine::new(Box::new(checker), None)
+}
+
+/// Parse `source`, compile, assert ≥1 Error-severity diagnostic is produced.
+/// If `needle` is non-empty, also assert at least one error message contains it.
+/// Returns the CompiledModule for optional further assertions.
+fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one compile error");
+    if !needle.is_empty() {
+        assert!(
+            errors.iter().any(|d| d.message.contains(needle)),
+            "expected error containing {:?}, got: {:?}",
+            needle,
+            errors
+        );
+    }
+    compiled
+}
+
+// ---------------------------------------------------------------------------
+// --- let binding uses meta.key ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with meta block + let binding using `meta.key`,
@@ -23,27 +86,19 @@ fn e2e_meta_access_let_binding() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    let compiled = parse_and_compile(source);
 
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
+    // Eval
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.eval(&compiled);
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     // Assert
     let desc_id = ValueCellId::new("Widget", "desc");
@@ -55,7 +110,7 @@ fn e2e_meta_access_let_binding() {
 }
 
 // ---------------------------------------------------------------------------
-// step-15: E2E — multiple meta keys in one block
+// --- multiple meta keys in one block ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with two meta keys, two let bindings each reading
@@ -73,27 +128,19 @@ fn e2e_meta_access_multiple_keys() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    let compiled = parse_and_compile(source);
 
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
+    // Eval
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.eval(&compiled);
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     // Assert both keys
     let n_id = ValueCellId::new("Gear", "n");
@@ -112,7 +159,7 @@ fn e2e_meta_access_multiple_keys() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213: E2E — meta.key on an `occurrence def` entity
+// --- meta.key on occurrence entity ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with an `occurrence def` that has a meta block
@@ -131,22 +178,7 @@ fn e2e_meta_access_on_occurrence() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Sanity: the compiled template should be tagged as an Occurrence.
     assert_eq!(compiled.templates.len(), 1);
@@ -157,8 +189,7 @@ fn e2e_meta_access_on_occurrence() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -171,7 +202,7 @@ fn e2e_meta_access_on_occurrence() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-1/2: E2E — meta access on a `structure def` entity (Structure kind)
+// --- meta.key on structure entity ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse a `structure def` with a meta block + let binding, compile
@@ -189,22 +220,7 @@ fn e2e_meta_access_on_structure_resolves() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Sanity: the compiled template should be tagged as a Structure.
     assert_eq!(compiled.templates.len(), 1);
@@ -215,8 +231,7 @@ fn e2e_meta_access_on_structure_resolves() {
     );
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -229,7 +244,7 @@ fn e2e_meta_access_on_structure_resolves() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-3/4: E2E — nonexistent meta key produces compile error
+// --- nonexistent meta key produces compile error ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `meta.nonexistent` where only `a` is defined.
@@ -246,31 +261,11 @@ fn e2e_meta_nonexistent_key_error() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect an error diagnostic
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    assert!(
-        errors.iter().any(|d| d.message.contains("no key")),
-        "expected 'no key' error, got: {:?}",
-        errors
-    );
+    parse_compile_expect_err(source, "no key");
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-5/6: E2E — meta access without a meta block produces error
+// --- meta access without meta block produces error ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `meta.foo` on a structure that has no meta block.
@@ -285,31 +280,11 @@ fn e2e_meta_no_meta_block_error() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect an error diagnostic
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    assert!(
-        errors.iter().any(|d| d.message.contains("no meta block")),
-        "expected 'no meta block' error, got: {:?}",
-        errors
-    );
+    parse_compile_expect_err(source, "no meta block");
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-7/8: E2E — child structure's meta.key resolves when used as sub-component
+// --- child structure meta.key resolves as sub-component ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: two structures — `Part` with a meta block + let binding, and
@@ -333,26 +308,10 @@ fn e2e_meta_sub_structure_child_meta() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert Part's own label resolves
@@ -365,7 +324,7 @@ fn e2e_meta_sub_structure_child_meta() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-9/10: E2E — meta value stored in let binding propagates downstream
+// --- meta let binding propagates downstream ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `v` holds meta.version, and `is_v2` compares `v == "2"`.
@@ -383,26 +342,10 @@ fn e2e_meta_let_binding_downstream() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -422,7 +365,7 @@ fn e2e_meta_let_binding_downstream() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-11/12: E2E — meta.key string equality (matching case → true)
+// --- meta.key string equality (match) ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `matches` is set to `meta.tag == "valid"`.  When tag IS "valid"
@@ -438,26 +381,10 @@ fn e2e_meta_string_eq_match() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -470,7 +397,7 @@ fn e2e_meta_string_eq_match() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-13/14: E2E — meta.key string equality (non-matching case → false)
+// --- meta.key string equality (mismatch) ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `mismatch` is set to `meta.tag == "invalid"`.  When tag IS "valid"
@@ -486,26 +413,10 @@ fn e2e_meta_string_eq_mismatch() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
     // Assert
@@ -518,13 +429,7 @@ fn e2e_meta_string_eq_mismatch() {
 }
 
 // ---------------------------------------------------------------------------
-// task-1045 regression: missing key and no-meta-block error paths
-//
-// These two tests are named regression guards for the same error paths covered
-// by task-213's e2e_meta_nonexistent_key_error and e2e_meta_no_meta_block_error
-// above (which additionally assert exact message substrings).  The task-1045
-// tests use a different source scenario and broader assertions (≥1 Error
-// diagnostic exists) so they remain valid even if error message text is reworded.
+// --- regression guards: missing key and no meta block ---
 // ---------------------------------------------------------------------------
 
 /// Regression guard (suggestion 8): accessing a meta key that does not exist
@@ -543,25 +448,7 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect at least one Error diagnostic for the missing key
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one compile error for missing meta key 'nonexistent', got none"
-    );
+    parse_compile_expect_err(source, "");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -579,29 +466,11 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect at least one Error diagnostic for the missing meta block
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one compile error for meta access on structure with no meta block, got none"
-    );
+    parse_compile_expect_err(source, "");
 }
 
 // ---------------------------------------------------------------------------
-// step-17: E2E — meta.key in a constraint expression
+// --- meta.key in constraint expression ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `constraint meta.tag == "valid"`.
@@ -618,28 +487,20 @@ fn e2e_meta_access_in_constraint() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
+    let compiled = parse_and_compile(source);
 
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
+    // Check (eval + constraint evaluation) — must not panic when meta.key
+    // appears in a constraint expression
+    let mut engine = make_engine();
+    let result = engine.check(&compiled);
+
+    // Guard: no check-phase errors
+    let check_errors: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
-
-    // Check (eval + constraint evaluation) — must not panic when meta.key
-    // appears in a constraint expression
-    let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-    let result = engine.check(&compiled);
+    assert!(check_errors.is_empty(), "check errors: {:?}", check_errors);
 
     // Assert constraint_results is non-empty so the loop below is not vacuous.
     // If the engine silently drops the constraint expression, this will fail.
@@ -647,6 +508,12 @@ fn e2e_meta_access_in_constraint() {
         !result.constraint_results.is_empty(),
         "expected at least one constraint result, got zero \
          (engine may have dropped the MetaAccess constraint expression)"
+    );
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result for the single \
+         `constraint meta.tag == \"valid\"` declaration"
     );
 
     // Assert no constraint violations
@@ -659,4 +526,50 @@ fn e2e_meta_access_in_constraint() {
             entry.satisfaction
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// --- meta.key value resolves to the expected string (companion to constraint test) ---
+// ---------------------------------------------------------------------------
+
+/// Companion to e2e_meta_access_in_constraint: verifies that `meta.tag` resolves
+/// to the expected `Value::String("valid")` at the eval boundary.
+///
+/// Uses a plain `let` binding (no constraint) so the resolved value is directly
+/// observable via `result.values`.  This proves the value handed to the constraint
+/// checker is the expected string rather than a coerced or default value.
+#[test]
+fn e2e_meta_access_in_constraint_value_resolves() {
+    let source = r#"
+        structure def S {
+            meta {
+                tag = "valid"
+            }
+            let tag_value : String = meta.tag
+        }
+    "#;
+
+    let compiled = parse_and_compile(source);
+
+    // Eval
+    let mut engine = make_engine();
+    let result = engine.eval(&compiled);
+
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
+    // Assert meta.tag resolves to the expected string — proves the value
+    // handed to the constraint checker is Value::String("valid"), not a
+    // coerced or default value.
+    let tag_value_id = ValueCellId::new("S", "tag_value");
+    assert_eq!(
+        result.values.get(&tag_value_id),
+        Some(&Value::String("valid".to_string())),
+        "S.tag_value should resolve to 'valid' via meta.tag"
+    );
 }
