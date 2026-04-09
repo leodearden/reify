@@ -17998,9 +17998,15 @@
         "updatedAt": "2026-04-03T23:29:51.820Z",
         "metadata": {
           "modules": [
+            "crates/reify-types",
             "crates/reify-expr",
-            "crates/reify-stdlib",
-            "crates/reify-types"
+            "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-stdlib/src/lib.rs",
+            "crates/reify-stdlib/src/complex.rs"
           ]
         }
       },
@@ -18017,9 +18023,14 @@
         "updatedAt": "2026-04-03T23:29:49.017Z",
         "metadata": {
           "modules": [
+            "crates/reify-types",
             "crates/reify-expr",
-            "crates/reify-stdlib",
-            "crates/reify-types"
+            "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-stdlib/src/lib.rs"
           ]
         }
       },
