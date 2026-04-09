@@ -526,6 +526,12 @@ printf 'if [[ -n "$var" ]]; then echo guard; fi\n' > "$fixture_double_bracket"
 if _has_if_n_guard "$fixture_double_bracket" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects double-bracket form: if [[ -n" "$ok"
 
+# `test` keyword form: `if test -n "$var"`
+fixture_test_keyword=$(mk_fixture)
+printf 'if test -n "$var"; then echo guard; fi\n' > "$fixture_test_keyword"
+if _has_if_n_guard "$fixture_test_keyword" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects test-keyword form: if test -n" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
