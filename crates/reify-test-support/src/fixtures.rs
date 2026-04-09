@@ -1292,6 +1292,20 @@ mod tests {
     }
 
     #[test]
+    fn warn_source_with_unknown_port_type_is_well_formed() {
+        let src = warn_source_with_unknown_port_type();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
+        );
+        assert!(
+            src.contains("param d : Length = 5mm"),
+            "missing 'param d : Length = 5mm'"
+        );
+    }
+
+    #[test]
     fn warning_source_with_width_param_cell_has_length_type_span_kind_and_default() {
         let source = warning_source_with_width();
         let compiled =
