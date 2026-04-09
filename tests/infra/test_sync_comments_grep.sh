@@ -112,6 +112,9 @@ assert "rejects: fnsanitize_value( (no space between fn keyword and name)" \
 assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
     bash -c "! printf '%s\n' 'my_fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "rejects: fn sanitize_value_raw<T>( (suffixed name that is also generic)" \
+    bash -c "! printf '%s\n' 'fn sanitize_value_raw<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 
