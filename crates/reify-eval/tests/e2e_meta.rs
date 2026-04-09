@@ -509,6 +509,12 @@ fn e2e_meta_access_in_constraint() {
         "expected at least one constraint result, got zero \
          (engine may have dropped the MetaAccess constraint expression)"
     );
+    assert_eq!(
+        result.constraint_results.len(),
+        1,
+        "expected exactly one constraint result for the single \
+         `constraint meta.tag == \"valid\"` declaration"
+    );
 
     // Assert no constraint violations
     for entry in &result.constraint_results {
