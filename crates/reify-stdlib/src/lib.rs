@@ -50,28 +50,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = linalg::dispatch(name, args) {
         return v;
     }
-    match name {
-        // --- Determinacy predicates (stubs) ---
-        // These predicates inspect DeterminacyState which is tracked in the Engine's
-        // snapshot, not in Value itself. Like sample(), the actual behavior is
-        // intercepted at the eval layer (reify-expr/reify-eval) where snapshot state
-        // is available. These stubs serve as documentation and fallback.
-        "determined" => Value::Undef,
-        "undetermined" => Value::Undef,
-        "constrained" => Value::Undef,
-        "partially_determined" => Value::Undef,
-
-        // --- Field operations (stubs) ---
-        // These are handled by reify-expr's eval_expr FunctionCall interceptor
-        // for actual lambda application; the stdlib entries serve as documentation
-        // and fallback for direct stdlib calls.
-        "sample" => Value::Undef, // Requires EvalContext for lambda application
-        "gradient" => Value::Undef, // Numeric differentiation not yet implemented
-        "divergence" => Value::Undef, // Numeric differentiation not yet implemented
-        "curl" => Value::Undef,   // Numeric differentiation not yet implemented
-
-        _ => Value::Undef,
+    if let Some(v) = stubs::dispatch(name, args) {
+        return v;
     }
+    Value::Undef
 }
 
 #[cfg(test)]
