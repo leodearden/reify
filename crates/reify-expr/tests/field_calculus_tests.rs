@@ -1201,3 +1201,76 @@ fn curl_2d_vector_field_returns_undef() {
         result
     );
 }
+
+/// divergence(gradient(f)) returns Undef — gradient-sourced fields are not
+/// accepted by compute_divergence's source-kind whitelist.
+///
+/// Build a 1D analytical field, produce a Gradient-sourced field via gradient(),
+/// then pass that to divergence. The source check fires before domain/codomain
+/// validation, so Undef is returned immediately. Mirrors
+/// gradient_of_gradient_field_returns_undef in gradient_tests.rs.
+#[test]
+fn divergence_gradient_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x*x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // gradient(field) — should succeed and produce a Gradient-sourced field
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter here
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "first gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // divergence(gradient_field) — source=Gradient not in {Analytical, Composed},
+    // so compute_divergence returns Undef immediately (lib.rs:742–747).
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::Real),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(grad_result, grad_field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence(gradient(f)) must return Undef, got {:?}",
+        result
+    );
+}
