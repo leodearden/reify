@@ -683,3 +683,65 @@ fn gradient_3d_vector_codomain_type() {
         );
     }
 }
+
+// ── Step 6: Sample identity test ─────────────────────────────────────────────
+
+/// sample(field, 3.0) returns exactly 7.0 for f(x)=2*x+1.
+///
+/// Tests the sample pathway independently of differential operators.
+/// Confirms field evaluation works as a baseline before testing operators
+/// that depend on sampling.
+#[test]
+fn field_composition_sample_identity() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2*x + 1
+    let two_x = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        two_x,
+        CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // sample(field, 3.0) → 2*3+1 = 7.0
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Real(7.0),
+        "sample(f(x)=2*x+1, 3.0) should return exactly 7.0, got {:?}",
+        result
+    );
+}
