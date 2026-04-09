@@ -115,7 +115,7 @@ fn did_open_params(uri: &str, text: &str) -> serde_json::Value {
 async fn open_bracket_doc(lsp: &InProcessLsp) {
     lsp.handle_request(
         "textDocument/didOpen",
-        did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
+        did_open_params("file:///test.ri", reify_test_support::bracket_source()),
     )
     .await
     .expect("open_bracket_doc: didOpen should succeed");
@@ -514,7 +514,7 @@ async fn did_open_returns_ok_null() {
     let result = lsp
         .handle_request(
             "textDocument/didOpen",
-            did_open_params("file:///test.ri", &reify_test_support::bracket_source()),
+            did_open_params("file:///test.ri", reify_test_support::bracket_source()),
         )
         .await
         .expect("didOpen should return Ok");

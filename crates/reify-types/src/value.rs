@@ -2605,7 +2605,7 @@ mod tests {
         // Meta-test: exercises the to_bits()-based PartialEq and total_cmp()-based
         // Ord paths through the strengthened helper (including the b.cmp(a) check)
         // for an equal float pair.
-        assert_ord_consistent(&Value::Real(3.14), &Value::Real(3.14), true);
+        assert_ord_consistent(&Value::Real(3.125), &Value::Real(3.125), true);
     }
 
     #[test]
@@ -5867,7 +5867,7 @@ mod tests {
                 "Scalar",
                 Value::Scalar {
                     si_value: 1.0,
-                    dimension: dim.clone(),
+                    dimension: dim,
                 },
             ),
             (
@@ -5914,7 +5914,7 @@ mod tests {
                 Value::Complex {
                     re: 0.0,
                     im: 0.0,
-                    dimension: dim.clone(),
+                    dimension: dim,
                 },
             ),
             ("Orientation", orient(1.0, 0.0, 0.0, 0.0)),

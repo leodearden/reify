@@ -807,12 +807,11 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
                 // (with literal quotes). The second criterion is intentionally broader
                 // so that a test using the bare path is discovered — and then fails
                 // the THIS_FILE assertion in test_self_read_paths_use_manifest_dir.
-                if let Some(body) = extract_test_fn_body(source, &sig) {
-                    if body.contains("(THIS_FILE)")
-                        || body.contains("\"tests/build_logic_tests.rs\"")
-                    {
-                        result.push(sig);
-                    }
+                if let Some(body) = extract_test_fn_body(source, &sig)
+                    && (body.contains("(THIS_FILE)")
+                        || body.contains("\"tests/build_logic_tests.rs\""))
+                {
+                    result.push(sig);
                 }
             }
             saw_test = false;
@@ -838,17 +837,13 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
 fn strip_line_comments(line: &str) -> String {
     // Step 1: remove all complete /* ... */ pairs on this line.
     let mut s = line.to_string();
-    loop {
-        if let Some(open) = s.find("/*") {
-            // Search for */ starting after the opening /*
-            if let Some(rel_close) = s[open + 2..].find("*/") {
-                let close_end = open + 2 + rel_close + 2; // byte index past "*/"
-                s.replace_range(open..close_end, "");
-            } else {
-                break; // unclosed block comment on this line — leave unchanged
-            }
+    while let Some(open) = s.find("/*") {
+        // Search for */ starting after the opening /*
+        if let Some(rel_close) = s[open + 2..].find("*/") {
+            let close_end = open + 2 + rel_close + 2; // byte index past "*/"
+            s.replace_range(open..close_end, "");
         } else {
-            break;
+            break; // unclosed block comment on this line — leave unchanged
         }
     }
     // Step 2: strip trailing // comment.

@@ -57,6 +57,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 }
 
 /// Load and compile a .ri file, returning both compiled module and eval result.
+#[allow(dead_code)]
 fn compile_and_eval_ri(path: &str, module_name: &str) -> (reify_compiler::CompiledModule, reify_eval::EvalResult) {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
@@ -196,7 +197,7 @@ fn three_deep_chain_values() {
 ///   - y > 0mm    (from Middle)
 ///   - z > 0mm    (from Leaf)
 ///   - z < x      (from ThreeDeepLeaf itself)
-/// Total: at least 4 constraints, all Satisfied.
+///     Total: at least 4 constraints, all Satisfied.
 #[test]
 fn three_deep_chain_constraints_all_satisfied() {
     let source = std::fs::read_to_string("../../examples/trait_hierarchy.ri")
