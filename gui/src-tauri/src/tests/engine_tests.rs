@@ -6,7 +6,7 @@ use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
-use crate::engine::{EngineSession, parse_value_string};
+use crate::engine::{EngineSession, module_key, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -1666,14 +1666,12 @@ fn resolve_source_panics_without_loaded_module() {
 /// module_key("bracket") == "bracket.ri" — normal identifier.
 #[test]
 fn module_key_normal_name() {
-    use crate::engine::module_key;
     assert_eq!(module_key("bracket"), "bracket.ri");
 }
 
 /// module_key("some_module") == "some_module.ri" — underscored name.
 #[test]
 fn module_key_underscored_name() {
-    use crate::engine::module_key;
     assert_eq!(module_key("some_module"), "some_module.ri");
 }
 
@@ -1685,7 +1683,6 @@ fn module_key_underscored_name() {
 /// into load_from_source without updating module_key.
 #[test]
 fn module_key_matches_load_from_source_insertion() {
-    use crate::engine::module_key;
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
