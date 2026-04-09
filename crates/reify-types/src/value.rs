@@ -3994,6 +3994,17 @@ mod tests {
     }
 
     #[test]
+    fn value_orientation_ord_equal_wx_different_y() {
+        // Equal w and x, different y with non-zero z — catches y/z field-order swap regressions.
+        // Correct Ord (w→x→y→z): w=0.5,x=0.5,y=1.0,z=0.5 > w=0.5,x=0.5,y=0.5,z=1.0
+        // because y=1.0 > y=0.5 when w and x are tied.
+        // A wrong impl comparing z before y would say the opposite (z=0.5 < z=1.0).
+        let higher_y = orient(0.5, 0.5, 1.0, 0.5);
+        let lower_y = orient(0.5, 0.5, 0.5, 1.0);
+        assert!(higher_y > lower_y);
+    }
+
+    #[test]
     fn value_ord_orientation_negative_components() {
         // Negative component values must order correctly via total_cmp().
         // to_bits() would give wrong ordering here — see module-level doc.
