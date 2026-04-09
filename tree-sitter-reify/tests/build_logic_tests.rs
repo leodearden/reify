@@ -905,6 +905,31 @@ fn find_bare_build_rs_violations(source: &str) -> Vec<(usize, &str)> {
         .collect()
 }
 
+/// Scans `source` for lines that contain a bare `"tests/build_logic_tests.rs"` or
+/// `"./tests/build_logic_tests.rs"` string literal (with literal double-quote characters)
+/// in non-comment code, and returns matching lines as `(1-based line number, original line)`
+/// pairs.
+///
+/// Each line is first passed through [`strip_line_comments`] so that patterns inside
+/// `//` or `/* */` comments are ignored.  Only the code portion is checked.
+///
+/// Delegates to [`find_bare_literal_violations`] with both path variants.
+///
+/// **Self-avoidance**: pattern strings defined in this file use escaped quotes
+/// (`\"tests/build_logic_tests.rs\"`) in Rust string literals, which in the raw source
+/// text appear as the two-character sequence `\"` — that does NOT match the unescaped
+/// `"` used as the search boundary, so this helper's own source does not trigger a
+/// false positive.
+fn find_bare_self_path_violations(source: &str) -> Vec<(usize, &str)> {
+    find_bare_literal_violations(
+        source,
+        &[
+            "\"tests/build_logic_tests.rs\"",
+            "\"./tests/build_logic_tests.rs\"",
+        ],
+    )
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: every #[cfg(unix)] test function that
