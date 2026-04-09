@@ -27430,11 +27430,11 @@
         "description": "Follow-up from Task 1279 review (esc-1279-4, S1 + S2 + S4). Three related test-quality improvements to tests/infra/test_sync_comments_grep.sh, all touching the pub+modifier assertion block near lines 92-102.\n\n**S1 — Disambiguate duplicate label (line 101-102):**\nTask 1279 added an assertion for `pub(super) const fn sanitize_value(` with the label \"(pub+const combination)\", which is identical to the existing `pub(crate) const fn` label at line 92. Two distinct assertions with the same parenthetical label make it harder to distinguish failures in CI output.\n\nFix: Rename the line 101 label to \"(pub(super)+const combination)\" to differentiate from the existing \"pub(crate)+const\" assertion at line 92.\n\n**S2 — Mirror new accept cases with _raw reject cases (after line 102):**\nThe new accept cases at lines 98-102 exercise `pub(crate) async fn` and `pub(super) const fn`, but there is no matching reject-case coverage for the same prefixes with a suffixed identifier. The existing reject cases only cover bare `fn sanitize_value_raw(`. A bug in the modifier chain could regress prefix+suffix interactions without this being caught.\n\nAdd reject-case mirrors near the existing reject block (~line 106+):\n- `rejects: pub(crate) async fn sanitize_value_raw(`\n- `rejects: pub(super) const fn sanitize_value_raw(`\n\n**S4 — Optional: fill remaining symmetry gaps (after line 102):**\nThe underlying pattern supports `pub(in path::to::mod) fn ...` and several uncovered modifier combinations. This is explicitly flagged by the reviewer as \"optional\" and \"a minor symmetry gap rather than a bug.\" Decide during implementation whether to include:\n- `accepts: pub(in crate::foo) fn sanitize_value(`\n- `accepts: pub(super) unsafe fn sanitize_value(`\n- `accepts: unsafe async fn sanitize_value(`\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1279-4 (steward-triage from Task 1279 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:59:57.832Z",
+        "updatedAt": "2026-04-09T17:00:05.600Z",
         "metadata": {
           "files": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -27518,7 +27518,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:00:05.134Z",
+      "lastModified": "2026-04-09T17:00:05.601Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
