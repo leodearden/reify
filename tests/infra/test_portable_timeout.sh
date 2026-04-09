@@ -593,5 +593,19 @@ echo "--- Test 23: timer subshells use quoted PGID argument for SIGKILL ---"
 assert "both timer subshells use quoted PGID in SIGKILL: exactly 2 occurrences" \
     bash -c 'count=$(grep -cF "kill -9 -- \"-\$cmd_pid\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
 
+# -- Test 24: structural: grace period is a named variable (DRY) (S4) ---------
+echo ""
+echo "--- Test 24: grace period DRY — local _pt_kill_grace variable used in both timer subshells ---"
+
+# The hardcoded 'sleep 2' in both timer subshells must be replaced by a single
+# named local variable '_pt_kill_grace=2' declared once in portable_timeout.
+# Two assertions: (a) the local declaration exists, (b) exactly 2 uses of
+# 'sleep "$_pt_kill_grace"' appear — one per timer subshell branch.
+assert "portable_timeout declares local _pt_kill_grace=2" \
+    grep -qE 'local[[:space:]]+_pt_kill_grace=2' "$LIB_PORTABLE"
+
+assert "both timer subshells reference \$_pt_kill_grace: exactly 2 occurrences" \
+    bash -c 'count=$(grep -cF "sleep \"\$_pt_kill_grace\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
