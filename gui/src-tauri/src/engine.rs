@@ -317,14 +317,22 @@ impl EngineSession {
         }
 
         // Resolve file_path and source text via the shared helper.
-        // Returns None if no module is loaded or if the invariant is broken
-        // (e.g., in tests via break_module_name_for_test); in that case we
-        // return an empty vec rather than panicking.
+        // Returns None only when the invariant is broken (module_name or
+        // source_map out of sync with compiled) — e.g., via break_*_for_test.
+        // In debug builds we catch this loudly so stale-state bugs surface
+        // immediately during development; release builds still return an empty
+        // vec for graceful degradation (debug_assert is a no-op there).
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
         let (file_path, source) = match self.resolve_source() {
             Some(pair) => pair,
-            None => return Vec::new(),
+            None => {
+                debug_assert!(
+                    false,
+                    "resolve_source returned None with non-empty diagnostics — invariant broken"
+                );
+                return Vec::new();
+            }
         };
 
         // Build the newline table once (O(M)) so each span lookup is O(log M).
