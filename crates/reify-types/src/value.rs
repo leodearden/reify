@@ -2046,6 +2046,93 @@ mod tests {
     }
 
     #[test]
+    fn nan_partialeq_bit_identity_scalar() {
+        let s1 = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let s2 = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            s1, s2,
+            "two separately constructed Scalar NaN values with identical bit patterns must compare equal"
+        );
+        assert_eq!(
+            s1,
+            s1.clone(),
+            "a Scalar NaN value must compare equal to its own clone"
+        );
+    }
+
+    #[test]
+    fn nan_partialeq_bit_identity_complex() {
+        // (a) both re and im are NaN
+        let c1 = Value::Complex {
+            re: f64::NAN,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c2 = Value::Complex {
+            re: f64::NAN,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c1, c2,
+            "two separately constructed Complex values with NaN re and NaN im must compare equal"
+        );
+        assert_eq!(
+            c1,
+            c1.clone(),
+            "a Complex value with NaN re and NaN im must compare equal to its own clone"
+        );
+
+        // (b) only re is NaN, im is finite
+        let c3 = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c4 = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c3, c4,
+            "two separately constructed Complex values with NaN re and finite im must compare equal"
+        );
+        assert_eq!(
+            c3,
+            c3.clone(),
+            "a Complex value with NaN re and finite im must compare equal to its own clone"
+        );
+
+        // (c) only im is NaN, re is finite
+        let c5 = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c6 = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c5, c6,
+            "two separately constructed Complex values with finite re and NaN im must compare equal"
+        );
+        assert_eq!(
+            c5,
+            c5.clone(),
+            "a Complex value with finite re and NaN im must compare equal to its own clone"
+        );
+    }
+
+    #[test]
     fn different_values_different_hashes() {
         let a = Value::length(0.08);
         let b = Value::length(0.10);
