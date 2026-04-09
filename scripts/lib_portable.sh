@@ -47,6 +47,8 @@ portable_sha256() {
 #   main shell's process-group kill (kill -- -$timer_pid) handles cleanup of
 #   the timer and its children atomically without this risk.  If the wrapped
 #   command ignores SIGTERM, the caller is responsible for handling escalation.
+#   Callers needing SIGKILL can wrap the command or check process liveness
+#   after portable_timeout returns.
 #
 # Ambiguity note (GNU timeout / gtimeout paths):
 #   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
