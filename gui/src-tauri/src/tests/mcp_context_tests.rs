@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::{ReifyToolContext, SelectionInfo};
-use reify_test_support::{MockGeometryKernel, bracket_source, warning_source};
+use reify_test_support::{MockGeometryKernel, bracket_source, warn_source_with_unknown_port_type};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
@@ -548,8 +548,12 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// This test therefore focuses on two things the engine test cannot cover: (a) that
 /// the wrapping path returns `Result::Ok`, and (b) that every field passes through
 /// without a field-swap bug. The pinned exact-coordinate span assertions
-/// (line/column/end_line/end_column) are the ONLY span-arithmetic regression guard in
-/// the test suite — they catch any accidental transposition that a bare `>= 1` range
+/// (line/column/end_line/end_column) are the only ones in the suite that pin literal
+/// exact-coordinate values for a real compiler-emitted span.
+/// `get_diagnostics_multi_diagnostic_stress_matches_reference` in `engine_tests.rs`
+/// pins coordinates against a `byte_offset_to_line_col` reference oracle for synthetic
+/// injected spans; this test provides complementary coverage on a real `port_decl` span
+/// shape. Together they catch any accidental transposition that a bare `>= 1` range
 /// check would miss. If a future change improves diagnostic locality (e.g. narrowing
 /// the span to point at just `NonExistentTrait` instead of the whole `port_decl`),
 /// update the pinned values to match the new coordinates — do NOT revert to range
@@ -560,7 +564,7 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
-    let source = warning_source();
+    let source = warn_source_with_unknown_port_type();
 
     let ctx = make_tauri_context_with_source(source, "test_warn");
     let diags = ctx
@@ -602,12 +606,12 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 
     // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
     // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) to the
-    // exclusive end byte one past the closing `}` of the port body. The `}` glyph
-    // sits at L4:C5 (four leading spaces → prefix chars().count() = 4, 1-indexed = 5).
-    // Tree-sitter's end_byte is exclusive (one past `}`), so offset_to_line_col_fast
-    // returns column 6 (chars().count() of the prefix through `}` = 5, plus 1 = 6).
-    // This is a multi-line span, so the former `if end_line == line` same-line guard
-    // was always false for this fixture.
+    // exclusive end byte one past the closing `}` of the port body (line 4: 4 spaces
+    // + `}`). `offset_to_line_col_fast` computes chars().count() of
+    // `source[line_start..end_byte]` and adds 1: that prefix is "    }" = 5 chars,
+    // so end_column = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column
+    // 6 is the exclusive one-past position.) This is a multi-line span, so the former
+    // `if end_line == line` same-line guard was always false for this fixture.
     assert_eq!(
         first.line, 2,
         "`port` keyword starts at line 2 of the fixture"

@@ -2719,7 +2719,10 @@ fn compile_expr_guarded(
                 {
                     // Check for self.sub.member chaining (handled at outer level): skip here
                     // if member is a sub-component name — return a StructureRef for the sub.
-                    if scope.sub_component_types.contains_key(member.as_str()) {
+                    // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                    if scope.sub_component_types.contains_key(member.as_str())
+                        && !scope.collection_sub_names.contains(member.as_str())
+                    {
                         // self.sub_name — return StructureRef so that chaining works
                         // (but note: this case is handled by the outer MemberAccess pattern below)
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
@@ -2729,6 +2732,21 @@ fn compile_expr_guarded(
                             sub_id,
                             Type::StructureRef(structure_name),
                         );
+                    }
+                    // Error: collection sub accessed directly through self.
+                    if scope.collection_sub_names.contains(member.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot access collection sub '{}' directly through self; \
+                                 use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
+                                member, member, member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "collection sub requires indexing",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -2754,6 +2772,7 @@ fn compile_expr_guarded(
                 }
 
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
+                // Guard: exclude collection subs (List<T>), which must be accessed via index.
                 if let reify_syntax::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
@@ -2761,6 +2780,7 @@ fn compile_expr_guarded(
                     && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
+                    && !scope.collection_sub_names.contains(sub_name.as_str())
                 {
                     // Resolve member type from sub_member_types
                     let member_type = match scope
@@ -2785,6 +2805,28 @@ fn compile_expr_guarded(
                         format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+                // Error: collection sub member accessed directly through self.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: sub_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.collection_sub_names.contains(sub_name.as_str())
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "cannot access member '{}' of collection sub '{}' directly through self; \
+                             use `{}[i].{}` for a specific instance",
+                            member, sub_name, sub_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "collection sub member requires indexing",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
             }
 
@@ -7482,9 +7524,11 @@ fn check_trait_conformance(
     let mut all_requirements: Vec<TraitRequirement> = Vec::new();
     let mut all_defaults: Vec<TraitDefault> = Vec::new();
     let mut visited_traits: HashSet<String> = HashSet::new();
-    let mut seen_requirement_names: HashMap<String, Type> = HashMap::new();
-    let mut seen_default_names: HashMap<String, Type> = HashMap::new();
-    let mut seen_let_hashes: HashMap<String, ContentHash> = HashMap::new();
+    // Maps name → (type/hash, originating trait name) so conflict diagnostics can name
+    // both traits instead of just saying "conflicting traits".
+    let mut seen_requirement_names: HashMap<String, (Type, String)> = HashMap::new();
+    let mut seen_default_names: HashMap<String, (Type, String)> = HashMap::new();
+    let mut seen_let_hashes: HashMap<String, (ContentHash, String)> = HashMap::new();
 
     for trait_bound in structure.trait_bounds {
         collect_all_requirements(
@@ -7502,19 +7546,33 @@ fn check_trait_conformance(
         );
     }
 
+    // Tag used when cross-checking requirements against available defaults.
+    // A `param` requirement can only be satisfied by a `param` default, and a `let`
+    // requirement only by a `let` default. A kind mismatch is treated the same as "no
+    // default" so the user sees "missing required member" rather than a confusing
+    // kind-mismatch error (the fix is the same either way: provide the member).
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum AvailableDefaultKind {
+        Param,
+        Let,
+    }
+
     // Build a map of available default names from all_defaults (non-constraint, named).
     // Used to cross-check requirements: a requirement is satisfied if the structure
-    // provides the member OR if another trait in the bound set provides a matching default.
-    let available_defaults: HashMap<String, Type> = all_defaults
+    // provides the member OR if another trait in the bound set provides a matching default
+    // of the SAME kind. Kind mismatches are ignored (treated as absent).
+    let available_defaults: HashMap<String, (AvailableDefaultKind, Type)> = all_defaults
         .iter()
         .filter_map(|d| {
             let name = d.name.as_deref()?;
-            let ty = match &d.kind {
-                DefaultKind::Param { cell_type, .. } => cell_type.clone(),
-                DefaultKind::Let(_) => Type::Real,
+            let (kind, ty) = match &d.kind {
+                DefaultKind::Param { cell_type, .. } => {
+                    (AvailableDefaultKind::Param, cell_type.clone())
+                }
+                DefaultKind::Let(_) => (AvailableDefaultKind::Let, Type::Real),
                 DefaultKind::Constraint(_) => return None,
             };
-            Some((name.to_string(), ty))
+            Some((name.to_string(), (kind, ty)))
         })
         .collect();
 
@@ -7522,6 +7580,12 @@ fn check_trait_conformance(
     for req in &all_requirements {
         match &req.kind {
             RequirementKind::Param(expected_type) | RequirementKind::Let(expected_type) => {
+                // Determine which default kind can satisfy this requirement.
+                let required_default_kind = match &req.kind {
+                    RequirementKind::Param(_) => AvailableDefaultKind::Param,
+                    RequirementKind::Let(_) => AvailableDefaultKind::Let,
+                    _ => unreachable!(),
+                };
                 match structure_members.get(&req.name) {
                     Some(actual_type) => {
                         if !implicitly_converts_to(actual_type, expected_type) {
@@ -7536,14 +7600,19 @@ fn check_trait_conformance(
                     }
                     None => {
                         // Check if a matching default from another trait satisfies this requirement.
+                        // Only a same-kind default can satisfy: a `let` default does NOT satisfy
+                        // a `param` requirement (param slots must be externally settable).
                         match available_defaults.get(&req.name) {
-                            Some(default_type)
-                                if implicitly_converts_to(default_type, expected_type) =>
+                            Some((default_kind, default_type))
+                                if *default_kind == required_default_kind
+                                    && implicitly_converts_to(default_type, expected_type) =>
                             {
-                                // Default satisfies the requirement — no error.
+                                // Same-kind default with matching type satisfies the requirement.
                             }
-                            Some(default_type) => {
-                                // Default exists but has wrong type → type mismatch.
+                            Some((default_kind, default_type))
+                                if *default_kind == required_default_kind =>
+                            {
+                                // Same-kind default but wrong type → type mismatch.
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "type mismatch for trait member '{}': \
@@ -7556,8 +7625,10 @@ fn check_trait_conformance(
                                     )),
                                 );
                             }
-                            None => {
-                                // No default available — truly missing.
+                            _ => {
+                                // No default, or a default of the wrong kind — treat as missing.
+                                // A param requirement with only a let default in scope means the
+                                // structure must provide a settable param slot itself.
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "missing required member '{}' (expected type: {})",
@@ -7705,9 +7776,10 @@ fn collect_all_requirements(
     requirements: &mut Vec<TraitRequirement>,
     defaults: &mut Vec<TraitDefault>,
     visited: &mut HashSet<String>,
-    seen_names: &mut HashMap<String, Type>,
-    seen_defaults: &mut HashMap<String, Type>,
-    seen_let_hashes: &mut HashMap<String, ContentHash>,
+    // Maps member name → (type, originating trait name) for conflict reporting.
+    seen_names: &mut HashMap<String, (Type, String)>,
+    seen_defaults: &mut HashMap<String, (Type, String)>,
+    seen_let_hashes: &mut HashMap<String, (ContentHash, String)>,
     structure_members: &HashMap<String, Type>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
@@ -7749,19 +7821,26 @@ fn collect_all_requirements(
         };
 
         if let Some(expected_type) = &expected_type {
-            if let Some(existing_type) = seen_names.get(&req.name) {
+            if let Some((existing_type, existing_trait)) = seen_names.get(&req.name) {
                 if existing_type != expected_type {
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "conflicting trait requirements for '{}': {} vs {}",
-                            req.name, existing_type, expected_type
+                            "conflicting trait requirements for '{}': \
+                             trait '{}' requires {}, trait '{}' requires {}",
+                            req.name, existing_trait, existing_type, trait_name, expected_type
                         ))
-                        .with_label(DiagnosticLabel::new(span, "conflicting traits")),
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                        )),
                     );
                 }
                 continue; // Deduplicated
             }
-            seen_names.insert(req.name.clone(), expected_type.clone());
+            seen_names.insert(
+                req.name.clone(),
+                (expected_type.clone(), trait_name.to_string()),
+            );
         }
 
         requirements.push(req.clone());
@@ -7776,23 +7855,30 @@ fn collect_all_requirements(
             // For let bindings: use content_hash comparison to distinguish same
             // expression (dedup) vs different expression (conflict).
             if let DefaultKind::Let(let_decl) = &default.kind {
-                if let Some(existing_hash) = seen_let_hashes.get(name.as_str()) {
+                if let Some((existing_hash, existing_trait)) = seen_let_hashes.get(name.as_str()) {
                     if existing_hash != &let_decl.content_hash
                         && !structure_members.contains_key(name.as_str())
                     {
                         // Same name, different expression, not overridden → conflict.
                         diagnostics.push(
                             Diagnostic::error(format!(
-                                "conflicting trait let bindings for '{}': different expressions from merged traits",
-                                name
+                                "conflicting trait let bindings for '{}': \
+                                 trait '{}' and trait '{}' provide different expressions",
+                                name, existing_trait, trait_name
                             ))
-                            .with_label(DiagnosticLabel::new(span, "conflicting trait let bindings")),
+                            .with_label(DiagnosticLabel::new(
+                                span,
+                                format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                            )),
                         );
                     }
                     // Same name already seen (same or different hash) → skip.
                     continue;
                 }
-                seen_let_hashes.insert(name.clone(), let_decl.content_hash);
+                seen_let_hashes.insert(
+                    name.clone(),
+                    (let_decl.content_hash, trait_name.to_string()),
+                );
                 // Fall through to insert into seen_defaults and push.
             }
 
@@ -7803,22 +7889,26 @@ fn collect_all_requirements(
                 DefaultKind::Constraint(_) => Type::Bool, // sentinel for constraint label dedup
             };
 
-            if let Some(existing_type) = seen_defaults.get(name.as_str()) {
+            if let Some((existing_type, existing_trait)) = seen_defaults.get(name.as_str()) {
                 if existing_type != &default_type && !structure_members.contains_key(name.as_str())
                 {
                     // Same name + different type + not overridden → conflict
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "conflicting trait defaults for '{}': {} vs {}",
-                            name, existing_type, default_type
+                            "conflicting trait defaults for '{}': \
+                             trait '{}' has {}, trait '{}' has {}",
+                            name, existing_trait, existing_type, trait_name, default_type
                         ))
-                        .with_label(DiagnosticLabel::new(span, "conflicting trait defaults")),
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                        )),
                     );
                 }
                 // Same name already seen → skip (deduplicate).
                 continue;
             }
-            seen_defaults.insert(name.clone(), default_type);
+            seen_defaults.insert(name.clone(), (default_type, trait_name.to_string()));
             defaults.push(default.clone());
         }
     }

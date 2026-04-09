@@ -2,8 +2,8 @@ use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
-    MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source,
-    warning_source_with_width,
+    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
 
@@ -835,7 +835,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = warning_source();
+    let source = warn_source_with_unknown_port_type();
 
     // load_from_source should succeed — warnings are not errors
     session
@@ -945,7 +945,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = warning_source_with_width();
+    let source = warn_source_with_unknown_port_type_with_width();
 
     session
         .load_from_source(source, "testmod")
@@ -987,7 +987,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     session
-        .load_from_source(warning_source(), "initial")
+        .load_from_source(warn_source_with_unknown_port_type(), "initial")
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
@@ -1007,7 +1007,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     );
 
     session
-        .update_source("updated.ri", warning_source())
+        .update_source("updated.ri", warn_source_with_unknown_port_type())
         .expect("update_source should succeed");
 
     let diags_after = session.get_diagnostics();
@@ -1232,7 +1232,7 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
 
     // Load warning source — establishes a non-empty diagnostics state
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("warning source should compile");
 
     let diags_before = session.get_diagnostics();
@@ -1911,7 +1911,7 @@ fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled is Some, module_name is None.
@@ -1940,7 +1940,7 @@ fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled and module_name are Some,

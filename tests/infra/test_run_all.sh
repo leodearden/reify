@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+_TMPDIRS=()
+cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
@@ -37,8 +41,9 @@ echo "--- Test 2: test_helpers.sh excluded from discovery ---"
 
 if [ -f "$RUN_ALL" ]; then
     TMPDIR_T2="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T2")
     cp "$SCRIPT_DIR/test_helpers.sh" "$TMPDIR_T2/test_helpers.sh"
-    t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" && t2_rc=0 || t2_rc=$?
+    t2_output="$(bash "$RUN_ALL" "$TMPDIR_T2" 2>&1)" || true
     rm -rf "$TMPDIR_T2"
 
     if ! echo "$t2_output" | grep -q "Running: test_helpers\.sh"; then
@@ -60,6 +65,7 @@ echo "--- Test 3: test_*.sh discovery (mock dir) ---"
 
 if [ -f "$RUN_ALL" ]; then
     TMPDIR_T3="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T3")
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_portable_sha256.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_test_helpers.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T3/test_helpers.sh"
@@ -101,6 +107,7 @@ echo "--- Test 4: exit-code aggregation ---"
 if [ -f "$RUN_ALL" ]; then
     # 4a: all-pass scenario — should exit 0
     TMPDIR_PASS="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_PASS")
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_PASS/test_alpha.sh"
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_PASS/test_beta.sh"
     chmod +x "$TMPDIR_PASS/test_alpha.sh" "$TMPDIR_PASS/test_beta.sh"
@@ -114,6 +121,7 @@ if [ -f "$RUN_ALL" ]; then
 
     # 4b: any-fail scenario — should exit 1
     TMPDIR_FAIL="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_FAIL")
     printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_FAIL/test_pass.sh"
     printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_FAIL/test_fail.sh"
     chmod +x "$TMPDIR_FAIL/test_pass.sh" "$TMPDIR_FAIL/test_fail.sh"
@@ -127,6 +135,7 @@ if [ -f "$RUN_ALL" ]; then
 
     # 4c: no test_*.sh files scenario — should exit 0 (empty suite is success)
     TMPDIR_EMPTY="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_EMPTY")
     t4c_rc=0
     bash "$RUN_ALL" "$TMPDIR_EMPTY" >/dev/null 2>&1 || t4c_rc=$?
     rm -rf "$TMPDIR_EMPTY"
@@ -148,6 +157,24 @@ echo "--- Test 5: orchestrator.yaml test_command includes run_all.sh ---"
 
 assert "orchestrator.yaml references tests/infra/run_all.sh" \
     bash -c "grep -q 'tests/infra/run_all\.sh' '$ORCHESTRATOR_YAML'"
+
+# -- Test 6: structural self-checks (meta-assertions) ---------------------------
+echo ""
+echo "--- Test 6: structural self-checks ---"
+
+THIS_FILE="${BASH_SOURCE[0]}"
+
+assert "t2_rc dead variable removed" \
+    bash -c "! grep -qE 't2_rc=[0\$]' '$THIS_FILE'"
+
+assert "trap cleanup EXIT is registered" \
+    bash -c "grep -Eq '^trap cleanup EXIT' '$THIS_FILE'"
+
+assert "_TMPDIRS array is declared" \
+    bash -c "grep -Eq '^_TMPDIRS=\(\)' '$THIS_FILE'"
+
+assert "cleanup() function defined" \
+    bash -c "grep -Eq '^cleanup\(\) \{' '$THIS_FILE'"
 
 # -- Summary --------------------------------------------------------------------
 test_summary

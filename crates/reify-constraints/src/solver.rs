@@ -766,24 +766,21 @@ fn solutions_agree(
     true
 }
 
-/// Verify solution uniqueness by re-solving from a perturbed starting point.
+/// Build the perturbed initial point for uniqueness verification.
 ///
-/// Creates a perturbed initial point by reflecting each parameter to the
-/// opposite end of its effective bounds range. If the solution found from
-/// the perturbed starting point matches the original within tolerance,
-/// the solution is considered unique.
+/// For each auto parameter, computes the perturbed starting value by reflecting
+/// to the opposite end of its effective bounds range from the current solution.
+/// If a solved value is missing or non-numeric (`as_f64()` returns `None`), the
+/// midpoint is used as a fallback and the parameter ID is added to the returned
+/// missing list.
 ///
-/// Returns `true` if the solution is unique, `false` if a different
-/// solution was found (indicating the problem is underdetermined).
-fn verify_uniqueness(
-    problem: &ResolutionProblem,
+/// Returns `(perturbed_anchors, missing_param_ids)`.
+fn build_perturbation_anchors(
+    auto_params: &[reify_types::AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
-) -> bool {
-    // Build perturbed initial point: reflect each param to the opposite
-    // end of its bounds range from the solution.
+) -> (Vec<f64>, Vec<String>) {
     let mut missing: Vec<String> = Vec::new();
-    let perturbed: Vec<f64> = problem
-        .auto_params
+    let perturbed: Vec<f64> = auto_params
         .iter()
         .map(|param| {
             let (lo, hi) = effective_bounds(param);
@@ -804,9 +801,28 @@ fn verify_uniqueness(
             }
         })
         .collect();
+    (perturbed, missing)
+}
+
+/// Verify solution uniqueness by re-solving from a perturbed starting point.
+///
+/// Creates a perturbed initial point by reflecting each parameter to the
+/// opposite end of its effective bounds range. If the solution found from
+/// the perturbed starting point matches the original within tolerance,
+/// the solution is considered unique.
+///
+/// Returns `true` if the solution is unique, `false` if a different
+/// solution was found (indicating the problem is underdetermined).
+fn verify_uniqueness(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    // Build perturbed initial point: reflect each param to the opposite
+    // end of its bounds range from the solution.
+    let (perturbed, missing) =
+        build_perturbation_anchors(&problem.auto_params, solved_values);
     if !missing.is_empty() {
         tracing::warn!(
-            missing_params = ?missing,
             "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
              using midpoint as comparison anchor \
              (perturbation start defaults to lower-half side)",
@@ -933,15 +949,17 @@ mod tests {
     ///
     /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
     /// 2. Every substring in `expected_warn_substrings` appears in the joined WARN messages
-    ///    (verifies that the relevant `ValueCellId`s were included in the event via the
-    ///    `missing_params = ?missing` field).
+    ///    (verifies that the relevant `ValueCellId`s were rendered into the message body via
+    ///    the `{:?}` placeholder; `WarnCapturingSubscriber`'s `MessageVisitor` only captures
+    ///    the `message` field and ignores all structured fields — see
+    ///    `crates/reify-test-support/src/tracing_support.rs`).
     ///
     /// Returns the `unique` flag so each call site can assert the verdict with its own
     /// descriptive message, consistent with the named-local style of the sibling tests.
     ///
-    /// See the section comment below (above the `verify_uniqueness_warns_*` tests) for the
-    /// early-return coverage rationale (solve_core and solutions_agree are NOT invoked on
-    /// the missing/non-numeric path).
+    /// See the section comment below (above `verify_uniqueness_aggregates_warn_for_multiple_missing_params`)
+    /// for the early-return coverage rationale (solve_core and solutions_agree are NOT
+    /// invoked on the missing/non-numeric path).
     fn assert_verify_uniqueness_aggregated_warn(
         problem: &ResolutionProblem,
         solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
@@ -974,6 +992,16 @@ mod tests {
                 "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
             );
         }
+
+        // Pin the rendered count placeholder ({} via missing.len()) so a future cleanup
+        // cannot silently drop it from the format-string body without test failure.
+        let expected_count_fragment =
+            format!("{} solved value(s)", expected_warn_substrings.len());
+        assert!(
+            all_msgs.contains(&expected_count_fragment),
+            "expected WARN messages to contain rendered count {expected_count_fragment:?} \
+             (via the {{}} placeholder in the format-string body); messages: {msgs:?}"
+        );
 
         unique
     }
@@ -1127,131 +1155,10 @@ mod tests {
         }
     }
 
-    // ---- verify_uniqueness tracing tests ----
-    //
-    // Coverage note (S3 rationale — Task 1228 review, resolved by Task 1243):
-    //
-    // These tests exercise ONLY the early-return path in `verify_uniqueness` that was
-    // introduced by Task 1242 (commit 3414dcc11). When `verify_uniqueness` detects a
-    // missing or non-numeric param, it emits the aggregated WARN and immediately returns
-    // `false` — `solve_core` and `solutions_agree` are never called on this path.
-    //
-    // Consequence: Task 1228 review suggestion S3 proposed adding a `solutions_agree`
-    // WARN count assertion here to restore cross-coverage of that function's warn
-    // emission on the single-missing-param path. That assertion is moot: the early-return
-    // short-circuits before `solutions_agree` is reached, so its WARN count would always
-    // be 0 on these tests, making any such assertion vacuous or wrong.
-    //
-    // Any future regression in `solutions_agree`'s own WARN emission is caught by the
-    // `solutions_agree_*` tests in this same module, not by these `verify_uniqueness_*`
-    // tests. The two families are intentionally decoupled.
-    //
-    // NB: the early-return invariant is directly asserted by
-    // `verify_uniqueness_skips_solve_core_when_param_missing` below.
-
-    #[test]
-    fn verify_uniqueness_warns_when_param_missing_from_solved_values() {
-        use std::collections::HashMap;
-
-        use reify_types::{AutoParam, Type, ValueCellId};
-
-        let param_id = ValueCellId::new("Part", "x");
-        let problem = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: param_id.clone(),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            }],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
-
-        // Empty solved_values: param is missing → None branch fires in verify_uniqueness
-        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
-
-        let unique =
-            assert_verify_uniqueness_aggregated_warn(&problem, &solved_values, &["Part.x"]);
-        assert!(!unique, "missing solved value should cause uniqueness check to fail");
-    }
-
-    #[test]
-    fn verify_uniqueness_warns_when_param_is_non_numeric() {
-        use std::collections::HashMap;
-
-        use reify_types::{AutoParam, Type, Value, ValueCellId};
-
-        let param_id = ValueCellId::new("Part", "x");
-        let problem = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: param_id.clone(),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            }],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
-
-        // Value::Undef: as_f64() returns None → None branch fires in verify_uniqueness
-        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
-        solved_values.insert(param_id.clone(), Value::Undef);
-
-        let unique =
-            assert_verify_uniqueness_aggregated_warn(&problem, &solved_values, &["Part.x"]);
-        assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
-    }
-
-    #[test]
-    fn verify_uniqueness_no_warn_when_param_has_valid_f64() {
-        use std::collections::HashMap;
-
-        use reify_test_support::warn_capturing_subscriber;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
-
-        use super::verify_uniqueness;
-
-        let param_id = ValueCellId::new("Part", "x");
-        let problem = ResolutionProblem {
-            auto_params: vec![AutoParam {
-                id: param_id.clone(),
-                param_type: Type::length(),
-                bounds: Some((0.0, 1.0)),
-                free: false,
-            }],
-            constraints: vec![],
-            current_values: ValueMap::new(),
-            objective: None,
-            functions: vec![],
-        };
-
-        // Valid f64 value: no None branch, no warn expected
-        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
-        solved_values.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 0.25,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
-
-        let (subscriber, capture) = warn_capturing_subscriber();
-        // NB: the return value is captured but NOT asserted on. With no constraints,
-        // `solve_core` early-returns the perturbed initial (0.9) unchanged; `solutions_agree`
-        // finds a 0.65 disagreement vs. the original 0.25, so `verify_uniqueness` returns
-        // `false`. This test's contract is the *absence* of the fallback warn (the happy-path
-        // branch where `as_f64()` returns `Some`), not a uniqueness verdict. `_unique` keeps
-        // captured-value symmetry with the sibling tests without asserting the verdict.
-        let _unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        capture.assert_count(0);
-    }
+    // ---- verify_uniqueness integration test ----
+    // None-branch data logic is tested in isolation by the build_perturbation_anchors
+    // unit tests above. This single end-to-end test verifies that warn emission actually
+    // fires through verify_uniqueness when params are missing.
 
     #[test]
     fn verify_uniqueness_aggregates_warn_for_multiple_missing_params() {
@@ -1364,6 +1271,143 @@ mod tests {
             "expected 0 DEBUG events (early-return skips both the \
              'verifying uniqueness via perturbation' debug and all solve_core debug events); \
              got {debug_n}"
+        );
+    }
+
+    // ---- build_perturbation_anchors unit tests ----
+
+    #[test]
+    fn build_perturbation_anchors_valid_f64() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values = HashMap::new();
+        solved_values.insert(id, scalar(0.25));
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert_eq!(perturbed.len(), 1);
+        // solution 0.25 < mid 0.5 → lo + 0.9*(hi-lo) = 0.0 + 0.9*1.0 = 0.9
+        assert!(
+            (perturbed[0] - 0.9).abs() < 1e-10,
+            "expected perturbed[0] == 0.9, got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_missing_param() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (_id, params) = test_param();
+        // Empty map: param is absent → None branch fires, mid is used as fallback
+        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing, vec!["Part.x"], "expected Part.x in missing list");
+        assert_eq!(perturbed.len(), 1);
+        // fallback is mid = 0.5, which is NOT < mid → upper-half branch: lo + 0.1*(hi-lo) = 0.1
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 (midpoint fallback goes to lower side), got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_non_numeric_undef() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> =
+            HashMap::new();
+        // Value::Undef: as_f64() returns None → same None-branch as missing
+        solved_values.insert(id, reify_types::Value::Undef);
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing, vec!["Part.x"], "Value::Undef should appear in missing list");
+        assert_eq!(perturbed.len(), 1);
+        // fallback mid = 0.5 (not < 0.5) → lo + 0.1*(hi-lo) = 0.1
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 for Undef fallback, got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_multiple_missing() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let param_x = ValueCellId::new("Part", "x");
+        let param_y = ValueCellId::new("Part", "y");
+        let params = vec![
+            AutoParam {
+                id: param_x,
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+            AutoParam {
+                id: param_y,
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+        ];
+        // Both params absent → both hit the None branch
+        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing.len(), 2, "both params should be missing; got {:?}", missing);
+        assert!(missing.contains(&"Part.x".to_string()), "Part.x should be missing");
+        assert!(missing.contains(&"Part.y".to_string()), "Part.y should be missing");
+        assert_eq!(perturbed.len(), 2);
+        // Both fall back to mid = 0.5 → lo + 0.1*(hi-lo) = 0.1 each
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1, got {}",
+            perturbed[0]
+        );
+        assert!(
+            (perturbed[1] - 0.1).abs() < 1e-10,
+            "expected perturbed[1] == 0.1, got {}",
+            perturbed[1]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_upper_half_solution() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values = HashMap::new();
+        // 0.75 >= mid 0.5 → upper half → lo + 0.1*(hi-lo) = 0.1 (perturbation to lower side)
+        solved_values.insert(id, scalar(0.75));
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert_eq!(perturbed.len(), 1);
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 (upper-half solution → lower-end perturbation), got {}",
+            perturbed[0]
         );
     }
 
