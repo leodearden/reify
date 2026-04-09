@@ -821,3 +821,300 @@ fn gradient_dimensional_correctness() {
         }
     }
 }
+
+// ── Step 8: Robustness tests ──────────────────────────────────────────────────
+
+/// Divergence of constant vector field F(x,y,z)=[1,1,1] should be ≈0.
+///
+/// The divergence of a constant field is exactly zero (no variation in any direction).
+/// Central differences should give near-zero result within 1e-6.
+#[test]
+fn divergence_constant_field_near_zero() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(1.0, 1.0, 1.0) (constant vector field)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // divergence(field) → scalar field ≈ 0
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of constant vector field should return a Field, got {:?}",
+        div_result
+    );
+
+    // sample at any point, expect near 0
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!("divergence sample should be numeric, got {:?}", sample_result)
+    });
+    assert!(
+        val.abs() < 1e-6,
+        "divergence of constant [1,1,1] should be ≈0, got {}",
+        val
+    );
+}
+
+/// Gradient of linear f(x,y,z)=x+2*y+3*z is constant [1,2,3] everywhere.
+///
+/// Verify gradient at two different points both give ≈[1,2,3] within 1e-4.
+#[test]
+fn gradient_linear_field_constant() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + 2*y + 3*z
+    let two_y = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let three_z = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            two_y,
+            Type::Real,
+        ),
+        three_z,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // gradient(field) should give constant [1, 2, 3]
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    // Verify at two different points
+    let test_points = [
+        Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]),
+        Value::Point(vec![Value::Real(5.0), Value::Real(10.0), Value::Real(15.0)]),
+    ];
+
+    for (i, point) in test_points.iter().enumerate() {
+        let sample_expr = make_function_call(
+            "sample",
+            vec![
+                CompiledExpr::literal(grad_result.clone(), grad_field_type.clone()),
+                CompiledExpr::literal(point.clone(), domain_type.clone()),
+            ],
+            Type::vec3(Type::Real),
+        );
+        let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+        assert_gradient_vector(
+            &sample_result,
+            &[1.0, 2.0, 3.0],
+            1e-4,
+            &format!("gradient of x+2y+3z at point {i}"),
+        );
+    }
+}
+
+/// Laplacian of linear f(x,y,z)=x+2*y+3*z should be ≈0.
+///
+/// Second partial derivatives of a linear function are all zero.
+/// Tolerance 1e-4 accounts for two levels of numerical differentiation.
+#[test]
+fn laplacian_linear_field_near_zero() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + 2*y + 3*z
+    let two_y = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let three_z = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            two_y,
+            Type::Real,
+        ),
+        three_z,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field ≈ 0
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of linear field should return a Field, got {:?}",
+        lap_result
+    );
+
+    // sample at (1, 2, 3)
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+    });
+    assert!(
+        val.abs() < 1e-4,
+        "laplacian of linear field should be ≈0, got {}",
+        val
+    );
+}
