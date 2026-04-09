@@ -790,8 +790,9 @@ fn verify_uniqueness(
                     tracing::warn!(
                         param = %param.id,
                         mid,
-                        "verify_uniqueness: solved value missing or non-numeric, \
-                         falling back to mid for perturbation start"
+                        "verify_uniqueness: solved value missing or non-numeric; \
+                         using midpoint as comparison anchor \
+                         (perturbation start defaults to lower-half side)"
                     );
                     mid
                 }
