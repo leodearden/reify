@@ -1508,7 +1508,19 @@ pub(crate) fn compile_expr_guarded(
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "internal compiler error: unresolved sub-member type for '{}.{}'",
+                            sub_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "ICE: sub-member type not registered",
+                        )),
+                    );
+                    Type::Real
+                });
             CompiledExpr::value_ref(id, ty)
         }
     }
