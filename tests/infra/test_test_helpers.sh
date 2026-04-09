@@ -250,6 +250,124 @@ for consumer in "${CONSUMERS[@]}"; do
 done
 
 # ==============================================================================
+# sync_comments_test.sh refactoring structural checks
+# Verify: DRY helper exists, defensive if-guards removed, head -1 documented.
+# ==============================================================================
+
+SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
+
+echo ""
+echo "--- sync_comments_test.sh structural checks ---"
+
+# (a) file defines assert_sync_ref_exists() helper function
+if grep -qE '^assert_sync_ref_exists\(\)' "$SYNC_FILE" 2>/dev/null; then
+    check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
+else
+    check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
+fi
+
+# (b) file has NO conditional if [ -n "$_..." ] guard (defensive guards removed)
+if ! grep -Fq 'if [ -n "$_' "$SYNC_FILE" 2>/dev/null; then
+    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "true"
+else
+    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "false"
+fi
+
+# (c) head -1 pipeline has adjacent comment documenting single-reference limitation
+if grep -B3 'head -1' "$SYNC_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
+    check "head -1 pipeline has single-reference documentation comment" "true"
+else
+    check "head -1 pipeline has single-reference documentation comment" "false"
+fi
+
+# (d) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
+if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_FILE" 2>/dev/null; then
+    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "true"
+else
+    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "false"
+fi
+
+# (e) assert_sync_ref_exists uses a display_fn fallback variable
+if grep -Fq 'display_fn' "$SYNC_FILE" 2>/dev/null; then
+    check "assert_sync_ref_exists uses display_fn fallback variable" "true"
+else
+    check "assert_sync_ref_exists uses display_fn fallback variable" "false"
+fi
+
+# (f) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
+if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn docstring uses 'naturally excluded' wording" "true"
+else
+    check "extract_fn docstring uses 'naturally excluded' wording" "false"
+fi
+
+# (g) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
+if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
+else
+    check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
+fi
+
+# (h) extract_fn output is captured to a named variable before diffing (non-empty guard)
+if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn output captured to expr_body variable" "true"
+else
+    check "extract_fn output captured to expr_body variable" "false"
+fi
+
+# (i) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
+if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn non-empty guard present for expr_body" "true"
+else
+    check "extract_fn non-empty guard present for expr_body" "false"
+fi
+
+# behavioral: extract_fn returns empty output for a non-existent function name,
+# confirming the non-empty guard would fire when a fn is renamed or missing.
+echo ""
+echo "--- extract_fn non-empty guard behavioral test ---"
+
+_fn_beh_out=$(bash -c "
+    tmp=\$(mktemp)
+    printf 'fn sanitize_value(\n    v: i32,\n) -> i32 {\n    v\n}\n' > \"\$tmp\"
+    source '${HELPER_FILE}'
+    test_summary() { :; }
+    { source '${SYNC_FILE}'; } >/dev/null 2>&1
+    PASS=0; FAIL=0
+    extract_fn nonexistent_fn_xyz \"\$tmp\"
+    rm -f \"\$tmp\"
+")
+
+if [ -z "$_fn_beh_out" ]; then
+    check "extract_fn returns empty output for non-existent function name" "true"
+else
+    check "extract_fn returns empty output for non-existent function name (got: $_fn_beh_out)" "false"
+fi
+
+# (j) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
+echo ""
+echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
+
+_beh_out=$(bash -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
+    echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
+    source '${HELPER_FILE}'
+    test_summary() { :; }
+    source '${SYNC_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
+    rm -f \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1)
+
+if echo "$_beh_out" | grep -q 'FAIL'; then
+    check "guard fires and records FAIL when ref_fn extraction yields nothing" "true"
+else
+    check "guard fires and records FAIL when ref_fn extraction yields nothing (got: $_beh_out)" "false"
+fi
+
+# ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
 # richer assert API and is intentionally excluded from this shared module.

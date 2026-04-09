@@ -52,7 +52,6 @@ fn check_source(source: &str) -> reify_eval::CheckResult {
 // ─── step-9: self.param eval produces correct value ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_param_eval_produces_correct_value() {
     // `self.thickness` should evaluate to the same value as `thickness`.
     // 5mm = 0.005 in SI (meters).
@@ -75,9 +74,9 @@ fn self_param_eval_produces_correct_value() {
         .get(&mirror_id)
         .expect("mirror should be in eval result");
 
-    // Both should be Real values equal to 0.005 (5mm in SI meters)
+    // Both should be Scalar values equal to 0.005 (5mm in SI meters)
     match (thickness_val, mirror_val) {
-        (Value::Real(t), Value::Real(m)) => {
+        (Value::Scalar { si_value: t, .. }, Value::Scalar { si_value: m, .. }) => {
             assert!(
                 (t - 0.005).abs() < 1e-9,
                 "thickness should be 0.005, got {}",
@@ -89,14 +88,14 @@ fn self_param_eval_produces_correct_value() {
                 m
             );
             assert!(
-                (t - m).abs() < 1e-15,
+                (t - m).abs() < 1e-9,
                 "mirror should equal thickness: {} vs {}",
                 t,
                 m
             );
         }
         _ => panic!(
-            "expected Real values, got thickness={:?}, mirror={:?}",
+            "expected Scalar values, got thickness={:?}, mirror={:?}",
             thickness_val, mirror_val
         ),
     }
@@ -105,7 +104,6 @@ fn self_param_eval_produces_correct_value() {
 // ─── step-10: self in let arithmetic eval ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_let_arithmetic_eval() {
     // `self.a + self.b` should evaluate to the sum: 3mm + 7mm = 10mm = 0.010 SI.
     let result = eval_source(
@@ -123,21 +121,20 @@ fn self_in_let_arithmetic_eval() {
         .expect("sum should be in eval result");
 
     match sum_val {
-        Value::Real(v) => {
+        Value::Scalar { si_value: v, .. } => {
             assert!(
                 (v - 0.010).abs() < 1e-9,
                 "sum should be 0.010 (10mm SI), got {}",
                 v
             );
         }
-        _ => panic!("expected Real value for sum, got {:?}", sum_val),
+        _ => panic!("expected Scalar value for sum, got {:?}", sum_val),
     }
 }
 
 // ─── step-12: self in constraint eval ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_eval_satisfied() {
     // `constraint self.x > 2mm` with x = 5mm should be satisfied.
     let result = check_source(
@@ -170,19 +167,18 @@ fn self_in_constraint_eval_satisfied() {
         .get(&x_id)
         .expect("x should be in check result");
     match x_val {
-        Value::Real(v) => {
+        Value::Scalar { si_value: v, .. } => {
             assert!(
                 (v - 0.005).abs() < 1e-9,
                 "x should be 0.005 (5mm SI), got {}",
                 v
             );
         }
-        _ => panic!("expected Real value for x, got {:?}", x_val),
+        _ => panic!("expected Scalar value for x, got {:?}", x_val),
     }
 }
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_eval_violated() {
     // `constraint self.x > 2mm` with x = 1mm should be violated.
     let result = check_source(

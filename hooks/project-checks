@@ -49,8 +49,8 @@ if [ -d "$ROOT/gui" ]; then
     fi
 
     echo "  typecheck: gui"
-    if ! (cd "$ROOT/gui" && npx tsc --noEmit); then
-        echo "pre-commit: tsc --noEmit failed in gui/. Fix type errors before committing to main."
+    if ! (cd "$ROOT/gui" && npm run typecheck); then
+        echo "pre-commit: npm run typecheck failed in gui/. Fix type errors before committing to main."
         exit 1
     fi
 

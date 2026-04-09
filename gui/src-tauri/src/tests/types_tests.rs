@@ -494,3 +494,119 @@ fn format_value_undef() {
         ("undefined".to_string(), String::new())
     );
 }
+
+// --- serialize_finite_f32_vec characterization tests ---
+// These tests exercise serialize_finite_f32_vec (private fn) through MeshData's
+// Serialize impl, covering both happy-path and error paths, characterizing the merged single-pass loop behavior.
+
+#[test]
+fn serialize_finite_f32_vec_all_finite_values_round_trip() {
+    // Exact float values must survive the serialize→deserialize round-trip unchanged.
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![1.5, -2.25, 3.0],
+        indices: vec![],
+        normals: None,
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let arr = v["vertices"].as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0].as_f64().unwrap(), 1.5);
+    assert_eq!(arr[1].as_f64().unwrap(), -2.25);
+    assert_eq!(arr[2].as_f64().unwrap(), 3.0);
+}
+
+#[test]
+fn serialize_finite_f32_vec_empty_vec_serializes_to_empty_array() {
+    // Edge case: an empty vertices slice must produce an empty JSON array,
+    // not an error — the merged single-pass loop must handle zero iterations.
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![],
+        indices: vec![],
+        normals: None,
+    };
+    let v = serde_json::to_value(&mesh).unwrap();
+    let arr = v["vertices"].as_array().unwrap();
+    assert_eq!(arr.len(), 0);
+}
+
+#[test]
+fn serialize_finite_f32_vec_nan_causes_error_with_non_finite_and_nan() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![f32::NAN],
+        indices: vec![],
+        normals: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
+}
+
+#[test]
+fn serialize_finite_f32_vec_infinity_causes_error_with_non_finite_and_inf() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![f32::INFINITY],
+        indices: vec![],
+        normals: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(msg.contains("inf"), "expected 'inf' in: {msg}");
+}
+
+#[test]
+fn serialize_finite_f32_vec_neg_infinity_causes_error_with_non_finite_and_neg_inf() {
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![f32::NEG_INFINITY],
+        indices: vec![],
+        normals: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(msg.contains("-inf"), "expected '-inf' in: {msg}");
+}
+
+#[test]
+fn serialize_finite_f32_vec_nan_in_normals_causes_error() {
+    // serialize_finite_f32_vec_opt must delegate to serialize_finite_f32_vec,
+    // so a NaN in normals triggers the same error path.
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![0.0, 0.0, 0.0],
+        indices: vec![0],
+        normals: Some(vec![0.0, 0.0, f32::NAN]),
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+    assert!(msg.contains("NaN"), "expected 'NaN' in: {msg}");
+}
+
+#[test]
+fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
+    // A non-finite value at position > 0 must still cause an error.
+    // This verifies fail-fast semantics hold regardless of where the bad value sits
+    // in the single-pass merged loop.
+    //
+    // Partial-output safety: although the loop writes earlier elements (1.0, 2.0)
+    // to the serializer's internal state before detecting the NaN, `serde_json::to_value`
+    // builds an in-memory `Value` that is simply dropped on `Err` — no partial output is
+    // observable by the caller.  For streaming-serializer callers see the `# Note` in
+    // `serialize_finite_f32_vec` (types.rs).
+    let mesh = MeshData {
+        entity_path: "test".to_string(),
+        vertices: vec![1.0, 2.0, f32::NAN],
+        indices: vec![],
+        normals: None,
+    };
+    let err = serde_json::to_value(&mesh).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("non-finite"), "expected 'non-finite' in: {msg}");
+}

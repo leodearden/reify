@@ -1,0 +1,117 @@
+// Trait hierarchy stress test fixture.
+//
+// Covers:
+//   1. 3-deep trait refinement chain: Root → Middle → Leaf
+//      - Root: param x, constraint x > 0mm
+//      - Middle : Root: param y, let computed = x + y, constraint y > 0mm
+//      - Leaf : Middle: param z, constraint z > 0mm
+//      - ThreeDeepLeaf : Leaf: x=5mm, y=3mm, z=1mm, constraint z < x
+//
+//   2. Diamond inheritance: Base → Left, Base → Right, DiamondStruct : Left + Right
+//      - Base: param d : Length, constraint d > 0mm
+//      - Left : Base, Right : Base (empty refinements)
+//      - DiamondStruct : Left + Right: d=10mm, constraint d < 500mm
+//
+//   3. Multi-trait implementation (3 independent traits)
+//      - Weighable: param mass : Mass, constraint mass > 0kg
+//      - Sizeable: param width : Length, constraint width > 0mm
+//      - Countable: param count : Real, constraint count >= 0
+//      - TripleImpl : Weighable + Sizeable + Countable
+//
+//   4. Constrained diamond (constraints at multiple levels)
+//      - BaseC: param x : Length, constraint x > 0mm, constraint x < 1000mm
+//      - LeftC : BaseC: param l_val : Length, constraint l_val > 0mm
+//      - RightC : BaseC: param r_val : Length, constraint r_val > 0mm
+//      - ConstrainedDiamond : LeftC + RightC
+
+// ── 1. Three-deep refinement chain ───────────────────────────────────────────
+
+trait Root {
+    param x : Length
+    constraint x > 0mm
+}
+
+trait Middle : Root {
+    param y : Length
+    let computed = x + y
+    constraint y > 0mm
+}
+
+trait Leaf : Middle {
+    param z : Length
+    constraint z > 0mm
+}
+
+structure def ThreeDeepLeaf : Leaf {
+    param x : Length = 5mm
+    param y : Length = 3mm
+    param z : Length = 1mm
+    constraint z < x
+}
+
+// ── 2. Diamond inheritance ────────────────────────────────────────────────────
+
+trait Base {
+    param d : Length
+    constraint d > 0mm
+}
+
+trait LeftBase : Base {
+}
+
+trait RightBase : Base {
+}
+
+structure def DiamondStruct : LeftBase + RightBase {
+    param d : Length = 10mm
+    constraint d < 500mm
+}
+
+// ── 3. Multi-trait implementation (3 independent traits) ─────────────────────
+
+trait Weighable {
+    param mass : Mass
+    constraint mass > 0kg
+}
+
+trait Sizeable {
+    param width : Length
+    constraint width > 0mm
+}
+
+trait Countable {
+    param count : Real
+    constraint count >= 0
+}
+
+structure def TripleImpl : Weighable + Sizeable + Countable {
+    param mass : Mass = 2kg
+    param width : Length = 100mm
+    param count : Real = 5.0
+    constraint count < 1000
+}
+
+// ── 4. Constrained diamond ────────────────────────────────────────────────────
+
+trait BaseC {
+    param x : Length
+    constraint x > 0mm
+    constraint x < 1000mm
+}
+
+trait LeftC : BaseC {
+    param l_val : Length
+    constraint l_val > 0mm
+}
+
+trait RightC : BaseC {
+    param r_val : Length
+    constraint r_val > 0mm
+}
+
+structure def ConstrainedDiamond : LeftC + RightC {
+    param x : Length = 10mm
+    param l_val : Length = 5mm
+    param r_val : Length = 5mm
+    constraint x < 100mm
+}

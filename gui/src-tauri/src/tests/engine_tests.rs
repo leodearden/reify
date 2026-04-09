@@ -6,7 +6,7 @@ use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
-use crate::engine::{EngineSession, parse_value_string};
+use crate::engine::{EngineSession, module_key, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -1202,32 +1202,128 @@ fn byte_offset_to_line_col_empty_source() {
     assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
 }
 
+#[cfg(debug_assertions)]
 #[test]
+#[should_panic(expected = "offset <= source.len()")]
 fn byte_offset_to_line_col_offset_beyond_len() {
     use crate::engine::byte_offset_to_line_col;
 
-    // Source "ab" (len=2). Offset 100 far exceeds the source length.
-    // The loop exhausts all chars without hitting the break, leaving the
-    // position after the last char: column incremented for 'a' and 'b' → (1, 3).
+    // In debug/test builds, passing an offset beyond source.len() must panic
+    // with a clear message, so stale-span bugs are caught loudly.
+    // Release builds retain silent clamping (debug_assert is a no-op there).
+    let _ = byte_offset_to_line_col("ab", 100);
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len_release() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In release builds, debug_assert is a no-op, so passing an offset beyond
+    // source.len() silently clamps: the loop exhausts all characters and returns
+    // the position after the last character.
+    // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
     assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
 }
 
 #[test]
-fn byte_offset_to_line_col_empty_span_identical_coords() {
+fn get_diagnostics_empty_span_has_identical_start_end() {
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
 
-    // When a diagnostic span has start == end (empty span), both calls to
-    // byte_offset_to_line_col with the same offset must return identical coords.
-    // offset 6 in "hello\nworld" (after '\n') → start of second line → (2, 1).
-    let source = "hello\nworld";
-    let offset = 6; // 'w' is the first char of "world"
-    let start_coord = byte_offset_to_line_col(source, offset);
-    let end_coord = byte_offset_to_line_col(source, offset);
+    // Verify that a zero-length span (start == end) produces identical
+    // start and end coordinates through the full get_diagnostics pipeline,
+    // including the optimised offset_to_line_col_fast path.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let offset = source.find("width").expect("'width' not in bracket_source") as u32;
+
+    let diag = Diagnostic::warning("empty-span-test")
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(offset, offset), // zero-length span
+            "zero-length label",
+        ));
+    session.inject_diagnostic_for_test(diag);
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "empty-span-test")
+        .expect("injected empty-span diagnostic not found");
+
+    // The real concern: start and end coords must be identical for an empty span.
     assert_eq!(
-        start_coord, end_coord,
-        "empty span: identical offsets must produce identical coords"
+        d.line, d.end_line,
+        "empty span: line ({}) != end_line ({})",
+        d.line, d.end_line
     );
-    assert_eq!(start_coord, (2, 1));
+    assert_eq!(
+        d.column, d.end_column,
+        "empty span: column ({}) != end_column ({})",
+        d.column, d.end_column
+    );
+
+    // Cross-validate against the reference implementation.
+    let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
+    assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
+    assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+
+    // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
+    // bracket_source() starts "structure Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 30 (manually verified):
+    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    //   + 10 bytes "    param " → col 11 when 'w' is reached.
+    assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
+    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
+}
+
+#[test]
+fn byte_offset_to_line_col_multibyte_chars() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source: "αβ\nγ"
+    // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
+    // β = U+03B2, 2 bytes (UTF-8: 0xCE 0xB2), byte offset 2
+    // \n              ,  byte offset 4
+    // γ = U+03B3, 2 bytes (UTF-8: 0xCE 0xB3), byte offset 5
+    //
+    // Columns must be codepoint-based (1, 2, 3), not byte-based (1, 3, 5).
+    let source = "αβ\nγ";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+
+    // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 1 → mid-codepoint inside α (byte 0xB1 of the 2-byte UTF-8 sequence CE B1).
+    // char_indices only yields valid codepoint boundaries: (0,'α'),(2,'β'),(4,'\n'),(5,'γ').
+    // Offset 1 is not a boundary; the loop processes α (col→2) then sees i=2 ≥ 1 and breaks.
+    assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
+    // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
+    assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
+    // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
+    assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
+    // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+}
+
+#[test]
+fn byte_offset_to_line_col_at_source_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "abc\ndef" has byte length 7.
+    // offset == source.len() is the EOF position, one past the last char 'f'.
+    // The loop iterates all chars (indices 0-6, all < 7) exhausting them,
+    // so: 'a'→col2, 'b'→col3, 'c'→col4, '\n'→line2,col1, 'd'→col2, 'e'→col3, 'f'→col4
+    // Then the loop ends and we return (2, 4).
+    let source = "abc\ndef";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+    assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
 }
 
 // --- Task 837: offset_to_line_col_fast unit tests ---
@@ -1547,4 +1643,179 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
     let (l, c) = offset_to_line_col_fast(source2, &offsets2, 2);
     assert_eq!(l, 1);
     assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
+}
+
+// --- Task 899: resolve_source precondition test ---
+
+/// resolve_source panics (via debug_assert) when called without a loaded module.
+///
+/// The debug_assert!(self.compiled.is_some()) in resolve_source is the contract
+/// guard — this test verifies it fires when the precondition is violated.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "compiled")]
+fn resolve_source_panics_without_loaded_module() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    // No load — compiled is None. debug_assert should fire.
+    let _ = session.resolve_source_for_test();
+}
+
+// --- Task 899: module_key unit tests ---
+
+/// module_key("bracket") == "bracket.ri" — normal identifier.
+#[test]
+fn module_key_normal_name() {
+    assert_eq!(module_key("bracket"), "bracket.ri");
+}
+
+/// module_key("some_module") == "some_module.ri" — underscored name.
+#[test]
+fn module_key_underscored_name() {
+    assert_eq!(module_key("some_module"), "some_module.ri");
+}
+
+/// module_key(name) matches the key that load_from_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that load_from_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into load_from_source without updating module_key.
+#[test]
+fn module_key_matches_load_from_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key(name) matches the key that update_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that update_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into update_source without updating module_key (engine.rs:212).
+#[test]
+fn module_key_matches_update_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("update_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key panics (via debug_assert) when called with an empty name.
+///
+/// An empty name would produce ".ri", which is never a valid module key —
+/// `load_file` falls back to "unnamed" so an empty name is a programming error.
+/// The debug_assert in module_key is the contract guard.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty")]
+fn module_key_empty_name_panics() {
+    let _ = module_key("");
+}
+
+// --- Task 1194: positive resolve_source pinning test ---
+
+/// resolve_source returns the key (module_key(name)) and the original source text
+/// after a successful load_from_source call.
+///
+/// Pins: (a) key derivation appends ".ri" to the module name, (b) the source text
+/// is stored verbatim and returned as a zero-copy &str borrow.
+#[test]
+fn resolve_source_returns_key_and_source_after_load() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+}
+
+// --- Task 1194: invariant regression test ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic, because resolve_source hits the unconditional
+/// expect() on module_name (line ~252 in engine.rs).
+///
+/// break_module_name_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    session.break_module_name_for_test();
+    // This must panic — resolve_source hits expect("module_name is None …").
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: source_map panic guard test ---
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic, because resolve_source hits the
+/// unconditional expect() on source_map.get_key_value().
+///
+/// break_source_map_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // This must panic — resolve_source hits expect("source_map missing key …").
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: update_source path test ---
+
+/// resolve_source returns updated content (and the same key) after a successful
+/// update_source call.
+///
+/// Pins: (a) the key derived from the path argument stays "bracket.ri",
+/// (b) the source text is replaced with the new content and returned verbatim.
+#[test]
+fn resolve_source_returns_updated_content_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    // Baseline: resolve_source reflects the initial load.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+    // Update the source with modified content (different width parameter).
+    let updated = bracket_source_with_width("120mm");
+    session
+        .update_source("bracket.ri", &updated)
+        .expect("update_source should succeed with modified bracket source");
+    // After update: key stays the same, content is the new text.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", updated.as_str()),
+    );
 }

@@ -1,0 +1,28 @@
+// Sweep degenerate geometry operations fixture.
+//
+// Contains structures that exercise geometry call syntax for parse/compile
+// verification. The actual degenerate dispatch tests use builder APIs directly.
+
+structure def ValidExtrude {
+    param profile : Length = 5mm
+    param distance : Length = 10mm
+    let result = extrude(profile, distance)
+}
+
+structure def ValidRevolveFullTurn {
+    param profile : Length = 5mm
+    param ox : Length = 0mm
+    param oy : Length = 0mm
+    param oz : Length = 0mm
+    param ax : Real = 0.0
+    param ay : Real = 0.0
+    param az : Real = 1.0
+    let result = revolve_full(profile, ox, oy, oz, ax, ay, az)
+}
+
+structure def ValidLoftThreeProfiles {
+    param p1 : Length = 5mm
+    param p2 : Length = 10mm
+    param p3 : Length = 15mm
+    let result = loft(p1, p2, p3)
+}
