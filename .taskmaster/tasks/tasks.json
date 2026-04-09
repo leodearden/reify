@@ -27536,11 +27536,11 @@
         "description": "In scripts/check-pm-standardization.sh make three improvements: (1) Add a second preflight assertion `assert \"running inside a git repository\" git -C \"$ROOT\" rev-parse --is-inside-work-tree` so that git check-ignore failures (exit 128) are caught explicitly rather than silently passing through the `!` negation. (2) Keep the batched `git check-ignore` call for efficiency but add a fallback diagnostic loop — when the batch check fails, re-run `git check-ignore -v` on each file individually and report the offender. (3) Extract the three package.json paths into a single variable near the top (e.g. `PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'`) and expand it in both Check 1's for-loop and Check 2's grep arguments.\n\nMemory hints: search \"check-pm-standardization assert preflight git\" for context on original task 931 changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:20:31.848Z",
+        "updatedAt": "2026-04-09T17:47:48.859Z",
         "metadata": {
           "modules": [
             "scripts/check-pm-standardization.sh",
@@ -27779,7 +27779,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:47:46.958Z",
+      "lastModified": "2026-04-09T17:47:48.859Z",
       "taskCount": 1338,
       "completedCount": 1011,
       "tags": [
