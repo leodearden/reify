@@ -1508,4 +1508,50 @@ mod tests {
             &ctx,
         );
     }
+
+    /// Verify that the inner catch-all (inside the `Type::Vector` arm) of
+    /// `compute_numerical_gradient_at_point`'s `result_dim` match panics (in debug mode)
+    /// when the Vector's quantity is an unexpected type.
+    ///
+    /// `Type::vec3(Type::Bool)` hits the outer arm (`Type::Vector { quantity, .. }`) and then
+    /// `quantity = Type::Bool` hits the inner catch-all (`_ => DIMENSIONLESS`).  After the
+    /// debug guard is added the test must panic with a message containing
+    /// "unexpected Vector quantity".
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected Vector quantity")]
+    fn gradient_result_dim_unexpected_vector_quantity_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        // Single-parameter lambda: |pt| pt (body irrelevant — panic fires before evaluation)
+        let pt_id = ValueCellId::new("$lambda0.S", "pt");
+        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("pt".to_string(), pt_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        // 3D point input — lambda has 1 param and n=3 so single_point_param=true
+        let point = Value::Point(vec![
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+
+        // domain: Point3<Real>, codomain: Vector3<Bool> — Bool is unexpected in the inner arm
+        let domain_type = Type::point3(Type::Real);
+        let codomain_type = Type::vec3(Type::Bool);
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_gradient_at_point(
+            &lambda,
+            &point,
+            &domain_type,
+            &codomain_type,
+            &ctx,
+        );
+    }
 }
