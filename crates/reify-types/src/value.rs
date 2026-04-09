@@ -3790,16 +3790,8 @@ mod tests {
     #[test]
     fn value_ord_complex_negative_im() {
         // Negative im components must order correctly (re is tied).
-        let a = Value::Complex {
-            re: 1.0,
-            im: -1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: -0.5,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, -1.0);
+        let b = complex_with(1.0, -0.5);
         assert!(a < b);
     }
 
