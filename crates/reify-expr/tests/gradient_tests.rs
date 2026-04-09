@@ -1525,28 +1525,12 @@ fn gradient_1param_magnitude_field() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Expected: Vector3(0.6, 0.8, 0.0) = (x/|p|, y/|p|, z/|p|) where |p|=5
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            let expected = [0.6, 0.8, 0.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-4,
-                    "gradient component {} should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, not Undef; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.6, 0.8, 0.0],
+        1e-4,
+        "gradient of magnitude(p) at (3,4,0)",
+    );
 }
 
 /// Gradient of a gradient field returns Undef.
