@@ -827,6 +827,12 @@ mod completion_items_tests {
     fn completion_items_panics_on_unexpected_shape() {
         completion_items(&json!(42));
     }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::List has non-array 'items' field")]
+    fn completion_items_panics_on_non_array_items_field() {
+        completion_items(&json!({"items": 42}));
+    }
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
