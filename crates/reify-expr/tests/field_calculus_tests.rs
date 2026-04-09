@@ -3102,3 +3102,374 @@ fn gradient_int_domain_preserves_dim_codomain() {
         );
     }
 }
+
+// ── Curl dimension propagation tests ────────────────────────────────────────
+
+/// Curl of a Point{3,Length} → Vector{3,Velocity} field has codomain
+/// Vector{3, Scalar{dim = Velocity/Length = 1/Time}}.
+///
+/// Verifies that compute_curl correctly derives the result codomain
+/// dimension by dividing the input codomain component dimension by domain_dim.
+#[test]
+fn curl_dimensional_correctness() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // VELOCITY = LENGTH / TIME
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_quantity = Type::Scalar {
+        dimension: velocity_dim,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+    let codomain_type = Type::vec3(codomain_quantity.clone());
+
+    // Lambda: |x, y, z| vec3(x, y, z) — simple identity for metadata test.
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field with codomain Vector{3, Scalar{Velocity/Length = 1/Time}}
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { .. }),
+        "curl of Point{{3,Length}}→Vector{{3,Velocity}} should return a Field, got {:?}",
+        curl_result
+    );
+
+    // Verify codomain dimension: should be Vector{3, Scalar{Velocity/Length = 1/Time}}
+    if let Value::Field { codomain_type, .. } = &curl_result {
+        let expected_dim = velocity_dim.div(&DimensionVector::LENGTH);
+        let expected = Type::vec3(Type::Scalar {
+            dimension: expected_dim,
+        });
+        assert_eq!(
+            *codomain_type, expected,
+            "curl codomain should be Vector{{3, Scalar{{1/Time}}}}, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Curl of a dimensionless Point{3,Real} → Vector{3,Real} field still
+/// returns Vector{3,Real} codomain (regression guard).
+#[test]
+fn curl_dimensionless_still_vec3_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    if let Value::Field { codomain_type, .. } = &curl_result {
+        let expected = Type::vec3(Type::Real);
+        assert_eq!(
+            *codomain_type, expected,
+            "curl of dimensionless field should have Vector{{3,Real}} codomain, got {:?}",
+            codomain_type
+        );
+    } else {
+        panic!(
+            "curl of dimensionless field should return a Field, got {:?}",
+            curl_result
+        );
+    }
+}
+
+/// Sample(curl(dimensioned_field), point) returns Vector of Scalar components
+/// with the correct derived dimension.
+#[test]
+fn curl_sample_dimensional_correctness_returns_scalar() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // VELOCITY = LENGTH / TIME
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_quantity = Type::Scalar {
+        dimension: velocity_dim,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+    let codomain_type = Type::vec3(codomain_quantity.clone());
+
+    // Lambda: |x, y, z| vec3(z, x, y)  — rotation-like, produces non-zero curl.
+    // curl of (z, x, y) = (∂y/∂y - ∂x/∂z, ∂z/∂z - ∂y/∂x, ∂x/∂x - ∂z/∂y) = (1, 1, 1)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { .. }),
+        "curl should return a Field, got {:?}",
+        curl_result
+    );
+
+    // Sample at (1m, 2m, 3m)
+    let point = Value::Point(vec![
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 3.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+
+    let one_over_time = velocity_dim.div(&DimensionVector::LENGTH);
+    let curl_codomain = Type::vec3(Type::Scalar {
+        dimension: one_over_time,
+    });
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(curl_codomain),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Scalar {
+            dimension: one_over_time,
+        }),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // curl of (z, x, y) = (1, 1, 1) — all components should be ≈1.0
+    match &sample_result {
+        Value::Vector(comps) if comps.len() == 3 => {
+            for (i, comp) in comps.iter().enumerate() {
+                match comp {
+                    Value::Scalar {
+                        si_value,
+                        dimension,
+                    } => {
+                        assert_eq!(
+                            *dimension, one_over_time,
+                            "curl sample component {i} dimension should be 1/Time ({:?}), got {:?}",
+                            one_over_time, dimension,
+                        );
+                        assert!(
+                            (si_value - 1.0).abs() < 1e-4,
+                            "curl component {i} should be ≈1.0, got {}",
+                            si_value
+                        );
+                    }
+                    Value::Real(_) => panic!(
+                        "curl sample component {i}: expected Value::Scalar but got Value::Real"
+                    ),
+                    other => panic!(
+                        "curl sample component {i}: expected Value::Scalar, got {:?}",
+                        other
+                    ),
+                }
+            }
+        }
+        other => panic!(
+            "curl sample should return Vector(3), got {:?}",
+            other
+        ),
+    }
+}
+
+/// Sample(curl(dimensionless_field), point) returns Vector of Real components (regression guard).
+#[test]
+fn curl_sample_dimensionless_returns_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x, y, z| vec3(z, x, y)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    let point = Value::Point(vec![
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        codomain_type,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Vector(comps) if comps.len() == 3 => {
+            for (i, comp) in comps.iter().enumerate() {
+                assert!(
+                    matches!(comp, Value::Real(_)),
+                    "curl sample of dimensionless field component {i} should be Value::Real, got {:?}",
+                    comp
+                );
+            }
+        }
+        other => panic!(
+            "curl sample should return Vector(3), got {:?}",
+            other
+        ),
+    }
+}
