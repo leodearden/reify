@@ -934,6 +934,11 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             did_open_params("file:///test.ri", reify_test_support::bracket_source()),
         )
         .await;
+    // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
+    // currently exists in bridge.rs (did_open is dispatched without an init-state check),
+    // so this branch is unreachable today.  A future change that adds an init-state guard
+    // returning a well-defined error will make it reachable; the !e.is_empty() assertion
+    // is the first line of defense against an empty-string regression at that point.
     match &did_open_result {
         Ok(val) => assert_eq!(
             *val,
@@ -961,6 +966,11 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             }),
         )
         .await;
+    // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
+    // currently exists in bridge.rs (completion is dispatched without an init-state check),
+    // so this branch is unreachable today.  A future change that adds an init-state guard
+    // returning a well-defined error will make it reachable; the !e.is_empty() assertion
+    // is the first line of defense against an empty-string regression at that point.
     match &completion_result {
         Ok(val) if val.is_null() => {
             // Ok(Value::Null) — no completions is a valid Option<CompletionResponse>::None.
