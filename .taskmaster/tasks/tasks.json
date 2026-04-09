@@ -7605,19 +7605,10 @@
           "files": [
             "crates/reify-test-support/src/lib.rs",
             "crates/reify-compiler/tests/common/mod.rs",
-            "crates/reify-syntax/tests/common/mod.rs",
-            "crates/reify-compiler/tests/trait_conformance_tests.rs",
-            "crates/reify-compiler/tests/connect_compile_tests.rs",
-            "crates/reify-compiler/tests/collection_compile_tests.rs",
-            "crates/reify-compiler/tests/field_compile_tests.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs",
-            "crates/reify-syntax/tests/ad_hoc_selector_tests.rs",
-            "crates/reify-syntax/tests/connect_chain_tests.rs",
-            "crates/reify-syntax/tests/guard_tests.rs",
-            "crates/reify-syntax/tests/lambda_tests.rs"
+            "crates/reify-syntax/tests/common/mod.rs"
           ],
           "modules": [
-            "crates/reify-test-support/src",
+            "crates/reify-test-support",
             "crates/reify-compiler/tests",
             "crates/reify-syntax/tests"
           ]
@@ -7866,9 +7857,7 @@
             "crates/reify-eval/tests/sweep_e2e.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-kernel-occt"
+            "crates/reify-eval"
           ]
         }
       },
