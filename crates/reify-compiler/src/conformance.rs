@@ -43,7 +43,16 @@ pub(crate) fn check_trait_conformance(
                                 Type::Real
                             })
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                p.name
+                            ))
+                            .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    });
                 Some((p.name.clone(), ty))
             }
             reify_syntax::MemberDecl::Let(l) => {
@@ -70,7 +79,16 @@ pub(crate) fn check_trait_conformance(
                                 Type::Real
                             })
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "trait member '{}' has no type annotation; cannot infer type",
+                                l.name
+                            ))
+                            .with_label(DiagnosticLabel::new(l.span, "missing type annotation")),
+                        );
+                        Type::Real
+                    });
                 Some((l.name.clone(), ty))
             }
             _ => None,
