@@ -889,6 +889,36 @@ impl ConstraintSolver for DimensionalSolver {
 mod tests {
     use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
 
+    // ---- solutions_agree test helpers ----
+
+    /// Returns a canonical single-param tuple: (`ValueCellId::new("Part","x")`, one-element
+    /// `Vec<AutoParam>` with `Type::length()`, bounds `(0.0, 1.0)`, `free: false`).
+    /// Used by all `solutions_agree_*` tests that work with one parameter.
+    fn test_param() -> (reify_types::ValueCellId, Vec<reify_types::AutoParam>) {
+        use reify_types::{AutoParam, Type, ValueCellId};
+        let id = ValueCellId::new("Part", "x");
+        let params = vec![AutoParam {
+            id: id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.0, 1.0)),
+            free: false,
+        }];
+        (id, params)
+    }
+
+    /// Returns a `Value::Scalar` with the given `si_value` and `DimensionVector::LENGTH`.
+    /// All `solutions_agree_*` tests use `Type::length()`, so a fixed-dimension helper
+    /// avoids repeating the dimension on every call site.
+    fn scalar(v: f64) -> reify_types::Value {
+        use reify_types::{DimensionVector, Value};
+        Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        }
+    }
+
+    // ---- end solutions_agree test helpers ----
+
     #[test]
     fn dimensional_solver_exists_and_implements_trait() {
         use crate::DimensionalSolver;
@@ -1348,33 +1378,15 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::ValueCellId;
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (param_id, params) = test_param();
 
-        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
-        solved.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 0.5,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.5));
 
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
-        perturbed.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 0.5000001, // within tolerance
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(0.5000001)); // within tolerance
 
         assert!(
             solutions_agree(&params, &solved, &perturbed),
