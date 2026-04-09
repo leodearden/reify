@@ -28796,4 +28796,36 @@
       {
         "id": "1395",
         "title": "Add compile_project negative test for imported private unit invisibility",
-        "description": "The existing tests cross_modul
+        "description": "The existing tests cross_module_pub_unit_visible_via_module_dag and cross_module_private_unit_not_visible_via_module_dag (crates/reify-compiler/tests/user_defined_unit_tests.rs:208-240) exercise ModuleDag::compile_module, which was already calling compile_with_prelude before task 209 (module_dag.rs:168-181). Only compile_project_entry_sees_imported_pub_unit covers the new compile_project prelude-seeding branch; there is no negative test that compile_project enforces privacy. Add compile_project_entry_does_not_see_imported_private_unit: mirror the positive test but declare 'unit privmil' (no pub) in the library module, invoke compile_project on the entry file, and assert the entry module reports a semantic error mentioning 'unknown' or 'privmil'. Keeps positive/negative coverage symmetric at the compile_project layer so regressions in either branch are caught. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:21:27.207Z"
+      },
+      {
+        "id": "1396",
+        "title": "Pin or fix one-hop limitation for transitive pub-unit propagation",
+        "description": "No test covers transitive propagation of pub units: if module A declares 'pub unit mil', and module B has 'pub import a', does module C (which imports B) see 'mil'? Under the current implementation it does NOT — B's compiled_units only stores locally-declared units, so the prelude-seeding loop in lib.rs:237-251 finds nothing in B and mil is not re-exported. This matches the current treatment of constraint_defs (one-hop only), but it's undocumented and untested for units — a cross-module integration gap for task 209's scope. Prefer option (a): add a test that pins the current one-hop limitation (A→B→C where C cannot see mil) so any future fix is deliberate. Option (b) would extend scope: propagate pub-seeded prelude units into the current module's compiled_units when is_pub so they re-export transitively, plus a positive A→B→C test. Go with option (a) for this task; option (b) is a separate design decision. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:21:28.648Z"
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "lastModified": "2026-04-09T22:22:07.422Z",
+      "taskCount": 1396,
+      "completedCount": 1071,
+      "tags": [
+        "master"
+      ]
+    }
+  }
+}
