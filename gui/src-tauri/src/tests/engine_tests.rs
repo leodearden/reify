@@ -983,6 +983,10 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 ///
 /// After load_from_source("initial") then update_source("updated.ri", ...),
 /// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+///
+/// **Assumption**: `port mount : NonExistentTrait` produces a warning (not error).
+/// If the compiler changes this, the `.expect()` on load_from_source/update_source
+/// will panic — update the fixture accordingly.
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
@@ -1004,6 +1008,12 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
+        diags_before[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_before[0].file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
@@ -1016,6 +1026,12 @@ fn diagnostics_file_key_consistent_after_update_source() {
     assert!(
         !diags_after.is_empty(),
         "should still have diagnostics after update_source"
+    );
+    assert_eq!(
+        diags_after[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, update_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
     );
     assert_eq!(
         diags_after[0].file_path, "updated.ri",
