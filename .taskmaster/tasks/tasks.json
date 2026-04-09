@@ -25578,11 +25578,11 @@
         "description": "Three small doc/naming polish items on the `assert_verify_uniqueness_aggregated_warn` helper and surrounding section comment in crates/reify-constraints/src/solver.rs, from the reviewer_comprehensive review of Task 1243. Non-blocking; purely readability.",
         "details": "Source: reviewer_comprehensive review of Task 1243 (esc-1243-1036). Three suggestions:\n\nS1 (solver.rs:942-944, doc forward reference):\n- The helper doc comment at ~L942 says \"See the section comment at `// ---- verify_uniqueness tracing tests ----`\" but that section comment lives ~185 lines later (~L1130).\n- Fix: either (a) inline a 2-line tl;dr of the S3/early-return rationale directly in the helper doc, or (b) say \"see the section comment below, above the `verify_uniqueness_warns_*` tests\" so the pointer is self-locating.\n\nS3 (solver.rs:948, parameter naming):\n- `expected_param_substrings: &[&str]` is slightly misleading — the helper only checks substring presence in the joined WARN text, but all 3 call sites pass `ValueCellId`-style strings (e.g. \"Part.x\").\n- Fix: rename to `expected_missing_param_ids` (matches what callers pass) OR `expected_warn_substrings` (matches what the helper actually checks). Either is fine; pick one.\n\nS4 (solver.rs:1130-1147, section comment load-bearing):\n- The section comment asserts that a `solutions_agree` WARN count on these tests \"would always be 0\" because of the Task 1242 early-return. This is load-bearing — if the early-return invariant ever changes, the comment becomes stale guidance.\n- Fix: add a one-line cross-reference at the end of the section comment to the existing test `verify_uniqueness_skips_solve_core_when_param_missing` at solver.rs:1307, which ALREADY asserts 0 DEBUG events from the `reify_constraints` target (proving solve_core is not invoked). This makes the invariant test-enforced and the section comment self-witnessed.\n- Suggested wording: `// NB: the early-return invariant is directly asserted by `verify_uniqueness_skips_solve_core_when_param_missing` below.`\n\nDismissed from the same review:\n- S2 (test_coverage/strictness at solver.rs:959-968) — reviewer explicitly said \"No change needed if the decoupling is intentional.\" It is intentional per the section comment at L1130-1147, and the S3 substring check already ties each match to a specific missing_params payload.\n\nmemory_hints: search \"Task 1243 verify_uniqueness helper S3 early-return\"; search \"verify_uniqueness_skips_solve_core_when_param_missing test\"\nParent escalation: esc-1243-1036. Reviewer: reviewer_comprehensive. Parent task: 1243.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:31:53.155Z",
+        "updatedAt": "2026-04-09T04:43:08.749Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -26071,9 +26071,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:42:54.719Z",
+      "lastModified": "2026-04-09T04:43:08.749Z",
       "taskCount": 1293,
-      "completedCount": 959,
+      "completedCount": 960,
       "tags": [
         "master"
       ]
