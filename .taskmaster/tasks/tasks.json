@@ -2606,7 +2606,8 @@
           "modules": [
             "crates/reify-types",
             "crates/reify-syntax",
-            "crates/reify-compiler"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "milestone": "M8",
           "memory_hints": {
@@ -2614,7 +2615,16 @@
             "queries": [
               "resolution for: auto(free): ValueCellKind extension"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/tests/option_compile_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-09T08:13:47.175Z"
@@ -2729,15 +2739,23 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-expr",
             "crates/reify-syntax",
             "crates/reify-types",
-            "gui/src-tauri",
-            "tree-sitter-reify/grammar.js"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ],
           "milestone": "M8",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/expr.rs",
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/tests/option_compile_tests.rs",
+            "crates/reify-compiler/tests/match_compile_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-03T13:21:22.420Z"
