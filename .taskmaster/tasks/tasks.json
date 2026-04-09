@@ -28703,15 +28703,16 @@
         "description": "Add companion unit tests in crates/reify-eval/src/lib.rs (next to compile_geometry_op_extrude_near_zero_distance_returns_none at ~line 4481 and compile_geometry_op_revolve_near_zero_angle_returns_none at ~line 4551) that assert compile_geometry_op returns None for negative-near-zero inputs (e.g. literal_length(-1e-15) and literal_f64(-1e-15)).\n\nRationale: the current near-zero unit tests only use positive 1e-15, so the `.abs() >= 1e-12` / `.abs() < 1e-12` symmetry on the rejection side is not pinned by any test. A refactor to an asymmetric check (e.g. `v >= -1e-12 || v.abs() >= 1e-12`) would silently pass. Task 1181's new characterization tests cover the positive-of-the-negative-path (finite, magnitude ≥ 1e-12, negative sign), but not the negative-near-zero boundary.\n\nReviewer explicitly called this a pre-existing coverage gap that belongs in follow-up. From reviewer_comprehensive on esc-1181-108.\n\nmemory_hints: search \"compile_geometry_op near zero rejection threshold\" for context; see Task 1181 and Task 1180 (epsilon thresholds for extrude/revolve guards).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:19:23.399Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:19:23.086Z",
+      "lastModified": "2026-04-09T22:19:23.400Z",
       "taskCount": 1389,
       "completedCount": 1070,
       "tags": [
