@@ -52,6 +52,39 @@ use crate::concurrent::{
     AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError,
 };
 
+/// Compile-time constants for the structured poison-recovery warning schema.
+///
+/// This module is the **single source of truth** for every field value emitted
+/// by the `tracing::warn!` calls in `ConcurrentEvalAdapter`'s lock-recovery
+/// paths, as established by Task 600.
+///
+/// Each constant's string value is a Datadog/Jaeger filter key that operators
+/// use in alerting rules. **Any rename is a breaking change to alerting rules**
+/// and must be coordinated with the observability team.
+///
+/// New helpers that acquire poisonable locks MUST use these constants so that
+/// filter rules stay in sync with the emitted field values.
+pub mod poison_fields {
+    /// The `lock` field value for the `values` RwLock.
+    pub const LOCK_VALUES: &str = "values";
+    /// The `lock` field value for the `snapshot_values` RwLock.
+    pub const LOCK_SNAPSHOT_VALUES: &str = "snapshot_values";
+    /// The `lock` field value for the `results` Mutex.
+    pub const LOCK_RESULTS: &str = "results";
+    /// The `access` field value for read-lock acquisitions in helper methods.
+    pub const ACCESS_READ: &str = "read";
+    /// The `access` field value for write-lock acquisitions in helper methods.
+    pub const ACCESS_WRITE: &str = "write";
+    /// The `access` field value for exclusive (Mutex) lock acquisitions in helper methods.
+    pub const ACCESS_EXCLUSIVE: &str = "exclusive";
+    /// The `path` field value for recovery via `into_inner()` (sole-owner unwrap).
+    pub const PATH_INTO_INNER: &str = "into_inner";
+    /// The `path` field value for recovery via the shared-reference fallback.
+    pub const PATH_SHARED_FALLBACK: &str = "shared_fallback";
+    /// The fixed message emitted by every poison-recovery warning.
+    pub const MSG_LOCK_POISONED: &str = "lock poisoned, recovering";
+}
+
 /// Adapter that implements `AsyncNodeEvaluator` for concurrent evaluation.
 ///
 /// Wraps Engine state extracted by `prepare_concurrent_edit()` in interior-mutable
