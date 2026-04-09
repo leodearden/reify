@@ -1363,4 +1363,18 @@ mod tests {
              got default_expr=None",
         );
     }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_with_width_is_well_formed() {
+        let src = warn_source_with_unknown_port_type_with_width();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("param width : Length = 80mm"),
+            "missing 'param width : Length = 80mm'"
+        );
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
+        );
+    }
 }
