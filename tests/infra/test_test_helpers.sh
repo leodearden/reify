@@ -437,10 +437,10 @@ fi
 # Robustness tests for sync_comments_test.sh structural checks
 # ==============================================================================
 
-_robust_fixtures=()
-cleanup_robust() { rm -f "${_robust_fixtures[@]}"; }
+_robust_tmpdir=$(mktemp -d)
+cleanup_robust() { rm -rf "$_robust_tmpdir"; }
 trap cleanup_robust EXIT
-mk_fixture() { local f; f=$(mktemp); _robust_fixtures+=("$f"); echo "$f"; }
+mk_fixture() { mktemp -p "$_robust_tmpdir"; }
 
 echo ""
 echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
