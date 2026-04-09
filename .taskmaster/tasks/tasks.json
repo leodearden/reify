@@ -4936,11 +4936,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
+            "crates/reify-eval/tests",
             "examples"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/purpose_eval.rs",
+            "examples/m10_purpose_activation.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -4979,11 +4983,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
             "examples"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/m10_combined.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
