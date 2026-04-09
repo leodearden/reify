@@ -80,6 +80,7 @@ portable_timeout() {
         # a coincidental exit code 143 or 124.
         local timeout_flag
         timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
+        local _pt_kill_grace=2  # SIGKILL grace period after SIGTERM in POSIX-fallback timer
 
         # Save caller's monitor-mode state BEFORE any set -m/set +m manipulation.
         # Placing this save/restore BEFORE the first set -m ensures that $- still
@@ -119,7 +120,7 @@ portable_timeout() {
                 # process-group kill.  Safe: cmd_pid hasn't been wait(2)ed yet
                 # (main shell is blocked), so no PID-reuse risk.  Process-group
                 # kill also cleans up child processes (e.g. nested sleep).
-                sleep 2
+                sleep "$_pt_kill_grace"
                 kill -9 -- "-$cmd_pid" 2>/dev/null
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
@@ -129,7 +130,7 @@ portable_timeout() {
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
-                sleep 2
+                sleep "$_pt_kill_grace"
                 kill -9 -- "-$cmd_pid" 2>/dev/null
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
