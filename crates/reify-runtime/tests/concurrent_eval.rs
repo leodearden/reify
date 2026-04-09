@@ -9,6 +9,8 @@ use reify_eval::graph::EvaluationGraph;
 use reify_eval::{ConcurrentEditSetup, Engine};
 use reify_runtime::concurrent::{AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler};
 use reify_runtime::concurrent_eval::{ConcurrentEvalAdapter, edit_param_concurrent};
+#[cfg(feature = "test-utils")]
+use reify_runtime::concurrent_eval::poison_fields;
 use reify_test_support::TopologyTemplateBuilder;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{
@@ -1647,7 +1649,7 @@ mod poison_recovery {
         let values = assert_poison_recovers(
             || adapter.values(),
             1,
-            &[("lock", "values"), ("access", "read")],
+            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
         // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
         assert_eq!(
@@ -1677,7 +1679,7 @@ mod poison_recovery {
         let results = assert_poison_recovers(
             || adapter.take_results(),
             1,
-            &[("lock", "results"), ("access", "exclusive")],
+            &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)],
         );
         assert_eq!(results.len(), 0, "results should be empty after poison recovery");
     }
@@ -1698,7 +1700,7 @@ mod poison_recovery {
         let sv = assert_poison_recovers(
             || adapter.snapshot_values(),
             1,
-            &[("lock", "snapshot_values"), ("access", "read")],
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -1730,7 +1732,7 @@ mod poison_recovery {
         assert_poison_recovers(
             || adapter.build_result_shared(&eval_set, HashSet::new()),
             1,
-            &[("lock", "snapshot_values"), ("access", "read")],
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)],
         );
     }
 }
@@ -2028,7 +2030,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_values,
             build_result_shared,
-            &[("lock", "values"), ("access", "read")]
+            &[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)]
         );
         // Verify both T.a and T.b are present with exact values from simple_setup
         assert_eq!(
@@ -2055,7 +2057,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             build_result_shared,
-            &[("lock", "snapshot_values"), ("access", "read")]
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)]
         );
         // Verify exact (Value, DeterminacyState) tuples from simple_setup
         assert_eq!(
@@ -2075,7 +2077,7 @@ mod poison_recovery_extended {
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
         let edit_result =
-            poison_and_recover!(poison_results, build_result_shared, &[("lock", "results"), ("access", "exclusive")]);
+            poison_and_recover!(poison_results, build_result_shared, &[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)]);
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2087,7 +2089,7 @@ mod poison_recovery_extended {
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
         let edit_result =
-            poison_and_recover!(poison_values, into_result, &[("lock", "values"), ("path", "into_inner")]);
+            poison_and_recover!(poison_values, into_result, &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)]);
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
             Some(&Value::Real(10.0)),
@@ -2107,7 +2109,7 @@ mod poison_recovery_extended {
         let edit_result = poison_and_recover!(
             poison_snapshot_values,
             into_result,
-            &[("lock", "snapshot_values"), ("path", "into_inner")]
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_INTO_INNER)]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2121,7 +2123,7 @@ mod poison_recovery_extended {
     #[test]
     fn into_result_recovers_from_poisoned_results_lock() {
         let edit_result =
-            poison_and_recover!(poison_results, into_result, &[("lock", "results"), ("path", "into_inner")]);
+            poison_and_recover!(poison_results, into_result, &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)]);
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2135,7 +2137,7 @@ mod poison_recovery_extended {
     fn tracing_warn_emitted_on_poison_into_result() {
         assert_into_result_poison_warn(
             ConcurrentEvalAdapter::poison_values,
-            &[("lock", "values"), ("path", "into_inner")],
+            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)],
         );
     }
 
@@ -2146,7 +2148,7 @@ mod poison_recovery_extended {
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
         assert_into_result_poison_warn(
             ConcurrentEvalAdapter::poison_snapshot_values,
-            &[("lock", "snapshot_values"), ("path", "into_inner")],
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_INTO_INNER)],
         );
     }
 
@@ -2157,7 +2159,7 @@ mod poison_recovery_extended {
     fn tracing_warn_emitted_on_poison_into_result_results() {
         assert_into_result_poison_warn(
             ConcurrentEvalAdapter::poison_results,
-            &[("lock", "results"), ("path", "into_inner")],
+            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)],
         );
     }
 }
@@ -2211,7 +2213,7 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             values_arc,
             poison_values,
-            &[("lock", "values"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2223,7 +2225,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             values_arc,
             poison_values,
-            &[("lock", "values"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert_eq!(
             edit_result.values.get(&ValueCellId::new("T", "a")),
@@ -2246,7 +2248,7 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            &[("lock", "snapshot_values"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2258,7 +2260,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             snapshot_values_arc,
             poison_snapshot_values,
-            &[("lock", "snapshot_values"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert_eq!(
             edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
@@ -2286,7 +2288,7 @@ mod poison_shared_fallback {
         shared_fallback_recover!(
             results_arc,
             poison_results,
-            &[("lock", "results"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
     }
 
@@ -2298,7 +2300,7 @@ mod poison_shared_fallback {
         let edit_result = shared_fallback_recover!(
             results_arc,
             poison_results,
-            &[("lock", "results"), ("path", "shared_fallback")]
+            &[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]
         );
         assert!(
             edit_result.node_results.is_empty(),
@@ -2353,12 +2355,12 @@ mod poison_shared_fallback {
         capture.assert_count(3);
 
         // (3) All 3 distinct shared-fallback lock events present (by structured fields).
-        capture.assert_any_event_has_fields(&[("lock", "values"), ("path", "shared_fallback")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
         capture.assert_any_event_has_fields(&[
-            ("lock", "snapshot_values"),
-            ("path", "shared_fallback"),
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("path", poison_fields::PATH_SHARED_FALLBACK),
         ]);
-        capture.assert_any_event_has_fields(&[("lock", "results"), ("path", "shared_fallback")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
 
         // (4) T.a = Real(10.0) from simple_setup.
         assert_eq!(
@@ -2410,9 +2412,9 @@ mod structured_field_emission {
             catch_unwind(|| adapter.values())
         });
         assert!(result.is_ok(), "values() should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "read")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_READ)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2439,9 +2441,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "evaluate() should recover from poisoned values lock");
-        capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "write")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("access", poison_fields::ACCESS_WRITE)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2459,9 +2461,9 @@ mod structured_field_emission {
             catch_unwind(|| adapter.snapshot_values())
         });
         assert!(result.is_ok(), "snapshot_values() should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "snapshot_values"), ("access", "read")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_READ)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2487,9 +2489,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "evaluate() should recover from poisoned snapshot_values lock");
-        capture.assert_any_event_has_fields(&[("lock", "snapshot_values"), ("access", "write")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_SNAPSHOT_VALUES), ("access", poison_fields::ACCESS_WRITE)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2507,9 +2509,9 @@ mod structured_field_emission {
             catch_unwind(|| adapter.take_results())
         });
         assert!(result.is_ok(), "take_results() should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "results"), ("access", "exclusive")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("access", poison_fields::ACCESS_EXCLUSIVE)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2535,9 +2537,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "into_result() should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "values"), ("path", "into_inner")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_INTO_INNER)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2562,9 +2564,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "into_result() shared-fallback should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "values"), ("path", "shared_fallback")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2586,11 +2588,11 @@ mod structured_field_emission {
         });
         assert!(result.is_ok(), "into_result() should recover without panic");
         capture.assert_any_event_has_fields(&[
-            ("lock", "snapshot_values"),
-            ("path", "into_inner"),
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("path", poison_fields::PATH_INTO_INNER),
         ]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2613,11 +2615,11 @@ mod structured_field_emission {
         });
         assert!(result.is_ok(), "into_result() shared-fallback should recover without panic");
         capture.assert_any_event_has_fields(&[
-            ("lock", "snapshot_values"),
-            ("path", "shared_fallback"),
+            ("lock", poison_fields::LOCK_SNAPSHOT_VALUES),
+            ("path", poison_fields::PATH_SHARED_FALLBACK),
         ]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2638,9 +2640,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "into_result() should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "results"), ("path", "into_inner")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_INTO_INNER)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2662,9 +2664,9 @@ mod structured_field_emission {
             }))
         });
         assert!(result.is_ok(), "into_result() shared-fallback should recover without panic");
-        capture.assert_any_event_has_fields(&[("lock", "results"), ("path", "shared_fallback")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_RESULTS), ("path", poison_fields::PATH_SHARED_FALLBACK)]);
         assert!(
-            capture.messages().iter().any(|m| m == "lock poisoned, recovering"),
+            capture.messages().iter().any(|m| m == poison_fields::MSG_LOCK_POISONED),
             "message must be exactly 'lock poisoned, recovering'; got: {:?}",
             capture.messages()
         );
@@ -2835,7 +2837,7 @@ mod poison_evaluate {
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
         // Verify at least one event names the correct lock via structured fields
-        capture.assert_any_event_has_fields(&[("lock", "values")]);
+        capture.assert_any_event_has_fields(&[("lock", poison_fields::LOCK_VALUES)]);
     }
 }
 
@@ -3632,6 +3634,8 @@ mod execute_with_config_tests {
 
 #[cfg(feature = "test-utils")]
 mod poison_fields_constants {
+    use super::*;
+
     /// Sanity test: assert every compile-time constant in `poison_fields` holds the
     /// exact &str value expected by the structured-field schema from Task 600.
     ///
@@ -3640,8 +3644,6 @@ mod poison_fields_constants {
     /// system before the implementation exists.
     #[test]
     fn poison_fields_constants_exist_and_match_schema() {
-        use reify_runtime::concurrent_eval::poison_fields;
-
         assert_eq!(poison_fields::LOCK_VALUES, "values");
         assert_eq!(poison_fields::LOCK_SNAPSHOT_VALUES, "snapshot_values");
         assert_eq!(poison_fields::LOCK_RESULTS, "results");
