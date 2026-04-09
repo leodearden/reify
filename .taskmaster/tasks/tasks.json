@@ -13569,10 +13569,12 @@
         "updatedAt": "2026-03-28T00:46:26.631Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-expr",
-            "crates/reify-stdlib",
-            "crates/reify-types"
+            "crates/reify-types",
+            "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/lib.rs"
           ]
         }
       },
