@@ -426,6 +426,113 @@ structure S {
     );
 }
 
+/// Sub declaration inside a `where {}` block should emit a 'not yet supported' error.
+///
+/// Before the fix, `compile_guarded_members` silently dropped Sub declarations via
+/// a `_ => {}` catch-all. This test asserts that exactly one error diagnostic is
+/// emitted with a message containing 'not yet supported' and 'sub'.
+#[test]
+fn sub_in_block_guard_emits_unsupported_error() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        sub child = S()
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.to_lowercase().contains("not yet supported")
+                && d.message.to_lowercase().contains("sub")
+        })
+        .collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one 'not yet supported' error for sub in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Minimize declaration inside a `where {}` block should emit a 'not yet supported' error.
+///
+/// Before the fix, `compile_guarded_members` silently dropped Minimize declarations via
+/// a `_ => {}` catch-all. This test asserts that exactly one error diagnostic is
+/// emitted with a message containing 'not yet supported' and 'minimize'.
+#[test]
+fn minimize_in_block_guard_emits_unsupported_error() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 5mm
+    where active {
+        minimize x
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.to_lowercase().contains("not yet supported")
+                && d.message.to_lowercase().contains("minimize")
+        })
+        .collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one 'not yet supported' error for minimize in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Maximize declaration inside a `where {}` block should emit a 'not yet supported' error.
+///
+/// Before the fix, `compile_guarded_members` silently dropped Maximize declarations via
+/// a `_ => {}` catch-all. This test asserts that exactly one error diagnostic is
+/// emitted with a message containing 'not yet supported' and 'maximize'.
+#[test]
+fn maximize_in_block_guard_emits_unsupported_error() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    param x : Scalar = 5mm
+    where active {
+        maximize x
+    }
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.to_lowercase().contains("not yet supported")
+                && d.message.to_lowercase().contains("maximize")
+        })
+        .collect();
+
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one 'not yet supported' error for maximize in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Reference safety: a top-level constraint referencing a guarded param should
 /// produce a diagnostic. Currently the unguarded-reference check only walks
 /// value_cells, not top-level constraints.
