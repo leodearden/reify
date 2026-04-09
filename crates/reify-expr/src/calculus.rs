@@ -1,6 +1,6 @@
 use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
-use super::{apply_lambda, EvalContext};
+use super::{EvalContext, apply_lambda};
 
 /// Unify scalar-quantity validation with dimension extraction.
 ///
@@ -63,7 +63,9 @@ fn dim_quotient_type(
                 cd.div(&dd.pow(domain_exponent))
             };
             if result_dim != DimensionVector::DIMENSIONLESS {
-                Type::Scalar { dimension: result_dim }
+                Type::Scalar {
+                    dimension: result_dim,
+                }
             } else {
                 Type::Real
             }
@@ -119,8 +121,12 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
         _ => codomain_type.clone(),
     };
-    let gradient_quantity =
-        dim_quotient_type(scalar_dimension(codomain_type), domain_dimension(domain_type), 1, gradient_fallback);
+    let gradient_quantity = dim_quotient_type(
+        scalar_dimension(codomain_type),
+        domain_dimension(domain_type),
+        1,
+        gradient_fallback,
+    );
 
     // Construct result codomain type:
     // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
@@ -198,7 +204,9 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
     let (vec_n, codomain_quantity) = match codomain_type {
-        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => (*n, quantity.as_ref()),
+        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
+            (*n, quantity.as_ref())
+        }
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -211,9 +219,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     if vec_n != n {
         #[cfg(debug_assertions)]
-        eprintln!(
-            "[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}"
-        );
+        eprintln!("[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}");
         return Value::Undef;
     }
 
@@ -659,26 +665,25 @@ pub(crate) fn compute_numerical_gradient_at_point(
             let runtime_dim = f_plus.dimension();
             let expected_codomain_dim = result_dim;
             assert_eq!(
-                runtime_dim,
-                expected_codomain_dim,
+                runtime_dim, expected_codomain_dim,
                 "codomain_type does not match runtime return dimension: \
                  declared codomain expects dimension {:?} but lambda returned {:?}",
-                expected_codomain_dim,
-                runtime_dim,
+                expected_codomain_dim, runtime_dim,
             );
         }
         // Tier 2: soft warning for dimensioned-domain mismatches.
         // original_codomain = result_dim * domain_dim; compare with f_plus dimension.
         #[cfg(debug_assertions)]
-        if i == 0 && let Some(dom_dim) = domain_dim {
+        if i == 0
+            && let Some(dom_dim) = domain_dim
+        {
             let expected_original_codomain = result_dim.mul(&dom_dim);
             let runtime_dim = f_plus.dimension();
             if runtime_dim != expected_original_codomain {
                 eprintln!(
                     "[reify-expr] gradient: codomain_type mismatch (non-fatal): \
                      declared original codomain dimension {:?} but lambda returned {:?}",
-                    expected_original_codomain,
-                    runtime_dim,
+                    expected_original_codomain, runtime_dim,
                 );
             }
         }
@@ -1267,23 +1272,34 @@ mod tests {
 
     #[test]
     fn scalar_dimension_scalar_length_returns_length() {
-        assert_eq!(scalar_dimension(&Type::length()), Some(DimensionVector::LENGTH));
+        assert_eq!(
+            scalar_dimension(&Type::length()),
+            Some(DimensionVector::LENGTH)
+        );
     }
 
     #[test]
     fn scalar_dimension_scalar_dimensionless_returns_dimensionless() {
-        let ty = Type::Scalar { dimension: DimensionVector::DIMENSIONLESS };
+        let ty = Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
         assert_eq!(scalar_dimension(&ty), Some(DimensionVector::DIMENSIONLESS));
     }
 
     #[test]
     fn scalar_dimension_real_returns_dimensionless() {
-        assert_eq!(scalar_dimension(&Type::Real), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            scalar_dimension(&Type::Real),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
     fn scalar_dimension_int_returns_dimensionless() {
-        assert_eq!(scalar_dimension(&Type::Int), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            scalar_dimension(&Type::Int),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
@@ -1305,33 +1321,50 @@ mod tests {
 
     #[test]
     fn domain_dimension_scalar_length_returns_length() {
-        assert_eq!(domain_dimension(&Type::length()), Some(DimensionVector::LENGTH));
+        assert_eq!(
+            domain_dimension(&Type::length()),
+            Some(DimensionVector::LENGTH)
+        );
     }
 
     #[test]
     fn domain_dimension_real_returns_dimensionless() {
-        assert_eq!(domain_dimension(&Type::Real), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            domain_dimension(&Type::Real),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
     fn domain_dimension_int_returns_dimensionless() {
-        assert_eq!(domain_dimension(&Type::Int), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            domain_dimension(&Type::Int),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
     fn domain_dimension_point3_scalar_mass_returns_mass() {
-        let ty = Type::point3(Type::Scalar { dimension: DimensionVector::MASS });
+        let ty = Type::point3(Type::Scalar {
+            dimension: DimensionVector::MASS,
+        });
         assert_eq!(domain_dimension(&ty), Some(DimensionVector::MASS));
     }
 
     #[test]
     fn domain_dimension_point3_real_returns_dimensionless() {
-        assert_eq!(domain_dimension(&Type::point3(Type::Real)), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            domain_dimension(&Type::point3(Type::Real)),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
     fn domain_dimension_point3_int_returns_dimensionless() {
-        assert_eq!(domain_dimension(&Type::point3(Type::Int)), Some(DimensionVector::DIMENSIONLESS));
+        assert_eq!(
+            domain_dimension(&Type::point3(Type::Int)),
+            Some(DimensionVector::DIMENSIONLESS)
+        );
     }
 
     #[test]
@@ -1356,7 +1389,12 @@ mod tests {
             1,
             Type::Real,
         );
-        assert_eq!(result, Type::Scalar { dimension: expected_dim });
+        assert_eq!(
+            result,
+            Type::Scalar {
+                dimension: expected_dim
+            }
+        );
     }
 
     #[test]
@@ -1414,7 +1452,12 @@ mod tests {
             2,
             Type::Real,
         );
-        assert_eq!(result, Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_eq!(
+            result,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
+        );
     }
 
     #[test]
