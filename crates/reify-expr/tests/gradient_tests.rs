@@ -3661,7 +3661,7 @@ fn gradient_codomain_type_with_dimensioned_domain() {
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
     let domain_type = scalar_length.clone();
-    let codomain_type = scalar_mass.clone();
+    let codomain_type = scalar_mass;
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -3739,6 +3739,7 @@ fn gradient_codomain_type_with_dimensioned_domain() {
         ),
     }
 }
+
 /// Gradient field structure trusts the declared codomain_type.
 ///
 /// When taking a gradient of a field whose lambda returns the wrong runtime type,
