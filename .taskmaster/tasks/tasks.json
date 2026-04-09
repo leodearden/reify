@@ -25810,10 +25810,11 @@
         "description": "Follow-up cleanup for the Task 1125 guards in crates/reify-compiler/src/lib.rs:\n\n1. **Error-recovery type fallbacks (lines ~2749 and ~2829)** — both error branches return `CompiledExpr::literal(Value::Undef, Type::Real)`, which cascades type-mismatch diagnostics into downstream expressions expecting the collection element type or List<T>. Mirror the lookup already used at ~line 2860-2877:\n   - For the nested `self.items.diameter` case: `scope.collection_sub_member_types.get(sub_name).and_then(|m| m.get(member)).cloned().unwrap_or(Type::Real)`.\n   - For the direct `self.items` case: `Type::List(Box::new(Type::StructureRef(...)))` using the collection's declared element structure.\n\n2. **Misleading error text for aggregation members (lines ~2818-2823)** — For `self.items.count` / `.sum` / `.keys` / `.values`, the current message reads `use items[i].count for a specific instance`, but these are aggregations, not per-instance fields. Special-case `member` ∈ {\"count\",\"sum\",\"keys\",\"values\"}: recommend `{sub_name}.{member}` (drop the `self.`). Alternative: emit both options in the message.\n\n3. **Deduplicate pattern matching (lines ~2776-2830)** — the new error branch re-destructures the same `MemberAccess { MemberAccess { Ident(\"self\"), sub_name }, member }` pattern as the preceding success branch, and 2783 also has a redundant `!collection_sub_names.contains` guard alongside the separate collection-sub error branch. Collapse into a single if-let that branches internally: `if collection_sub_names.contains(sub_name) { emit error } else if sub_component_types.contains_key(sub_name) { resolve member }`. Apply the same simplification to the `self.member` branch at ~2723-2750.\n\n4. **Comment consolidation (lines ~2720-2724)** — the pre-existing comment about \"Check for self.sub.member chaining (handled at outer level)\" now sits awkwardly with the added collection-sub guard comment. Rewrite as a single comment: `// self.sub — for single-instance subs only, return a StructureRef so outer chaining works. Collection subs are handled by the error branch below (use indexed access instead).`\n\nAdd/extend unit tests so diagnostics for `self.items.count` and `self.items` assert the new (more precise) fallback types propagate without cascading noise.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:47:40.791Z"
       },
       {
         "id": "1282",
@@ -25829,7 +25830,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:47:40.594Z",
+      "lastModified": "2026-04-09T03:47:40.791Z",
       "taskCount": 1282,
       "completedCount": 946,
       "tags": [
