@@ -1630,6 +1630,7 @@ fn test_find_bare_build_rs_violations() {
 }
 
 #[test]
+#[allow(clippy::type_complexity)]
 fn test_no_bare_relative_path_reads() {
     // Source-level regression guard: this file must not contain any bare
     // relative-path string literals for the files it reads (build.rs or this
