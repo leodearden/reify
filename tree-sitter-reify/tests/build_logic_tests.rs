@@ -782,8 +782,14 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
 /// `#[test]` is seen, the flag `saw_test` is set. Intermediate
 /// attribute/comment lines keep the flag alive. When a line starting with
 /// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
-/// check whether the function body contains `(THIS_FILE)`. Only functions that
-/// pass this body check are collected.
+/// check whether the function body contains `(THIS_FILE)` as a call argument OR
+/// the bare relative-path literal `"tests/build_logic_tests.rs"` (with literal
+/// double-quote characters). Only functions that pass this body check are collected.
+///
+/// The dual criterion turns `test_self_read_paths_use_manifest_dir`'s loop into
+/// a genuine cross-property check: a test discovered via the bare-path criterion
+/// will fail the loop's `fn_body.contains("(THIS_FILE)")` assertion, catching
+/// regressions where the bare relative path is used instead of THIS_FILE.
 fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut saw_test = false;
@@ -796,9 +802,15 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
             // Extract "fn name()" — everything up to and including the first ')'
             if let Some(end) = trimmed.find(')') {
                 let sig = trimmed[..=end].to_string();
-                // Only collect if the function body contains (THIS_FILE)
+                // Collect if the function body contains (THIS_FILE) as a call argument
+                // OR the bare relative-path literal "tests/build_logic_tests.rs"
+                // (with literal quotes). The second criterion is intentionally broader
+                // so that a test using the bare path is discovered — and then fails
+                // the THIS_FILE assertion in test_self_read_paths_use_manifest_dir.
                 if let Some(body) = extract_test_fn_body(source, &sig) {
-                    if body.contains("(THIS_FILE)") {
+                    if body.contains("(THIS_FILE)")
+                        || body.contains("\"tests/build_logic_tests.rs\"")
+                    {
                         result.push(sig);
                     }
                 }
