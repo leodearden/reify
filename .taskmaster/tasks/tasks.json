@@ -24799,11 +24799,16 @@
         "description": "compute_numerical_divergence_at_point and compute_numerical_curl_at_point only accept Value::Point for point extraction, while compute_numerical_gradient_at_point also accepts Value::Vector (line 1058). If a user passes a Value::Vector as the sample point, divergence/curl silently returns Undef. Similarly, compute_numerical_laplacian_at_point is missing Value::Vector.\n\nFix:\n1. In compute_numerical_divergence_at_point (~line 1331): change `Value::Point(items) => {` to `Value::Point(items) | Value::Vector(items) => {`\n2. In compute_numerical_curl_at_point (~line 1468): change `Value::Point(items) if items.len() == 3 => {` to `(Value::Point(items) | Value::Vector(items)) if items.len() == 3 => {`\n3. In compute_numerical_laplacian_at_point (~line 1632): add `Value::Vector(items) => { ... }` alongside Value::Point\n4. Add #[cfg(debug_assertions)] arity mismatch warnings to divergence and laplacian numerical functions (matching gradient's pattern at lines 1097-1107)\n5. Add `&& n > 1` guard to curl's single_point_param (line 1493) for consistency with the other operators, or add a comment explaining omission\n\nmemory_hints: search \"Value::Vector point extraction gradient numerical\" for the established pattern",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:22:47.423Z"
+        "updatedAt": "2026-04-09T01:26:14.153Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1221",
@@ -24856,7 +24861,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:25:54.829Z",
+      "lastModified": "2026-04-09T01:26:14.153Z",
       "taskCount": 1224,
       "completedCount": 909,
       "tags": [
