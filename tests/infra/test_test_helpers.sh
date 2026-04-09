@@ -264,7 +264,7 @@ SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 # the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
 # count as prohibited defensive guards.
 _has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
-_has_if_n_guard() { grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+-n' "$1" 2>/dev/null; }
+_has_if_n_guard() { grep -qE '(if|&&|\|\|)[[:space:]]*(\[\[?|test)[[:space:]]+(-n|![[:space:]]+-z)' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
