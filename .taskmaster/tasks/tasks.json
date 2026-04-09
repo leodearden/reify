@@ -25208,11 +25208,11 @@
         "description": "Cosmetic cleanup of the aggregated warn! macro in crates/reify-constraints/src/solver.rs:807-816 and its companion test comment: (1) The warn! macro references `missing` three times — as the structured field `missing_params = ?missing`, as `missing.len()`, and as `{:?}` interpolated into the message body — duplicating identical data. Drop one of the two redundant references. (2) The test comment at ~1265 in `verify_uniqueness_aggregates_warn_for_multiple_missing_params` is misleading: it claims param names appear \"via ?missing_params field\", but WarnCapturingSubscriber's MessageVisitor only captures the `message` field and ignores all structured fields. The test actually passes because of the `{:?}` placeholder in the format-string body. Fix the comment to reflect the truth.</description>\n<parameter name=\"details\">Source: review_comprehensive S1 + S2 from Task 1228 review (esc-1228-1017).\n\nS2 (redundant_data at solver.rs:807-816): Choose one option:\n  Option A (simpler, no test churn): Drop `missing_params = ?missing` from the structured fields, keep the body's `{}` and `{:?}` placeholders. The test continues to assert against the message body unchanged.\n  Option B (richer, requires test_support enhancement): Drop the `{:?}` placeholder from the body, keep `missing_params = ?missing` as the canonical structured carrier, then enhance MessageVisitor in crates/reify-test-support/src/tracing_support.rs (or add a new visitor) to capture structured fields, and update tests to match against the structured rendering.\n\nRecommendation: Option A is the smaller change. Option B is preferable architecturally (structured logs are best practice) but pulls in test_support changes.\n\nS1 (test_comment_misleading at ~1265): Update the comment to reflect Option A or B. For Option A: `// Both param names must appear in the formatted message body (via the {:?} placeholder); WarnCapturingSubscriber's MessageVisitor does not capture structured fields.` Optionally add a brief note pointing at MessageVisitor in tracing_support.rs.\n\nThese two suggestions are coupled and should be addressed in one commit.\n\nmemory_hints: search \"WarnCapturingSubscriber MessageVisitor structured fields message capture\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestions S1 + S2).</parameter>\n<parameter name=\"priority\">low",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:45:56.924Z",
+        "updatedAt": "2026-04-09T03:24:48.187Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25559,7 +25559,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:24:47.255Z",
+      "lastModified": "2026-04-09T03:24:48.187Z",
       "taskCount": 1266,
       "completedCount": 938,
       "tags": [
