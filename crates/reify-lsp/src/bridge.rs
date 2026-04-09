@@ -227,3 +227,30 @@ pub mod error_prefix {
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
     pub const UNSUPPORTED_METHOD: &str = "unsupported LSP method:";
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_params_returns_ok_for_valid_input() {
+        let result = parse_params::<InitializeParams>(json!({"capabilities": {}}), "initialize");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_params_returns_err_with_label_prefix_on_invalid_input() {
+        let result = parse_params::<InitializeParams>(json!(42), "initialize");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().starts_with("initialize params error: "));
+    }
+
+    #[test]
+    fn parse_params_substitutes_provided_label() {
+        let result = parse_params::<DidOpenTextDocumentParams>(json!(42), "didOpen");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("didOpen params error"));
+    }
+}
