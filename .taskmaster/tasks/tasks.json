@@ -21493,7 +21493,10 @@
         "updatedAt": "2026-04-07T15:40:55.458Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
           ]
         }
       },
@@ -21572,7 +21575,7 @@
             "crates/reify-expr/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-expr/src"
+            "crates/reify-expr"
           ]
         }
       },
