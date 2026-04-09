@@ -1291,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn warning_source_with_width_compiles_and_has_width_value_cell() {
+    fn warning_source_with_width_produces_length_typed_width_cell_with_span() {
         let compiled =
             assert_warning_source_compiles_with_unknown_port_warning(warning_source_with_width());
         let s_template = compiled
