@@ -27539,7 +27539,15 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:17:34.280Z"
+        "updatedAt": "2026-04-09T17:17:34.280Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen Check 2 consistency logic against edge cases"
+            ]
+          }
+        }
       },
       {
         "id": "1327",
@@ -27559,11 +27567,16 @@
         "description": "In tests/infra/test_npm_ci_hardening.sh add at least one integration test that exercises check-pm-standardization.sh's actual logic against controlled fixture inputs. Create a temp directory with synthetic package.json files: (a) three files all containing `\"packageManager\": \"npm@10.9.0\"` — assert the script exits 0; (b) two files at `npm@10.9.0` and one at `npm@9.0.0` — assert the script exits non-zero (catching Check 2 logic bugs). This is the minimal set that would detect a wrong sort key, inverted exit code, or subtly wrong regex that all current structural tests (T5-T8) miss entirely. The existing structural tests may be retained alongside the behavioral tests.\n\nMemory hints: search \"test_npm_ci_hardening structural vs behavioral testing\" for context. Entity lookup: get_entity(\"check-pm-standardization.sh\") for script structure.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:12:08.221Z"
+        "updatedAt": "2026-04-09T17:17:34.737Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_npm_ci_hardening.sh"
+          ]
+        }
       },
       {
         "id": "1329",
@@ -27580,7 +27593,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:17:34.280Z",
+      "lastModified": "2026-04-09T17:17:34.737Z",
       "taskCount": 1329,
       "completedCount": 1003,
       "tags": [
