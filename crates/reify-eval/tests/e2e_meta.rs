@@ -92,6 +92,14 @@ fn e2e_meta_access_let_binding() {
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
 
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
+
     // Assert
     let desc_id = ValueCellId::new("Widget", "desc");
     assert_eq!(
@@ -125,6 +133,14 @@ fn e2e_meta_access_multiple_keys() {
     // Eval
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
+
+    // Guard: no eval errors
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "eval errors: {:?}", eval_errors);
 
     // Assert both keys
     let n_id = ValueCellId::new("Gear", "n");
