@@ -274,7 +274,7 @@ pub(crate) fn compile_guarded_members(
                 let is_auto = matches!(
                     param.default.as_ref(),
                     Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto,
+                        kind: reify_syntax::ExprKind::Auto { .. },
                         ..
                     })
                 );

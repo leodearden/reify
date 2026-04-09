@@ -69,7 +69,7 @@ pub(crate) fn substitute_expr(
         },
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto => ExprKind::Auto,
+        ExprKind::Auto { free } => ExprKind::Auto { free: *free },
         ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
             type_name: type_name.clone(),
             variant: variant.clone(),
@@ -528,7 +528,7 @@ pub(crate) fn compile_entity(
                 let is_auto = matches!(
                     param.default.as_ref(),
                     Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto,
+                        kind: reify_syntax::ExprKind::Auto { .. },
                         ..
                     })
                 );
@@ -858,7 +858,7 @@ pub(crate) fn compile_entity(
                             let is_auto = matches!(
                                 param.default.as_ref(),
                                 Some(reify_syntax::Expr {
-                                    kind: reify_syntax::ExprKind::Auto,
+                                    kind: reify_syntax::ExprKind::Auto { .. },
                                     ..
                                 })
                             );
