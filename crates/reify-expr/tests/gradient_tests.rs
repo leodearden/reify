@@ -1091,26 +1091,12 @@ fn gradient_at_origin() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Expected: Vector3(0.0, 0.0, 0.0) — gradient of x^2+y^2+z^2 at origin is zero
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            for (i, comp) in components.iter().enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    val.abs() < 1e-4,
-                    "gradient component {} at origin should be ~0.0, got {}",
-                    i,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-4,
+        "gradient of x²+y²+z² at origin",
+    );
 }
 
 /// Gradient perturbation with dimensioned Scalar lambda args.
