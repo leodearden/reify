@@ -389,9 +389,12 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 /// [`error_prefix::INITIALIZE_PARAMS`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
-        .await;
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+            .await;
+    })
+    .await;
 }
 
 /// Notifications with malformed params should propagate deserialization errors as Err,
@@ -401,12 +404,15 @@ async fn initialize_with_malformed_params_returns_error() {
 /// — deserialization failures are surfaced to the caller even for one-way messages.
 #[tokio::test]
 async fn notification_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didOpen",
-        error_prefix::DID_OPEN_PARAMS,
-    )
+    with_hang_guard(HANG_GUARD_SECS, "notification_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didOpen",
+            error_prefix::DID_OPEN_PARAMS,
+        )
+        .await;
+    })
     .await;
 }
 
@@ -567,9 +573,12 @@ async fn did_open_returns_ok_null() {
 /// surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn initialized_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
-        .await;
+    with_hang_guard(HANG_GUARD_SECS, "initialized_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+            .await;
+    })
+    .await;
 }
 
 /// LSP clients (e.g. some VS Code extensions, Neovim) may send `params: null` for
