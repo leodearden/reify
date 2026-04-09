@@ -1310,6 +1310,30 @@ fn test_drop_logs_error_check_is_form_agnostic() {
 }
 
 #[test]
+fn test_strip_line_comments() {
+    // Full-line `// comment` → empty string (split on `//` yields "")
+    assert_eq!(strip_line_comments("// this is a comment"), "");
+
+    // Code with trailing `// comment` → code portion only (with trailing space)
+    assert_eq!(
+        strip_line_comments("    let x = 1; // comment"),
+        "    let x = 1; "
+    );
+
+    // Code with closed `/* inline comment */` → comment block removed
+    assert_eq!(strip_line_comments("a /* x */ b"), "a  b");
+
+    // Unclosed `/*` with no matching `*/` on same line → left unchanged (line-level only)
+    assert_eq!(strip_line_comments("/* unclosed"), "/* unclosed");
+
+    // Line with no comments → returned unchanged
+    assert_eq!(strip_line_comments("let x = 1;"), "let x = 1;");
+
+    // Code before and after `/* comment */` are both preserved
+    assert_eq!(strip_line_comments("foo(/* polling */ bar)"), "foo( bar)");
+}
+
+#[test]
 fn test_build_rs_reads_use_manifest_dir() {
     // Meta-test / regression guard: each source-inspection test that reads build.rs
     // must use the `BUILD_RS` constant rather than the bare relative path
