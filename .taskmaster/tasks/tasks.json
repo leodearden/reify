@@ -9849,7 +9849,7 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
           ]
         }
       },
@@ -9866,10 +9866,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/src/lib.rs"
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval",
+            "crates/reify-runtime"
           ]
         }
       },
