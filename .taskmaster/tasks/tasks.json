@@ -26136,11 +26136,11 @@
         "description": "Improve the `completion_items` test helper in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Empty-input edge-case tests (S2):** Add unit tests for empty Array (`json!([])`) and empty List (`json!({\"isIncomplete\": false, \"items\": []})`) to confirm the helper returns an empty slice without panicking. This documents the contract for downstream `assert!(!items.is_empty())` guards.\n\n2. **Better malformed-List panic message (S3):** When the response is an object with an `\"items\"` key whose value is not an array (e.g. `{\"items\": null}`, `{\"items\": 42}`), the current code falls through to the generic panic. Add a specific check: if `response` is an object containing `\"items\"` but the value isn't an array, panic with a message like `\"CompletionResponse::List has non-array 'items' field: {response}\"`. Add a `#[should_panic]` test for this case.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context on this helper.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:53:46.187Z"
+        "updatedAt": "2026-04-09T08:13:46.612Z"
       },
       {
         "id": "1298",
@@ -26236,13 +26236,13 @@
         "description": "reify-stdlib/src/lib.rs (8,643 lines) is a single-file crate with ~25 active tasks contending on it. Split into domain submodules to reduce merge conflicts and enable parallel orchestrator execution.\n\nProposed splits:\n- prelude.rs — Prelude loading, caching, compile_with_prelude, collect_preludes. Unlocks ~8 tasks.\n- geometry.rs — Geometry primitives (cone, torus, chamfer, sweep, loft, pattern, extrude, revolve, boolean). Unlocks ~15 tasks.\n- analysis.rs — Analysis traits, DFM, von_mises, safety_factor, simulation_ready, design_review.\n- units.rs — Unit definitions, imperial, SI prefixes, unit collision detection.\n- lib.rs (remainder) — Thin re-export facade, Engine integration.\n\nTarget: lib.rs under 500 lines, no submodule over 2500 lines.\n\nmemory_hints: search \"stdlib prelude reify\", search \"geometry primitives stdlib\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "534"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T07:58:19.938Z",
+        "updatedAt": "2026-04-09T08:13:46.676Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -26255,7 +26255,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:13:46.564Z",
+      "lastModified": "2026-04-09T08:13:46.676Z",
       "taskCount": 1305,
       "completedCount": 968,
       "tags": [
