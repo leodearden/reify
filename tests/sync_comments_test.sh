@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
+EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
 STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
 
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
@@ -16,7 +16,7 @@ source "$REPO_ROOT/tests/infra/test_helpers.sh"
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
-    "reify-expr/src/lib.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
+    "reify-expr/src/sanitize.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
     grep -q "SYNC:.*reify-stdlib::sanitize_value" "$EXPR_FILE"
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
@@ -35,7 +35,7 @@ assert_sync_ref_exists() {
     if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
     local display_fn="${ref_fn:-<none>}"
     assert \
-        "fn ${display_fn} exists in ${tgt_crate}/src/lib.rs (as referenced by SYNC in ${src_crate})" \
+        "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
         grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
 }
 
@@ -43,13 +43,14 @@ assert_sync_ref_exists() {
 assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
-# Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the /^fn/
-# anchor, so doc comments and SYNC markers (which may legitimately differ between
-# the two copies) do not affect the body comparison.
+# Helper: extract the function body (excluding the signature line) to the next
+# line that begins with } at column 0.  The signature line is stripped so that
+# legitimate differences (visibility modifiers like pub(crate), doc comments,
+# SYNC markers) do not affect the body comparison.
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '/^fn '"$fn_name"'[(<]/,/^}/' "$file"
+    awk '/^(pub\([^)]*\)[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[(<[:space:]]/,/^}/' "$file" \
+        | tail -n +2
 }
 
 # Both copies of sanitize_value must have identical function bodies.
