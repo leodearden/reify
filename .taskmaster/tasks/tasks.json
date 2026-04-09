@@ -25123,11 +25123,11 @@
         "description": "Address 3 review suggestions on Task 1229's update to gui/src-tauri/src/tests/mcp_context_tests.rs::get_diagnostics_maps_warning_fields_to_diagnostic_info (current lines ~538-612). All changes are doc/comment-only and confined to that one test function.\n\n1. **Doc comment accuracy (lines 541-545):** The comment currently says the `DiagnosticData → DiagnosticInfo` mapping closure \"is already covered by `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.\" Confirmed against engine_tests.rs:881-900 — that test only does `first.line >= 1`, `first.column >= 1`, `first.end_line >= first.line`, `first.end_column >= 1` range checks. It does NOT validate exact span arithmetic, and would not catch a `(line, end_line)` or `(column, end_column)` transposition. After Task 1229, the new mcp_context test is in fact the ONLY place where exact span coordinates are pinned — the opposite of what the comment implies. Reword to be precise, e.g.: \"The mapping closure is exercised by `engine_get_diagnostics_returns_populated_warning`, but that test only range-checks the span fields. The exact-coordinate assertions in this test are intentionally the only span-arithmetic regression guard for the diagnostics path.\"\n\n2. **Exclusive-end clarity (lines 601-608):** The comments say \"closing `}` of port body ends at line 4 of the fixture\" / \"ends at column 6 (1-indexed).\" Ambiguous: the `}` itself is at L4:C5 (4 leading spaces + `}`). Column 6 is the position immediately AFTER the `}`, because tree-sitter's `end_byte` is exclusive and `offset_to_line_col_fast` computes `chars().count() + 1` from the line start. A future reader counting characters in the fixture will get column 5 for the `}` and may think the assertion is wrong. Clarify the exclusive-end convention, e.g.: \"The span end is the byte one-past the closing `}`: the `}` itself sits at L4:C5, so the exclusive end position is L4:C6.\"\n\n3. **Brittleness note in doc comment (lines 538-554):** Pinning exact coordinates couples this test to (a) the exact whitespace of the inline fixture, (b) which AST node tree-sitter reports as the label span for \"unknown port type\" warnings, and (c) the grammar's port_decl boundary definition. The current doc comment justifies the trade-off for `code: None` but doesn't warn that a more useful diagnostic — e.g. one that points at just `NonExistentTrait` instead of the whole port_decl — would also break this test. Add a sentence such as: \"If the diagnostic span is later narrowed (e.g. to point at just `NonExistentTrait`), update the pinned coordinates rather than reverting to range checks — the exact pinning is the regression guard.\"\n\nmemory_hints: search(\"Task 1229 mcp_context diagnostic doc comment\", project_id=\"reify\"); search(\"engine_get_diagnostics_returns_populated_warning range checks\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:50.475Z",
+        "updatedAt": "2026-04-09T02:58:06.927Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -25422,9 +25422,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:58:04.827Z",
+      "lastModified": "2026-04-09T02:58:06.927Z",
       "taskCount": 1258,
-      "completedCount": 929,
+      "completedCount": 930,
       "tags": [
         "master"
       ]
