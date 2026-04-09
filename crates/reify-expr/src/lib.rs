@@ -1478,7 +1478,7 @@ fn compute_numerical_curl_at_point(
 ) -> Value {
     // Only defined for 3D Point domains
     let coords: Vec<f64> = match point {
-        (Value::Point(items) | Value::Vector(items)) if items.len() == 3 => {
+        Value::Point(items) | Value::Vector(items) if items.len() == 3 => {
             let mut v = Vec::with_capacity(3);
             for item in items {
                 match item.as_f64() {
