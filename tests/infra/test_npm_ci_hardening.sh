@@ -77,11 +77,11 @@ assert "Check 1 grep pattern includes 'npm@' prefix match" \
 echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
-assert "script contains 'sort -u' for cross-file consistency comparison" \
-    grep -q 'sort -u' "$SCRIPT"
+assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
 
-assert "script references 'packageManager' in consistency logic" \
-    grep -q 'packageManager' "$SCRIPT"
+assert "Check 2 block references 'packageManager' in consistency logic" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
