@@ -5007,20 +5007,23 @@ fn termination_collect_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
 
 /// Returns true if `expr` represents a modifying operation on a parameter (not just passing it unchanged).
 ///
-/// For Int params: must contain BinOp::Sub or BinOp::Add (as proxy for subtraction).
+/// For Int params: must contain BinOp::Sub (subtraction moves toward a base case).
 /// For Bool params: must contain UnOp::Not.
-/// Any expression that is NOT simply `ValueRef(param_id)` AND contains a Sub/Add/Not counts.
+/// Any expression that is NOT simply `ValueRef(param_id)` AND contains a Sub/Not counts.
+///
+/// Note: BinOp::Add is intentionally excluded. `n + 1` with guard `n > 0` diverges —
+/// the value increases and never reaches the base case. Users should write `n - 1`
+/// (BinOp::Sub) for the canonical decrementing pattern.
 fn termination_is_modifying(expr: &CompiledExpr, param_id: &ValueCellId) -> bool {
     // If the expression is just the param unchanged, not modifying.
     if matches!(&expr.kind, CompiledExprKind::ValueRef(id) if id == param_id) {
         return false;
     }
 
-    // Walk for Sub, Add (Int modification) or Not (Bool modification)
+    // Walk for Sub (Int modification toward base case) or Not (Bool modification)
     let mut found_mod = false;
     expr.walk(&mut |e| match &e.kind {
         CompiledExprKind::BinOp { op: BinOp::Sub, .. } => found_mod = true,
-        CompiledExprKind::BinOp { op: BinOp::Add, .. } => found_mod = true,
         CompiledExprKind::UnOp { op: UnOp::Not, .. } => found_mod = true,
         _ => {}
     });
