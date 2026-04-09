@@ -1085,6 +1085,42 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the source_map invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_source_map_for_test() clears source_map while leaving compiled and
+/// module_name intact. This exercises the fallback paths added in Task 900:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no resolve_source call)
+/// - get_source_location uses a fallible source_map lookup and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_source_map_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the source_map invariant
+    session.break_source_map_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] when source is clean and source_map is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when source_map is missing"
+    );
+}
+
 // --- Task 837: build_line_offsets unit tests ---
 
 /// build_line_offsets returns empty vec for empty string.
