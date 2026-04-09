@@ -28942,10 +28942,11 @@
         "description": "The Extrude arm (lib.rs:3658), LinearPattern::spacing (lib.rs:3589), and CircularPattern::angle (lib.rs:3604) use eval_named_arg + manual filter that silently returns None on non-finite/non-numeric values. Apply the same diagnostic-on-skip pattern from eval_named_arg_f64 (task 1210) to these paths so users get feedback instead of silent geometry op skips.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:47:01.137Z"
       },
       {
         "id": "1405",
@@ -28961,7 +28962,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:46:59.059Z",
+      "lastModified": "2026-04-09T22:47:01.137Z",
       "taskCount": 1405,
       "completedCount": 1076,
       "tags": [
