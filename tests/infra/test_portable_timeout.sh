@@ -207,7 +207,7 @@ POSIX_FALLBACK_SETUP='
 # SETUP_POSIX_FALLBACK_ENV — eval-string helper for tests that require POSIX fallback
 # WITHOUT an EXIT trap. Timer subshells inherit EXIT traps, which would prematurely
 # clean up rescue_dir and produce false-positive passes in orphan-detection tests
-# (16b, 18b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 18a/b)
+# (16b, 21b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 21a/b)
 # share a single helper. Callers must clean up rescue_dir explicitly.
 SETUP_POSIX_FALLBACK_ENV='
     rescue_dir=$(mktemp -d)
@@ -317,8 +317,9 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 #
 # Test 16a (positive spawn check): proves the test setup is valid — the timer
 # must actually start its inner 'sleep 31337' before Test 16b's cleanup check
-# is meaningful.  Runs portable_timeout in the background, polls up to 5×200ms
-# (1s total) for the sentinel sleep to appear, then asserts it was found.
+# is meaningful.  Runs portable_timeout in the background, 5 checks separated
+# by 4×200ms sleeps (~0.8s worst case) for the sentinel sleep to appear, then
+# asserts it was found.
 #
 # Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
 # after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
@@ -358,9 +359,10 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
+        # Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
         # Safety-net: kill any lingering sentinel sleep 31337 processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
         exit $found
