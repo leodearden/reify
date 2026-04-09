@@ -136,6 +136,13 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     if let Some(arr) = response.as_array() {
         return arr;
     }
+    if let Some(items) = response
+        .as_object()
+        .and_then(|obj| obj.get("items"))
+        .and_then(|v| v.as_array())
+    {
+        return items;
+    }
     panic!(
         "completion response should be CompletionResponse::Array (JSON array) or \
          CompletionResponse::List (JSON object with \"items\" field), got: {response}"
