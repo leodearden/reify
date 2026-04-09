@@ -416,6 +416,8 @@ impl ParamMapping {
 ///
 /// Carries the `cell_id` as a structured field so it can be logged
 /// separately by the `solve()` call site, and a human-readable `message`.
+/// Implements `std::error::Error` so it can be propagated with `?` or
+/// wrapped by any conforming error-aggregation library.
 #[derive(Debug)]
 struct BuilderError {
     cell_id: ValueCellId,
@@ -1315,8 +1317,8 @@ mod tests {
 
     /// BuilderError Display must embed the cell_id and the word "missing" so
     /// log messages and SolveResult::NoProgress reasons are human-readable.
-    /// Also verifies the type satisfies std::error::Error so it can be used
-    /// in ? chains with anyhow / thiserror in the future.
+    /// Also verifies the type implements `std::error::Error` so it can be
+    /// propagated with `?` or wrapped by any conforming error-aggregation library.
     #[test]
     fn builder_error_display_contains_cell_id() {
         let cell_id = vcid("Test", "x");
