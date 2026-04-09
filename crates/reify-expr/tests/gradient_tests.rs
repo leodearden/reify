@@ -3155,13 +3155,13 @@ fn gradient_tensor_point_returns_undef() {
 
     let field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
+        codomain: Box::new(codomain_type),
     };
 
     // Call gradient(field)
     let grad_expr = make_function_call(
         "gradient",
-        vec![CompiledExpr::literal(field, field_type.clone())],
+        vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
             codomain: Box::new(Type::vec3(Type::Real)),
