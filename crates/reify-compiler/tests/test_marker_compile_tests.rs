@@ -37,6 +37,23 @@ fn annotation_warnings<'a>(
         .collect()
 }
 
+fn parse_first_constraint_def(source: &str) -> reify_syntax::ConstraintDef {
+    let parsed =
+        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    parsed
+        .declarations
+        .into_iter()
+        .find_map(|d| {
+            if let reify_syntax::Declaration::Constraint(c) = d {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintDef")
+}
+
 // ── Step 1: is_test field on TopologyTemplate ─────────────────────────────────
 
 #[test]
@@ -83,41 +100,17 @@ fn occurrence_marked_is_test_when_test_annotation_present() {
 
 #[test]
 fn constraint_def_is_test_returns_true_when_test_annotation() {
-    let source = "@test constraint def MinWall { param x : Length\n x > 0 }";
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let def = parsed
-        .declarations
-        .iter()
-        .find_map(|d| {
-            if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(c)
-            } else {
-                None
-            }
-        })
-        .expect("expected a ConstraintDef");
+    let def = parse_first_constraint_def(
+        "@test constraint def MinWall { param x : Length\n x > 0 }",
+    );
     assert!(def.is_test(), "expected is_test() == true for @test constraint def");
 }
 
 #[test]
 fn constraint_def_is_test_returns_false_without_annotation() {
-    let source = "constraint def MinWall { param x : Length\n x > 0 }";
-    let parsed =
-        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
-    let def = parsed
-        .declarations
-        .iter()
-        .find_map(|d| {
-            if let reify_syntax::Declaration::Constraint(c) = d {
-                Some(c)
-            } else {
-                None
-            }
-        })
-        .expect("expected a ConstraintDef");
+    let def = parse_first_constraint_def(
+        "constraint def MinWall { param x : Length\n x > 0 }",
+    );
     assert!(!def.is_test(), "expected is_test() == false for unannotated constraint def");
 }
 
@@ -129,10 +122,31 @@ fn unknown_annotation_on_constraint_def_emits_warning() {
         "@unknownfoo constraint def C { param x : Length\n x > 0 }",
     );
     assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
-    let warns = annotation_warnings(&module, "unknown");
+    let warns = annotation_warnings(&module, "unknown annotation");
     assert!(
         !warns.is_empty(),
         "expected a warning about unknown annotation on constraint def, got none; all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("unknownfoo")),
+        "expected warning to mention 'unknownfoo', got: {:?}",
+        warns
+    );
+}
+
+// ── Step 7b: validate_pragmas called for constraint defs ─────────────────────
+
+#[test]
+fn unknown_pragma_on_constraint_def_emits_warning() {
+    let module = compile_module(
+        "constraint def C { #unknownfoo\n param x : Length\n x > 0 }",
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let warns = annotation_warnings(&module, "unknown pragma");
+    assert!(
+        !warns.is_empty(),
+        "expected a warning about unknown pragma on constraint def, got none; all diagnostics: {:?}",
         module.diagnostics
     );
     assert!(
@@ -253,5 +267,27 @@ fn multiple_annotations_with_test_marks_template() {
     assert_eq!(
         template.annotations[1].args[0],
         reify_types::AnnotationArg::String("old".into())
+    );
+}
+
+#[test]
+fn multiple_annotations_with_test_marks_constraint_def() {
+    let def = parse_first_constraint_def(
+        "@test @deprecated(\"old\") constraint def C { param x : Length\n x > 0 }",
+    );
+    assert!(def.is_test(), "expected is_test() == true");
+    assert_eq!(
+        def.annotations.len(),
+        2,
+        "expected both annotations preserved, got {:?}",
+        def.annotations.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    assert_eq!(def.annotations[0].name, "test");
+    assert_eq!(def.annotations[1].name, "deprecated");
+    assert_eq!(def.annotations[1].args.len(), 1);
+    assert!(
+        matches!(&def.annotations[1].args[0].kind, reify_syntax::ExprKind::StringLiteral(s) if s == "old"),
+        "expected StringLiteral(\"old\") arg on @deprecated, got: {:?}",
+        def.annotations[1].args[0].kind
     );
 }

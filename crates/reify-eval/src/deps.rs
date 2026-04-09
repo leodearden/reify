@@ -1,9 +1,18 @@
+//! Static dependency extraction for evaluation graph nodes.
+//!
+//! Each node's dependencies are extracted once at graph-build time by walking
+//! the compiled expression tree. This is correct for Reify expressions because
+//! they are pure: the set of cells an expression *can* read is exactly the set
+//! it *will* read, regardless of runtime values. There is no benefit to runtime
+//! (Adapton-style) tracing in a pure language.
+
 use reify_types::{CompiledExpr, ValueCellId};
 
-/// Tracks which value cells a node read during evaluation.
+/// Statically extracted value cell dependencies for a node.
 ///
-/// This is a minimal stub for task 12 (content-hash caching).
-/// Task 11 will replace this with a full dependency tracing implementation.
+/// Computed once from the compiled expression tree at graph-build time,
+/// not during evaluation. Params and other root nodes use
+/// `DependencyTrace::default()` (empty reads).
 #[derive(Debug, Clone, Default)]
 pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
@@ -179,7 +188,7 @@ pub fn extract_realization_dependencies(
 mod tests {
     use super::*;
     use crate::cache::NodeId;
-    use reify_types::{ConstraintNodeId, ValueCellId};
+    use reify_types::{BinOp, ConstraintNodeId, Type, Value, ValueCellId};
 
     #[test]
     fn reverse_index_new_is_empty() {
@@ -396,6 +405,136 @@ mod tests {
             height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
                 e, 0
             )))
+        );
+    }
+
+    // --- extract_dependency_trace unit tests ---
+
+    /// Step 1: Verify extract_dependency_trace captures ValueRef ids from a simple BinOp.
+    ///
+    /// This documents the baseline static extraction behavior: every ValueRef in the
+    /// compiled expression tree contributes to the dependency trace, regardless of position.
+    #[test]
+    fn extract_dependency_trace_captures_value_refs_from_binop() {
+        let a = ValueCellId::new("A", "x");
+        let b = ValueCellId::new("A", "y");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            CompiledExpr::value_ref(b.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(trace.reads.len(), 2, "BinOp of two ValueRefs should yield 2 reads");
+        assert!(trace.reads.contains(&a), "reads should contain 'x'");
+        assert!(trace.reads.contains(&b), "reads should contain 'y'");
+    }
+
+    /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
+    /// condition, then-branch, and else-branch all contribute ValueRef reads.
+    ///
+    /// This is the key 'all branches' static extraction property: unlike runtime tracing,
+    /// static extraction conservatively includes all reachable ValueRefs across every branch.
+    #[test]
+    fn extract_dependency_trace_captures_all_branches_of_conditional() {
+        let cond_cell = ValueCellId::new("A", "flag");
+        let then_cell = ValueCellId::new("A", "then_val");
+        let else_cell = ValueCellId::new("A", "else_val");
+        let condition = CompiledExpr::value_ref(cond_cell.clone(), Type::Bool);
+        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::Real);
+        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::Real);
+        let expr = reify_test_support::builders::expr::conditional_expr(
+            condition,
+            then_branch,
+            else_branch,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            3,
+            "Conditional with 3 distinct ValueRefs should yield 3 reads"
+        );
+        assert!(trace.reads.contains(&cond_cell), "reads should contain condition cell");
+        assert!(trace.reads.contains(&then_cell), "reads should contain then-branch cell");
+        assert!(trace.reads.contains(&else_cell), "reads should contain else-branch cell");
+    }
+
+    /// Step 3: Verify extract_dependency_trace returns empty reads for a Literal expression.
+    ///
+    /// Confirms root/leaf behavior: a literal has no value-cell dependencies.
+    #[test]
+    fn extract_dependency_trace_returns_empty_for_literal() {
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let trace = extract_dependency_trace(&expr);
+        assert!(
+            trace.reads.is_empty(),
+            "Literal expression should have no reads, got: {:?}",
+            trace.reads
+        );
+    }
+
+    /// Step 6: Verify DependencyTrace::default() has empty reads.
+    ///
+    /// Documents the contract used throughout lib.rs: params and root nodes pass
+    /// `DependencyTrace::default()` to `record_evaluation()`, signalling that they
+    /// have no value-cell dependencies and will never be invalidated by cell changes.
+    #[test]
+    fn dependency_trace_default_has_empty_reads() {
+        let trace = DependencyTrace::default();
+        assert!(
+            trace.reads.is_empty(),
+            "DependencyTrace::default() should have no reads — root/param nodes are dependency roots"
+        );
+    }
+
+    /// Step 7: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
+    /// in cached entries (the statically extracted trace, not a separate runtime trace).
+    ///
+    /// This documents the end-to-end path: static extraction → stored in cache via
+    /// record_evaluation() → used for invalidation by invalidate_dependents().
+    #[test]
+    fn invalidate_dependents_uses_static_dependency_trace_reads() {
+        use crate::cache::{CacheStore, CachedResult};
+        use reify_types::{DeterminacyState, VersionId};
+
+        // Build a static trace for a BinOp: z = x + y
+        let x = ValueCellId::new("A", "x");
+        let y = ValueCellId::new("A", "y");
+        let z_id = ValueCellId::new("A", "z");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(y.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert!(trace.reads.contains(&x), "sanity: trace contains x");
+        assert!(trace.reads.contains(&y), "sanity: trace contains y");
+
+        // Store z's cached result with the statically extracted trace
+        let z_node = NodeId::Value(z_id.clone());
+        let mut store = CacheStore::new();
+        store.record_evaluation(
+            z_node.clone(),
+            CachedResult::Value(Value::Real(3.0), DeterminacyState::Determined),
+            VersionId(1),
+            trace,
+        );
+
+        // Invalidate dependents of x — z should become dirty (reads x)
+        store.invalidate_dependents(&[x.clone()]);
+        assert!(
+            store.is_dirty(&z_node),
+            "z depends on x via static trace, should be dirty after x changes"
+        );
+
+        // Invalidate dependents of a cell z does NOT read — z should not be additionally dirtied
+        let w = ValueCellId::new("A", "w");
+        store.clear_dirty(&z_node); // reset for the next check
+        store.invalidate_dependents(&[w.clone()]);
+        assert!(
+            !store.is_dirty(&z_node),
+            "z does not depend on w, should not be dirtied by w changing"
         );
     }
 }

@@ -12,12 +12,12 @@
 //! `snapshot_values()`, `take_results()`, `build_result_shared()`, `into_result()`,
 //! and the `AsyncNodeEvaluator::evaluate()` implementation all guarantee that they
 //! will not panic when an internal lock is poisoned by a prior evaluation task that
-//! panicked while holding it. Each recovery emits a `tracing::warn!` so that
-//! cascading panics in a concurrent batch can be detected and diagnosed. Recovered
-//! data may reflect a partially-completed write from the panicking task. Without this
-//! graceful recovery, one panicking task would cascade to every concurrent task
-//! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
-//! just the faulting node.
+//! panicked while holding it. Each recovery emits a structured `tracing::warn!`
+//! (see maintainer note below) so that cascading panics in a concurrent batch can
+//! be detected and diagnosed. Recovered data may reflect a partially-completed write
+//! from the panicking task. Without this graceful recovery, one panicking task would
+//! cascade to every concurrent task sharing the adapter via `Arc`, taking down the
+//! entire evaluation batch instead of just the faulting node.
 //!
 //! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
 //! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
@@ -26,6 +26,15 @@
 //! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
 //! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
 //! the receiver; see `into_result()`'s doc comment for the full rationale.
+//!
+//! Each recovery warning is emitted with structured fields whose values are defined
+//! as `pub const &str` items in the [`poison_fields`] submodule — see that module
+//! for the authoritative schema. New helpers MUST use those constants so that
+//! Datadog/Jaeger filter rules stay in sync with the emitted field values.
+//! In brief: `lock` names the affected lock, `access` or `path` describes how it was
+//! acquired (helper methods use `access`, `into_result()` inline sites use `path`),
+//! and `error = %e` carries the poison error. The message is always the value of
+//! [`poison_fields::MSG_LOCK_POISONED`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -43,6 +52,39 @@ use reify_types::{
 use crate::concurrent::{
     AsyncNodeEvaluator, CancellationToken, ConcurrentScheduler, SchedulerError,
 };
+
+/// Compile-time constants for the structured poison-recovery warning schema.
+///
+/// This module is the **single source of truth** for every field value emitted
+/// by the `tracing::warn!` calls in `ConcurrentEvalAdapter`'s lock-recovery
+/// paths, as established by Task 600.
+///
+/// Each constant's string value is a Datadog/Jaeger filter key that operators
+/// use in alerting rules. **Any rename is a breaking change to alerting rules**
+/// and must be coordinated with the observability team.
+///
+/// New helpers that acquire poisonable locks MUST use these constants so that
+/// filter rules stay in sync with the emitted field values.
+pub mod poison_fields {
+    /// The `lock` field value for the `values` RwLock.
+    pub const LOCK_VALUES: &str = "values";
+    /// The `lock` field value for the `snapshot_values` RwLock.
+    pub const LOCK_SNAPSHOT_VALUES: &str = "snapshot_values";
+    /// The `lock` field value for the `results` Mutex.
+    pub const LOCK_RESULTS: &str = "results";
+    /// The `access` field value for read-lock acquisitions in helper methods.
+    pub const ACCESS_READ: &str = "read";
+    /// The `access` field value for write-lock acquisitions in helper methods.
+    pub const ACCESS_WRITE: &str = "write";
+    /// The `access` field value for exclusive (Mutex) lock acquisitions in helper methods.
+    pub const ACCESS_EXCLUSIVE: &str = "exclusive";
+    /// The `path` field value for recovery via `into_inner()` (sole-owner unwrap).
+    pub const PATH_INTO_INNER: &str = "into_inner";
+    /// The `path` field value for recovery via the shared-reference fallback.
+    pub const PATH_SHARED_FALLBACK: &str = "shared_fallback";
+    /// The fixed message emitted by every poison-recovery warning.
+    pub const MSG_LOCK_POISONED: &str = "lock poisoned, recovering";
+}
 
 /// Adapter that implements `AsyncNodeEvaluator` for concurrent evaluation.
 ///
@@ -100,7 +142,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a read lock on `values`, recovering from poison with a warning.
     fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
         self.values.read().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_READ, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -108,7 +150,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a write lock on `values`, recovering from poison with a warning.
     fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
         self.values.write().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_WRITE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -118,7 +160,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.read().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, access = poison_fields::ACCESS_READ, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -128,7 +170,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.write().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, access = poison_fields::ACCESS_WRITE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -136,7 +178,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a lock on `results`, recovering from poison with a warning.
     fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
         self.results.lock().unwrap_or_else(|e| {
-            tracing::warn!("results Mutex poisoned, recovering: {e}");
+            tracing::warn!(lock = poison_fields::LOCK_RESULTS, access = poison_fields::ACCESS_EXCLUSIVE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -216,41 +258,39 @@ impl ConcurrentEvalAdapter {
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = poison_fields::LOCK_VALUES, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("values RwLock poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = poison_fields::LOCK_VALUES, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("snapshot_values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "snapshot_values RwLock poisoned (shared fallback), recovering: {e}"
-                    );
+                    tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("results Mutex poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = poison_fields::LOCK_RESULTS, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .lock()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("results Mutex poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = poison_fields::LOCK_RESULTS, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
