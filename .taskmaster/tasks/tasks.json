@@ -8254,19 +8254,17 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-test-support/src/lib.rs",
+            "crates/reify-eval/tests/e2e_meta.rs",
+            "crates/reify-eval/tests/m5_integration.rs",
+            "crates/reify-eval/tests/purpose_eval.rs",
             "crates/reify-compiler/tests/meta_compile_tests.rs",
             "crates/reify-compiler/tests/connect_compile_tests.rs",
-            "crates/reify-compiler/tests/field_compile_tests.rs",
-            "crates/reify-eval/tests/meta_eval_integration.rs",
-            "crates/reify-eval/tests/m5_integration.rs",
-            "crates/reify-eval/tests/occurrence_eval.rs",
-            "crates/reify-eval/tests/purpose_eval.rs",
-            "crates/reify-eval/tests/field_eval_tests.rs"
+            "crates/reify-compiler/tests/field_compile_tests.rs"
           ],
           "modules": [
-            "crates/reify-test-support/src",
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests"
+            "crates/reify-test-support",
+            "crates/reify-eval/tests",
+            "crates/reify-compiler/tests"
           ]
         }
       },
