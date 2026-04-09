@@ -607,7 +607,6 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
     assert_eq!(first.end_column, 6, "closing `}}` of port body ends at column 6 (1-indexed)");
 
-    // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
-    // TODO: update when code extraction is implemented
+    // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
 }
