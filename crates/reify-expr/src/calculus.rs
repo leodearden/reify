@@ -2,6 +2,25 @@ use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
 
 use super::{apply_lambda, EvalContext};
 
+/// Unify scalar-quantity validation with dimension extraction.
+///
+/// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
+/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`,
+/// since those are inherently dimensionless scalars.
+///
+/// Returns `None` for all other types (Point, Vector, Bool, etc.).
+///
+/// Using `scalar_dimension(ty).is_some()` replaces `matches!(ty, Type::Real | Type::Int |
+/// Type::Scalar { .. })` at every call site, yielding both the validation result and the
+/// dimension in a single call.
+fn scalar_dimension(ty: &Type) -> Option<DimensionVector> {
+    match ty {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+        _ => None,
+    }
+}
+
 /// Extract the physical dimension from a type, if present.
 ///
 /// Returns `Some(dim)` for:
