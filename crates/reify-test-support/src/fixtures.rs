@@ -34,6 +34,19 @@ pub fn bracket_source_with_width(width_str: &str) -> String {
     bracket_source().replace("80mm", width_str)
 }
 
+/// Source that reliably produces an "unknown port type" warning (not error).
+///
+/// Used by tests that need a non-empty `compiled.diagnostics` to exercise
+/// post-early-exit code paths in `get_diagnostics`.
+/// Validated by `crates/reify-compiler/tests/port_compile_tests.rs:101-124`.
+pub fn warning_source() -> &'static str {
+    r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
+}
+
 /// Return the bracket source with thickness set to 1mm, which violates the
 /// `thickness > 2mm` constraint.
 pub fn bracket_source_violating() -> String {
