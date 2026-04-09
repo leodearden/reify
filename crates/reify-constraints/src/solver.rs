@@ -948,7 +948,7 @@ mod tests {
     /// subscriber and asserts the aggregated WARN contract:
     ///
     /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
-    /// 2. Every substring in `expected_param_substrings` appears in the joined WARN messages
+    /// 2. Every substring in `expected_warn_substrings` appears in the joined WARN messages
     ///    (verifies that the relevant `ValueCellId`s were rendered into the message body via
     ///    the `{:?}` placeholder; `WarnCapturingSubscriber`'s `MessageVisitor` only captures
     ///    the `message` field and ignores all structured fields — see
@@ -957,13 +957,13 @@ mod tests {
     /// Returns the `unique` flag so each call site can assert the verdict with its own
     /// descriptive message, consistent with the named-local style of the sibling tests.
     ///
-    /// See the section comment at `// ---- verify_uniqueness tracing tests ----` for the
-    /// early-return coverage rationale (solve_core and solutions_agree are NOT invoked on
-    /// the missing/non-numeric path).
+    /// See the section comment below (above `verify_uniqueness_aggregates_warn_for_multiple_missing_params`)
+    /// for the early-return coverage rationale (solve_core and solutions_agree are NOT
+    /// invoked on the missing/non-numeric path).
     fn assert_verify_uniqueness_aggregated_warn(
         problem: &ResolutionProblem,
         solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
-        expected_param_substrings: &[&str],
+        expected_warn_substrings: &[&str],
     ) -> bool {
         use reify_test_support::warn_capturing_subscriber;
 
@@ -986,7 +986,7 @@ mod tests {
         );
 
         let all_msgs = msgs.join("\n");
-        for substring in expected_param_substrings {
+        for substring in expected_warn_substrings {
             assert!(
                 all_msgs.contains(substring),
                 "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
@@ -996,7 +996,7 @@ mod tests {
         // Pin the rendered count placeholder ({} via missing.len()) so a future cleanup
         // cannot silently drop it from the format-string body without test failure.
         let expected_count_fragment =
-            format!("{} solved value(s)", expected_param_substrings.len());
+            format!("{} solved value(s)", expected_warn_substrings.len());
         assert!(
             all_msgs.contains(&expected_count_fragment),
             "expected WARN messages to contain rendered count {expected_count_fragment:?} \
