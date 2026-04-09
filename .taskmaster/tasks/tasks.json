@@ -27033,11 +27033,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Add a nan_partialeq_bit_identity_orientation test covering NaN in each of w/x/y/z (single-component and all-NaN cases) to match the existing Real/Scalar/Complex family. (2) Change DimensionVector::LENGTH to DimensionVector::DIMENSIONLESS in nan_partialeq_bit_identity_complex and nan_partialeq_bit_identity_scalar for consistency with the existing *_bit_identity_nan_and_neg_zero_consistent tests.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:12:53.571Z",
+        "updatedAt": "2026-04-09T21:18:04.727Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -28494,9 +28494,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:16:55.534Z",
+      "lastModified": "2026-04-09T21:18:04.728Z",
       "taskCount": 1376,
-      "completedCount": 1051,
+      "completedCount": 1052,
       "tags": [
         "master"
       ]
