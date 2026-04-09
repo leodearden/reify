@@ -27371,12 +27371,13 @@
         "description": "Three test-quality suggestions from Task 1276 review (crates/reify-eval/tests/test_runner.rs:148-170). The test was strengthened in commit e80c9f094 but the new assertions can be made less brittle and more aligned with the sibling pattern used in `violated_constraint_def_produces_labeled_diagnostic` (constraint_def_eval.rs:85).\n\nS1 (line 164, test_brittleness): The `d.message.contains(\"violated\")` clause couples the test to a specific word in SimpleConstraintChecker's output (\"constraint {id} violated\"). If the wording is ever localized or reworded (e.g. \"not satisfied\", \"failed\"), this assertion breaks without a real regression. Drop the \"violated\" substring clause and rely on `severity == Severity::Error` + label-substring as the meaningful signal.\n\nS2 (line 155, redundant_assertion): The `e.id.entity == \"TestA\"` filter adds no signal — the test source has only TestA, so every constraint result is by construction from TestA. The sibling test `run_tests_ignores_nontest_template_constraint_failures` (test_runner.rs:108) already covers entity isolation. Simplify to `results[0].constraint_results.iter().any(|e| e.satisfaction == Satisfaction::Violated)`.\n\nS3 (line 165, test_logic): The `contains(\"Positive\") || contains(\"TestA\")` OR branch is dead — the label is enriched to \"Positive[0]\" by `labeled_diagnostics` (crates/reify-eval/src/lib.rs:2261), so the \"TestA\" branch will never fire today. Tighten to `d.message.contains(\"Positive\")` (or better, match `\"Positive[0]\"` to align with the sibling pattern at constraint_def_eval.rs:85 which uses `\"MinWall[0]\"`).\n\nNet effect: the assertions become:\n  1. `constraint_results.any(|e| e.satisfaction == Violated)`\n  2. `diagnostics.any(|d| d.severity == Error && d.message.contains(\"Positive\"))` (or \"Positive[0]\")\n\nmemory_hints:\n- search(\"diagnostic label substring pattern constraint_def_eval\")\n- inspect crates/reify-eval/tests/constraint_def_eval.rs:60-91 for the sibling pattern\n- inspect crates/reify-eval/src/lib.rs:2261 for labeled_diagnostics enrichment",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1276"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:28:04.877Z"
       },
       {
         "id": "1319",
@@ -27392,7 +27393,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:28:04.437Z",
+      "lastModified": "2026-04-09T16:28:04.877Z",
       "taskCount": 1319,
       "completedCount": 994,
       "tags": [
