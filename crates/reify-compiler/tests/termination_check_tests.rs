@@ -402,6 +402,36 @@ structure S {
     );
 }
 
+// ─── Task 408 step 3: undef in non-guard-referenced arg should be allowed ────
+
+/// A recursive sub `S(n: n - 1, label: undef) where n > 0` should produce NO
+/// undef-related error. `label` is not referenced by the guard `n > 0`, so it is
+/// irrelevant to termination. Currently, the check scans ALL args and emits a
+/// spurious 'undef not allowed' error.
+#[test]
+fn undef_in_non_guard_arg_is_allowed() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    param label : Int = 0
+    sub child = S(n: n - 1, label: undef) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "expected no errors: `label` is not guard-referenced, so undef in that arg is allowed; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── Task 408 step 1: BinOp::Add is not a valid termination-modifier ─────────
 
 /// A recursive sub with `S(n: n + 1) where n > 0` should emit an error because
