@@ -387,6 +387,31 @@ else
 fi
 rm -f "$fixture"
 
+echo ""
+echo "--- Robustness: if-guard pattern catches non-underscore ref variable ---"
+
+# Fixture with a ref guard using a non-underscore variable (e.g. ref_fn).
+# The helper should detect this and return non-zero (guard IS present → check
+# for "no guard" must be FALSE).
+fixture_guard=$(mktemp)
+printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
+if _check_has_no_ref_guard "$fixture_guard" 2>/dev/null; then
+    check "if-guard pattern detects non-underscore ref variable (should FAIL)" "false"
+else
+    check "if-guard pattern detects non-underscore ref variable (guard present → false)" "true"
+fi
+rm -f "$fixture_guard"
+
+# Clean fixture with no if-guard: helper should return 0 (no guard → true).
+fixture_clean=$(mktemp)
+printf '# no guards here\necho hello\n' > "$fixture_clean"
+if _check_has_no_ref_guard "$fixture_clean" 2>/dev/null; then
+    check "if-guard pattern returns true for clean file (no guard)" "true"
+else
+    check "if-guard pattern returns true for clean file (no guard)" "false"
+fi
+rm -f "$fixture_clean"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
