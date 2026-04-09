@@ -121,6 +121,34 @@ async fn open_bracket_doc(lsp: &InProcessLsp) {
     .expect("open_bracket_doc: didOpen should succeed");
 }
 
+/// Extract the completion items slice from a serialized [`CompletionResponse`] value.
+///
+/// The bridge serializes `Option<CompletionResponse>` to `serde_json::Value`, producing
+/// one of two shapes depending on which variant the server returned:
+///
+/// - `CompletionResponse::Array` → JSON array `[...]`
+/// - `CompletionResponse::List`  → JSON object `{"isIncomplete": bool, "items": [...]}`
+///
+/// This helper handles both shapes so that tests remain valid regardless of which
+/// variant the server returns.  Panics with an actionable message (including the actual
+/// value received) if neither shape matches.
+fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
+    if let Some(arr) = response.as_array() {
+        return arr;
+    }
+    if let Some(items) = response
+        .as_object()
+        .and_then(|obj| obj.get("items"))
+        .and_then(|v| v.as_array())
+    {
+        return items;
+    }
+    panic!(
+        "completion response should be CompletionResponse::Array (JSON array) or \
+         CompletionResponse::List (JSON object with \"items\" field), got: {response}"
+    );
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
@@ -187,10 +215,8 @@ async fn did_open_and_completion_returns_items() {
         .await
         .expect("completion should succeed");
 
-    // Should return an array of completion items
-    let items = result
-        .as_array()
-        .expect("completion should return an array");
+    // Should return completion items in either CompletionResponse variant.
+    let items = completion_items(&result);
     assert!(
         !items.is_empty(),
         "completion should return non-empty items for bracket source"
@@ -741,6 +767,45 @@ async fn shutdown_ignores_unexpected_params_after_initialize() {
     // Wrong JSON type entirely — bridge must not reject this post-handshake either.
     let lsp = initialized_lsp().await;
     assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+}
+
+/// Unit tests for the `completion_items` helper function.
+///
+/// These tests exercise `completion_items` in isolation using raw `serde_json::Value`
+/// fixtures, without going through the LSP bridge.
+mod completion_items_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn completion_items_extracts_from_array_response() {
+        let val = json!([{"label": "foo"}]);
+        let items = completion_items(&val);
+        assert_eq!(items.len(), 1, "expected one item, got {}", items.len());
+        assert_eq!(
+            items[0]["label"], "foo",
+            "first item label should be 'foo', got: {}",
+            items[0]["label"]
+        );
+    }
+
+    #[test]
+    fn completion_items_extracts_from_list_response() {
+        let val = json!({"isIncomplete": false, "items": [{"label": "bar"}]});
+        let items = completion_items(&val);
+        assert_eq!(items.len(), 1, "expected one item, got {}", items.len());
+        assert_eq!(
+            items[0]["label"], "bar",
+            "first item label should be 'bar', got: {}",
+            items[0]["label"]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::Array")]
+    fn completion_items_panics_on_unexpected_shape() {
+        completion_items(&json!(42));
+    }
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
