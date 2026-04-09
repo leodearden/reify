@@ -26842,11 +26842,11 @@
         "description": "Follow-up from Task 1184 review (esc-1184-1064, suggestion S1). In tests/infra/test_run_all.sh line 75, `t3_rc` is captured via `&& t3_rc=0 || t3_rc=$?` but never referenced — identical to the `t2_rc` dead variable that Task 1184 already cleaned up.\n\nFix: Change line 75 from `t3_output=\"$(bash \"$RUN_ALL\" \"$TMPDIR_T3\" 2>&1)\" && t3_rc=0 || t3_rc=$?` to `t3_output=\"$(bash \"$RUN_ALL\" \"$TMPDIR_T3\" 2>&1)\" || true` (matching the t2 fix). Then add a corresponding Test 6 meta-assertion: `assert \"t3_rc dead variable removed\" bash -c \"! grep -qE 't3_rc=[0\\$]' '$THIS_FILE'\"`.\n\nmemory_hints: search for \"t2_rc dead variable test_run_all.sh\" to see how t2_rc was cleaned up in Task 1184.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:35:47.217Z",
+        "updatedAt": "2026-04-09T16:13:43.346Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -27359,7 +27359,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:13:41.719Z",
+      "lastModified": "2026-04-09T16:13:43.346Z",
       "taskCount": 1317,
       "completedCount": 989,
       "tags": [
