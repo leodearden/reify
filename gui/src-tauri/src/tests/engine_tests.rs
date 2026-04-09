@@ -1694,6 +1694,25 @@ fn module_key_matches_load_from_source_insertion() {
     assert_eq!(stored_src, bracket_source());
 }
 
+/// module_key(name) matches the key that update_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that update_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into update_source without updating module_key (engine.rs:212).
+#[test]
+fn module_key_matches_update_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("update_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
 /// module_key panics (via debug_assert) when called with an empty name.
 ///
 /// An empty name would produce ".ri", which is never a valid module key —
