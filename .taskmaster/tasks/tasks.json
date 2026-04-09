@@ -25757,7 +25757,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "source": "steward-triage",
+          "modules": [
+            "tests",
+            "tests/infra"
+          ],
+          "parent_escalation": "esc-1174-1043",
+          "parent_task": 1174
+        }
       },
       {
         "id": 1279,
