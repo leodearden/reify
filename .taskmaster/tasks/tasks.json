@@ -22120,7 +22120,10 @@
         "subtasks": [],
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/e2e_meta.rs"
           ]
         }
       },
@@ -22137,7 +22140,10 @@
         "updatedAt": "2026-04-07T19:31:10.512Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/e2e_meta.rs"
           ]
         }
       },
