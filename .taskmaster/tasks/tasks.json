@@ -8130,7 +8130,12 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/type_compat.rs",
+            "crates/reify-compiler/tests/implicit_conversion_tests.rs"
+          ]
         },
         "subtasks": []
       },
@@ -8162,8 +8167,7 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-runtime"
+            "crates/reify-eval"
           ],
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -8171,7 +8175,12 @@
             "queries": [
               "resolution for: Review: Eval meta_map performance and refactoring (17 suggestions from task 212)"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/e2e_meta.rs",
+            "crates/reify-eval/tests/meta_eval_integration.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-03T13:21:22.664Z"
