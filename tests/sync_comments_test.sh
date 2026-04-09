@@ -53,10 +53,17 @@ extract_fn() {
 }
 
 # Both copies of sanitize_value must have identical function bodies.
+# Capture output first so we can assert non-empty before diffing — an empty
+# result from either side would mean the function was not found (e.g. renamed),
+# and `diff <() <()` would silently succeed (false negative).
+expr_body=$(extract_fn sanitize_value "$EXPR_FILE")
+stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
+[ -z "$expr_body" ] && assert "extract_fn sanitize_value found in reify-expr" false
+[ -z "$stdlib_body" ] && assert "extract_fn sanitize_value found in reify-stdlib" false
 assert \
     "sanitize_value body is identical in reify-expr and reify-stdlib" \
     diff \
-        <(extract_fn sanitize_value "$EXPR_FILE") \
-        <(extract_fn sanitize_value "$STDLIB_FILE")
+        <(printf '%s' "$expr_body") \
+        <(printf '%s' "$stdlib_body")
 
 test_summary
