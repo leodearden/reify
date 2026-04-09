@@ -26641,7 +26641,7 @@
         "description": "Follow-up from Task 1174 review (esc-1174-1043, S1). The fn-existence regex at tests/sync_comments_test.sh:39 hardcodes the alternation order `(unsafe)? (const)? (async)? fn`, but Rust's actual grammar order is `const? async? unsafe? fn`. Combinations like `const unsafe fn foo(...)` and `async unsafe fn foo(...)` are legal Rust but would silently fail to match the current regex.\n\nCurrent regex:\n```\n^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+\n```\n\nNot currently a bug because the sanitize_value definitions in reify-expr/reify-stdlib don't use those combinations, but it's a latent false-negative that silently weakens the SYNC comment checker.\n\nFix options:\n1. Reorder alternation groups to match Rust grammar: `(const)? (async)? (unsafe)? fn`.\n2. Switch to an orderless match: `(pub(\\([^)]*\\))?|unsafe|const|async)([[:space:]]+(pub(\\([^)]*\\))?|unsafe|const|async))*[[:space:]]+fn`.\n\nOption 2 is more robust but harder to read; option 1 is a minimal change. Pick one and apply consistently.\n\nRequired meta-test additions in tests/infra/test_sync_comments_grep.sh:\n- accept: `const unsafe fn sanitize_value(`\n- accept: `async unsafe fn sanitize_value(`\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1174-1043 (steward-triage from Task 1174 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -26657,7 +26657,8 @@
             "tests/sync_comments_test.sh",
             "tests/infra/test_sync_comments_grep.sh"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T22:12:00.421Z"
       },
       {
         "id": "1279",
@@ -28641,7 +28642,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:11:59.739Z",
+      "lastModified": "2026-04-09T22:12:00.422Z",
       "taskCount": 1384,
       "completedCount": 1067,
       "tags": [
