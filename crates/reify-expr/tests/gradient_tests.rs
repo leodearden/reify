@@ -2940,6 +2940,47 @@ fn gradient_single_point_param_quadratic() {
     );
 }
 
+/// Gradient of a 3D quadratic field `|p| dot(p,p)` sampled at the origin.
+///
+/// grad(x²+y²+z²) = (2x, 2y, 2z); at (0,0,0) this is the zero vector (0,0,0).
+/// Exercises the zero-vector edge case: the central-difference perturbation must
+/// not divide by zero or produce NaN when all coordinates are zero.
+///
+/// Central difference on a quadratic is mathematically exact (O(h²) truncation
+/// vanishes), leaving only FP roundoff. At the origin, f(h) − f(−h) = h²− h² = 0
+/// exactly in IEEE 754, so the result is exact zero. Tolerance 1e-9 is conservative.
+#[test]
+fn gradient_quadratic_at_origin() {
+    let (grad_result, domain_type, grad_codomain_type) = make_3d_quadratic_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at the origin (0, 0, 0); expected gradient = (0.0, 0.0, 0.0)
+    let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-9,
+        "gradient of dot(p,p) at origin (0,0,0)",
+    );
+}
+
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, p) at irrational coordinates.
 ///
 /// dot(p, p) = x² + y² + z² with gradient 2p = (2x, 2y, 2z). Unlike the old
