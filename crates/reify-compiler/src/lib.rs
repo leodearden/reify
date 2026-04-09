@@ -4680,7 +4680,7 @@ fn lower_annotations(
 /// Validate annotations against known annotation rules and context.
 ///
 /// Known annotations and their valid contexts:
-/// - `@test`: valid on structure, occurrence, function
+/// - `@test`: valid on structure, occurrence, function, constraint_def
 /// - `@optimized`: valid on structure, occurrence
 /// - `@solver_hint`: valid on structure, occurrence
 /// - `@deprecated`: valid on any context
@@ -4695,7 +4695,7 @@ fn validate_annotations(
                 // Valid on any context — no warning.
             }
             "test" => {
-                if !matches!(context, "structure" | "occurrence" | "function") {
+                if !matches!(context, "structure" | "occurrence" | "function" | "constraint_def") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @test is not valid on {context} declarations"
