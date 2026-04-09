@@ -709,3 +709,82 @@ fn mcp_server_set_parameter_error_preserves_state() {
         );
     }
 }
+
+#[test]
+fn mcp_server_get_parameters_distinguishes_auto_free_kind() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/auto_kinds.ri"
+    );
+
+    let requests = vec![
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reify_get_parameters",
+                "arguments": {}
+            }
+        }),
+    ];
+
+    let responses = mcp_roundtrip(&[fixture], &requests);
+    assert!(responses.len() >= 2, "expected at least 2 responses");
+
+    let call_response = &responses[1];
+    assert_eq!(
+        call_response["result"]["isError"],
+        Value::Bool(false),
+        "get_parameters should not return error: {:?}",
+        call_response
+    );
+
+    let content = call_response["result"]["content"]
+        .as_array()
+        .expect("should have content array");
+    let text = content[0]["text"]
+        .as_str()
+        .expect("content[0].text should be a string");
+    let params: Vec<serde_json::Value> =
+        serde_json::from_str(text).expect("content should be JSON array of parameters");
+
+    // Locate the three params by name
+    let width_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("width"))
+        .expect("should have 'width' parameter");
+    let tolerance_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("tolerance"))
+        .expect("should have 'tolerance' parameter");
+    let offset_param = params
+        .iter()
+        .find(|p| p["name"].as_str() == Some("offset"))
+        .expect("should have 'offset' parameter");
+
+    // width is a regular param
+    assert_eq!(
+        width_param["kind"].as_str().unwrap_or(""),
+        "Param",
+        "width should have kind 'Param', got: {:?}",
+        width_param["kind"]
+    );
+
+    // tolerance is `auto` → kind should be "Auto"
+    assert_eq!(
+        tolerance_param["kind"].as_str().unwrap_or(""),
+        "Auto",
+        "tolerance (auto) should have kind 'Auto', got: {:?}",
+        tolerance_param["kind"]
+    );
+
+    // offset is `auto(free)` → kind should be "Auto(free)"
+    assert_eq!(
+        offset_param["kind"].as_str().unwrap_or(""),
+        "Auto(free)",
+        "offset (auto(free)) should have kind 'Auto(free)', got: {:?}",
+        offset_param["kind"]
+    );
+}
