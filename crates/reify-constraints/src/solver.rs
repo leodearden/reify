@@ -912,11 +912,11 @@ impl ConstraintSolver for DimensionalSolver {
 mod tests {
     use reify_types::{ConstraintSolver, ResolutionProblem, SolveResult, ValueMap};
 
-    // ---- solutions_agree test helpers ----
+    // ---- shared solver test helpers ----
 
     /// Returns a canonical single-param tuple: (`ValueCellId::new("Part","x")`, one-element
     /// `Vec<AutoParam>` with `Type::length()`, bounds `(0.0, 1.0)`, `free: false`).
-    /// Used by all `solutions_agree_*` tests that work with one parameter.
+    /// Used by `solutions_agree_*` and `build_perturbation_anchors_*` tests that work with one parameter.
     fn test_param() -> (reify_types::ValueCellId, Vec<reify_types::AutoParam>) {
         use reify_types::{AutoParam, Type, ValueCellId};
         let id = ValueCellId::new("Part", "x");
@@ -930,8 +930,8 @@ mod tests {
     }
 
     /// Returns a `Value::Scalar` with the given `si_value` and `DimensionVector::LENGTH`.
-    /// All `solutions_agree_*` tests use `Type::length()`, so a fixed-dimension helper
-    /// avoids repeating the dimension on every call site.
+    /// `solutions_agree_*` and `build_perturbation_anchors_*` tests use `Type::length()`, so a
+    /// fixed-dimension helper avoids repeating the dimension on every call site.
     fn scalar(v: f64) -> reify_types::Value {
         use reify_types::{DimensionVector, Value};
         Value::Scalar {
@@ -940,7 +940,7 @@ mod tests {
         }
     }
 
-    // ---- end solutions_agree test helpers ----
+    // ---- end shared solver test helpers ----
 
     // ---- verify_uniqueness test helpers ----
 
@@ -1157,7 +1157,7 @@ mod tests {
 
     // ---- verify_uniqueness integration test ----
     // None-branch data logic is tested in isolation by the build_perturbation_anchors
-    // unit tests above. This single end-to-end test verifies that warn emission actually
+    // unit tests below. This single end-to-end test verifies that warn emission actually
     // fires through verify_uniqueness when params are missing.
 
     #[test]
@@ -1289,6 +1289,9 @@ mod tests {
         let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
 
         assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        // Empty `missing` means verify_uniqueness will not emit a WARN for this input.
+        // The explicit tracing-silence integration test was removed during the Task 1250
+        // refactor; coverage of the no-warn path is now implicit via this assertion.
         assert_eq!(perturbed.len(), 1);
         // solution 0.25 < mid 0.5 → lo + 0.9*(hi-lo) = 0.0 + 0.9*1.0 = 0.9
         assert!(

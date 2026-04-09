@@ -8320,13 +8320,13 @@
         "description": "Three correctness bugs in crates/reify-compiler/src/lib.rs:\n\n1. compile_purpose() (~line 1719) doesn't call set_unit_registry(), so QuantityLiterals referencing user-declared units inside purpose constraints silently fail to resolve.\n2. Affine units in conversion expressions (evaluate_const_expr QuantityLiteral branch) incorrectly apply the full transform (value*factor+offset). In conversion-factor context, only the scaling factor should be used.\n3. unwrap_or(1.0) in compile_unit silently uses factor=1.0 when conversion expression fails. Per project convention, logic errors should be noisy.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "208"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:12:39.081Z",
+        "updatedAt": "2026-04-09T09:31:00.657Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
@@ -10036,11 +10036,11 @@
         "description": "compile_guarded_members() at crates/reify-compiler/src/lib.rs:4376-4379 has an empty catch-all that silently drops Sub, Minimize, and Maximize declarations inside guarded (where{}) blocks. No diagnostic is emitted — the user's code is silently ignored.\n\n**What's wrong:**\n- The `_ => {}` arm at line 4376 silently discards these member declarations\n- This is the root cause of the ignored test `recursive_sub_inside_block_guard_no_error` at crates/reify-compiler/tests/termination_check_tests.rs:415\n- Users writing `where condition { sub component(...) }` get no feedback that the sub is ignored\n\n**Fix:** Replace the empty catch-all with a diagnostic error: \"Sub/Minimize/Maximize declarations in guarded blocks are not yet supported\". This turns silent data loss into a visible compiler error. The ignored test should then pass for the right reason (error detected) or be updated accordingly.\n\n**Memory hints:** search for \"guarded block compilation\", entity names: compile_guarded_members, CompiledGuardedGroup",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:12:40.348Z",
+        "updatedAt": "2026-04-09T09:30:57.321Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -20886,13 +20886,13 @@
         "description": "Follow-up task from task 929 code review. Addresses 5 non-blocking suggestions across tests/infra and scripts/.\n\nS1 (test_coverage): In test_npm_ci_hardening.sh:66-67, strengthen the 'check-pm-standardization.sh is in lint_command' assertion to grep for 'scripts/check-pm-standardization.sh' (full path) instead of just the bare filename, or add a comment explaining the guard-pattern assertion below provides full-path coverage.\n\nS2 (missing_negative_assertion): In test_npm_ci_hardening.sh:62-77, add symmetric negative assertion: `assert \"sync_comments_test.sh is NOT in lint_command\" bash -c \"! grep 'lint_command:' '$ORCH' | grep -q 'sync_comments_test.sh'\"`. This mirrors the existing check that check-pm-standardization.sh is NOT in test_command.\n\nS3 (missing_execution_test): In test_npm_ci_hardening.sh, add an execution assertion that runs `scripts/check-pm-standardization.sh` and asserts exit 0, verifying the script actually works in the repo context (not just that it's referenced in orchestrator.yaml).\n\nS4 (silent_failure_masking): In orchestrator.yaml:14-15, add warning echoes when `if test -f` guards trigger a skip, e.g.: `if test -f scripts/check-pm-standardization.sh; then bash scripts/check-pm-standardization.sh; else echo 'WARNING: check-pm-standardization.sh not found, skipping'; fi`. Same for sync_comments_test.sh.\n\nS5 (external_command_failure_handling): In scripts/check-pm-standardization.sh:27, add a git availability check before calling `git check-ignore`. If not inside a git repo (or git unavailable), skip or warn instead of silently reporting PASS for all lockfiles.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "929"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:54.393Z",
+        "updatedAt": "2026-04-09T09:30:56.250Z",
         "metadata": {
           "modules": [
             "orchestrator.yaml",
@@ -26357,11 +26357,11 @@
         "description": "Three interrelated follow-up suggestions from reviewer_comprehensive on Task 1283's diff. All three touch the same test block in `crates/reify-constraints/src/solver.rs` (roughly lines 1160-1350, the `verify_uniqueness_*` integration tests) and should be done in one pass to avoid merge churn and pick a single coherent policy.\n\n(S1 — extract early-return test helper) `verify_uniqueness_skips_solve_core_when_param_missing` (~line 1216) and `verify_uniqueness_skips_solve_core_when_param_non_numeric` (~line 1290) are ~95% identical: same `ResolutionProblem` setup (single length param with bounds (0.0, 1.0), no constraints, no objective), same `CountingSubscriberBuilder` wiring counting WARN+DEBUG at target_prefix \"reify_constraints\", same `warn==1 / debug==0 / !unique` contract. Only the `solved_values` HashMap contents differ (empty vs `Value::Undef`) plus a few assertion-message strings. Extract a private helper inside the test module along the lines of:\n\n```rust\nfn assert_verify_uniqueness_early_returns(\n    problem: &ResolutionProblem,\n    solved_values: &HashMap<ValueCellId, Value>,\n    branch_label: &str,\n)\n```\n\nthat builds the counting subscriber, runs `verify_uniqueness`, and asserts `!unique && warn==1 && debug==0` with messages templated on `branch_label`. Each call site then becomes ~10 lines of setup + one helper call, and adding a third early-return branch (e.g. NaN) is a one-liner.\n\n(S2 — assertion-message wording) In the new non-numeric test's WARN assertion (~line 1337), the message currently reads `\"expected exactly 1 WARN (the aggregated non-numeric-param early-return warn)\"`. The actual warn string emitted by `solver.rs:826` is `\"{N} solved value(s) missing or non-numeric\"` — a single aggregated warn covering both the missing and non-numeric branches, not a distinct non-numeric warn. Change the message to `\"the aggregated missing-or-non-numeric early-return warn\"` (matching how the sibling missing-param test should also be worded if it diverges). Ideally the helper from S1 produces a single canonical wording so this cannot drift again.\n\n(S3 — restore verdict coverage for the multi-missing aggregation path) Task 1283's S2 intentionally dropped `assert!(!unique, ...)` from `verify_uniqueness_aggregates_warn_for_multiple_missing_params` (~line 1164) on the grounds that a single-param early-return skip test already proves the verdict contract. But the multi-missing aggregation path now has no verdict assertion at all — a future refactor that changes how multi-missing is aggregated could silently ship a wrong verdict as long as exactly one WARN still fires. Pick one of:\n  (a) Preferred: add a dedicated `verify_uniqueness_skips_solve_core_when_multiple_params_missing` test, modeled on `_when_param_missing`, that exercises the two-missing-param case with the CountingSubscriberBuilder and asserts `!unique && warn==1 && debug==0`. This keeps `aggregates_warn_for_multiple_missing_params` focused on warn-message text and the new test focused on control-flow contract. Once the S1 helper lands this is ~15 lines of setup + one helper call.\n  (b) Alternative: restore the one-line `assert!(!unique, ...)` in the existing aggregation test. Cheaper but undoes Task 1283 S2's \"verdict is out-of-contract here\" framing — NOT recommended.\n\n**Note:** A fourth reviewer suggestion in this batch (S2 \"test_coverage_overlap\" — delete `verify_uniqueness_warns_when_param_is_non_numeric` as subsumed by the new skip test) was triaged as **obsolete** because `verify_uniqueness_warns_when_param_is_non_numeric` and its missing-param twin were already removed in main by task/1250 step-7 (\"remove three redundant end-to-end tracing tests\") before Task 1283 landed. The post-merge file no longer contains those tests, so there is nothing to delete.\n\n**Scope:** test-only, single-file (`crates/reify-constraints/src/solver.rs`), small. Expected net diff: add ~25-line helper, replace two ~60-line tests with ~15-line call sites, adjust one assertion message, add one ~15-line multi-missing skip test. The existing `build_perturbation_anchors_*` unit tests and `assert_verify_uniqueness_aggregated_warn` helper are out of scope — don't touch them.\n\n**Verification:** `cargo test -p reify-constraints verify_uniqueness` (all existing tests must still pass, and the new multi-missing skip test must pass).\n\nParent: Task 1283 (review triage). Reviewer: reviewer_comprehensive (3 of 4 suggestions on Task 1283's diff; the 4th was obsoleted by the merge from main).\n\nmemory_hints: get_task \"1283\", get_task \"1250\", search \"verify_uniqueness skips_solve_core CountingSubscriberBuilder\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:33:06.442Z",
+        "updatedAt": "2026-04-09T09:26:15.842Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints/src"
@@ -26421,13 +26421,42 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": "1311",
+        "title": "Rename misleading test recursive_sub_inside_block_guard_no_error",
+        "description": "Rename the test `recursive_sub_inside_block_guard_no_error` in crates/reify-compiler/tests/termination_check_tests.rs (line 618) to something like `recursive_sub_inside_block_guard_emits_unsupported_error`. The test was un-ignored in task 490 and now asserts that exactly one 'not yet supported' error IS emitted — the old name `no_error` is actively misleading.\n\nMemory hints: search \"task 490 guarded block diagnostic\", entity: compile_guarded_members",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T09:31:58.116Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
+      },
+      {
+        "id": "1312",
+        "title": "Replace wildcard catch-all with explicit match arms in compile_guarded_members",
+        "description": "In crates/reify-compiler/src/guards.rs (line 421-424), the `_ => {}` catch-all silently drops 6 MemberDecl variants (Port, Connect, Chain, AssociatedType, MetaBlock, ConstraintInst) with no diagnostic. A new variant added to MemberDecl in the future would also be silently swallowed without a compiler warning.\n\nReplace the `_ => {}` wildcard with explicit empty arms: `MemberDecl::Port(_) | MemberDecl::Connect(_) | MemberDecl::Chain(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) | MemberDecl::ConstraintInst(_) => {}`. This ensures adding a new MemberDecl variant produces a non-exhaustive match compiler error, forcing a conscious decision.\n\nThe MemberDecl enum is defined in crates/reify-syntax/src/lib.rs (lines 77-91) with 13 variants total. Param, Let, Constraint, and GuardedGroup are handled by earlier arms; Sub, Minimize, and Maximize emit diagnostics (added in task 490).\n\nMemory hints: search \"compile_guarded_members match arms\", entity: MemberDecl, compile_guarded_members",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T09:31:01.899Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:24:13.576Z",
-      "taskCount": 1310,
-      "completedCount": 974,
+      "lastModified": "2026-04-09T09:31:58.116Z",
+      "taskCount": 1312,
+      "completedCount": 976,
       "tags": [
         "master"
       ]
