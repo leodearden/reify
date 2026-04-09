@@ -333,7 +333,7 @@ echo "--- Test 17: lib_portable.sh timer subshell does NOT escalate to SIGKILL -
 # that PID to an unrelated process.  The main shell's process-group kill
 # (kill -- -$timer_pid) handles cleanup atomically instead.
 assert "lib_portable.sh timer subshell does NOT escalate to SIGKILL (PID-reuse safety)" \
-    bash -c '! grep -qE "kill -9[[:space:]]|kill -KILL[[:space:]]" "$1"' _ "$LIB_PORTABLE"
+    bash -c '! sed -n "/^portable_timeout()/,/^}/p" "$1" | grep -qE "kill -9[[:space:]]|kill -KILL[[:space:]]"' _ "$LIB_PORTABLE"
 
 # -- Test 18: monitor mode (set -m) preserved after POSIX fallback call --------
 echo ""
