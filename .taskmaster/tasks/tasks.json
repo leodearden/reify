@@ -18079,11 +18079,11 @@
         "description": "Three small improvements to the Orientation Ord tie-breaking tests (value.rs:3313-3370):\n\n1. **Descriptive variable names:** Replace alphabetical sequence variables (g/h/i/j) with semantically meaningful names (e.g. `higher_y`/`lower_y`, `greater_z`/`lesser_z`). Also consider renaming e/f in the existing `equal_w_different_x` test. The cross-function alphabetical sequence (a→j) is an invisible maintenance risk.\n\n2. **Extract `make_orientation(w, x, y, z)` helper:** A general constructor helper parallel to the existing `make_orientation_identity()` at line ~4166. This would DRY up the 6-line struct literal repeated in `equal_w_different_x`, `equal_wx_different_y`, and `equal_wxy_different_z`.\n\n3. **Add missing regression comment to z-only test:** The `value_orientation_ord_equal_wxy_different_z` test is missing the \"A wrong impl…\" comment that all peer tie-breaking tests carry. Add: `// A wrong impl that drops z comparison entirely would say i == j, not i > j.` (using the new variable names).\n\nMemory hints: search \"Orientation Ord field order\" for implementation context; search \"descriptive variable names convention\" for naming norms.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:46:33.809Z",
+        "updatedAt": "2026-04-09T04:55:21.660Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -26130,9 +26130,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:54:30.184Z",
+      "lastModified": "2026-04-09T04:55:21.660Z",
       "taskCount": 1297,
-      "completedCount": 965,
+      "completedCount": 966,
       "tags": [
         "master"
       ]
