@@ -6,10 +6,10 @@ use reify_types::Value;
 /// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
 /// — or a directly-constructed `Value::Scalar`.  Consequently only the
 /// `Value::Real` and `Value::Scalar` arms are reachable from current call
-/// sites; the `Value::Orientation` arm is unreachable today but is included
-/// for structural parity with `reify-stdlib::sanitize_value` (defense-in-depth:
-/// if callers evolve to pass orientation values, sanitization is already in
-/// place).
+/// sites; the `Value::Complex` and `Value::Orientation` arms are unreachable
+/// today but are included for structural parity with `reify-stdlib::sanitize_value`
+/// (defense-in-depth: if callers evolve to pass complex or orientation values,
+/// sanitization is already in place).
 ///
 /// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
 /// duplication is intentional (making stdlib's version public would widen its
