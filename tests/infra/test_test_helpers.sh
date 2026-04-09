@@ -402,6 +402,34 @@ else
     check "behavioral block registers trap-based cleanup on EXIT" "false"
 fi
 
+# -- Behavioral robustness: sed extraction is immune to hostile top-level code -
+echo ""
+echo "--- assert_sync_ref_exists robustness: sed extraction immune to top-level exit in SYNC_FILE ---"
+
+# Inject 'exit 99' at the end of an altered copy of SYNC_FILE.  If full-file
+# sourcing were ever used, the bash subshell would exit 99 before the assert
+# call, so 'FAIL' would be absent from the output and this check would fire.
+_rob_out=$(bash -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    altered_sync=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\" \"\$altered_sync\"' EXIT
+    cat '${SYNC_FILE}' > \"\$altered_sync\"
+    echo 'exit 99' >> \"\$altered_sync\"
+    echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
+    echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
+    source '${HELPER_FILE}'
+    source <(sed -n '/^assert_sync_ref_exists()/,/^}/p' \"\$altered_sync\")
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1)
+
+if echo "$_rob_out" | grep -q 'FAIL'; then
+    check "sed extraction immune to hostile top-level exit in SYNC_FILE (exit 99 never fires)" "true"
+else
+    check "sed extraction immune to hostile top-level exit in SYNC_FILE (exit 99 never fires) (got: $_rob_out)" "false"
+fi
+
 # ==============================================================================
 # Robustness tests for sync_comments_test.sh structural checks
 # ==============================================================================
