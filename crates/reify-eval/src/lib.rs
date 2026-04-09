@@ -4554,8 +4554,19 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN rotation axis should return None");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("ax")
+                    && d.message.contains("Revolve")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'Revolve', got: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
@@ -4711,8 +4722,19 @@ mod tests {
             args: vec![("factor".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(result.is_none(), "NaN scale factor should return None");
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("factor")
+                    && d.message.contains("Scale")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'factor', and 'Scale', got: {:?}",
+            diagnostics
+        );
     }
 
     #[test]
