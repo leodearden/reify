@@ -745,3 +745,79 @@ fn field_composition_sample_identity() {
         result
     );
 }
+
+// ── Step 7: Dimensional correctness test ──────────────────────────────────────
+
+/// Gradient of a Length→Temperature field has codomain dimension Temperature/Length.
+///
+/// For f: Scalar<Length> → Scalar<Temperature> with lambda |x| → 2*x,
+/// gradient codomain_type should have dimension TEMPERATURE / LENGTH.
+/// This verifies the R/Q dimensional arithmetic in compute_gradient.
+#[test]
+fn gradient_dimensional_correctness() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| 2.0 * x (temperature field over length domain)
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // gradient(field) → gradient field with dimension Temperature/Length
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Length→Temperature field should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Verify codomain dimension: should be Temperature / Length
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        let expected_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH);
+        match codomain_type {
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    *dimension,
+                    expected_dim,
+                    "gradient codomain dimension should be Temperature/Length ({:?}), got {:?}",
+                    expected_dim,
+                    dimension
+                );
+            }
+            other => panic!(
+                "gradient_dimensional_correctness: expected Scalar codomain, got {:?}",
+                other
+            ),
+        }
+    }
+}
