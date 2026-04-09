@@ -802,6 +802,12 @@ mod completion_items_tests {
             items[0]["label"]
         );
     }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::Array")]
+    fn completion_items_panics_on_unexpected_shape() {
+        completion_items(&json!(42));
+    }
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
