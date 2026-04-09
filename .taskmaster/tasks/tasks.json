@@ -23775,7 +23775,7 @@
             "crates/reify-expr/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-expr/src"
+            "crates/reify-expr"
           ]
         }
       },
