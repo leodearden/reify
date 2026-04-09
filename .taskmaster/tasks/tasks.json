@@ -26215,9 +26215,13 @@
             "crates/reify-types/src"
           ],
           "memory_hints": {
-            "entities": [],
+            "entities": [
+              "DimensionVector",
+              "value.rs"
+            ],
             "queries": [
-              "resolution for: Complete nan_partialeq_bit_identity test family and fix dimension inconsistency"
+              "DimensionVector DIMENSIONLESS vs LENGTH constants reify-types value",
+              "nan_partialeq_bit_identity test orientation w x y z single component reify-types"
             ]
           }
         }
@@ -26543,7 +26547,7 @@
         }
       },
       {
-        "id": "1316",
+        "id": 1316,
         "title": "Tighten extrude/revolve degenerate-guard boundary tests",
         "description": "In crates/reify-eval/src/lib.rs, the task-1198 tests for compile_geometry_op threshold behavior need two improvements:\n\n1. Add exact-boundary tests using 1e-12 (not 2e-12) for both extrude distance and revolve angle guards. The extrude guard is `v.abs() >= 1e-12` and the revolve guard is `angle_rad.abs() < 1e-12`, so exactly 1e-12 should return Some for both. Tests at 2e-12 don't catch > vs >= off-by-one regressions.\n\n2. In compile_geometry_op_extrude_negative_distance_still_legal, change `distance: _` to bind and assert the actual distance value (approximately -0.05), confirming the negative sign is preserved through compilation.\n\nmemory_hints: search \"extrude threshold 1e-12\", search \"revolve degenerate guard\"",
         "status": "pending",
