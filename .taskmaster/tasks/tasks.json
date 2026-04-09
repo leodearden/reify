@@ -4700,14 +4700,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-kernel-occt",
-            "crates/reify-test-support",
-            "crates/reify-types"
+            "crates/reify-eval"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-03T10:23:28.487Z"
@@ -4725,11 +4724,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval/tests",
+            "crates/reify-compiler/tests"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/tests/connect_eval.rs",
+            "crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
