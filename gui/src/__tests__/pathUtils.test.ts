@@ -6,11 +6,14 @@ describe('normalizePath', () => {
     expect(normalizePath('file:///project/src/foo.ri')).toBe('/project/src/foo.ri');
   });
 
-  it('decodes percent-encoded spaces in a file:// URI', () => {
+  it('decodes percent-encoded spaces in file:// URI pathname', () => {
+    // Documents the downstream contract at Editor.tsx:81-83 where the result is passed
+    // to bridgeOpenFile → Tauri open_file → Rust std::fs::read_to_string, which expects
+    // a decoded OS path (spaces, non-ASCII). %20 must become a space.
     expect(normalizePath('file:///project/src/hello%20world.ri')).toBe('/project/src/hello world.ri');
   });
 
-  it('decodes multiple percent-encoded characters in a file:// URI', () => {
+  it('decodes non-ASCII percent-encoding in file:// URI pathname', () => {
     expect(normalizePath('file:///path/%E4%BD%A0%E5%A5%BD.ri')).toBe('/path/你好.ri');
   });
 
@@ -20,6 +23,18 @@ describe('normalizePath', () => {
 
   it('passes bare paths through unchanged (no file:// prefix)', () => {
     expect(normalizePath('/project/src/foo.ri')).toBe('/project/src/foo.ri');
+  });
+
+  it('preserves %2F encoding in file:// URI pathname', () => {
+    expect(normalizePath('file:///path/foo%2Fbar.ri')).toBe('/path/foo%2Fbar.ri');
+  });
+
+  it('does not decode percent-encoding in bare paths', () => {
+    expect(normalizePath('/project/hello%20world.ri')).toBe('/project/hello%20world.ri');
+  });
+
+  it('does not decode %00 (null byte) in file:// URI pathname', () => {
+    expect(normalizePath('file:///path/%00evil.ri')).toBe('/path/%00evil.ri');
   });
 });
 
@@ -60,5 +75,9 @@ describe('isSameFile', () => {
 
   it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
     expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
+  });
+
+  it('matches percent-encoded URI (first arg) against decoded bare path (second arg)', () => {
+    expect(isSameFile('file:///project/hello%20world.ri', '/project/hello world.ri')).toBe(true);
   });
 });
