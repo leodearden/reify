@@ -1689,8 +1689,21 @@ fn module_key_matches_load_from_source_insertion() {
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
-    let (stored_key, _) = session.resolve_source_for_test();
+    let (stored_key, stored_src) = session.resolve_source_for_test();
     assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key panics (via debug_assert) when called with an empty name.
+///
+/// An empty name would produce ".ri", which is never a valid module key —
+/// `load_file` falls back to "unnamed" so an empty name is a programming error.
+/// The debug_assert in module_key is the contract guard.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty")]
+fn module_key_empty_name_panics() {
+    let _ = module_key("");
 }
 
 // --- Task 1194: positive resolve_source pinning test ---
