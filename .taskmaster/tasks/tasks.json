@@ -27537,6 +27537,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1327,
+        "title": "Fix test assertion quality in test_npm_ci_hardening.sh",
+        "description": "In tests/infra/test_npm_ci_hardening.sh make targeted fixes: (1) Update the Test 2 header comment from '1-3 (no 4-9)' to '1-4 (no 5-9)' and the echo label from 'only checks 1-3' to 'only checks 1-4'. (2) Replace `awk '/^for /,/^done/'` with `awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/'` (or equivalent) so the loop-body extraction works regardless of indentation. (3) Add a paired positive assertion `grep -q 'tr -d' \"$SCRIPT\"` alongside the existing negative `wc -l)` check in Test 8. (4) Strengthen Test 6's sort-u check by asserting it appears in proximity to the consistency block (e.g. also assert `grep -q 'packageManager' \"$SCRIPT\"` nearby, or replace the token check with a behavioral fixture test).\n\nMemory hints: search \"test_npm_ci_hardening structural assertions Tests 4-8\" for context on original task 931 changes.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -27549,7 +27560,7 @@
       ],
       "created": "2026-04-09T17:11:50.774Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T17:11:50.811Z"
+      "updated": "2026-04-09T17:11:59.551Z"
     }
   }
 }
