@@ -1025,6 +1025,120 @@ mod tests {
         }
     }
 
+    // ---- verify_uniqueness tracing tests ----
+
+    #[test]
+    fn verify_uniqueness_warns_when_param_missing_from_solved_values() {
+        use std::collections::HashMap;
+
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Empty solved_values: param is missing → None branch fires in verify_uniqueness
+        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = verify_uniqueness(&problem, &solved_values);
+        });
+
+        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
+        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+    }
+
+    #[test]
+    fn verify_uniqueness_warns_when_param_is_non_numeric() {
+        use std::collections::HashMap;
+
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::{AutoParam, Type, Value, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Value::Undef: as_f64() returns None → None branch fires in verify_uniqueness
+        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
+        solved_values.insert(param_id.clone(), Value::Undef);
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = verify_uniqueness(&problem, &solved_values);
+        });
+
+        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
+        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+    }
+
+    #[test]
+    fn verify_uniqueness_no_warn_when_param_has_valid_f64() {
+        use std::collections::HashMap;
+
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Valid f64 value: no None branch, no warn expected
+        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
+        solved_values.insert(
+            param_id.clone(),
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = verify_uniqueness(&problem, &solved_values);
+        });
+
+        capture.assert_count(0);
+    }
+
     #[test]
     fn build_trial_values_empty_params() {
         use super::build_trial_values;
