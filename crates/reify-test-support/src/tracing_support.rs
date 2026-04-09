@@ -17,7 +17,11 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// - `counter` — the warn counter returned by [`warn_counting_subscriber`] or
 ///   [`warn_counting_guard`].
 /// - `before` — a snapshot of the counter taken before the code under test
-///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.
+///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.  Must
+///   be a value obtained earlier in happens-before order on the current
+///   thread; passing a value greater than the counter's current load —
+///   including a stale snapshot from a reordered or unrelated read — will
+///   panic.
 /// - `expected_delta` — how many WARN events you expect since the snapshot.
 /// - `context` — included in the panic message for diagnostics.
 ///
