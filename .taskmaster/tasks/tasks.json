@@ -8326,22 +8326,13 @@
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:45.784Z",
+        "updatedAt": "2026-04-09T09:12:39.081Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "UnitRegistry",
-              "compile_purpose",
-              "evaluate_const_expr",
-              "CompiledUnit",
-              "UnitEntry"
-            ],
+            "entities": [],
             "queries": [
-              "compile_purpose set_unit_registry threading bug",
-              "affine offset conversion factor scaling only",
-              "unwrap_or silent default factor reify compiler",
-              "task 208 unit declarations registry"
+              "resolution for: Fix correctness bugs in unit compilation (purpose threading, affine offset, silent factor default)"
             ]
           },
           "files": [
@@ -10045,11 +10036,11 @@
         "description": "compile_guarded_members() at crates/reify-compiler/src/lib.rs:4376-4379 has an empty catch-all that silently drops Sub, Minimize, and Maximize declarations inside guarded (where{}) blocks. No diagnostic is emitted — the user's code is silently ignored.\n\n**What's wrong:**\n- The `_ => {}` arm at line 4376 silently discards these member declarations\n- This is the root cause of the ignored test `recursive_sub_inside_block_guard_no_error` at crates/reify-compiler/tests/termination_check_tests.rs:415\n- Users writing `where condition { sub component(...) }` get no feedback that the sub is ignored\n\n**Fix:** Replace the empty catch-all with a diagnostic error: \"Sub/Minimize/Maximize declarations in guarded blocks are not yet supported\". This turns silent data loss into a visible compiler error. The ignored test should then pass for the right reason (error detected) or be updated accordingly.\n\n**Memory hints:** search for \"guarded block compilation\", entity names: compile_guarded_members, CompiledGuardedGroup",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T14:06:12.184Z",
+        "updatedAt": "2026-04-09T09:12:40.348Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -20701,7 +20692,7 @@
         "description": "Depth-limit returns silent None — LSP go-to-def fails with no log signal. analysis.rs still has duplicated depth-limit tests after the function moved to reify-syntax, and the duplicated tests hardcode `33` instead of MAX_MEMBER_NESTING_DEPTH+1. Test coverage gaps for combined Port+GuardedGroup recursion and first-match-wins ordering.\n\n## Observability (crates/reify-syntax/src/lib.rs:210)\nAdd `tracing::warn!(name, depth, \"find_named_member_span: depth limit exceeded\")` at the depth-limit return site so silent LSP go-to-def failures are diagnosable in server logs.\n\n## Cleanup duplication (crates/reify-lsp/src/analysis.rs:1333-1393)\n1. Delete the depth-limit tests (find_named_member_span_succeeds_within_depth_limit, find_named_member_span_returns_none_beyond_depth_limit, helper build_nested_guarded_members) from analysis.rs. The authoritative copy now lives in crates/reify-syntax/tests/member_span_tests.rs and the analysis.rs copy hardcodes 33 instead of MAX_MEMBER_NESTING_DEPTH + 1.\n2. Move the `pub use reify_syntax::{find_named_member_span, MemberSpanInfo}` re-export from analysis.rs:5 to crates/reify-lsp/src/lib.rs (the layering owner), or import directly from reify_syntax in goto_def.rs.\n\n## Tests (crates/reify-syntax/tests/member_span_tests.rs)\n3. Add let_without_doc_returns_none_doc (mirror of the existing param_without_doc_returns_none_doc).\n4. Add a combined Port-inside-GuardedGroup test exercising shared-depth-counter behaviour across both recursion arms.\n5. Add a first-match test where the same name appears at top level and inside a nested GuardedGroup; assert the top-level (earlier byte offset) is returned.\n\nSource: review escalation esc-601-98 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20717,8 +20708,15 @@
             "crates/reify-syntax/src",
             "crates/reify-syntax/tests",
             "crates/reify-lsp/src"
-          ]
-        }
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: find_named_member_span: depth-limit observability + cleanup duplicated tests"
+            ]
+          }
+        },
+        "updatedAt": "2026-04-09T09:18:22.009Z"
       },
       {
         "id": "998",
@@ -21038,7 +21036,7 @@
         "id": "1013",
         "title": "Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests",
         "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\". When unblocking, check whether the block stems from task 1304's reify-expr/src/lib.rs split (merged at 08:16Z, same session). That split moved sanitize.rs and complex.rs out of lib.rs; any in-flight branch touching types from those areas may have import-path merge conflicts. gradient_tests.rs imports Value types from reify-expr — verify import paths still resolve against the new submodule structure.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "",
@@ -21055,7 +21053,8 @@
             ]
           },
           "_causation_id": "498666c7-2e80-4ac4-a25e-ef5dadd03974"
-        }
+        },
+        "updatedAt": "2026-04-09T09:17:36.906Z"
       },
       {
         "id": "1014",
@@ -21551,7 +21550,7 @@
         "id": "1039",
         "title": "Fix incomplete CARGO_MANIFEST_DIR coverage in build_logic_tests and strengthen meta-test",
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n2. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nVerification: `cargo test -p tree-sitter-reify test_self_read_paths_use_manifest_dir`\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "details": "",
@@ -21573,7 +21572,7 @@
             "item_2_superseded_by_task_1059"
           ]
         },
-        "updatedAt": "2026-04-09T08:34:47.226Z"
+        "updatedAt": "2026-04-09T09:19:03.886Z"
       },
       {
         "id": "1040",
@@ -24317,11 +24316,11 @@
         "description": "The unit tests added in Task 1167 (crates/reify-eval/src/lib.rs lines ~4863-5054) cover only `Primitive::Box` (1 of 3 primitive variants) and `Modify::Fillet` (1 of 5 modify variants). The shared `eval_arg` closures are exercised but the per-kind formatting and other variant code paths are not validated. There is also no end-to-end test confirming that the warning actually reaches `BuildResult.diagnostics` / `TessellateResult.diagnostics` via `Engine::build()`, `Engine::build_snapshot()`, or `Engine::tessellate_realizations()` (call sites at lib.rs lines ~2899-2906, 2979-2986, 3099-3107). Future refactors that break the `&mut diagnostics` plumbing would not be caught by the new unit tests.\n\n**Add the following tests:**\n\n1. `compile_geometry_op_primitive_cylinder_missing_radius_emits_diagnostic` — `Primitive::Cylinder` missing `radius`.\n2. `compile_geometry_op_primitive_sphere_missing_radius_emits_diagnostic` — `Primitive::Sphere` missing `radius`.\n3. `compile_geometry_op_modify_chamfer_missing_distance_emits_diagnostic` — `Modify::Chamfer` missing `distance`.\n4. `compile_geometry_op_modify_shell_missing_thickness_emits_diagnostic` — `Modify::Shell` missing `thickness` while a `face_0` arg is present (confirms only the required-arg path warns, not the optional `face_*` collection).\n5. `compile_geometry_op_modify_draft_missing_angle_emits_diagnostic` — `Modify::Draft` missing `angle`.\n6. `compile_geometry_op_modify_thicken_missing_offset_emits_diagnostic` — `Modify::Thicken` missing `offset`.\n7. `compile_geometry_op_box_two_missing_args_emits_two_diagnostics_in_order` — `Primitive::Box` missing both `width` and `height`; assert `diagnostics.len() == 2` and verify message order matches caller iteration order (`width` before `height`).\n8. **End-to-end plumbing test** in the same module: construct a `CompiledModule` containing a `Primitive::Box` op with an intentionally missing required arg, run `engine.build(...)`, and assert the resulting `BuildResult.diagnostics` contains a `Severity::Warning` mentioning the missing arg name. Doing this for one of the three call sites is sufficient to lock the wiring in place.\n\nTests (1)–(7) can reuse the helpers in the existing module; (8) needs an `Engine` fixture — look at sibling tests for the right setup.\n\n**Source review suggestions:** S5 (test_coverage) + S6 (test_coverage) from Task 1167 review.\n\nmemory_hints: search \"compile_geometry_op test coverage primitive modify\" entity \"BuildResult\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:34:03.557Z",
+        "updatedAt": "2026-04-09T09:04:21.350Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -24449,11 +24448,11 @@
         "description": "In crates/reify-eval/src/lib.rs (tests around lines 4482-4499 and 4552-4577), the new degenerate-geometry tests only assert rejection well below the threshold (1e-15). Add complementary coverage that locks in the actual threshold behavior:\n\n1. `compile_geometry_op_extrude_at_threshold_returns_some` — pass `literal_length(1e-11)` (or 2e-12) and assert `Some(GeometryOp::Extrude { .. })`.\n2. `compile_geometry_op_revolve_angle_at_threshold_returns_some` — pass `1e-11` rad and assert `Some(GeometryOp::Revolve { .. })`.\n3. `compile_geometry_op_extrude_negative_near_zero_returns_none` — pass `literal_length(-1e-15)` and assert `None`. The behavior change from `*v != 0.0` to `v.abs() >= 1e-12` quietly broadens rejection to small negatives; lock that in.\n4. `compile_geometry_op_extrude_negative_distance_still_legal` — pass `literal_length(-0.05)` and assert `Some` to confirm ordinary negative distances remain valid.\n\nA future regression that, e.g., raises the threshold by an order of magnitude or drops `.abs()` would otherwise slip through.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:02:25.044Z",
+        "updatedAt": "2026-04-09T09:04:23.323Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -25268,11 +25267,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:45:47.126Z",
+        "updatedAt": "2026-04-09T09:17:35.662Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen divergence_gradient_field_returns_undef to isolate source-kind whitelist check"
+            ]
+          }
         }
       },
       {
@@ -26041,13 +26046,13 @@
         "description": "Fix four documentation inaccuracies in `crates/reify-constraints/src/solver.rs` test module introduced by the Task 1250 refactor:\n\n1. **Line ~915**: Section comment says `---- solutions_agree test helpers ----` but `test_param()` and `scalar()` are now shared with `build_perturbation_anchors` tests. Rename to `---- shared solver test helpers ----` (and update the closing comment on ~943).\n2. **Line ~919**: Doc comment on `test_param()` says \"Used by all `solutions_agree_*` tests\" but it's also used by `build_perturbation_anchors_*` tests. Update to mention both families.\n3. **Lines ~1159-1161**: Integration test comment says \"build_perturbation_anchors unit tests above\" but the unit tests are defined *below* (~line 1277). Fix \"above\" → \"below\".\n4. **In `build_perturbation_anchors_valid_f64` (~line 1280)**: Add a brief comment noting that an empty `missing` list means `verify_uniqueness` will not emit a WARN, since the explicit tracing-silence integration test was removed during the refactor.\n\nAll are comment-only changes, no logic modifications.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           "1250"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:33:58.372Z",
+        "updatedAt": "2026-04-09T08:57:40.109Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -26129,11 +26134,11 @@
         "description": "Add a distinct-NaN-payload `assert_ord_consistent` call in the bare `Value::Real` meta-tests to match the Scalar test parity at line ~2672.\n\nCurrently `test_assert_ord_consistent_real_nan` (line ~2628) only covers canonical NaN self-equality (same bit pattern). The Scalar test `value_scalar_bit_identity_neg_zero_and_nan_consistent` also covers distinct NaN payloads (canonical vs payload NaN), but there is no equivalent for bare `Value::Real`.\n\nAdd after the existing `test_assert_ord_consistent_real_nan` test:\n```rust\nassert_ord_consistent(\n    &Value::Real(f64::from_bits(0x7ff8_0000_0000_0000)),\n    &Value::Real(f64::from_bits(0x7ff8_0000_0000_0001)),\n    false,\n);\n```\n\nThis exercises the `to_bits()`-based PartialEq path for bare Real with distinct NaN payloads (different bits → not equal).\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\", get_entity \"value_scalar_bit_identity_neg_zero_and_nan_consistent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:46.446Z",
+        "updatedAt": "2026-04-09T09:06:52.877Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -26146,11 +26151,11 @@
         "description": "Three related improvements to the `reify test` CLI command output, all from Task 270 review:\n\n**S1 — Print constraint failure details for failing tests (robustness_and_usability)**\nLocation: `crates/reify-cli/src/main.rs:144-159`\nCurrently `cmd_test` only prints status label + test name per result, with no detail about which constraints failed or what the violation was. For `TestStatus::Fail` results, print the `constraint_results` entries that have `Satisfaction::Violated` (and optionally diagnostics). Consider reusing or adapting the existing `report_eval_output()` helper to avoid duplicating formatting logic.\n\n**S2 — Add missing '1 indeterminate' summary assertion (test_coverage)**\nLocation: `crates/reify-cli/tests/cli_test.rs:74-103`\n`test_command_on_mixed_file_shows_summary` asserts '1 passed' and '1 failed' in the summary but does not assert '1 indeterminate'. The test_mixed.ri fixture has exactly 1 indeterminate result. Add: `assert!(stdout.contains(\"1 indeterminate\"), ...);`\n\n**S3 — Fix label column alignment (output_formatting)**\nLocation: `crates/reify-cli/src/main.rs:159`\nPASS (4), FAIL (4), INDETERMINATE (13) have different widths causing misaligned test names. Use `println!(\"  {:<13}  {}\", label, result.name);` for fixed-width alignment.\n\nmemory_hints: search \"cmd_test report_eval_output constraint_results\" and \"reify test CLI output format\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:58.137Z"
+        "updatedAt": "2026-04-09T08:57:28.543Z"
       },
       {
         "id": "1296",
@@ -26198,11 +26203,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:16:55.377Z",
+        "updatedAt": "2026-04-09T09:06:51.826Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Complete nan_partialeq_bit_identity test family and fix dimension inconsistency"
+            ]
+          }
         }
       },
       {
@@ -26375,18 +26386,26 @@
         "description": "In `tree-sitter-reify/tests/build_logic_tests.rs`, `find_bare_self_path_violations` and `find_bare_build_rs_violations` are structurally identical (~130 lines of near-duplicate code), differing only in needle strings. Their unit tests and file-level guard tests mirror the same structure.\n\n**Required changes:**\n\n1. **Fix completeness gap (S1):** `find_bare_self_path_violations` only checks `\"tests/build_logic_tests.rs\"` but not `\"./tests/build_logic_tests.rs\"`, while `find_bare_build_rs_violations` checks both `\"build.rs\"` and `\"./build.rs\"`. A contributor could use the `./`-prefixed relative path and bypass the guard.\n\n2. **Deduplicate helpers (S2):** Extract a shared `find_bare_literal_violations(source, needles: &[&str]) -> Vec<(usize, &str)>` that both call sites delegate to. Each passes its own needle list:\n   - build.rs: `&[\"\\\"build.rs\\\"\", \"\\\"./build.rs\\\"\"]`\n   - self-path: `&[\"\\\"tests/build_logic_tests.rs\\\"\", \"\\\"./tests/build_logic_tests.rs\\\"\"]`\n\n3. **Deduplicate unit tests:** Share a `assert_bare_literal_detection(finder_fn, positive_cases, negative_cases)` harness or use a table-driven approach.\n\n4. **Deduplicate file-level guards:** The two `test_no_bare_relative_*` tests could loop over a `[(finder_fn, description)]` table.\n\n5. **Add `./`-prefixed detection test cases** to the self-path test (mirroring the build.rs test which already has a `\"./build.rs\"` positive case on line 1458).\n\nmemory_hints: search \"task 1039 CARGO_MANIFEST_DIR coverage\" in reify project; search \"find_bare_literal_violations deduplication\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:34:48.753Z"
+        "updatedAt": "2026-04-09T09:19:02.627Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Deduplicate find_bare_*_violations helpers and fix missing ./ variant"
+            ]
+          }
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:35:47.742Z",
+      "lastModified": "2026-04-09T09:19:03.886Z",
       "taskCount": 1308,
-      "completedCount": 970,
+      "completedCount": 973,
       "tags": [
         "master"
       ]

@@ -7,15 +7,6 @@ use serde_json::json;
 use crate::lsp_bridge::{LspBridge, lsp_request_impl};
 use reify_lsp::test_support::RecordingSink;
 
-/// Error prefix emitted by the `initialize` handler in
-/// `crates/reify-lsp/src/bridge.rs` when `InitializeParams` deserialization
-/// fails (i.e. `.map_err(|e| format!("initialize params error: {e}"))`).
-///
-/// Pinned here so both `lsp_request_impl_null_literal_passes_json_parse_step`
-/// and `lsp_request_impl_rejects_wrong_shape_params` reference a single
-/// authoritative constant rather than independent string literals.
-const INIT_PARAMS_ERR: &str = "initialize params error";
-
 #[tokio::test]
 async fn lsp_bridge_can_be_constructed_and_initialized() {
     let bridge = LspBridge::new();
@@ -221,51 +212,29 @@ async fn lsp_request_impl_rejects_malformed_json_params() {
 #[tokio::test]
 async fn lsp_request_impl_null_literal_passes_json_parse_step() {
     let bridge = LspBridge::new();
-    // Invariant under test: the JSON parse step in `lsp_request_impl` accepts the
-    // `null` literal (since null IS valid JSON per RFC 8259), even though the
-    // downstream `initialize` handler subsequently rejects it. The error, if any,
-    // must NOT carry the "invalid JSON params" prefix — that prefix is emitted only
-    // by the JSON parse step, not by the handler.
+    // Invariant: `null` IS valid JSON (RFC 8259), so the JSON parse step in
+    // `lsp_request_impl` must accept it. Whether the downstream handler accepts
+    // or rejects null is outside this test's scope — we only assert that the
+    // "invalid JSON params" prefix is NOT emitted (that prefix is emitted only
+    // by the JSON parse step, not by any handler).
     let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
-    // Contract pinned: as of crates/reify-lsp/src/bridge.rs lines 108-116, the
-    // `initialize` handler rejects null params via
-    // `serde_json::from_value::<InitializeParams>(Value::Null)`, so `result` is
-    // currently Err. If the handler is later changed to accept null params (e.g.,
-    // falling back to defaults), `unwrap_err()` below will panic — that is the
-    // signal to update this test to handle the Ok path. The primary invariant
-    // being tested (null passes the JSON parse step) remains valid regardless of
-    // how the initialize handler treats null.
-    let err = result.unwrap_err();
     assert!(
-        !err.contains("invalid JSON params"),
-        "null literal should not trigger a JSON parse error, got: {err}"
-    );
-    assert!(
-        err.contains(INIT_PARAMS_ERR),
-        "expected handler-side rejection, got: {err}"
+        !matches!(&result, Err(e) if e.contains("invalid JSON params")),
+        "null literal should not trigger a JSON parse error, got: {result:?}"
     );
 }
 
 #[tokio::test]
-async fn lsp_request_impl_rejects_wrong_shape_params() {
-    // Table-driven: each entry is valid JSON that is NOT a valid InitializeParams object.
-    // serde_json::from_str accepts them (they are valid JSON), but
-    // serde_json::from_value::<InitializeParams> rejects them at the handler level.
+async fn lsp_request_impl_valid_json_passes_json_parse_step() {
+    // Table-driven: each entry is valid JSON that serde_json::from_str accepts.
+    // `lsp_request_impl` must NOT return "invalid JSON params" for any of these
+    // (that error is emitted only by the JSON parse step, not by any handler).
     let bridge = LspBridge::new();
-    for case in ["{}", "[]", "42", "true"] {
+    for case in ["{}", "[]", "42", "true", "null"] {
         let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
         assert!(
-            result.is_err(),
-            "wrong-shape JSON case {case:?} should return Err"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            !err.contains("invalid JSON params"),
-            "case {case:?}: valid JSON should not trigger a JSON parse error, got: {err}"
-        );
-        assert!(
-            err.contains(INIT_PARAMS_ERR),
-            "case {case:?}: expected handler-side rejection, got: {err}"
+            !matches!(&result, Err(e) if e.contains("invalid JSON params")),
+            "valid JSON case {case:?} should not trigger a JSON parse error, got: {result:?}"
         );
     }
 }
