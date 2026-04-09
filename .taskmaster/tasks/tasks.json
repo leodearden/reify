@@ -9553,7 +9553,7 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
           ]
         }
       },
@@ -9637,16 +9637,12 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/src/graph.rs",
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-eval/tests/recursive_unfold.rs",
-            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+            "crates/reify-eval/tests/recursive_unfold.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-compiler/src",
-            "crates/reify-eval/tests",
-            "crates/reify-compiler/tests"
+            "crates/reify-eval",
+            "crates/reify-compiler"
           ]
         }
       },
