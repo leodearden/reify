@@ -1106,13 +1106,14 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_test_support::vcid;
 
     // ── Shared test helpers ────────────────────────────────────────────────
 
     /// Returns a standard "missing non-auto coord" setup tuple:
     /// `(builder, cell_id, auto_params, current_values)` where:
     /// - `builder` is a fresh `SystemBuilder` with no params
-    /// - `cell_id` is `ValueCellId::new(entity, field)`
+    /// - `cell_id` is `vcid(entity, field)`
     /// - `auto_params` is an empty `Vec<AutoParam>` (cell_id is non-auto)
     /// - `current_values` is an empty `ValueMap` (cell_id is absent → triggers Err)
     fn missing_coord_setup(
@@ -1120,7 +1121,7 @@ mod tests {
         field: &str,
     ) -> (SystemBuilder, ValueCellId, Vec<AutoParam>, ValueMap) {
         let builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new(entity, field);
+        let cell_id = vcid(entity, field);
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
         (builder, cell_id, auto_params, current_values)
@@ -1187,7 +1188,7 @@ mod tests {
     #[test]
     fn add_auto_coord_succeeds_for_non_auto_with_value() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         // cell_id is NOT in auto_params — it's a non-auto param
         let auto_params: Vec<AutoParam> = vec![];
         // But it IS in current_values
@@ -1220,7 +1221,7 @@ mod tests {
     #[test]
     fn add_auto_coord_auto_param_default_preserved() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         // cell_id IS in auto_params
         let auto_params = auto_params_for(&cell_id);
         // But NOT in current_values — should use 0.01 default
@@ -1294,7 +1295,7 @@ mod tests {
     /// in ? chains with anyhow / thiserror in the future.
     #[test]
     fn builder_error_display_contains_cell_id() {
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let err = BuilderError {
             cell_id: cell_id.clone(),
             message: format!("non-auto parameter {cell_id} missing from current_values"),
@@ -1378,7 +1379,7 @@ mod tests {
     #[test]
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let auto_params = auto_params_for(&cell_id);
         let current_values = ValueMap::new();
         let initial_len = builder.params.len();
@@ -1412,7 +1413,7 @@ mod tests {
     #[test]
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let auto_params = auto_params_for(&cell_id);
         let mut current_values = ValueMap::new();
         current_values.insert(
@@ -1442,7 +1443,7 @@ mod tests {
     /// output only the message (cell_id is logged as a separate structured field).
     #[test]
     fn builder_error_has_cell_id_and_display() {
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let message = "non-auto parameter Test.x missing from current_values".to_string();
         let err = BuilderError {
             cell_id: cell_id.clone(),
@@ -1470,8 +1471,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "panics_on_wrong_cell_id: BuilderError cell_id")]
     fn assert_missing_err_panics_on_wrong_cell_id() {
-        let actual_id = ValueCellId::new("A", "x");
-        let expected_id = ValueCellId::new("B", "y");
+        let actual_id = vcid("A", "x");
+        let expected_id = vcid("B", "y");
         let result: Result<(), BuilderError> = Err(BuilderError {
             cell_id: actual_id.clone(),
             message: format!("non-auto parameter {} missing from current_values", actual_id),
