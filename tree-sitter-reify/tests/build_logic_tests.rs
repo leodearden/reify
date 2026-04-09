@@ -1399,6 +1399,15 @@ fn test_strip_line_comments() {
 
     // Code before and after `/* comment */` are both preserved
     assert_eq!(strip_line_comments("foo(/* polling */ bar)"), "foo( bar)");
+
+    // Known limitation: // inside string literals is treated as comment start
+    assert_eq!(strip_line_comments(r#"let s = "//"; let x = 1;"#), r#"let s = ""#);
+
+    // Multiple /* */ blocks on one line — loop handles successive pairs
+    assert_eq!(strip_line_comments("a /* x */ b /* y */ c"), "a  b  c");
+
+    // Block comment then line comment — exercises both steps in sequence
+    assert_eq!(strip_line_comments("code /* block */ more // line"), "code  more ");
 }
 
 #[test]
@@ -1457,6 +1466,11 @@ fn test_find_bare_build_rs_violations() {
     // unescaped " immediately before build.rs, which is absent here.
     let self_reference = r#"let p = "\"build.rs\"";"#;
     assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+
+    // Multi-line input: verify 1-based line numbering
+    let hits = find_bare_build_rs_violations("ok\nread_to_string(\"build.rs\")\nok");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0, 2);
 }
 
 #[test]
