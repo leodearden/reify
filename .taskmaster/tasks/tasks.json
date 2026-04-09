@@ -28836,11 +28836,16 @@
         "description": "No test covers transitive propagation of pub units: if module A declares 'pub unit mil', and module B has 'pub import a', does module C (which imports B) see 'mil'? Under the current implementation it does NOT — B's compiled_units only stores locally-declared units, so the prelude-seeding loop in lib.rs:237-251 finds nothing in B and mil is not re-exported. This matches the current treatment of constraint_defs (one-hop only), but it's undocumented and untested for units — a cross-module integration gap for task 209's scope. Prefer option (a): add a test that pins the current one-hop limitation (A→B→C where C cannot see mil) so any future fix is deliberate. Option (b) would extend scope: propagate pub-seeded prelude units into the current module's compiled_units when is_pub so they re-export transitively, plus a positive A→B→C test. Go with option (a) for this task; option (b) is a separate design decision. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:28.648Z"
+        "updatedAt": "2026-04-09T22:26:43.121Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1397",
@@ -28857,7 +28862,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:26:22.158Z",
+      "lastModified": "2026-04-09T22:26:43.121Z",
       "taskCount": 1397,
       "completedCount": 1073,
       "tags": [
