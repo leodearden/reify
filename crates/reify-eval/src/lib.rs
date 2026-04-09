@@ -5,6 +5,8 @@ pub mod dirty;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
+pub mod tests_runner;
+pub use tests_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -156,7 +158,7 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_types::ConstraintNodeId,
     pub label: Option<String>,
@@ -3401,23 +3403,22 @@ fn compile_geometry_op(
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let mut eval_arg = |name: &str| -> reify_types::Value {
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .unwrap_or(reify_types::Value::Undef)
             };
 
             match kind {
                 PrimitiveKind::Box => Some(reify_types::GeometryOp::Box {
-                    width: eval_arg("width"),
-                    height: eval_arg("height"),
-                    depth: eval_arg("depth"),
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                    depth: eval_arg("depth")?,
                 }),
                 PrimitiveKind::Cylinder => Some(reify_types::GeometryOp::Cylinder {
-                    radius: eval_arg("radius"),
-                    height: eval_arg("height"),
+                    radius: eval_arg("radius")?,
+                    height: eval_arg("height")?,
                 }),
                 PrimitiveKind::Sphere => Some(reify_types::GeometryOp::Sphere {
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
             }
         }
@@ -3450,21 +3451,20 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let mut eval_arg = |name: &str| -> reify_types::Value {
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-                    .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
                     target: target_id,
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
                 reify_compiler::ModifyKind::Chamfer => Some(reify_types::GeometryOp::Chamfer {
                     target: target_id,
-                    distance: eval_arg("distance"),
+                    distance: eval_arg("distance")?,
                 }),
                 reify_compiler::ModifyKind::Shell => {
-                    let thickness = eval_arg("thickness");
+                    let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
                     let faces_to_remove: Vec<usize> = args
                         .iter()
@@ -3486,7 +3486,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
-                    let angle = eval_arg("angle");
+                    let angle = eval_arg("angle")?;
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
@@ -3498,7 +3498,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Thicken => {
-                    let offset = eval_arg("offset");
+                    let offset = eval_arg("offset")?;
                     Some(reify_types::GeometryOp::Thicken {
                         target: target_id,
                         offset,
@@ -3644,7 +3644,7 @@ fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )?;
-                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && *v != 0.0)?;
+                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && v.abs() >= 1e-12)?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3664,7 +3664,7 @@ fn compile_geometry_op(
                         return None;
                     }
                     let angle_rad = f64_arg("angle")?;
-                    if angle_rad == 0.0 {
+                    if angle_rad.abs() < 1e-12 {
                         return None;
                     }
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
@@ -4478,6 +4478,25 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_extrude_near_zero_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with a near-zero (1e-15 m) distance — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(1e-15))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "near-zero extrude distance should return None"
+        );
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_zero_axis_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
@@ -4526,6 +4545,33 @@ mod tests {
 
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN rotation axis should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_near_zero_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with a near-zero (1e-15 rad) angle — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(1e-15)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "near-zero revolve angle should return None"
+        );
     }
 
     #[test]
@@ -4852,7 +4898,7 @@ mod tests {
     // ── compile_geometry_op diagnostic tests ─────────────────────────────────
 
     #[test]
-    fn compile_geometry_op_primitive_missing_arg_emits_diagnostic() {
+    fn compile_geometry_op_primitive_missing_arg_returns_none() {
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
@@ -4876,23 +4922,11 @@ mod tests {
             &mut diagnostics,
         );
 
-        // The op is still constructed (Some), not aborted
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
         assert!(
-            result.is_some(),
-            "compile_geometry_op should return Some even when an arg is missing"
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
         );
-
-        // The missing 'width' arg should produce Value::Undef
-        match result.unwrap() {
-            reify_types::GeometryOp::Box { width, .. } => {
-                assert_eq!(
-                    width,
-                    reify_types::Value::Undef,
-                    "missing arg should default to Value::Undef"
-                );
-            }
-            other => panic!("expected GeometryOp::Box, got {:?}", other),
-        }
 
         // Exactly one diagnostic warning should have been emitted for the missing 'width'
         assert_eq!(
@@ -4919,7 +4953,7 @@ mod tests {
     }
 
     #[test]
-    fn compile_geometry_op_modify_missing_arg_emits_diagnostic() {
+    fn compile_geometry_op_modify_missing_arg_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
 
@@ -4942,23 +4976,11 @@ mod tests {
             &mut diagnostics,
         );
 
-        // The op is still constructed (Some), not aborted
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
         assert!(
-            result.is_some(),
-            "compile_geometry_op should return Some even when an arg is missing"
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
         );
-
-        // The missing 'radius' arg should produce Value::Undef
-        match result.unwrap() {
-            reify_types::GeometryOp::Fillet { radius, .. } => {
-                assert_eq!(
-                    radius,
-                    reify_types::Value::Undef,
-                    "missing arg should default to Value::Undef"
-                );
-            }
-            other => panic!("expected GeometryOp::Fillet, got {:?}", other),
-        }
 
         // Exactly one diagnostic warning should have been emitted for the missing 'radius'
         assert_eq!(
