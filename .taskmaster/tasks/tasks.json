@@ -24729,11 +24729,11 @@
         "description": "Add four targeted test cases to build_logic_tests.rs that cover gaps identified in the Task 1190 review:\n\n1. **Known limitation: `//` inside string literals** (strip_line_comments): Add a test documenting that `//` inside a string literal is treated as a comment delimiter. E.g.:\n   ```rust\n   // Known limitation: // inside string literals is treated as comment start\n   assert_eq!(strip_line_comments(r#\"let s = \"//\"; let x = 1;\"#), r#\"let s = \"\"#);\n   ```\n\n2. **Multiple `/* */` blocks on one line** (strip_line_comments): The removal loop handles successive blocks but only one iteration is tested. Add:\n   ```rust\n   assert_eq!(strip_line_comments(\"a /* x */ b /* y */ c\"), \"a  b  c\");\n   ```\n\n3. **Block comment then line comment** (strip_line_comments): Exercise both algorithm steps in sequence on a single input. Add:\n   ```rust\n   assert_eq!(strip_line_comments(\"code /* block */ more // line\"), \"code  more \");\n   ```\n\n4. **Multi-line input with 1-based line numbers** (find_bare_build_rs_violations): Verify correct 1-based line numbering with multi-line input. Add:\n   ```rust\n   let hits = find_bare_build_rs_violations(\"ok\\nread_to_string(\\\"build.rs\\\")\\nok\");\n   assert_eq!(hits.len(), 1);\n   assert_eq!(hits[0].0, 2);\n   ```\n\nAll additions go into the existing `test_strip_line_comments` and `test_find_bare_build_rs_violations` test functions.\n\nmemory_hints: search \"Task 1190 strip_line_comments build_logic_tests\" in reify project; search \"Task 1040 CARGO_MANIFEST_DIR build_logic_tests\" for original context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:51:35.584Z",
+        "updatedAt": "2026-04-09T00:57:10.746Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests"
@@ -24754,7 +24754,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:57:09.795Z",
+      "lastModified": "2026-04-09T00:57:10.746Z",
       "taskCount": 1217,
       "completedCount": 899,
       "tags": [
