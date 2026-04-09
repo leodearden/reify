@@ -18837,9 +18837,14 @@
         "updatedAt": "2026-04-07T14:06:26.977Z",
         "metadata": {
           "modules": [
+            "gui/src-tauri",
             "crates/reify-mcp",
-            "crates/reify-types",
-            "gui/src-tauri"
+            "crates/reify-types"
+          ],
+          "files": [
+            "gui/src-tauri/src/engine.rs",
+            "crates/reify-mcp/src/types.rs",
+            "crates/reify-types/src/diagnostics.rs"
           ]
         }
       },
@@ -18856,15 +18861,17 @@
         "updatedAt": "2026-04-07T16:03:56.997Z",
         "metadata": {
           "modules": [
-            "tests/infra",
-            "tests/sync_comments_test.sh"
+            "tests"
           ],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Add error guards to sync_comments_test.sh for missing files and source failures"
             ]
-          }
+          },
+          "files": [
+            "tests/sync_comments_test.sh"
+          ]
         }
       },
       {
