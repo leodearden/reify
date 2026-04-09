@@ -26166,11 +26166,11 @@
         "description": "In `crates/reify-compiler/tests/test_marker_compile_tests.rs`: (1) Add `unknown_pragma_on_constraint_def_emits_warning` test that compiles a constraint def with `#unknownfoo` and asserts the warning fires (covers `validate_pragmas` call at lib.rs:4397). (2) Change `annotation_warnings(&module, \"unknown\")` on line 132 to `annotation_warnings(&module, \"unknown annotation\")` (or `\"@unknownfoo\"`) so the first assertion is actually meaningful. (3) Add `multiple_annotations_with_test_marks_constraint_def` mirroring the template version at line 235 — parse `@test @deprecated(\"old\") constraint def C { ... }`, assert `def.is_test()` and that `def.annotations` still contains `deprecated`. (4) Extract a `parse_first_constraint_def(source: &str) -> &ConstraintDef` helper and use it in both `constraint_def_is_test_returns_true_when_test_annotation` (line 85) and `constraint_def_is_test_returns_false_without_annotation` (line 104) to remove the duplicated parse boilerplate.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:09:59.175Z",
+        "updatedAt": "2026-04-09T21:03:34.118Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
@@ -28378,9 +28378,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:03:12.745Z",
+      "lastModified": "2026-04-09T21:03:34.118Z",
       "taskCount": 1373,
-      "completedCount": 1048,
+      "completedCount": 1049,
       "tags": [
         "master"
       ]
