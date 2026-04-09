@@ -25950,10 +25950,11 @@
         "description": "The `seen_defaults` dedup in `collect_all_requirements` (lib.rs ~line 7892) compares only by type, not by kind (Param vs Let). When TraitA provides `param x : Real = 1` and TraitB provides `let x : Real = 42`, the Let default is silently discarded because it matches the existing Param entry on type. A third trait requiring `let x : Real` then sees only the Param default, fails kind-matching, and reports a spurious \"missing member\" error.\n\nFix: treat same-name, same-type, different-kind defaults as a conflict in the dedup logic, or store both kinds in `available_defaults` (e.g., keyed by (name, kind) instead of just name) so both remain available for requirement matching.\n\nMemory hints: search \"seen_defaults dedup kind-aware trait merge\", search \"cross-trait requirement kind param let mismatch\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:30:14.448Z"
       },
       {
         "id": "1288",
@@ -25969,7 +25970,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:30:14.170Z",
+      "lastModified": "2026-04-09T04:30:14.448Z",
       "taskCount": 1288,
       "completedCount": 954,
       "tags": [
