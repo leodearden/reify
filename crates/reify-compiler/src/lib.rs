@@ -4358,8 +4358,13 @@ pub fn compile_with_prelude(
             reify_syntax::Declaration::Purpose(_) => {
                 // Compiled in dedicated purpose pass below.
             }
-            reify_syntax::Declaration::Constraint(_) => {
+            reify_syntax::Declaration::Constraint(c) => {
                 // Constraint definitions: lowering/compilation not yet implemented.
+                // However, validate annotations and pragmas so that unknown or
+                // misplaced annotations are reported the same as for other decls.
+                let lowered_anns = lower_annotations(&c.annotations, &mut diagnostics);
+                validate_annotations(&lowered_anns, "constraint_def", &mut diagnostics);
+                validate_pragmas(&c.pragmas, "constraint_def", &mut diagnostics);
             }
             reify_syntax::Declaration::Unit(_) => {
                 // Already compiled in unit pre-pass above.
