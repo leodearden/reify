@@ -200,7 +200,7 @@ fn update_source_with_invalid_source_returns_err() {
     assert!(result.is_err(), "invalid source should return Err");
 }
 
-// --- Step 11: Integration tests ---
+// --- Constraint violation roundtrip ---
 
 #[test]
 fn constraint_violation_roundtrip() {
@@ -299,7 +299,7 @@ fn export_end_to_end() {
     assert!(!data.is_empty(), "exported file should not be empty");
 }
 
-// --- Step 15: Review bug regression tests ---
+// --- Source-map consistency after load/update ---
 
 /// Review bug #2: source_map key inconsistency.
 /// load_from_source inserts key "bracket.ri", but update_source inserts the raw path string.
@@ -482,7 +482,7 @@ fn get_source_location_uses_explicit_key_lookup() {
     );
 }
 
-// --- Step 21: Unit table ordering tests ---
+// --- Unit suffix parsing ---
 
 /// Verify all supported unit suffixes parse correctly.
 #[test]
@@ -643,7 +643,7 @@ fn parse_value_string_unit_table_ordering_invariant() {
     }
 }
 
-// --- Task 497: step-3 — UNIT_TABLE ordering invariant test ---
+// --- UNIT_TABLE descending-length ordering ---
 
 /// Directly assert that UNIT_TABLE is sorted by descending suffix length.
 ///
@@ -668,7 +668,7 @@ fn unit_table_ordering_invariant_holds() {
     );
 }
 
-// --- Task 132: Tessellation integration tests ---
+// --- Tessellation integration ---
 
 #[test]
 fn build_gui_state_includes_meshes_from_tessellation() {
@@ -827,7 +827,7 @@ fn update_source_produces_meshes() {
     );
 }
 
-// --- Task 827: get_diagnostics tests ---
+// --- get_diagnostics lifecycle ---
 
 /// get_diagnostics() returns empty vec when no module is loaded.
 /// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
@@ -944,7 +944,7 @@ fn engine_get_diagnostics_clean_source_returns_empty() {
     );
 }
 
-// --- Task 836: resolve_source pinning tests ---
+// --- resolve_source contract ---
 
 /// get_source_location returns None when no module is loaded.
 /// Documents the early-return (`let compiled = self.compiled.as_ref()?`)
@@ -1192,7 +1192,7 @@ fn resolve_source_fallback_when_module_name_missing() {
     );
 }
 
-// --- Task 837: build_line_offsets unit tests ---
+// --- build_line_offsets ---
 
 /// build_line_offsets returns empty vec for empty string.
 #[test]
@@ -1430,7 +1430,7 @@ fn byte_offset_to_line_col_at_source_len() {
     assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
 }
 
-// --- Task 497: step-1 — byte_offset_to_line_col returns 1-based columns ---
+// --- byte_offset_to_line_col 1-based columns ---
 
 /// Explicitly verify that byte_offset_to_line_col returns 1-based (line, col)
 /// at every byte offset of a known multi-line string "ab\ncd".
@@ -1477,7 +1477,7 @@ fn byte_offset_to_line_col_returns_one_based_columns() {
     }
 }
 
-// --- Task 837: offset_to_line_col_fast unit tests ---
+// --- offset_to_line_col_fast ---
 
 /// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
 #[test]
@@ -1568,7 +1568,7 @@ fn offset_to_line_col_fast_at_eof_offset() {
     );
 }
 
-// --- Task 837: step-7 stress / multi-diagnostic tests ---
+// --- Multi-diagnostic stress ---
 
 /// get_diagnostics with multiple injected diagnostics at various byte offsets
 /// produces line/col values matching byte_offset_to_line_col for each span.
@@ -1682,7 +1682,7 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
 }
 
-// --- Task 837 step-9: multibyte UTF-8 cross-validation tests ---
+// --- Multibyte UTF-8 cross-validation ---
 
 /// offset_to_line_col_fast must match byte_offset_to_line_col for every
 /// char-boundary offset in a string containing 2-byte UTF-8 sequences.
@@ -1801,7 +1801,7 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
     assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
 }
 
-// --- Task 899: resolve_source precondition test ---
+// --- resolve_source without loaded module ---
 
 /// resolve_source returns None when called without a loaded module.
 ///
@@ -1845,7 +1845,7 @@ fn resolve_source_returns_none_when_source_map_broken() {
     assert_eq!(session.resolve_source_for_test(), None);
 }
 
-// --- Task 899: module_key unit tests ---
+// --- module_key ---
 
 /// module_key("bracket") == "bracket.ri" — normal identifier.
 #[test]
@@ -1913,7 +1913,7 @@ fn module_key_empty_name_panics() {
     let _ = module_key("");
 }
 
-// --- Task 1194: positive resolve_source pinning test ---
+// --- resolve_source positive path ---
 
 /// resolve_source returns the key (module_key(name)) and the original source text
 /// after a successful load_from_source call.
@@ -1933,7 +1933,7 @@ fn resolve_source_returns_key_and_source_after_load() {
     );
 }
 
-// --- Task 1194: invariant regression test ---
+// --- Broken-invariant graceful fallback ---
 
 /// Calling get_diagnostics when module_name has been cleared (while compiled
 /// remains Some) returns an empty vec.
@@ -1965,8 +1965,6 @@ fn get_diagnostics_returns_empty_when_module_name_broken() {
     );
 }
 
-// --- Task 1212: source_map graceful fallback test ---
-
 /// Calling get_diagnostics when source_map has been cleared (while compiled
 /// and module_name remain Some) returns an empty vec.
 ///
@@ -1997,7 +1995,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken() {
     );
 }
 
-// --- Task 1225: resolve_source graceful fallback via real warning source ---
+// --- Broken-invariant fallback (real warnings) ---
 
 /// Calling get_diagnostics when module_name has been cleared (while compiled
 /// remains Some) returns an empty vec.
@@ -2064,7 +2062,7 @@ fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
     );
 }
 
-// --- Task 1212: update_source path test ---
+// --- resolve_source after update_source ---
 
 /// resolve_source returns updated content (and the same key) after a successful
 /// update_source call.
