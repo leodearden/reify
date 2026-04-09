@@ -28,6 +28,15 @@ fn error_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_type
         .collect()
 }
 
+/// Helper: return only warning-severity diagnostics.
+fn warning_diagnostics(module: &reify_compiler::CompiledModule) -> Vec<&reify_types::Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect()
+}
+
 // ── H2: collection member typo should produce a diagnostic ──────────────
 
 #[test]
@@ -376,5 +385,92 @@ fn port_param_unknown_type_name_emits_error() {
         has_type_error,
         "expected diagnostic about unknown type 'Nonexistent' in port param, got: {:?}",
         errors
+    );
+}
+
+// ── task-823 step-9: empty collection literal type inference warnings ────
+
+#[test]
+fn empty_list_literal_emits_type_inference_warning() {
+    // An empty list literal `[]` has no elements to infer the element type from.
+    // expr.rs:895 silently defaulted to Type::Real. It should now emit a warning
+    // diagnostic informing the user that element type is defaulting to Real.
+    let source = r#"
+        structure S {
+            let x = []
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty list should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty list") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty list type inference, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn empty_set_literal_emits_type_inference_warning() {
+    // An empty set literal `set{}` has no elements to infer from.
+    // expr.rs:917 silently defaulted to Type::Real. It should now emit a warning.
+    let source = r#"
+        structure S {
+            let x = set{}
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty set should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty set") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty set type inference, got: {:?}",
+        warnings
+    );
+}
+
+#[test]
+fn empty_map_literal_emits_type_inference_warning() {
+    // An empty map literal `map{}` has no entries to infer key/value types from.
+    // expr.rs:949 and 953 silently defaulted to Type::String/Type::Real. Should warn.
+    let source = r#"
+        structure S {
+            let x = map{}
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "empty map should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings
+        .iter()
+        .any(|d| d.message.contains("empty map") || d.message.contains("cannot infer"));
+    assert!(
+        has_type_warning,
+        "expected warning about empty map type inference, got: {:?}",
+        warnings
     );
 }
