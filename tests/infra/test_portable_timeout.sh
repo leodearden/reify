@@ -254,6 +254,27 @@ assert "builder-generated setup variables non-empty with correct trap/TMPDIR pro
         printf "%s" "$MKTEMP_FAIL_SETUP" | grep -q "trap.*EXIT"
     '
 
+# -- Safety-net regression: -E not -qE in while-read kill pipeline -----------
+assert "Test 16a safety-net uses -E not -qE (stdout feeds while-read kill-loop)" \
+    env TEST_FILE="$0" bash -c '
+        _key="kills any"
+        _ln=$(grep -n "${_key} sleep 31337 system-wide" "$TEST_FILE" | tail -1 | cut -d: -f1)
+        _sn=$(sed -n "${_ln},$((${_ln}+4))p" "$TEST_FILE")
+        printf "%s" "$_sn" | grep -q " -E " && ! printf "%s" "$_sn" | grep -q " -qE "
+    '
+
+assert "safety-net pipeline actually kills a deliberately leaked sleep 31337 sentinel" \
+    bash -c '
+        sleep 31337 & _victim=$!
+        trap "kill -9 $_victim 2>/dev/null || true" EXIT
+        sleep 0.1
+        ps -A -o pid,args 2>/dev/null \
+            | grep -E "[[:space:]]sleep 31337$" \
+            | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
+        sleep 0.2
+        ! kill -0 "$_victim" 2>/dev/null
+    '
+
 assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
