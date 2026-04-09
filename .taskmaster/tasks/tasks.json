@@ -2739,10 +2739,13 @@
         "status": "in-progress",
         "metadata": {
           "modules": [
-            "crates/reify-syntax",
-            "crates/reify-types",
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests",
+            "crates/reify-expr/src",
+            "crates/reify-syntax/src",
+            "crates/reify-syntax/tests",
+            "crates/reify-types/src",
+            "tree-sitter-reify/grammar.js"
           ],
           "milestone": "M8",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
