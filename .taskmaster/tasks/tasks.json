@@ -10815,9 +10815,9 @@
             "crates/reify-types/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-eval/src",
-            "crates/reify-types/src"
+            "crates/reify-compiler",
+            "crates/reify-eval",
+            "crates/reify-types"
           ]
         }
       },
@@ -10838,8 +10838,8 @@
             "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-compiler/src"
+            "crates/reify-eval",
+            "crates/reify-compiler"
           ]
         }
       },
@@ -10863,7 +10863,7 @@
           "modules": [
             "crates/reify-compiler/tests",
             "crates/reify-eval/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-test-support"
           ]
         }
       },
