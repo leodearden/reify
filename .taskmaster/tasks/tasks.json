@@ -19774,11 +19774,11 @@
         "description": "In tests/check-pm-standardization.sh: (1) Match npm@ prefix not just field presence. (2) Add cross-file consistency check for packageManager version. (3) Batch git check-ignore calls. (4) Add preflight command -v git check.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:59:57.131Z",
+        "updatedAt": "2026-04-09T17:00:09.453Z",
         "metadata": {
           "modules": [
             "scripts"
@@ -27518,7 +27518,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:00:09.051Z",
+      "lastModified": "2026-04-09T17:00:09.454Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
