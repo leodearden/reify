@@ -28058,15 +28058,16 @@
         "description": "Currently only `downstream_ops_after_malformed_initialize_without_initialized` (crates/reify-lsp/tests/in_process_bridge.rs:915) has a `tokio::time::timeout` hang-guard (added in task 1338). Other pre-handshake tests in the same file (e.g., the malformed-params tests that exercise a fresh `InProcessLsp` before handshake) share the same hang exposure but have no guard, making the current guard read as ad-hoc.",
         "details": "Options (reviewer-suggested):\n(a) Factor a `with_hang_guard<F>(seconds: u64, f: F)` helper at the top of the test module and apply it uniformly to all pre-handshake tests in the file.\n(b) Add a one-line comment on the downstream_ops test documenting why it is uniquely at hang risk (e.g., \"exercises compile path where a real stall was historically observed\") and leave siblings ungated.\n\nPrefer (a) unless investigation shows the downstream_ops test is genuinely uniquely hang-prone. Source: esc-1338-39 suggestion from reviewer_comprehensive (test_robustness). Note: reify-lsp Cargo.toml already includes `tokio = { workspace = true, features = [\"time\"] }` in dev-dependencies, so adding more timeouts requires no dependency changes. Low priority.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:33:37.622Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:33:37.269Z",
+      "lastModified": "2026-04-09T19:33:37.622Z",
       "taskCount": 1355,
       "completedCount": 1022,
       "tags": [
