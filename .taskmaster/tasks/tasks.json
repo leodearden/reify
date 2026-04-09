@@ -18764,7 +18764,10 @@
         "updatedAt": "2026-04-04T00:22:15.136Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
           ]
         }
       },
@@ -18782,6 +18785,10 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/module_dag.rs"
           ]
         }
       },
