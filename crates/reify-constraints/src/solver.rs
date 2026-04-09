@@ -1415,12 +1415,13 @@ mod tests {
         );
     }
 
-    // ---- solutions_agree: None/non-numeric handling tests (TDD red) ----
+    // ---- solutions_agree: None/non-numeric handling tests ----
     //
-    // These tests exercise the bug: `unwrap_or(0.0)` silently substitutes 0.0
-    // for missing or non-numeric values. When both sides are None, diff=0.0
-    // and the function incorrectly returns true (agrees). After the fix these
-    // tests must return false.
+    // These tests originally exercised a bug where `unwrap_or(0.0)` silently
+    // substituted 0.0 for missing or non-numeric values. When both sides were
+    // None, diff was 0.0 and the function incorrectly returned true (agreed).
+    // After the fix landed, these tests now guard against regression — they
+    // must continue to return false.
 
     #[test]
     fn solutions_agree_both_params_missing_returns_false() {
