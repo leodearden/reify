@@ -18627,6 +18627,10 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/module_dag.rs"
           ]
         }
       },
@@ -18650,6 +18654,10 @@
           },
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
