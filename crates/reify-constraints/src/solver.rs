@@ -1062,12 +1062,22 @@ mod tests {
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
-        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
-        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+        // Exactly 1 verify_uniqueness WARN (filter by new wording); solutions_agree
+        // may emit additional WARNs but we count only the aggregated verify_uniqueness one.
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
+        );
+        assert!(!unique, "expected verify_uniqueness to return false when param is missing");
     }
 
     #[test]
@@ -1098,12 +1108,22 @@ mod tests {
         solved_values.insert(param_id.clone(), Value::Undef);
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
-        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
-        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+        // Exactly 1 verify_uniqueness WARN (filter by new wording); solutions_agree
+        // may emit additional WARNs but we count only the aggregated verify_uniqueness one.
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
+        );
+        assert!(!unique, "expected verify_uniqueness to return false when param is non-numeric");
     }
 
     #[test]
