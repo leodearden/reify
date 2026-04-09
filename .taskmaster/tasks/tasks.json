@@ -25055,11 +25055,11 @@
         "description": "Task 1221 updated compute_divergence (lib.rs:803-841) and compute_laplacian (lib.rs:999-1035) to stamp the result Field's codomain_type with a dimensioned Type::Scalar, but the corresponding runtime sample handlers compute_numerical_divergence_at_point (lib.rs ~1536) and compute_numerical_laplacian_at_point (lib.rs ~1855) still return Value::Real(divergence) / Value::Real(laplacian) — i.e. dimensionless. This breaks the metadata-vs-runtime contract that was established for gradient: compute_gradient AND compute_numerical_gradient_at_point were updated together (see lib.rs:1206-1213 and 1368-1375 which build Value::Scalar { dimension: result_dim, ... } when result_dim != DIMENSIONLESS). Any downstream consumer that does `sample(div_field, p) * other_velocity` will silently treat the divergence as dimensionless because Value::Real propagates through arithmetic, whereas the type system thinks it's Scalar<1/Time>. This is the same class of bug the gradient fix closed.\n\nFix:\n1. Compute the result dimension inside compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point (mirroring the result_dim derivation in compute_numerical_gradient_at_point at lib.rs:1206-1213). This requires the dispatcher to forward the result codomain type — currently the sample handler dispatch at lib.rs:158/182 only forwards grad_codomain_type for the Gradient case. Add equivalent forwarding for Divergence/Laplacian, or compute the result_dim from domain_type alone (laplacian: cd / dd^2; divergence: cd / dd) inside the handler.\n2. At the return site, wrap in Value::Scalar { si_value: ..., dimension: result_dim } when result_dim != DIMENSIONLESS, mirroring lib.rs:1368-1375.\n3. Add at least one sample()-level test per operator: build a concrete dimensioned analytical lambda (e.g. f(x,y,z) = vec3(x, y, z) with x,y,z in meters and components in m/s), then assert sample(divergence(field), origin) returns a Value::Scalar with dimension == 1/Time, not Value::Real. The current new tests in field_calculus_tests.rs:1126-1438 only inspect metadata via divergence()/laplacian() and never call sample(), so they would not catch this drift.\n\nMemory hints:\n- search \"gradient codomain_type result_dim Value::Scalar\" — pattern from compute_numerical_gradient_at_point\n- search \"grad_codomain_type forwarded sample handler dispatch\" — see lib.rs:158/182 for how dispatch carries codomain\n- get_entity \"Task 1221\" — the partial fix this task completes",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:22:11.056Z",
+        "updatedAt": "2026-04-09T02:42:55.925Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25255,7 +25255,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:42:55.270Z",
+      "lastModified": "2026-04-09T02:42:55.925Z",
       "taskCount": 1248,
       "completedCount": 926,
       "tags": [
