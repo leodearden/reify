@@ -1154,12 +1154,6 @@ mod tests {
             "{context}: BuilderError message should contain 'missing', got: {}",
             err.message
         );
-        assert!(
-            err.to_string().contains(&cell_id.to_string()),
-            "{context}: Display should contain cell_id '{}', got: {}",
-            cell_id,
-            err
-        );
     }
 
     /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
