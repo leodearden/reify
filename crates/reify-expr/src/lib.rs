@@ -800,28 +800,34 @@ fn compute_divergence(field_val: &Value) -> Value {
         return Value::Undef;
     }
 
-    // Compute result codomain type: component_dim / domain_dim.
-    // Mirrors the gradient_quantity block in compute_gradient (line 650-690).
+    // Compute result codomain type using the preserve-codomain strategy:
+    // when both sides are non-trivially-dimensioned, divide component_dim by domain_dim;
+    // otherwise preserve the Vector's component type, downgrading dimensionless Scalar to Real.
     let result_codomain = {
         // Extract domain dimension from the Point's quantity.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
         let domain_dim = match domain_type {
             Type::Point { quantity, .. } => match quantity.as_ref() {
                 Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
                 _ => None,
             },
             _ => None,
         };
 
         // Extract codomain component dimension from the Vector's quantity.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
         let codomain_component_dim = match codomain_type {
             Type::Vector { quantity, .. } => match quantity.as_ref() {
                 Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
                 _ => None,
             },
             _ => None,
         };
 
         // Divide codomain component by domain dimension when both are non-trivial.
+        // Fallback: preserve the Vector's component type, downgrading dimensionless Scalar to Real.
         match (codomain_component_dim, domain_dim) {
             (Some(cd), Some(dd))
                 if cd != DimensionVector::DIMENSIONLESS
@@ -836,7 +842,17 @@ fn compute_divergence(field_val: &Value) -> Value {
                     Type::Real
                 }
             }
-            _ => Type::Real,
+            _ => match codomain_type {
+                Type::Vector { quantity, .. } => match quantity.as_ref() {
+                    Type::Scalar { dimension }
+                        if *dimension == DimensionVector::DIMENSIONLESS =>
+                    {
+                        Type::Real
+                    }
+                    _ => quantity.as_ref().clone(),
+                },
+                _ => Type::Real,
+            },
         }
     };
 
