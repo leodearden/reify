@@ -26137,11 +26137,16 @@
         "description": "Improve the `completion_items` test helper in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Empty-input edge-case tests (S2):** Add unit tests for empty Array (`json!([])`) and empty List (`json!({\"isIncomplete\": false, \"items\": []})`) to confirm the helper returns an empty slice without panicking. This documents the contract for downstream `assert!(!items.is_empty())` guards.\n\n2. **Better malformed-List panic message (S3):** When the response is an object with an `\"items\"` key whose value is not an array (e.g. `{\"items\": null}`, `{\"items\": 42}`), the current code falls through to the generic panic. Add a specific check: if `response` is an object containing `\"items\"` but the value isn't an array, panic with a message like `\"CompletionResponse::List has non-array 'items' field: {response}\"`. Add a `#[should_panic]` test for this case.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context on this helper.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:14:01.098Z"
+        "updatedAt": "2026-04-09T08:16:38.708Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": "1298",
@@ -26267,7 +26272,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:16:27.536Z",
+      "lastModified": "2026-04-09T08:16:38.708Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
