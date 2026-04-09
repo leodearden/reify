@@ -330,26 +330,12 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 # Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
 
 assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Background portable_timeout with a 2s command so the timer has time
         # to spawn its inner "sleep 31337" before we check.
@@ -372,28 +358,12 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
-        # would clean up the rescue dir on exit, causing false-positive passes.
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Run a 0.3s command under a long timeout (31337s sentinel).
         # Using sleep 0.3 instead of "true" gives the timer time to spawn
@@ -536,27 +506,13 @@ echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 # This confirms the test has discriminating power and is not vacuous.
 
 assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
         rc=0
@@ -565,29 +521,13 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
     '
 
 assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
-        # would clean up the rescue dir on exit, causing false-positive passes.
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Command ignores SIGTERM; timer escalates to SIGKILL.
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
