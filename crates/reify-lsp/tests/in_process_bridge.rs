@@ -836,6 +836,12 @@ mod completion_items_tests {
     fn completion_items_panics_on_non_array_items_field() {
         completion_items(&json!({"items": 42}));
     }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::Array")]
+    fn completion_items_panics_on_list_missing_items_field() {
+        completion_items(&json!({"isIncomplete": false}));
+    }
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
