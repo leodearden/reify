@@ -4873,11 +4873,12 @@ fn emit_deprecation_warning(
 ///
 /// For each template tagged `is_recursive == true`, finds every sub whose target is in
 /// the same strongly-connected component (SCC) and checks:
-/// 1. No `undef` in sub args (forbidden as non-termination mechanism).
-/// 2. Sub has a `guard_expr` (where-clause).
-/// 3. Guard references at least one `Int` or `Bool` param.
+/// 1. Sub has a `guard_expr` (where-clause).
+/// 2. Guard references at least one `Int` or `Bool` param.
+/// 3. No `undef` in guard-referenced sub args (forbidden as non-termination mechanism;
+///    args for params not mentioned in the guard are termination-irrelevant and allowed).
 /// 4. Each guard-referenced param is modified toward a base case in the sub's args
-///    (Int: contains Sub or Add, Bool: contains Not; passing param unchanged is rejected).
+///    (Int: contains Sub, Bool: contains Not; passing param unchanged is rejected).
 fn check_recursive_termination(
     templates: &[TopologyTemplate],
     cyclic_sccs: &[HashSet<String>],
@@ -4908,17 +4909,6 @@ fn check_recursive_termination(
             // Only check subs that target another template in the same SCC (recursive subs)
             if !scc.contains(&sub.structure_name) {
                 continue;
-            }
-
-            // Step 14: undef in recursive sub args is forbidden
-            if termination_args_contain_undef(sub) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "undef is not allowed as a non-termination mechanism in recursive sub arguments",
-                    )
-                    .with_label(DiagnosticLabel::new(sub.span, "recursive sub uses undef")),
-                );
-                continue; // Don't pile on more errors for this sub
             }
 
             // Step 4: recursive sub must have a where-clause guard
@@ -4957,6 +4947,21 @@ fn check_recursive_termination(
                 continue;
             }
 
+            // Step 14: undef in guard-referenced args is forbidden.
+            // Only check args whose param is referenced by the guard — other args are
+            // termination-irrelevant and may legally contain undef.
+            let guard_param_names: HashSet<String> =
+                referenced_params.iter().map(|vc| vc.id.member.clone()).collect();
+            if termination_args_contain_undef(sub, &guard_param_names) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "undef is not allowed as a non-termination mechanism in recursive sub arguments",
+                    )
+                    .with_label(DiagnosticLabel::new(sub.span, "recursive sub uses undef")),
+                );
+                continue; // Don't pile on more errors for this sub
+            }
+
             // Step 10/12: each guard-referenced param must be modified in the sub's args
             for param in &referenced_params {
                 let param_name = &param.id.member;
@@ -4981,17 +4986,27 @@ fn check_recursive_termination(
     }
 }
 
-/// Returns true if any arg of the recursive sub contains `undef`.
-fn termination_args_contain_undef(sub: &SubComponentDecl) -> bool {
-    sub.args.iter().any(|(_, expr)| {
-        let mut found = false;
-        expr.walk(&mut |e| {
-            if matches!(&e.kind, CompiledExprKind::Literal(Value::Undef)) {
-                found = true;
-            }
-        });
-        found
-    })
+/// Returns true if any guard-referenced arg of the recursive sub contains `undef`.
+///
+/// Only args whose parameter name is in `guard_param_names` are checked.
+/// Args for params not referenced by the guard are termination-irrelevant and
+/// may legally contain undef (e.g., `label: undef` when the guard only mentions `n`).
+fn termination_args_contain_undef(
+    sub: &SubComponentDecl,
+    guard_param_names: &HashSet<String>,
+) -> bool {
+    sub.args
+        .iter()
+        .filter(|(name, _)| guard_param_names.contains(name))
+        .any(|(_, expr)| {
+            let mut found = false;
+            expr.walk(&mut |e| {
+                if matches!(&e.kind, CompiledExprKind::Literal(Value::Undef)) {
+                    found = true;
+                }
+            });
+            found
+        })
 }
 
 /// Collect all ValueCellIds referenced in an expression (for guard analysis).
