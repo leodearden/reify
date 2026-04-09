@@ -25174,10 +25174,11 @@
         "description": "Optimize verify_uniqueness in crates/reify-constraints/src/solver.rs:781-816 to return false immediately after the aggregated WARN if `missing` is non-empty. The current code runs a full perturbed solve_core + solutions_agree cycle even though solutions_agree is guaranteed to return false on its first iteration (because the original solved_values map is missing the same param the perturbation closure already detected). This wastes a Nelder-Mead solve. Returning false directly both saves the work and produces a single, clean WARN per call.</description>\n<parameter name=\"details\">Source: review_comprehensive S5 from Task 1228 review (esc-1228-1017).\n\nImplementation:\n- After the `if !missing.is_empty()` warn block at solver.rs:807-816, add `return false;`.\n- Update or add a test asserting that verify_uniqueness returns false WITHOUT calling solve_core when an auto_param is missing from solved_values. (One way: count solve_core invocations via a probe; simpler: rely on the existing `assert!(!unique, ...)` assertions in verify_uniqueness_warns_when_param_missing_from_solved_values and verify_uniqueness_warns_when_param_is_non_numeric, plus a runtime/timing observation in CI.)\n- Confirm no other call site of verify_uniqueness depends on the side effects of the perturbed solve when missing != empty.\n\nReviewer note: \"Outside the scope of [Task 1228] (which is purely a logging cleanup), but worth flagging because the new aggregation makes the fact that we already know the answer more obvious in the code.\"\n\nmemory_hints: search \"verify_uniqueness solutions_agree perturbed solve\", get_entity \"DimensionalSolver\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestion S5).</parameter>\n<parameter name=\"priority\">medium",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:40:03.483Z"
       },
       {
         "id": "1243",
@@ -25204,7 +25205,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:40:02.387Z",
+      "lastModified": "2026-04-09T02:40:03.483Z",
       "taskCount": 1244,
       "completedCount": 924,
       "tags": [
