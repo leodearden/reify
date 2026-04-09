@@ -1323,6 +1323,44 @@ mod tests {
         assert_eq!(extract_dim(&ty), None);
     }
 
+    // --- scalar_dimension unit tests ---
+
+    #[test]
+    fn scalar_dimension_scalar_length_returns_length() {
+        assert_eq!(scalar_dimension(&Type::length()), Some(DimensionVector::LENGTH));
+    }
+
+    #[test]
+    fn scalar_dimension_scalar_dimensionless_returns_dimensionless() {
+        let ty = Type::Scalar { dimension: DimensionVector::DIMENSIONLESS };
+        assert_eq!(scalar_dimension(&ty), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn scalar_dimension_real_returns_dimensionless() {
+        assert_eq!(scalar_dimension(&Type::Real), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn scalar_dimension_int_returns_dimensionless() {
+        assert_eq!(scalar_dimension(&Type::Int), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn scalar_dimension_point3_real_returns_none() {
+        assert_eq!(scalar_dimension(&Type::point3(Type::Real)), None);
+    }
+
+    #[test]
+    fn scalar_dimension_vec3_real_returns_none() {
+        assert_eq!(scalar_dimension(&Type::vec3(Type::Real)), None);
+    }
+
+    #[test]
+    fn scalar_dimension_bool_returns_none() {
+        assert_eq!(scalar_dimension(&Type::Bool), None);
+    }
+
     // --- dim_quotient_type unit tests ---
 
     #[test]
