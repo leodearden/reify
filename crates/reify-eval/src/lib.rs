@@ -5706,6 +5706,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_box_two_missing_args_emits_two_diagnostics_in_order() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Box with only 'depth' present — both 'width' and 'height' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("depth".into(), literal_length(0.04)),
+                // width and height deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when 'width' and 'height' are missing"
+        );
+        // Two separate warnings: one for 'width', one for 'height' (in caller-iteration order)
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected exactly two diagnostics (one per missing arg), got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "first diagnostic should be Warning severity"
+        );
+        assert_eq!(
+            diagnostics[1].severity,
+            reify_types::Severity::Warning,
+            "second diagnostic should be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("width"),
+            "first diagnostic should mention 'width' (emitted first), got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[1].message.contains("height"),
+            "second diagnostic should mention 'height' (emitted second), got: {}",
+            diagnostics[1].message
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
