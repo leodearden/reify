@@ -25589,6 +25589,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1269,
+        "title": "Disambiguate 'should FAIL' labels in test_test_helpers.sh guard-detection fixtures",
+        "description": "In tests/infra/test_test_helpers.sh, the four guard-detection fixtures at lines 402-405, 412-415, 424-427, and 439-442 use the phrasing `(should FAIL)` on the `check \"...\" \"false\"` branches. But `check` with `\"false\"` always records a FAIL in test output regardless — the phrasing reads as an instruction when it is actually a branch-taken annotation.\n\nA reader scanning `FAIL: ... (should FAIL)` lines in CI output is likely to misread them as \"expected-to-fail\" tests rather than \"this is the wrong-outcome branch I hope is never taken.\" The new `$marker` and `$_expr_ref_fn` historical-pin tests added in Task 1241 inherit and perpetuate this confusing convention.\n\nFix: rename the wrong-outcome branch labels to be self-explanatory, e.g.:\n- `(wrong: helper said no guard, but guard is present)`\n- `(wrong: helper reported guard in clean file)`\n\nApply consistently to all four guard-detection fixtures. Pre-existing stylistic issue, but since the Task 1241 diff is the last code that added new fixtures inheriting this convention, it's the right place to fix it.\n\nVerification: `bash tests/infra/test_test_helpers.sh` still passes and CI output FAIL lines (if triggered) read unambiguously.\n\nFlagged by reviewer_comprehensive on Task 1241.\n\nmemory_hints: search(\"check function label (should FAIL) guard detection fixture\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25601,7 +25612,7 @@
       ],
       "created": "2026-04-09T03:29:48.617Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T03:29:53.182Z"
+      "updated": "2026-04-09T03:30:04.269Z"
     }
   }
 }
