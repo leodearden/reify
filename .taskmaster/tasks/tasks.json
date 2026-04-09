@@ -27904,11 +27904,11 @@
         "description": "Three consistency/correctness follow-ups to scripts/lib_portable.sh's post-wait orphan-cleanup block (lines 145-152), added in Task 1214 (S2).\n\n**S1: Quote the PGID argument on line 152 for consistency with timer subshells.**\nLines 124 and 134 now use `kill -9 -- \"-$cmd_pid\" 2>/dev/null` (quoted, per Task 1214's S1 fix), but the new post-wait cleanup on line 152 uses `kill -9 -- -$cmd_pid 2>/dev/null || true` (unquoted). If defensive quoting is worth applying in the timer subshells, it should apply here too. Change line 152 to `kill -9 -- \"-$cmd_pid\" 2>/dev/null || true`. This will break Test 23 (currently asserts exactly 2 quoted occurrences) — update it to 3, or rewrite as an invariant (no unquoted `kill -9 -- -$cmd_pid` occurrences anywhere in the file).\n\n**S2: Fix the comment justifying SIGKILL-over-SIGTERM on the post-wait cleanup (lines 149-150).**\nThe current comment says \"if we reached this point the command already ignored SIGTERM, so re-sending SIGTERM here would be ineffective.\" That's only true for the timeout-escalation path — line 152 also runs when the command exited naturally before the timeout fired, in which case the command did NOT ignore SIGTERM and the premise is false. Rewrite to cover both paths, e.g. \"Use SIGKILL rather than SIGTERM: in the timeout path, the command already ignored SIGTERM, so SIGTERM would be ineffective; in the early-exit path, any surviving process-group members are orphans with no opportunity for graceful shutdown anyway.\"\n\n**S3: Address or document the early-exit behavioral change.**\nPreviously, orphans in a normally-exiting command's process group received SIGTERM (giving them a grace window); they now receive SIGKILL unconditionally. This is a silent behavioral change for commands that background children in the same PGID and exit successfully. No existing test exercises the early-exit orphan-cleanup path (Test 16 only checks the timer's inner `sleep 31337`, which is the timeout-escalation path). Two options:\n  (a) Add a behavioral test that launches a command which forks a child in the same PGID, exits fast, and verifies the child is reaped post-call.\n  (b) Document the semantics change in the portable_timeout doc comment so callers know orphaned PGID members no longer get a SIGTERM grace window on early exit.\n\nAll three suggestions come from reviewer_comprehensive's post-merge review of Task 1214. They're small and closely related — one task covers them efficiently.\n\nMemory hints: search \"portable_timeout POSIX fallback SIGKILL orphan cleanup\" for context on the design; Task 1214 established the baseline.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:23:46.126Z",
+        "updatedAt": "2026-04-09T21:22:50.837Z",
         "metadata": {
           "modules": [
             "scripts/lib_portable.sh",
@@ -28525,7 +28525,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:22:48.228Z",
+      "lastModified": "2026-04-09T21:22:50.837Z",
       "taskCount": 1378,
       "completedCount": 1055,
       "tags": [
