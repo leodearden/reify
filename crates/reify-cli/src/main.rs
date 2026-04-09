@@ -2,6 +2,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_eval::TestStatus;
 
 mod mcp_context;
 use reify_geometry::DispatchPlanner;
@@ -15,6 +16,7 @@ fn main() -> ExitCode {
         eprintln!("Usage: reify <command> [options]");
         eprintln!("Commands:");
         eprintln!("  check <file>              Check constraints");
+        eprintln!("  test <file>               Run @test-annotated structures");
         eprintln!("  build <file> -o <output>   Build geometry and export");
         eprintln!("  lsp                        Start language server (stdin/stdout)");
         eprintln!("  gui <file>                 Open file in GUI");
@@ -24,6 +26,7 @@ fn main() -> ExitCode {
 
     match args[1].as_str() {
         "check" => cmd_check(&args[2..]),
+        "test" => cmd_test(&args[2..]),
         "build" => cmd_build(&args[2..]),
         "lsp" => cmd_lsp(),
         "gui" => cmd_gui(&args[2..]),
@@ -110,6 +113,62 @@ fn cmd_check(args: &[String]) -> ExitCode {
             println!("Some constraints violated.");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn cmd_test(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        eprintln!("Usage: reify test <file>");
+        return ExitCode::FAILURE;
+    }
+
+    let compiled = match parse_and_compile(&args[0]) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    if compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+
+    let mut passed: usize = 0;
+    let mut failed: usize = 0;
+    let mut indeterminate: usize = 0;
+
+    for result in &results {
+        let label = match result.status {
+            TestStatus::Pass => {
+                passed += 1;
+                "PASS"
+            }
+            TestStatus::Fail => {
+                failed += 1;
+                "FAIL"
+            }
+            TestStatus::Indeterminate => {
+                indeterminate += 1;
+                "INDETERMINATE"
+            }
+        };
+        println!("  {}  {}", label, result.name);
+    }
+
+    let overall = if failed > 0 { "FAIL" } else { "ok" };
+    println!(
+        "test result: {}. {} passed; {} failed; {} indeterminate",
+        overall, passed, failed, indeterminate
+    );
+
+    if failed > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
