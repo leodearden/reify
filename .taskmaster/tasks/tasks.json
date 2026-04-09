@@ -25938,11 +25938,16 @@
         "description": "Add an integration test `build_modify_missing_arg_no_kernel_error` (or similar) that constructs a Modify op (e.g. Fillet with missing radius) through the full `Engine::build()` path. Assert the same invariants as the existing Primitive (Box) integration test in `crates/reify-eval/tests/geometry_error_handling.rs:1013-1111`: kernel is never called, geometry_output is None, and exactly the expected warning diagnostic is emitted (no duplicate downstream error).\n\n**Source:** S3 review suggestion from Task 1187 review.\n\nmemory_hints: search \"compile_geometry_op Modify branch missing arg\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:28:08.411Z"
+        "updatedAt": "2026-04-09T04:32:12.933Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": "1287",
@@ -25985,7 +25990,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:31:53.378Z",
+      "lastModified": "2026-04-09T04:32:12.933Z",
       "taskCount": 1289,
       "completedCount": 955,
       "tags": [
