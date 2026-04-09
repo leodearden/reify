@@ -9109,13 +9109,15 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
+            "crates/reify-types/src/lib.rs",
             "crates/reify-syntax/src/lib.rs",
-            "crates/reify-syntax/src/ts_parser.rs",
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/type_resolution.rs"
           ],
           "modules": [
-            "crates/reify-syntax/src",
-            "crates/reify-compiler/src"
+            "crates/reify-types",
+            "crates/reify-syntax",
+            "crates/reify-compiler"
           ]
         }
       },
@@ -9317,7 +9319,8 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-expr/src/lib.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/expr.rs",
             "crates/reify-types/src/ty.rs"
           ],
           "modules": [
