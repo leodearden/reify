@@ -25967,11 +25967,16 @@
         "description": "Two test coverage improvements for trait merge:\n\n1. **Richer assertions on cross_trait_default_satisfies_requirement** (trait_merge_tests.rs ~line 176-193): The test checks kind=Param and count=1, but doesn't verify `cell_type` or `default_expr`. Add assertions like `assert_eq!(x_cells[0].cell_type, Type::Length, ...)` and `assert!(x_cells[0].default_expr.is_some(), ...)` to catch regressions where type or expression is lost during injection.\n\n2. **Diamond inheritance test**: No test covers the diamond pattern where a param requirement from a grandparent trait is satisfied by a same-kind default from a sibling trait through refinement. Example: `trait Base { param x : Real }`, `trait Left : Base { }`, `trait Right : Base { param x : Real = 1.0 }`, `structure S : Left + Right {}` — verify no error and correct cell materialization. This exercises the `visited` dedup and kind-matching interaction together.\n\nMemory hints: search \"trait merge test coverage cross-trait defaults\", search \"diamond inheritance trait\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:30:14.825Z"
+        "updatedAt": "2026-04-09T04:33:13.542Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "1289",
@@ -26014,7 +26019,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:32:34.600Z",
+      "lastModified": "2026-04-09T04:33:13.542Z",
       "taskCount": 1291,
       "completedCount": 956,
       "tags": [
