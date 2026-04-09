@@ -26,14 +26,29 @@ for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.j
 done
 
 # ── Check 2: packageManager version consistent across all package.json files ─
+# Defensive shape (task 1326): the subshell enables `set -euo pipefail` so that
+# grep failures inside the pipeline (e.g. a missing package.json file) propagate
+# instead of being masked by the final `tr -d` exit status. An explicit `[ -f ]`
+# preflight provides belt-and-braces coverage. The dual assertion — total == 3
+# AND unique == 1 — catches the case where one file is missing the
+# packageManager field entirely: grep emits fewer lines, which `sort -u` would
+# otherwise silently collapse to a single unique line.
 echo ""
 echo "Check 2: packageManager version consistent across package.json files"
 assert "all package.json files agree on packageManager version" bash -c "
-    count=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
+    set -euo pipefail
+    for f in '$ROOT/gui/package.json' '$ROOT/gui/sidecar/package.json' '$ROOT/tree-sitter-reify/package.json'; do
+        [ -f \"\$f\" ] || exit 1
+    done
+    total=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
+        '$ROOT/gui/package.json' \
+        '$ROOT/gui/sidecar/package.json' \
+        '$ROOT/tree-sitter-reify/package.json' | wc -l | tr -d ' ')
+    unique=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
         '$ROOT/gui/package.json' \
         '$ROOT/gui/sidecar/package.json' \
         '$ROOT/tree-sitter-reify/package.json' | sort -u | wc -l | tr -d ' ')
-    [ \"\$count\" = '1' ]
+    [ \"\$total\" = '3' ] && [ \"\$unique\" = '1' ]
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
