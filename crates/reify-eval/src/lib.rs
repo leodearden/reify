@@ -3408,15 +3408,24 @@ fn compile_geometry_op(
             };
 
             match kind {
-                PrimitiveKind::Box => Some(reify_types::GeometryOp::Box {
-                    width: eval_arg("width")?,
-                    height: eval_arg("height")?,
-                    depth: eval_arg("depth")?,
-                }),
-                PrimitiveKind::Cylinder => Some(reify_types::GeometryOp::Cylinder {
-                    radius: eval_arg("radius")?,
-                    height: eval_arg("height")?,
-                }),
+                PrimitiveKind::Box => {
+                    let width = eval_arg("width");
+                    let height = eval_arg("height");
+                    let depth = eval_arg("depth");
+                    Some(reify_types::GeometryOp::Box {
+                        width: width?,
+                        height: height?,
+                        depth: depth?,
+                    })
+                }
+                PrimitiveKind::Cylinder => {
+                    let radius = eval_arg("radius");
+                    let height = eval_arg("height");
+                    Some(reify_types::GeometryOp::Cylinder {
+                        radius: radius?,
+                        height: height?,
+                    })
+                }
                 PrimitiveKind::Sphere => Some(reify_types::GeometryOp::Sphere {
                     radius: eval_arg("radius")?,
                 }),
@@ -3516,22 +3525,27 @@ fn compile_geometry_op(
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
+                    let dx = f64_arg("dx");
+                    let dy = f64_arg("dy");
+                    let dz = f64_arg("dz");
                     Some(reify_types::GeometryOp::Translate {
                         target: target_id,
-                        dx: f64_arg("dx")?,
-                        dy: f64_arg("dy")?,
-                        dz: f64_arg("dz")?,
+                        dx: dx?,
+                        dy: dy?,
+                        dz: dz?,
                     })
                 }
-                reify_compiler::TransformKind::Rotate => Some(reify_types::GeometryOp::Rotate {
-                    target: target_id,
-                    axis: [
-                        f64_arg("axis_x")?,
-                        f64_arg("axis_y")?,
-                        f64_arg("axis_z")?,
-                    ],
-                    angle_rad: f64_arg("angle")?,
-                }),
+                reify_compiler::TransformKind::Rotate => {
+                    let axis_x = f64_arg("axis_x");
+                    let axis_y = f64_arg("axis_y");
+                    let axis_z = f64_arg("axis_z");
+                    let angle = f64_arg("angle");
+                    Some(reify_types::GeometryOp::Rotate {
+                        target: target_id,
+                        axis: [axis_x?, axis_y?, axis_z?],
+                        angle_rad: angle?,
+                    })
+                }
                 reify_compiler::TransformKind::Scale => {
                     let factor = f64_arg("factor")?;
                     // Reject negative scale: OCCT SetScale with negative factor
@@ -3545,19 +3559,18 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::TransformKind::RotateAround => {
+                    let px = f64_arg("px");
+                    let py = f64_arg("py");
+                    let pz = f64_arg("pz");
+                    let axis_x = f64_arg("axis_x");
+                    let axis_y = f64_arg("axis_y");
+                    let axis_z = f64_arg("axis_z");
+                    let angle = f64_arg("angle");
                     Some(reify_types::GeometryOp::RotateAround {
                         target: target_id,
-                        point: [
-                            f64_arg("px")?,
-                            f64_arg("py")?,
-                            f64_arg("pz")?,
-                        ],
-                        axis: [
-                            f64_arg("axis_x")?,
-                            f64_arg("axis_y")?,
-                            f64_arg("axis_z")?,
-                        ],
-                        angle_rad: f64_arg("angle")?,
+                        point: [px?, py?, pz?],
+                        axis: [axis_x?, axis_y?, axis_z?],
+                        angle_rad: angle?,
                     })
                 }
             }
@@ -3573,40 +3586,52 @@ fn compile_geometry_op(
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
-                    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
-                    let count = f64_arg("count")? as usize;
-                    let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics)?;
+                    let dx = f64_arg("dx");
+                    let dy = f64_arg("dy");
+                    let dz = f64_arg("dz");
+                    let count_val = f64_arg("count");
+                    let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics);
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
-                        direction,
-                        count,
-                        spacing,
+                        direction: [dx?, dy?, dz?],
+                        count: count_val? as usize,
+                        spacing: spacing?,
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-                    let count = f64_arg("count")? as usize;
-                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
+                    let ox = f64_arg("ox");
+                    let oy = f64_arg("oy");
+                    let oz = f64_arg("oz");
+                    let ax = f64_arg("ax");
+                    let ay = f64_arg("ay");
+                    let az = f64_arg("az");
+                    let count_val = f64_arg("count");
+                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics);
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
-                        axis_origin,
-                        axis_dir,
-                        count,
-                        angle,
+                        axis_origin: [ox?, oy?, oz?],
+                        axis_dir: [ax?, ay?, az?],
+                        count: count_val? as usize,
+                        angle: angle?,
                     })
                 }
                 reify_compiler::PatternKind::Mirror => {
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
+                    let ox = f64_arg("ox");
+                    let oy = f64_arg("oy");
+                    let oz = f64_arg("oz");
+                    let nx = f64_arg("nx");
+                    let ny = f64_arg("ny");
+                    let nz = f64_arg("nz");
                     Some(reify_types::GeometryOp::Mirror {
                         target: target_id,
-                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
-                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                        plane_origin: [ox?, oy?, oz?],
+                        plane_normal: [nx?, ny?, nz?],
                     })
                 }
             }
@@ -3658,16 +3683,23 @@ fn compile_geometry_op(
                     let mut f64_arg = |name: &str| {
                         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
-                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                    let ax = f64_arg("ax");
+                    let ay = f64_arg("ay");
+                    let az = f64_arg("az");
+                    let angle_val = f64_arg("angle");
+                    let ox = f64_arg("ox");
+                    let oy = f64_arg("oy");
+                    let oz = f64_arg("oz");
+                    let axis_dir = [ax?, ay?, az?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
                     if !mag.is_finite() || mag < 1e-12 {
                         return None;
                     }
-                    let angle_rad = f64_arg("angle")?;
+                    let angle_rad = angle_val?;
                     if angle_rad.abs() < 1e-12 {
                         return None;
                     }
-                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                    let axis_origin = [ox?, oy?, oz?];
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
                         axis_origin,
@@ -5370,34 +5402,41 @@ mod tests {
             &mut diagnostics,
         );
 
-        // Still returns None (Transform short-circuits on missing f64 args)
+        // Still returns None (Transform returns None when args are missing)
         assert!(
             result.is_none(),
             "missing dy/dz should still return None, got {:?}",
             result
         );
 
-        // But now exactly one diagnostic warning should be emitted for the first missing arg 'dy'
+        // Eager evaluation emits diagnostics for ALL missing args (dy and dz), not just the first
         assert_eq!(
             diagnostics.len(),
-            1,
-            "expected exactly one diagnostic for missing 'dy', got: {:?}",
+            2,
+            "expected diagnostics for both missing 'dy' and 'dz', got: {:?}",
             diagnostics
         );
-        assert_eq!(
-            diagnostics[0].severity,
-            reify_types::Severity::Warning,
-            "expected Warning severity"
-        );
+        for diag in &diagnostics {
+            assert_eq!(
+                diag.severity,
+                reify_types::Severity::Warning,
+                "expected Warning severity"
+            );
+            assert!(
+                diag.message.contains("Translate"),
+                "diagnostic message should mention 'Translate', got: {}",
+                diag.message
+            );
+        }
         assert!(
             diagnostics[0].message.contains("dy"),
-            "diagnostic message should mention 'dy', got: {}",
+            "first diagnostic should mention 'dy', got: {}",
             diagnostics[0].message
         );
         assert!(
-            diagnostics[0].message.contains("Translate"),
-            "diagnostic message should mention 'Translate', got: {}",
-            diagnostics[0].message
+            diagnostics[1].message.contains("dz"),
+            "second diagnostic should mention 'dz', got: {}",
+            diagnostics[1].message
         );
     }
 
