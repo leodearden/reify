@@ -24993,15 +24993,16 @@
         "description": "The literal `structure def S { port mount : NonExistentTrait { param d : Length = 5mm } }` is duplicated **six times** across `gui/src-tauri/src/tests/engine_tests.rs` (lines 835, 951, 996, 1247, 1921, 1955). Each copy carries the implicit assumption that the reify compiler will emit an \"unknown port type\" warning for this snippet. If the compiler ever changes that behavior — e.g. promotes it to an error, demotes it, or stops emitting the diagnostic — every copy will need updating, and the assumption is currently documented in only some sites (1006-1015, 1026-1035).\n\nExtract a single helper alongside the existing `bracket_source()` in `reify_test_support` (or local to `engine_tests.rs` if test_support shouldn't grow):\n\n```rust\n/// Source that reliably produces an \"unknown port type\" warning (not error).\n/// Used by tests that need a non-empty `compiled.diagnostics` to exercise\n/// post-early-exit code paths in `get_diagnostics`.\npub fn warning_source() -> &'static str {\n    r#\"structure def S {\n    port mount : NonExistentTrait {\n        param d : Length = 5mm\n    }\n}\"#\n}\n```\n\nThen replace all 6 inline copies with `warning_source()` calls. Verify the affected tests still pass:\n- `engine_get_diagnostics_returns_populated_warning` (line 831)\n- `update_source_invalidates_old_diagnostic_paths` (~line 947)\n- `engine_get_diagnostics_includes_file_path_for_warning` (~line 992)\n- `update_source_changes_file_path_in_diagnostics` (~line 1247)\n- `get_diagnostics_panics_on_broken_module_name_with_real_warning` (line ~1915, task 1225)\n- `get_diagnostics_panics_on_broken_source_map_with_real_warning` (line ~1948, task 1225)\n\nSource: review_comprehensive suggestion S1 on task 1225 (esc-1225-1000).\n\nmemory_hints: search(\"warning_source bracket_source NonExistentTrait engine_tests duplication\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:03:12.882Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:03:12.625Z",
+      "lastModified": "2026-04-09T02:03:12.882Z",
       "taskCount": 1232,
       "completedCount": 917,
       "tags": [
