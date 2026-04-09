@@ -26,9 +26,9 @@ assert "scripts/check-pm-standardization.sh is executable" \
 assert "tests/check-pm-standardization.sh does NOT exist" \
     bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
 
-# -- Test 2: script has only checks 1-3 (no 4-9) ----------------------------
+# -- Test 2: script has only checks 1-4 (no 5-9) ----------------------------
 echo ""
-echo "--- Test 2: script contains only checks 1-3 ---"
+echo "--- Test 2: script contains only checks 1-4 ---"
 
 SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
 
