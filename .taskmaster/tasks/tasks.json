@@ -28089,11 +28089,11 @@
         "description": "Reduce the two near-identical 11-line Err-arm scaffolding blocks in the downstream_ops_after_malformed_initialize_without_initialized test (crates/reify-lsp/tests/in_process_bridge.rs lines 944-954 and 976-989). Today these arms are unreachable because bridge.rs has no init-state guard for didOpen/completion; they were added as forward-compatible scaffolding per task 1338.",
         "details": "Options (reviewer-suggested):\n(a) Remove the Err arms entirely and replace with `.expect(\"didOpen should succeed pre-handshake (bridge has no init-state guard)\")`, asserting on the Value directly. This is the simpler approach — if a future change adds a guard, whoever does so can add back the Err handling then.\n(b) Extract a single helper `assert_ok_null_or_nonempty_err(label, result)` at the top of the test module and call it from both sites, eliminating the duplicated 11-line match+comment pattern.\n\nWeigh (a) vs (b): (a) trades scaffolding-intent for simpler code; (b) preserves scaffolding-intent while removing duplication. Source: esc-1338-39 suggestion from reviewer_comprehensive (test_quality_dead_code). Task 1338 explicitly chose the \"documented scaffolding\" path originally, so this follow-up is a re-balancing rather than a bug fix. Low priority.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:38:44.587Z",
+        "updatedAt": "2026-04-09T20:07:24.574Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -28256,7 +28256,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T20:07:23.723Z",
+      "lastModified": "2026-04-09T20:07:24.575Z",
       "taskCount": 1363,
       "completedCount": 1035,
       "tags": [
