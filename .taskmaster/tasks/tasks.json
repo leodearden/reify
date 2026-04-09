@@ -25326,7 +25326,7 @@
         "description": "In `crates/reify-eval/src/lib.rs`, `eval_named_arg_f64` silently returns `None` (no diagnostic) when a named argument is present but evaluates to a non-f64 type (e.g., a string) or a non-finite value (NaN/Inf). This means the user gets no feedback — the geometry op is silently skipped. Add a diagnostic warning in `eval_named_arg_f64` when the value is present but `as_f64()` returns `None` (wrong type) or is non-finite, e.g. \"argument 'dx' for Translate evaluated to non-numeric/non-finite value\".\n\nThis is a pre-existing behavioral gap surfaced during Task 1186 review (S2).\n\nmemory_hints: search \"eval_named_arg_f64\" \"compile_geometry_op\" entity \"eval_named_arg_f64\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -25337,7 +25337,8 @@
           "modules": [
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T22:06:23.011Z"
       },
       {
         "id": "1211",
@@ -28606,7 +28607,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:06:21.771Z",
+      "lastModified": "2026-04-09T22:06:23.012Z",
       "taskCount": 1382,
       "completedCount": 1064,
       "tags": [
