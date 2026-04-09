@@ -8487,12 +8487,7 @@
             "crates/reify-expr/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-expr",
-            "crates/reify-stdlib",
-            "crates/reify-test-support",
-            "crates/reify-types",
-            "gui/src-tauri"
+            "crates/reify-expr"
           ],
           "memory_hints": {
             "entities": [],
