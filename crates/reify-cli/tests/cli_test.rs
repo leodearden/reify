@@ -106,6 +106,29 @@ fn test_command_on_mixed_file_shows_summary() {
     );
 }
 
+// S3: labels are left-padded to 13 chars so test names align
+#[test]
+fn test_command_on_mixed_file_aligns_labels() {
+    let (status, stdout, stderr) = run_test(&common::fixture_path("test_mixed.ri"));
+    let _ = (status, stderr); // outcome already tested elsewhere
+
+    // PASS is 4 chars; padded to 13 = 9 trailing spaces; then 2-space separator
+    assert!(
+        stdout.contains("  PASS           TestPass"),
+        "stdout should contain padded PASS line, got: {stdout}"
+    );
+    // FAIL is 4 chars; same padding
+    assert!(
+        stdout.contains("  FAIL           TestFail"),
+        "stdout should contain padded FAIL line, got: {stdout}"
+    );
+    // INDETERMINATE is exactly 13 chars; no extra padding, just 2-space separator
+    assert!(
+        stdout.contains("  INDETERMINATE  TestIndet"),
+        "stdout should contain INDETERMINATE line, got: {stdout}"
+    );
+}
+
 // Step 11: no-tests file exits success (vacuously passing)
 #[test]
 fn test_command_on_no_tests_file_exits_success() {
