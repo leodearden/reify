@@ -24934,6 +24934,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs"
           ]
         }
       },
@@ -25009,6 +25013,9 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
