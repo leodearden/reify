@@ -26080,6 +26080,10 @@
           "modules": [
             "crates/reify-compiler",
             "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-types/src/lib.rs"
           ]
         }
       },
@@ -26096,7 +26100,10 @@
         "updatedAt": "2026-04-09T02:58:04.172Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/test_marker_compile_tests.rs"
           ]
         }
       },
@@ -26125,8 +26132,12 @@
         "updatedAt": "2026-04-09T03:00:18.165Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-test-support"
+            "crates/reify-test-support",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-compiler/tests/port_compile_tests.rs"
           ]
         }
       },
