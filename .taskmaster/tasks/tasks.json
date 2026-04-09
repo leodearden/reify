@@ -15343,7 +15343,7 @@
             "crates/reify-eval/src/graph.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
           ]
         }
       },
@@ -15739,12 +15739,13 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-test-support/src/builders/trait_def.rs"
+            "crates/reify-types/src/traits.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/trait_bounds_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-test-support/src/builders"
+            "crates/reify-types",
+            "crates/reify-compiler"
           ]
         }
       },
