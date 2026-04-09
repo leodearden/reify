@@ -988,14 +988,8 @@ fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let warning_source = r#"structure S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
-
     session
-        .load_from_source(warning_source, "initial")
+        .load_from_source(warning_source(), "initial")
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
@@ -1015,7 +1009,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     );
 
     session
-        .update_source("updated.ri", warning_source)
+        .update_source("updated.ri", warning_source())
         .expect("update_source should succeed");
 
     let diags_after = session.get_diagnostics();
