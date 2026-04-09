@@ -3928,34 +3928,10 @@ mod tests {
     #[test]
     fn value_orientation_ord_within_type() {
         // Lexicographic on w, x, y, z via total_cmp() — component priority: w→x→y→z
-        let a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(a < b);
+        assert!(orient(0.0, 0.0, 0.0, 0.0) < orient(1.0, 0.0, 0.0, 0.0));
 
         // Same w, different x
-        let c = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let d = Value::Orientation {
-            w: 1.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(c < d);
+        assert!(orient(1.0, 0.0, 0.0, 0.0) < orient(1.0, 1.0, 0.0, 0.0));
     }
 
     #[test]
