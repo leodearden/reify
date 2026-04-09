@@ -255,6 +255,7 @@ done
 # ==============================================================================
 
 SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
+SYNC_REF_HELPERS_FILE="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
@@ -350,6 +351,65 @@ if [ -z "$_fn_beh_out" ]; then
     check "extract_fn returns empty output for non-existent function name" "true"
 else
     check "extract_fn returns empty output for non-existent function name (got: $_fn_beh_out)" "false"
+fi
+
+# ==============================================================================
+# sync_ref_helpers.sh structural checks
+# Verify: helper file exists, defines assert_sync_ref_exists, sources
+# test_helpers.sh, has source guard, head -1 documented, early-fail guard,
+# display_fn fallback.
+# ==============================================================================
+
+echo ""
+echo "--- sync_ref_helpers.sh structural checks ---"
+
+# (a) file exists
+if [ -f "$SYNC_REF_HELPERS_FILE" ]; then
+    check "sync_ref_helpers.sh file exists" "true"
+else
+    check "sync_ref_helpers.sh file exists" "false"
+fi
+
+# (b) file defines assert_sync_ref_exists() helper function
+if _has_assert_sync_ref_exists "$SYNC_REF_HELPERS_FILE"; then
+    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "true"
+else
+    check "sync_ref_helpers.sh defines assert_sync_ref_exists()" "false"
+fi
+
+# (c) file sources test_helpers.sh
+if grep -qE '(source|\.)\s+.*test_helpers\.sh' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
+    check "sync_ref_helpers.sh sources test_helpers.sh" "true"
+else
+    check "sync_ref_helpers.sh sources test_helpers.sh" "false"
+fi
+
+# (d) file has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)
+if grep -q '_REIFY_SYNC_REF_HELPERS_SH_SOURCED' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
+    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "true"
+else
+    check "sync_ref_helpers.sh has source guard (_REIFY_SYNC_REF_HELPERS_SH_SOURCED)" "false"
+fi
+
+# (e) head -1 pipeline has adjacent comment documenting single-reference limitation
+if grep -B3 'head -1' "$SYNC_REF_HELPERS_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
+    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "true"
+else
+    check "sync_ref_helpers.sh head -1 pipeline has single-reference documentation comment" "false"
+fi
+
+# (f) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
+if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
+    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "true"
+else
+    check "sync_ref_helpers.sh has early-fail guard for empty ref_fn" "false"
+fi
+
+# (g) assert_sync_ref_exists uses a display_fn fallback variable
+if grep -Fq 'display_fn' "$SYNC_REF_HELPERS_FILE" 2>/dev/null; then
+    check "sync_ref_helpers.sh uses display_fn fallback variable" "true"
+else
+    check "sync_ref_helpers.sh uses display_fn fallback variable" "false"
 fi
 
 # (j) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
