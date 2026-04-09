@@ -3500,32 +3500,12 @@ fn gradient_decomposed_n3_irrational_coords() {
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(
-                components.len(),
-                3,
-                "gradient vector should have 3 components"
-            );
-            let expected = [1.0_f64, 2.0, 3.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-8,
-                    "gradient component {} of x+2y+3z at irrational coords should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[1.0, 2.0, 3.0],
+        1e-8,
+        "gradient of x+2y+3z at irrational coords, decomposed path",
+    );
 }
 
 // ── Step-8: Declaration-vs-runtime type contract ──────────────────────
