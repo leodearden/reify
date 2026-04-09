@@ -25079,11 +25079,11 @@
         "description": "After Task 1221 the three field-calculus operators have three different fallback strategies for the dimension-extraction-and-divide logic, despite a comment claiming compute_divergence \"Mirrors the gradient_quantity block\":\n- compute_gradient (lib.rs:650-690): falls back to Type::Real for dimensionless Scalar codomain, otherwise codomain_type.clone()\n- compute_divergence (lib.rs:803-841): unconditionally falls back to Type::Real\n- compute_laplacian (lib.rs:999-1035): unconditionally falls back to codomain_type.clone()\n\nThis creates corner-case asymmetries. Examples missing or wrong:\n- (S4) Point{n, Real} → Vector{n, Scalar<Length>} should yield divergence codomain Length (Length/1), but compute_divergence returns Real\n- (S4) Point{n, Scalar<Length>} → Vector{n, Real} should yield divergence codomain 1/Length, but returns Real\n- (S8) compute_laplacian's domain validation accepts Type::Real, Type::Int, Type::Scalar, and Point{quantity ∈ {Real,Int,Scalar}}, but the new dim-extraction at lib.rs:1003-1010 only handles Type::Scalar and Point{Scalar} — Type::Real, Type::Int, Point{Real}, and Point{Int} all collapse to None. Same issue for codomain extraction at lib.rs:1013-1016.\n\nFix:\n1. Pick one strategy and apply it to all three operators. The gradient strategy is most defensible: preserve codomain when one side is dimensionless, downgrade to Real only for explicitly-dimensionless Scalar. For divergence, this means extracting the Vector's component type and falling back to it.\n2. Treat Type::Real and Type::Int as Some(DimensionVector::DIMENSIONLESS) in the extraction match arms, so the existing `dd != DIMENSIONLESS` guard handles them correctly (rather than silently missing the guard via None fallback).\n3. Update the misleading comment at compute_divergence:804 to be accurate.\n4. Add tests for the mixed-dimensional cases enumerated above (Real domain × Length codomain, Length domain × Real codomain, Int domain × dimensioned codomain) for all three operators.\n\nLikely subsumed if the helper-extraction task lands first (the helper would force consistency). If both tasks proceed in parallel, coordinate via dependency.\n\nMemory hints:\n- search \"compute_gradient gradient_quantity dimensionless fallback\" for the canonical pattern\n- get_entity \"DimensionVector::DIMENSIONLESS\" for the dim algebra",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:35:29.539Z",
+        "updatedAt": "2026-04-09T03:39:59.812Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25654,7 +25654,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:39:59.428Z",
+      "lastModified": "2026-04-09T03:39:59.812Z",
       "taskCount": 1270,
       "completedCount": 942,
       "tags": [
