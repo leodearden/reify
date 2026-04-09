@@ -472,4 +472,69 @@ mod tests {
             trace.reads
         );
     }
+
+    /// Step 6: Verify DependencyTrace::default() has empty reads.
+    ///
+    /// Documents the contract used throughout lib.rs: params and root nodes pass
+    /// `DependencyTrace::default()` to `record_evaluation()`, signalling that they
+    /// have no value-cell dependencies and will never be invalidated by cell changes.
+    #[test]
+    fn dependency_trace_default_has_empty_reads() {
+        let trace = DependencyTrace::default();
+        assert!(
+            trace.reads.is_empty(),
+            "DependencyTrace::default() should have no reads — root/param nodes are dependency roots"
+        );
+    }
+
+    /// Step 7: Verify CacheStore.invalidate_dependents uses the DependencyTrace.reads stored
+    /// in cached entries (the statically extracted trace, not a separate runtime trace).
+    ///
+    /// This documents the end-to-end path: static extraction → stored in cache via
+    /// record_evaluation() → used for invalidation by invalidate_dependents().
+    #[test]
+    fn invalidate_dependents_uses_static_dependency_trace_reads() {
+        use crate::cache::{CacheStore, CachedResult};
+        use reify_types::{DeterminacyState, VersionId};
+
+        // Build a static trace for a BinOp: z = x + y
+        let x = ValueCellId::new("A", "x");
+        let y = ValueCellId::new("A", "y");
+        let z_id = ValueCellId::new("A", "z");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x.clone(), Type::Real),
+            CompiledExpr::value_ref(y.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert!(trace.reads.contains(&x), "sanity: trace contains x");
+        assert!(trace.reads.contains(&y), "sanity: trace contains y");
+
+        // Store z's cached result with the statically extracted trace
+        let z_node = NodeId::Value(z_id.clone());
+        let mut store = CacheStore::new();
+        store.record_evaluation(
+            z_node.clone(),
+            CachedResult::Value(Value::Real(3.0), DeterminacyState::Determined),
+            VersionId(1),
+            trace,
+        );
+
+        // Invalidate dependents of x — z should become dirty (reads x)
+        store.invalidate_dependents(&[x.clone()]);
+        assert!(
+            store.is_dirty(&z_node),
+            "z depends on x via static trace, should be dirty after x changes"
+        );
+
+        // Invalidate dependents of a cell z does NOT read — z should not be additionally dirtied
+        let w = ValueCellId::new("A", "w");
+        store.clear_dirty(&z_node); // reset for the next check
+        store.invalidate_dependents(&[w.clone()]);
+        assert!(
+            !store.is_dirty(&z_node),
+            "z does not depend on w, should not be dirtied by w changing"
+        );
+    }
 }
