@@ -26725,7 +26725,10 @@
         "updatedAt": "2026-04-09T04:32:12.933Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/geometry_error_handling.rs"
           ]
         }
       },
@@ -26743,6 +26746,10 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/traits.rs"
           ]
         }
       },
@@ -26759,7 +26766,12 @@
         "updatedAt": "2026-04-09T04:33:13.542Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-eval/tests/trait_merge_eval.rs"
           ]
         }
       },
