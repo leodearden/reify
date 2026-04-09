@@ -671,6 +671,25 @@ async fn shutdown_ignores_unexpected_params() {
     assert_shutdown_returns_null(&lsp, &json!("oops")).await;
 }
 
+/// Mirror of `shutdown_ignores_unexpected_params` for the post-handshake path.
+///
+/// Guards the invariant that the `"shutdown"` arm in `InProcessLsp::handle_request`
+/// ignores params regardless of initialization state. Both unexpected values
+/// (`{"foo": 42}` and `"oops"`) must return `Ok(Value::Null)` after the
+/// initialize/initialized handshake, just as they do before it.
+///
+/// Each payload gets a fresh `initialized_lsp().await` instance so that the two
+/// assertions are isolated from any state the prior shutdown call may have left.
+#[tokio::test]
+async fn shutdown_ignores_unexpected_params_after_initialize() {
+    // Object with unexpected extra fields — bridge must not reject this post-handshake.
+    let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+    // Wrong JSON type entirely — bridge must not reject this post-handshake either.
+    let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
