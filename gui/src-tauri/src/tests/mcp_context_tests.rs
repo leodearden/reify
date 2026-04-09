@@ -540,15 +540,21 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
 /// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
 /// mapping closure (including the `offset_to_line_col_fast` span conversion and the
-/// hardcoded `code: None`) lives entirely in `engine.rs` and is already covered by
-/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.
+/// hardcoded `code: None`) lives entirely in `engine.rs`.
+/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs` only
+/// range-checks span fields (`line >= 1`, `column >= 1`, `end_line >= line`,
+/// `end_column >= 1`); it does NOT pin exact coordinates.
 ///
 /// This test therefore focuses on two things the engine test cannot cover: (a) that
 /// the wrapping path returns `Result::Ok`, and (b) that every field passes through
-/// without a field-swap bug. For span fields the pinned exact-coordinate assertions
-/// (line/column/end_line/end_column) are unique to this test — they catch any
-/// accidental transposition in the wrapping path that a bare `>= 1` range check would
-/// miss. The `code: None` assertion confirms the `Option<String>` field passes through
+/// without a field-swap bug. The pinned exact-coordinate span assertions
+/// (line/column/end_line/end_column) are the ONLY span-arithmetic regression guard in
+/// the test suite — they catch any accidental transposition that a bare `>= 1` range
+/// check would miss. If a future change improves diagnostic locality (e.g. narrowing
+/// the span to point at just `NonExistentTrait` instead of the whole `port_decl`),
+/// update the pinned values to match the new coordinates — do NOT revert to range
+/// checks, as that would silently remove the span regression coverage.
+/// The `code: None` assertion confirms the `Option<String>` field passes through
 /// unchanged (the mapping closure hardcodes `None`; a future code-extraction change
 /// that starts populating it will break this assertion and prompt the implementing
 /// agent to update both the assertion and this doc comment).
