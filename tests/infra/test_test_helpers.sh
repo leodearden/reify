@@ -357,14 +357,13 @@ echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
 _beh_out=$(bash -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
     echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
     echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
     source '${HELPER_FILE}'
-    test_summary() { :; }
     source <(sed -n '/^assert_sync_ref_exists()/,/^}/p' '${SYNC_FILE}')
     PASS=0; FAIL=0
     assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
-    rm -f \"\$tmp_src\" \"\$tmp_tgt\"
 " 2>&1)
 # endregion:behavioral_test_block
 
