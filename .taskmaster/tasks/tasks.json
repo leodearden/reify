@@ -26346,15 +26346,16 @@
         "description": "Address two review suggestions from Task 1013 (esc-1013-844) that improve the dimensioned-domain gradient test coverage in crates/reify-expr/tests/gradient_tests.rs.\n\n1. Structural codomain_type assertion: The existing `gradient_codomain_type_with_dimensioned_domain` test only validates the heterogeneous-dimension quotient indirectly via the sample's runtime dimension. It does NOT assert that the returned `Value::Field`'s `codomain_type` metadata equals `Scalar{MASS/LENGTH}`. A parallel test (`gradient_codomain_type_vs_runtime_mismatch_field_structure`) exists specifically because runtime dimension and declared codomain_type can diverge. Add a structural match on `&grad_result` after `eval_expr(...)`:\n\n    match &grad_result {\n        Value::Field { codomain_type: ct, .. } => {\n            assert_eq!(ct, &scalar_mass_per_length, \"gradient codomain_type should be Scalar{MASS/LENGTH}\");\n        }\n        _ => panic!(\"gradient should return a Field, got {:?}\", grad_result),\n    }\n\n2. Non-linear dimensioned-domain coverage: The current test uses the linear lambda `2*x`, where the gradient is exactly 2.0 regardless of step size or FP-restore strategy. Add a companion test (e.g. `gradient_codomain_type_nonlinear_dimensioned_domain`) using a non-linear lambda (e.g. `x*x` with a MASS/LENGTH² coefficient so the result dimension is still MASS) sampled at a non-trivial point. This exercises the numerical sensitivity path (step size, FP restore) that a linear case cannot catch.\n\nmemory_hints:\n  search: \"gradient_codomain_type_with_dimensioned_domain MASS LENGTH\"\n  entities: [\"gradient_codomain_type_with_dimensioned_domain\", \"gradient_codomain_type_vs_runtime_mismatch_field_structure\"]",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T08:30:00.966Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:29:59.351Z",
+      "lastModified": "2026-04-09T08:30:00.969Z",
       "taskCount": 1307,
       "completedCount": 969,
       "tags": [
