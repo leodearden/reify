@@ -1244,20 +1244,68 @@ mod tests {
         assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
     }
 
-    #[test]
-    fn warning_source_is_well_formed() {
-        let source = warning_source();
-        assert!(source.contains("structure def S"));
-        assert!(source.contains("port mount : NonExistentTrait"));
-        assert!(source.contains("param d : Length = 5mm"));
+    /// Helper: parse and compile `source`, assert no errors and exactly one
+    /// `Severity::Warning` mentioning both "unknown port type" and
+    /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
+    fn assert_warning_source_compiles_with_unknown_port_warning(
+        source: &str,
+    ) -> reify_compiler::CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = reify_compiler::compile(&parsed);
+
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_types::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        let warnings: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_types::Severity::Warning
+                    && d.message.contains("unknown port type")
+                    && d.message.contains("NonExistentTrait")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected exactly 1 unknown-port-type warning mentioning NonExistentTrait, got: {:?}",
+            compiled.diagnostics
+        );
+
+        compiled
     }
 
     #[test]
-    fn warning_source_with_width_has_width_param() {
-        let source = warning_source_with_width();
-        assert!(source.contains("structure def S"));
-        assert!(source.contains("param width : Length = 80mm"));
-        assert!(source.contains("port mount : NonExistentTrait"));
-        assert!(source.contains("param d : Length = 5mm"));
+    fn warning_source_produces_unknown_port_warning_no_errors() {
+        assert_warning_source_compiles_with_unknown_port_warning(warning_source());
+    }
+
+    #[test]
+    fn warning_source_with_width_compiles_and_has_width_value_cell() {
+        let compiled =
+            assert_warning_source_compiles_with_unknown_port_warning(warning_source_with_width());
+        let s_template = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "S")
+            .expect("expected S template in compiled module");
+        assert!(
+            s_template.value_cells.iter().any(|vc| vc.id.member == "width"),
+            "expected S template to have a value_cell with member 'width', got: {:?}",
+            s_template
+                .value_cells
+                .iter()
+                .map(|vc| &vc.id.member)
+                .collect::<Vec<_>>()
+        );
     }
 }
