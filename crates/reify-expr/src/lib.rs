@@ -1329,7 +1329,7 @@ fn compute_numerical_divergence_at_point(
     ctx: &EvalContext,
 ) -> Value {
     let coords: Vec<f64> = match point {
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
