@@ -1492,6 +1492,22 @@ mod tests {
         assert_missing_err(result, &cell_id);
     }
 
+    /// assert_missing_err must panic when the error's cell_id does not match the
+    /// expected cell_id.  This is a negative test for the helper: it verifies the
+    /// mismatch-detection path rather than only the happy-path.
+    #[test]
+    #[should_panic]
+    fn assert_missing_err_panics_on_wrong_cell_id() {
+        let actual_id = ValueCellId::new("A", "x");
+        let expected_id = ValueCellId::new("B", "y");
+        let result: Result<(), BuilderError> = Err(BuilderError {
+            cell_id: actual_id.clone(),
+            message: format!("non-auto parameter {} missing from current_values", actual_id),
+        });
+        // Passes `expected_id` ("B","y") but the error carries `actual_id` ("A","x") — must panic.
+        assert_missing_err(result, &expected_id);
+    }
+
     /// add_point must propagate the Err returned by add_auto_coord when the
     /// x-coordinate cell_id is a non-auto param absent from current_values.
     /// This covers the `?` operator in add_point's PointRef::Auto arm.
