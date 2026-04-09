@@ -25831,11 +25831,16 @@
         "description": "In crates/reify-compiler/src/lib.rs, the bare-identifier path (ExprKind::Ident, lines ~2229-2247) resolves a collection sub name like `items` to a List<T> value cell (`__list_{name}__{first_member}`), so `let x = items` is valid inside a structure. Task 1125 made the equivalent `self.items` (MemberAccess branch at lines ~2737-2750) an error telling users to switch to indexed access. Since `self.member` is otherwise equivalent to bare `member` in entity scope (see the step-11 self.param equivalence test), this inconsistency is surprising: a refactor from `items` to `self.items` will break with a message that tells users to change form entirely.\n\nDecide and implement one of:\n  (a) Make `self.items` resolve to the same List<T> value cell as bare `items` (mirror the bare-ident logic inside the `self.member` branch at ~line 2737: look up collection_sub_member_types[member], return a ValueRef to `__list_{member}__{first_member}` with type List<T>).\n  (b) Also error on bare `items` so the rule is uniform, and document the rationale.\n\nAdd a test pinning whichever direction is chosen, and keep parity with the existing step-11 self.param equivalence test.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect lib.rs ExprKind::Ident collection_sub_names branch near 2229, and MemberAccess self.member branch near 2737.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:47:40.594Z"
+        "updatedAt": "2026-04-09T04:12:54.373Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "1281",
@@ -25881,7 +25886,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:12:11.634Z",
+      "lastModified": "2026-04-09T04:12:54.373Z",
       "taskCount": 1283,
       "completedCount": 948,
       "tags": [
