@@ -210,3 +210,33 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
         errors
     );
 }
+
+// ── task-823 step-1: port param unknown type name emits diagnostic ──────
+
+#[test]
+fn port_param_unknown_type_name_emits_error() {
+    // A port param whose type name doesn't exist (Nonexistent) should produce
+    // an error diagnostic. Previously, entity.rs:366 silently defaulted to
+    // Type::Real via unwrap_or without any diagnostic.
+    let source = r#"
+        trait MechPort {
+            param diameter : Length
+        }
+        structure S {
+            port mount : MechPort {
+                param diameter : Nonexistent
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_type_error = errors.iter().any(|d| {
+        d.message.contains("Nonexistent") || d.message.contains("unresolved type name")
+    });
+    assert!(
+        has_type_error,
+        "expected diagnostic about unknown type 'Nonexistent' in port param, got: {:?}",
+        errors
+    );
+}
