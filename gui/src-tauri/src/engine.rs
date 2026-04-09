@@ -522,6 +522,17 @@ impl EngineSession {
     pub(crate) fn break_module_name_for_test(&mut self) {
         self.module_name.take();
     }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `source_map` while leaving `compiled` and `module_name` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on source_map.get_key_value() fires correctly.
+    pub(crate) fn break_source_map_for_test(&mut self) {
+        self.source_map.clear();
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.

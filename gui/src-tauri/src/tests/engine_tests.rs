@@ -1747,3 +1747,56 @@ fn get_diagnostics_panics_on_broken_module_name() {
     // This must panic — resolve_source hits expect("module_name is None …").
     let _ = session.get_diagnostics();
 }
+
+// --- Task 1212: source_map panic guard test ---
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic, because resolve_source hits the
+/// unconditional expect() on source_map.get_key_value().
+///
+/// break_source_map_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // This must panic — resolve_source hits expect("source_map missing key …").
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: update_source path test ---
+
+/// resolve_source returns updated content (and the same key) after a successful
+/// update_source call.
+///
+/// Pins: (a) the key derived from the path argument stays "bracket.ri",
+/// (b) the source text is replaced with the new content and returned verbatim.
+#[test]
+fn resolve_source_returns_updated_content_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    // Baseline: resolve_source reflects the initial load.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+    // Update the source with modified content (different width parameter).
+    let updated = bracket_source_with_width("120mm");
+    session
+        .update_source("bracket.ri", &updated)
+        .expect("update_source should succeed with modified bracket source");
+    // After update: key stays the same, content is the new text.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", updated.as_str()),
+    );
+}
