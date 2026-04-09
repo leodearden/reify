@@ -23822,7 +23822,7 @@
         "description": "In crates/reify-expr/src/lib.rs, the `result_dim` match (~lines 762-769) has a catch-all `_ => DimensionVector::DIMENSIONLESS` arm that handles Type::Real correctly but would silently accept any future unexpected Type variant (e.g., a hypothetical Type::Complex).\n\nAdd a `#[cfg(debug_assertions)]` guard in the catch-all arm — either an `eprintln!` warning or a `debug_assert!(matches!(codomain_type, Type::Real | ...))` — to flag unexpected codomain_type variants during development. Follow the existing pattern used in `compute_gradient` around line 576.\n\nMemory hints: search for \"result_dim codomain_type catch-all\" and \"compute_gradient debug_assert type variant\".\nSource: task 1007 review suggestion S3.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23834,7 +23834,7 @@
             "crates/reify-expr"
           ]
         },
-        "updatedAt": "2026-04-09T19:12:45.326Z"
+        "updatedAt": "2026-04-09T19:57:10.922Z"
       },
       {
         "id": "1131",
@@ -28151,9 +28151,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:57:00.453Z",
+      "lastModified": "2026-04-09T19:57:10.922Z",
       "taskCount": 1360,
-      "completedCount": 1028,
+      "completedCount": 1029,
       "tags": [
         "master"
       ]
