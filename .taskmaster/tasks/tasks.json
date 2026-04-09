@@ -28354,10 +28354,11 @@
         "description": "In crates/reify-expr/src/calculus.rs tests (lines 1570-1714): (1) Extract test helpers for repeated lambda-construction and context-setup boilerplate (~10 lines duplicated across 3 tests) — e.g. make_identity_lambda() and test_ctx(). (2) Add a test with n>=2, i>0 (e.g. n=3, i=1) to exercise the selective-update logic in gradient_at_point and verify only the perturbed axis changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:06:19.770Z"
       },
       {
         "id": "1372",
@@ -28395,7 +28396,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:19.151Z",
+      "lastModified": "2026-04-09T21:06:19.771Z",
       "taskCount": 1374,
       "completedCount": 1049,
       "tags": [
