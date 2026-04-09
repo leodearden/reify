@@ -806,7 +806,6 @@ fn verify_uniqueness(
         .collect();
     if !missing.is_empty() {
         tracing::warn!(
-            missing_params = ?missing,
             "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
              using midpoint as comparison anchor \
              (perturbation start defaults to lower-half side)",
@@ -1262,7 +1261,9 @@ mod tests {
              got {vu_warn_count}; messages: {msgs:?}"
         );
 
-        // Both param names must appear in the aggregated WARN (via ?missing_params field)
+        // Both param names must appear in the formatted message body (via the {:?} placeholder);
+        // WarnCapturingSubscriber's MessageVisitor only captures the message field and ignores
+        // structured fields (see crates/reify-test-support/src/tracing_support.rs).
         let all_msgs = msgs.join("\n");
         assert!(
             all_msgs.contains("Part.x"),
