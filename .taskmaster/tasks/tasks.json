@@ -16116,8 +16116,7 @@
             "crates/reify-eval/tests/guard_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -16214,12 +16213,11 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-eval/tests/resolution.rs",
-            "crates/reify-test-support/src/mocks.rs"
+            "crates/reify-eval/tests/concurrent.rs",
+            "crates/reify-eval/tests/resolution.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests",
-            "crates/reify-test-support"
+            "crates/reify-eval/tests"
           ]
         }
       },
