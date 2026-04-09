@@ -1157,6 +1157,29 @@ mod tests {
         );
     }
 
+    /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Drives step-1 TDD cycle.
+    #[test]
+    fn fixed_line_helper_produces_expected_line_ref() {
+        let line = fixed_line(0.0, 1.0, 2.0, 3.0, 4.0, 5.0);
+        match line.start {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 0.0);
+                assert_eq!(y, 1.0);
+                assert_eq!(z, 2.0);
+            }
+            other => panic!("expected Fixed start, got {other:?}"),
+        }
+        match line.end {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 3.0);
+                assert_eq!(y, 4.0);
+                assert_eq!(z, 5.0);
+            }
+            other => panic!("expected Fixed end, got {other:?}"),
+        }
+    }
+
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
     /// Shared by the three add_auto_coord tests that need a standard single-param setup.
     fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
