@@ -100,6 +100,10 @@ fn test_command_on_mixed_file_shows_summary() {
         stdout.contains("1 failed"),
         "stdout should contain '1 failed' in summary, got: {stdout}"
     );
+    assert!(
+        stdout.contains("1 indeterminate"),
+        "stdout should contain '1 indeterminate' in summary, got: {stdout}"
+    );
 }
 
 // Step 11: no-tests file exits success (vacuously passing)
