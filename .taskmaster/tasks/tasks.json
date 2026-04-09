@@ -24708,7 +24708,10 @@
         "updatedAt": "2026-04-08T23:23:11.083Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/stress_sweep_degenerate.rs"
           ]
         }
       },
@@ -24824,8 +24827,12 @@
         "updatedAt": "2026-04-08T23:43:42.006Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs"
           ]
         }
       },
