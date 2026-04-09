@@ -1747,3 +1747,25 @@ fn get_diagnostics_panics_on_broken_module_name() {
     // This must panic — resolve_source hits expect("module_name is None …").
     let _ = session.get_diagnostics();
 }
+
+// --- Task 1212: source_map panic guard test ---
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic, because resolve_source hits the
+/// unconditional expect() on source_map.get_key_value().
+///
+/// break_source_map_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // This must panic — resolve_source hits expect("source_map missing key …").
+    let _ = session.get_diagnostics();
+}
