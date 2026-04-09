@@ -3127,9 +3127,9 @@ fn gradient_tensor_point_returns_undef() {
 
     // Lambda: |x, y, z| x + y + z
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        BinOp::Add,
         CompiledExpr::binop(
-            reify_types::BinOp::Add,
+            BinOp::Add,
             CompiledExpr::value_ref(x_id.clone(), Type::Real),
             CompiledExpr::value_ref(y_id.clone(), Type::Real),
             Type::Real,
