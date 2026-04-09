@@ -88,6 +88,18 @@ fn e2e_meta_access_let_binding() {
 
     let compiled = parse_and_compile(source);
 
+    // Sanity: Widget template should be present and tagged as a Structure.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Widget")
+        .expect("Widget template should be present in compiled output");
+    assert_eq!(
+        template.entity_kind,
+        reify_compiler::EntityKind::Structure,
+        "expected Widget to have entity_kind == Structure"
+    );
+
     // Eval
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
