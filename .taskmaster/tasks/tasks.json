@@ -25445,11 +25445,11 @@
         "description": "Doc/comment-only refinements to gui/src-tauri/src/tests/mcp_context_tests.rs::get_diagnostics_maps_warning_fields_to_diagnostic_info from a second-round review of Task 1239's doc updates. Both changes are confined to that one test function (current lines ~538-622).\n\n1. **Soften \"ONLY span-arithmetic regression guard\" claim (lines ~550-552).** The current doc comment from Task 1239 says the pinned-coordinate assertions are \"the ONLY span-arithmetic regression guard in the test suite.\" Verified against `gui/src-tauri/src/tests/engine_tests.rs::get_diagnostics_multi_diagnostic_stress_matches_reference` at lines 1499-1575: that test pins exact line/column/end_line/end_column for THREE injected diagnostics by comparing against a `byte_offset_to_line_col` oracle for each span. It does catch any line↔column transposition bug in the engine.rs mapping closure (engine.rs:354-365). The wrapping path in mcp_context.rs:127-133 is a pure passthrough with no field reassignment, so the actual span-arithmetic logic the doc is worried about is also covered by that engine stress test. The mcp_context test still has unique value (it uses a real compiler-emitted span on a real port_decl AST node and exercises the wrapping path's `Ok` return), but the \"ONLY\" claim mis-describes coverage redundancy. Reword to something like: \"the only test that pins literal exact-coordinate values for a real compiler-emitted span — the engine multi-diagnostic stress test (`get_diagnostics_multi_diagnostic_stress_matches_reference`) pins coordinates against a `byte_offset_to_line_col` reference for synthetic injected spans, so this test provides complementary coverage on a real port_decl span shape.\"\n\n2. **Reorder the exclusive-end clarity comment (lines ~607-612).** The new explanatory block from Task 1239 currently arrives at column 5 first (\"four leading spaces → prefix chars().count() = 4, 1-indexed = 5\") then pivots to column 6 via the exclusive end byte. Since the assertion is `end_column == 6`, leading with the end-byte semantics and treating the glyph column as a sanity check reads more linearly. Rephrase along these lines: \"// Tree-sitter end_byte is exclusive — for the closing `}` of the port body on line 4 (4 spaces + `}`), end_byte points one past `}` (at the trailing `\\\\n`). offset_to_line_col_fast computes chars().count() of source[line_start..end_byte] + 1 = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column 6 is the exclusive one-past position.)\"\n\nBoth edits are pure rewording — no test logic, no assertions, no fixture changes. Verify the test still compiles and runs after the comment edits (`cargo test -p reify-tauri get_diagnostics_maps_warning_fields_to_diagnostic_info` from gui/src-tauri).\n\nmemory_hints: search(\"Task 1239 mcp_context doc comment span coordinates\", project_id=\"reify\"); search(\"get_diagnostics_multi_diagnostic_stress_matches_reference oracle byte_offset_to_line_col\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:22:51.810Z",
+        "updatedAt": "2026-04-09T03:34:04.244Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -25627,9 +25627,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:33:23.720Z",
+      "lastModified": "2026-04-09T03:34:04.244Z",
       "taskCount": 1269,
-      "completedCount": 940,
+      "completedCount": 941,
       "tags": [
         "master"
       ]
