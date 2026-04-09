@@ -714,10 +714,13 @@ fn solve_core(problem: &ResolutionProblem, initial: &[f64]) -> SolveResult {
 /// Returns `true` if every param value in `solved_values` and
 /// `perturbed_values` matches within the project tolerance constants.
 ///
-/// If either map is missing a param or contains a non-numeric value
-/// (e.g. `Value::Undef`, `Value::Bool`), emits a `tracing::warn!` and
-/// returns `false` — the caller treats false as non-unique → Infeasible,
-/// producing a noisy user-facing error rather than silently masking the bug.
+/// If either map is missing a param, contains a non-numeric value
+/// (e.g. `Value::Undef`, `Value::Bool`), or contains a non-finite value
+/// (NaN, Infinity), emits a `tracing::warn!` and returns `false` — the
+/// caller treats false as non-unique → Infeasible, producing a noisy
+/// user-facing error rather than silently masking the bug. Non-finite
+/// values must be rejected because NaN comparisons always return false,
+/// which would let the tolerance check silently report agreement.
 fn solutions_agree(
     auto_params: &[AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
@@ -725,23 +728,23 @@ fn solutions_agree(
 ) -> bool {
     for param in auto_params {
         let s1 = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
-            Some(v) => v,
-            None => {
+            Some(v) if v.is_finite() => v,
+            _ => {
                 tracing::warn!(
                     param = %param.id,
-                    "uniqueness check: original solution has missing or non-numeric value; \
-                     cannot verify uniqueness"
+                    "uniqueness check: original solution has missing, non-numeric, or \
+                     non-finite (NaN/Inf) value; cannot verify uniqueness"
                 );
                 return false;
             }
         };
         let s2 = match perturbed_values.get(&param.id).and_then(|v| v.as_f64()) {
-            Some(v) => v,
-            None => {
+            Some(v) if v.is_finite() => v,
+            _ => {
                 tracing::warn!(
                     param = %param.id,
-                    "uniqueness check: perturbed solution has missing or non-numeric value; \
-                     cannot verify uniqueness"
+                    "uniqueness check: perturbed solution has missing, non-numeric, or \
+                     non-finite (NaN/Inf) value; cannot verify uniqueness"
                 );
                 return false;
             }
