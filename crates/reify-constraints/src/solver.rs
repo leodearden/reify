@@ -781,24 +781,20 @@ fn verify_uniqueness(
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.
+    let mut missing: Vec<String> = Vec::new();
     let perturbed: Vec<f64> = problem
         .auto_params
         .iter()
         .map(|param| {
             let (lo, hi) = effective_bounds(param);
             let mid = (lo + hi) / 2.0;
-            let solution_val = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
-                Some(v) => v,
-                None => {
-                    tracing::warn!(
-                        param = %param.id,
-                        mid,
-                        "verify_uniqueness: solved value missing or non-numeric, \
-                         falling back to mid for perturbation start"
-                    );
+            let solution_val = solved_values
+                .get(&param.id)
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| {
+                    missing.push(param.id.to_string());
                     mid
-                }
-            };
+                });
             if solution_val < mid {
                 // Solution is in the lower half — start near the high end
                 lo + 0.9 * (hi - lo)
@@ -808,6 +804,16 @@ fn verify_uniqueness(
             }
         })
         .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            missing_params = ?missing,
+            "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
+             using midpoint as comparison anchor \
+             (perturbation start defaults to lower-half side)",
+            missing.len(),
+            missing
+        );
+    }
 
     tracing::debug!(
         n_params = problem.auto_params.len(),
@@ -1099,17 +1105,18 @@ mod tests {
             verify_uniqueness(&problem, &solved_values)
         });
 
-        // Assert only on the verify_uniqueness fallback warn; decoupled from any
-        // downstream solutions_agree warn behavior which may change independently.
-        let n_matching = capture
-            .messages()
+        // Exactly 1 verify_uniqueness WARN (filter by new wording from task/1228);
+        // solutions_agree may emit additional WARNs but we count only the aggregated
+        // verify_uniqueness one. Decoupled from any downstream solutions_agree warn
+        // behavior which may change independently.
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
             .iter()
-            .filter(|m| m.contains("falling back to mid"))
+            .filter(|m| m.contains("midpoint as comparison anchor"))
             .count();
         assert_eq!(
-            n_matching,
-            1,
-            "expected exactly 1 'falling back to mid' warn from verify_uniqueness"
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
         assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
@@ -1146,17 +1153,18 @@ mod tests {
             verify_uniqueness(&problem, &solved_values)
         });
 
-        // Assert only on the verify_uniqueness fallback warn; decoupled from any
-        // downstream solutions_agree warn behavior which may change independently.
-        let n_matching = capture
-            .messages()
+        // Exactly 1 verify_uniqueness WARN (filter by new wording from task/1228);
+        // solutions_agree may emit additional WARNs but we count only the aggregated
+        // verify_uniqueness one. Decoupled from any downstream solutions_agree warn
+        // behavior which may change independently.
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
             .iter()
-            .filter(|m| m.contains("falling back to mid"))
+            .filter(|m| m.contains("midpoint as comparison anchor"))
             .count();
         assert_eq!(
-            n_matching,
-            1,
-            "expected exactly 1 'falling back to mid' warn from verify_uniqueness"
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
@@ -1200,6 +1208,72 @@ mod tests {
         });
 
         capture.assert_count(0);
+    }
+
+    #[test]
+    fn verify_uniqueness_aggregates_warn_for_multiple_missing_params() {
+        use std::collections::HashMap;
+
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_x = ValueCellId::new("Part", "x");
+        let param_y = ValueCellId::new("Part", "y");
+        let problem = ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: param_x.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+                AutoParam {
+                    id: param_y.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+            ],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Empty solved_values: both params are missing → both hit the None branch
+        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
+        });
+
+        // Exactly 1 aggregated WARN from verify_uniqueness (both missing params in one event)
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 aggregated verify_uniqueness WARN for 2 missing params; \
+             got {vu_warn_count}; messages: {msgs:?}"
+        );
+
+        // Both param names must appear in the aggregated WARN (via ?missing_params field)
+        let all_msgs = msgs.join("\n");
+        assert!(
+            all_msgs.contains("Part.x"),
+            "aggregated WARN must mention Part.x; messages: {msgs:?}"
+        );
+        assert!(
+            all_msgs.contains("Part.y"),
+            "aggregated WARN must mention Part.y; messages: {msgs:?}"
+        );
+
+        assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
     }
 
     #[test]
