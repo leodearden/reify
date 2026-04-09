@@ -353,23 +353,81 @@ fi
 echo ""
 echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
 
+# region:behavioral_test_block
 _beh_out=$(bash -c "
     tmp_src=\$(mktemp)
     tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
     echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
     echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
     source '${HELPER_FILE}'
-    test_summary() { :; }
-    source '${SYNC_FILE}'
+    source <(sed -n '/^assert_sync_ref_exists()/,/^}/p' '${SYNC_FILE}')
     PASS=0; FAIL=0
     assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
-    rm -f \"\$tmp_src\" \"\$tmp_tgt\"
 " 2>&1)
+# endregion:behavioral_test_block
 
 if echo "$_beh_out" | grep -q 'FAIL'; then
     check "guard fires and records FAIL when ref_fn extraction yields nothing" "true"
 else
     check "guard fires and records FAIL when ref_fn extraction yields nothing (got: $_beh_out)" "false"
+fi
+
+# -- Structural meta-tests: behavioral_test_block isolation properties --------
+echo ""
+echo "--- structural meta-tests: behavioral_test_block isolation ---"
+
+beh_region=$(sed -n '/^# region:behavioral_test_block$/,/^# endregion:behavioral_test_block$/p' "${BASH_SOURCE[0]}")
+
+# (a) function extraction: region uses sed -n to extract assert_sync_ref_exists
+#     (not a full-file source)
+if echo "$beh_region" | grep -qE 'sed[[:space:]]+-n.*assert_sync_ref_exists'; then
+    check "behavioral block uses sed -n to extract assert_sync_ref_exists" "true"
+else
+    check "behavioral block uses sed -n to extract assert_sync_ref_exists" "false"
+fi
+
+# (b) brittle full-file source absent: region does NOT source entire SYNC_FILE directly
+#     (source <(...) process substitution is allowed; bare source '...' is not)
+if ! echo "$beh_region" | grep -qE "source[[:space:]]+'[^<]*SYNC_FILE"; then
+    check "behavioral block does NOT source SYNC_FILE directly (no full-file side effects)" "true"
+else
+    check "behavioral block does NOT source SYNC_FILE directly (no full-file side effects)" "false"
+fi
+
+# (c) trap-based cleanup: region registers a trap for EXIT to remove tmp files
+if echo "$beh_region" | grep -qE 'trap[[:space:]]+.*rm[[:space:]]*-f.*EXIT'; then
+    check "behavioral block registers trap-based cleanup on EXIT" "true"
+else
+    check "behavioral block registers trap-based cleanup on EXIT" "false"
+fi
+
+# -- Behavioral robustness: sed extraction is immune to hostile top-level code -
+echo ""
+echo "--- assert_sync_ref_exists robustness: sed extraction immune to top-level exit in SYNC_FILE ---"
+
+# Inject 'exit 99' at the end of an altered copy of SYNC_FILE.  If full-file
+# sourcing were ever used, the bash subshell would exit 99 before the assert
+# call, so 'FAIL' would be absent from the output and this check would fire.
+_rob_out=$(bash -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    altered_sync=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\" \"\$altered_sync\"' EXIT
+    cat '${SYNC_FILE}' > \"\$altered_sync\"
+    echo 'exit 99' >> \"\$altered_sync\"
+    echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
+    echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
+    source '${HELPER_FILE}'
+    source <(sed -n '/^assert_sync_ref_exists()/,/^}/p' \"\$altered_sync\")
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1)
+
+if echo "$_rob_out" | grep -q 'FAIL'; then
+    check "sed extraction immune to hostile top-level exit in SYNC_FILE (exit 99 never fires)" "true"
+else
+    check "sed extraction immune to hostile top-level exit in SYNC_FILE (exit 99 never fires) (got: $_rob_out)" "false"
 fi
 
 # ==============================================================================

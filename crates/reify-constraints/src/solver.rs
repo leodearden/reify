@@ -813,6 +813,7 @@ fn verify_uniqueness(
             missing.len(),
             missing
         );
+        return false;
     }
 
     tracing::debug!(
@@ -1118,6 +1119,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
@@ -1166,6 +1172,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
@@ -1203,8 +1214,14 @@ mod tests {
         );
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        // NB: the return value is captured but NOT asserted on. With no constraints,
+        // `solve_core` early-returns the perturbed initial (0.9) unchanged; `solutions_agree`
+        // finds a 0.65 disagreement vs. the original 0.25, so `verify_uniqueness` returns
+        // `false`. This test's contract is the *absence* of the fallback warn (the happy-path
+        // branch where `as_f64()` returns `Some`), not a uniqueness verdict. `_unique` keeps
+        // captured-value symmetry with the sibling tests without asserting the verdict.
+        let _unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
         capture.assert_count(0);
@@ -1274,6 +1291,80 @@ mod tests {
         );
 
         assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
+    }
+
+    /// Proves that `verify_uniqueness` takes the early-return path when a param
+    /// is missing from `solved_values` — i.e. it does NOT call `solve_core`.
+    ///
+    /// Observable contract:
+    /// - returns false (no change)
+    /// - exactly 1 WARN event (the aggregated missing-param warn)
+    /// - exactly 0 DEBUG events from `reify_constraints` target
+    ///
+    /// The DEBUG-count assertion is the key TDD signal: if the early-return is
+    /// absent, at least the `"verifying uniqueness via perturbation"` debug event
+    /// at solver.rs:818 fires (DEBUG ≥ 1), plus additional debug events from
+    /// inside `solve_core`'s no-constraint / no-objective early-return path
+    /// (DEBUG ≥ 2).  Zero DEBUG events proves both were skipped.
+    #[test]
+    fn verify_uniqueness_skips_solve_core_when_param_missing() {
+        use std::collections::HashMap;
+        use std::sync::atomic::Ordering;
+
+        use reify_test_support::CountingSubscriberBuilder;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Empty solved_values: param is missing → early-return path should fire
+        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
+        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
+        });
+
+        assert!(
+            !unique,
+            "verify_uniqueness must return false when param is missing from solved_values"
+        );
+
+        let warn_n = warn_count.load(Ordering::Acquire);
+        assert_eq!(
+            warn_n, 1,
+            "expected exactly 1 WARN (the aggregated missing-param early-return warn); \
+             got {warn_n}"
+        );
+
+        let debug_n = debug_count.load(Ordering::Acquire);
+        assert_eq!(
+            debug_n, 0,
+            "expected 0 DEBUG events (early-return skips both the \
+             'verifying uniqueness via perturbation' debug and all solve_core debug events); \
+             got {debug_n}"
+        );
     }
 
     #[test]
