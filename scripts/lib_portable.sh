@@ -114,13 +114,24 @@ portable_timeout() {
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
                 touch "$timeout_flag" 2>/dev/null
+                # Snapshot direct children of cmd_pid before signaling: bash may
+                # use job control to place its children in separate process groups,
+                # so 'kill -- -$cmd_pid' alone won't reach them.  Capture while the
+                # parent is still alive so PPID relationships are intact.
+                _pt_kids=$(ps -A -o pid=,ppid= 2>/dev/null | while IFS= read -r _pt_line; do
+                    set -- $_pt_line; [ $# -ge 2 ] && [ "$2" = "$cmd_pid" ] && echo "$1"
+                done)
                 kill "$cmd_pid" 2>/dev/null
                 # Grace period: if SIGTERM is ignored, escalate to SIGKILL via
                 # process-group kill.  Safe: cmd_pid hasn't been wait(2)ed yet
                 # (main shell is blocked), so no PID-reuse risk.  Process-group
-                # kill also cleans up child processes (e.g. nested sleep).
+                # kill also cleans up child processes in cmd's PGID.
                 sleep 2
                 kill -9 -- -$cmd_pid 2>/dev/null
+                # Kill any children whose PGID differs from cmd_pid's PGID
+                # (e.g. bash places 'sleep N' in its own process group when
+                # job control is active inside the cmd wrapper).
+                for _pt_kid in $_pt_kids; do kill -9 -- -"$_pt_kid" 2>/dev/null || true; done
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         else
@@ -128,9 +139,13 @@ portable_timeout() {
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
             set -m 2>/dev/null || true
             ( sleep "$seconds" && {
+                _pt_kids=$(ps -A -o pid=,ppid= 2>/dev/null | while IFS= read -r _pt_line; do
+                    set -- $_pt_line; [ $# -ge 2 ] && [ "$2" = "$cmd_pid" ] && echo "$1"
+                done)
                 kill "$cmd_pid" 2>/dev/null
                 sleep 2
                 kill -9 -- -$cmd_pid 2>/dev/null
+                for _pt_kid in $_pt_kids; do kill -9 -- -"$_pt_kid" 2>/dev/null || true; done
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         fi
@@ -141,11 +156,10 @@ portable_timeout() {
         # all children of the subshell atomically; fall back to plain kill if unsupported.
         kill -- -$timer_pid 2>/dev/null || kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
-        # Kill any orphaned children in the command's process group.  When the timer
-        # escalates to SIGKILL it kills the command wrapper (e.g. a bash -c) but not
-        # its children (e.g. a nested sleep).  'kill -- -$cmd_pid' sends SIGTERM to
-        # every process in the command's process group, cleaning up those orphans.
-        # Safe after wait: if the group is already empty the signal is ignored.
+        # Safety-net SIGTERM to cmd's process group.  Catches any survivors that
+        # were in PGID=cmd_pid and weren't reached by the timer's SIGKILL.
+        # Children in separate PGIDs are handled by the timer's _pt_kids loop.
+        # Safe after wait: if the group is already empty this is a no-op.
         kill -- -$cmd_pid 2>/dev/null || true
 
         if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && { [ "$cmd_exit" -eq 143 ] || [ "$cmd_exit" -eq 137 ]; }; then
