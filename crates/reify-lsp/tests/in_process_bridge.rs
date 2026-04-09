@@ -136,12 +136,15 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     if let Some(arr) = response.as_array() {
         return arr;
     }
-    if let Some(items) = response
-        .as_object()
-        .and_then(|obj| obj.get("items"))
-        .and_then(|v| v.as_array())
-    {
-        return items;
+    if let Some(obj) = response.as_object() {
+        if let Some(items_val) = obj.get("items") {
+            if let Some(arr) = items_val.as_array() {
+                return arr;
+            }
+            panic!(
+                "CompletionResponse::List has non-array 'items' field: {response}"
+            );
+        }
     }
     panic!(
         "completion response should be CompletionResponse::Array (JSON array) or \
