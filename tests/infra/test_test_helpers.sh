@@ -258,24 +258,24 @@ SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
-# _check_has_no_if_n_guard catches any 'if [ -n' conditional regardless of
+# _has_if_n_guard catches any 'if [ -n' conditional regardless of
 # the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
 # count as prohibited defensive guards.
-_check_defines_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
-_check_has_no_if_n_guard() { ! grep -qE 'if \[ -n' "$1" 2>/dev/null; }
+_has_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
+_has_if_n_guard() { grep -qE 'if \[ -n' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
 # (a) file defines assert_sync_ref_exists() helper function
-if _check_defines_assert_sync_ref_exists "$SYNC_FILE"; then
+if _has_assert_sync_ref_exists "$SYNC_FILE"; then
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
 else
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
 fi
 
 # (b) file has NO defensive if [ -n ] guard (defensive guards removed)
-if _check_has_no_if_n_guard "$SYNC_FILE"; then
+if ! _has_if_n_guard "$SYNC_FILE"; then
     check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
 else
     check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
@@ -442,7 +442,7 @@ echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
 
 fixture=$(mktemp)
 printf 'assert_sync_ref_exists () {\n  : trivial body\n}\n' > "$fixture"
-if _check_defines_assert_sync_ref_exists "$fixture" 2>/dev/null; then
+if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then
     check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "true"
 else
     check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "false"
@@ -457,7 +457,7 @@ echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
 # for "no guard" must be FALSE).
 fixture_guard=$(mktemp)
 printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
-if _check_has_no_if_n_guard "$fixture_guard" 2>/dev/null; then
+if ! _has_if_n_guard "$fixture_guard" 2>/dev/null; then
     check "if-guard pattern detects non-underscore ref variable (should FAIL)" "false"
 else
     check "if-guard pattern detects non-underscore ref variable (guard present → false)" "true"
@@ -467,7 +467,7 @@ rm -f "$fixture_guard"
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
 fixture_clean=$(mktemp)
 printf '# no guards here\necho hello\n' > "$fixture_clean"
-if _check_has_no_if_n_guard "$fixture_clean" 2>/dev/null; then
+if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then
     check "if-guard pattern returns true for clean file (no guard)" "true"
 else
     check "if-guard pattern returns true for clean file (no guard)" "false"
@@ -479,7 +479,7 @@ rm -f "$fixture_clean"
 # correctly detected and the helper returns non-zero.
 fixture_marker=$(mktemp)
 printf 'if [ -n "$marker" ]; then echo skip; fi\n' > "$fixture_marker"
-if _check_has_no_if_n_guard "$fixture_marker" 2>/dev/null; then
+if ! _has_if_n_guard "$fixture_marker" 2>/dev/null; then
     check "if-guard pattern detects non-ref-named variable \$marker (should FAIL)" "false"
 else
     check "if-guard pattern detects non-ref-named variable \$marker (guard present → false)" "true"
@@ -494,7 +494,7 @@ rm -f "$fixture_marker"
 # regression visible rather than silent.
 fixture_historical=$(mktemp)
 printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
-if _check_has_no_if_n_guard "$fixture_historical" 2>/dev/null; then
+if ! _has_if_n_guard "$fixture_historical" 2>/dev/null; then
     check "historical pin: if-guard on \$_expr_ref_fn detected (should FAIL)" "false"
 else
     check "historical pin: if-guard on \$_expr_ref_fn detected (ff0880bfe regression)" "true"
