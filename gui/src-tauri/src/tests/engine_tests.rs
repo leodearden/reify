@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
+use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source};
 use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
@@ -832,11 +832,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warning_source();
 
     // load_from_source should succeed — warnings are not errors
     session
@@ -1243,13 +1239,8 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     // Load warning source — establishes a non-empty diagnostics state
-    let warn_source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
     session
-        .load_from_source(warn_source, "test_warn")
+        .load_from_source(warning_source(), "test_warn")
         .expect("warning source should compile");
 
     let diags_before = session.get_diagnostics();
@@ -1918,15 +1909,10 @@ fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
 
     // This source reliably produces a compiler warning (unknown port type), not
     // an error — the same fixture used by engine_get_diagnostics_returns_populated_warning.
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(source, "test_warn")
+        .load_from_source(warning_source(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled is Some, module_name is None.
@@ -1952,15 +1938,10 @@ fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Same real warning-producing fixture as above.
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(source, "test_warn")
+        .load_from_source(warning_source(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled and module_name are Some,
