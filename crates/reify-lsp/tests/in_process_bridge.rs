@@ -743,6 +743,27 @@ async fn shutdown_ignores_unexpected_params_after_initialize() {
     assert_shutdown_returns_null(&lsp, &json!("oops")).await;
 }
 
+/// Unit tests for the `completion_items` helper function.
+///
+/// These tests exercise `completion_items` in isolation using raw `serde_json::Value`
+/// fixtures, without going through the LSP bridge.
+mod completion_items_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn completion_items_extracts_from_array_response() {
+        let val = json!([{"label": "foo"}]);
+        let items = completion_items(&val);
+        assert_eq!(items.len(), 1, "expected one item, got {}", items.len());
+        assert_eq!(
+            items[0]["label"], "foo",
+            "first item label should be 'foo', got: {}",
+            items[0]["label"]
+        );
+    }
+}
+
 /// Each `error_prefix` constant must actually appear in the error message
 /// returned when the corresponding method receives malformed params.
 ///
