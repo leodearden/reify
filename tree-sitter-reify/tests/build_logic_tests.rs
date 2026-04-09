@@ -828,6 +828,36 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     result
 }
 
+/// Strips line-level comments from a single source line and returns the code portion.
+///
+/// Algorithm (line-level only — multi-line `/* */` tracking is not supported):
+/// 1. Iteratively find `/*` … `*/` pairs on this line and remove them.
+///    Unclosed `/*` (no matching `*/` on the same line) is left unchanged.
+/// 2. Split on `//` and take the first segment (strips trailing `//` comments).
+/// 3. Return the result.
+fn strip_line_comments(line: &str) -> String {
+    // Step 1: remove all complete /* ... */ pairs on this line.
+    let mut s = line.to_string();
+    loop {
+        if let Some(open) = s.find("/*") {
+            // Search for */ starting after the opening /*
+            if let Some(rel_close) = s[open + 2..].find("*/") {
+                let close_end = open + 2 + rel_close + 2; // byte index past "*/"
+                s.replace_range(open..close_end, "");
+            } else {
+                break; // unclosed block comment on this line — leave unchanged
+            }
+        } else {
+            break;
+        }
+    }
+    // Step 2: strip trailing // comment.
+    if let Some(idx) = s.find("//") {
+        s.truncate(idx);
+    }
+    s
+}
+
 #[test]
 fn test_unix_permission_tests_have_root_guard() {
     // Source-level regression guard: every #[cfg(unix)] test function that
