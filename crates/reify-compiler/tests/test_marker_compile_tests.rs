@@ -158,3 +158,26 @@ fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
         bad_warns
     );
 }
+
+// ── Step 11: regression guard - @test on field still warns ───────────────────
+
+#[test]
+fn test_annotation_on_field_still_warns_invalid_context() {
+    let module = compile_module(
+        "@test field def f : Point3 -> Real { source = analytical { |p| 0.0 } }",
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("@test is not valid"))
+        .collect();
+    assert!(
+        !bad_warns.is_empty(),
+        "expected '@test is not valid' warning on field, got none"
+    );
+    assert!(
+        bad_warns.iter().any(|d| d.message.contains("field")),
+        "expected warning to mention 'field', got: {:?}",
+        bad_warns
+    );
+}
