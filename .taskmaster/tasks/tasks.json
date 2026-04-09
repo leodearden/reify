@@ -24168,11 +24168,11 @@
         "description": "Follow-up from Task 1068 review (esc-1068-904, suggestions S1 and S2). Both suggestions target tests/infra/test_run_all.sh.\n\nS1 (resource_cleanup, lines 41-55): Temp dirs (TMPDIR_T2, TMPDIR_T3, TMPDIR_PASS, TMPDIR_FAIL, TMPDIR_EMPTY) are cleaned up inline via `rm -rf`, but there is no trap-based cleanup. Under `set -euo pipefail`, an unexpected early exit leaks them.\n\nFix: Add a trap at the top of the script that tracks and removes all temp dirs on EXIT. Pattern:\n\n    _TMPDIRS=()\n    cleanup() { for d in \"${_TMPDIRS[@]+${_TMPDIRS[@]}}\"; do rm -rf \"$d\"; done; }\n    trap cleanup EXIT\n\nThen replace each `rm -rf \"$TMPDIR_*\"` with `_TMPDIRS+=(\"$TMPDIR_*\")` (or keep the inline rm and just register the dir for safety-net cleanup).\n\nS2 (dead_code, line 43): `t2_rc` is captured via `&& t2_rc=0 || t2_rc=$?` but never referenced — Test 2 only checks output text. Either drop the rc capture (`t2_output=\"$(...)\" || true`) or add an assertion that t2_rc is 0 (the empty/excluded suite should succeed).\n\nVerify by running `bash tests/infra/test_run_all.sh` and `bash tests/infra/run_all.sh` after the change.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:45:10.758Z",
+        "updatedAt": "2026-04-09T04:35:16.773Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -26036,9 +26036,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:34:53.389Z",
+      "lastModified": "2026-04-09T04:35:16.773Z",
       "taskCount": 1292,
-      "completedCount": 956,
+      "completedCount": 957,
       "tags": [
         "master"
       ]
