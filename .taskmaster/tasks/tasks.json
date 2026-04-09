@@ -20880,6 +20880,10 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp"
+          ],
+          "files": [
+            "crates/reify-lsp/src/bridge.rs",
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         }
       },
@@ -20895,13 +20899,13 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "gui/src-tauri/src/tests/types_tests.rs",
+            "crates/reify-mcp/tests/registry_tests.rs",
             "gui/src-tauri/src/commands.rs",
             "gui/src-tauri/src/types.rs"
           ],
           "modules": [
-            "gui/src-tauri/src",
-            "gui/src-tauri/src/tests"
+            "crates/reify-mcp",
+            "gui/src-tauri"
           ]
         }
       },
@@ -20918,12 +20922,11 @@
         "metadata": {
           "files": [
             "crates/reify-compiler/src/scc.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-test-support/src/builders/topology.rs"
+            "crates/reify-types/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-test-support/src/builders"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ]
         }
       },
