@@ -1684,3 +1684,22 @@ fn module_key_empty_name() {
     use crate::engine::module_key;
     assert_eq!(module_key(""), ".ri");
 }
+
+/// module_key(name) matches the key that load_from_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that load_from_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into load_from_source without updating module_key.
+#[test]
+fn module_key_matches_load_from_source_insertion() {
+    use crate::engine::module_key;
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    let (stored_key, _) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+}
