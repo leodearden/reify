@@ -167,6 +167,31 @@ fn empty_members_returns_none() {
     assert!(result.is_none(), "empty member slice should return None");
 }
 
+// ── (g) first-match-wins ordering ────────────────────────────────
+
+#[test]
+fn first_match_wins_top_level_over_nested() {
+    // Two params named "dup": one at the top level, one inside a where block.
+    // The top-level one comes first in source order, so it should be returned.
+    let source = r#"structure S {
+    param cond : Bool = true
+    param dup : Scalar = 1mm
+    where cond {
+        param dup : Scalar = 999mm
+    }
+}"#;
+    let members = parse_first_structure_members(source);
+    let result = find_named_member_span(&members, "dup");
+    assert!(result.is_some(), "param 'dup' should be found");
+    let info = result.unwrap();
+    let decl_text = &source[info.span.start as usize..info.span.end as usize];
+    // The top-level declaration contains "1mm", the nested one "999mm".
+    assert!(
+        decl_text.contains("1mm") && !decl_text.contains("999mm"),
+        "first match should be the top-level 'dup', got: {decl_text:?}"
+    );
+}
+
 // ── (f) depth limiting ────────────────────────────────────────────
 
 /// Build a member tree with `depth` levels of GuardedGroup nesting,
