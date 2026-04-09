@@ -160,7 +160,7 @@ fn run_tests_propagates_violation_diagnostics() {
 // Step 18: sub-component reference to non-test template as fixture
 #[test]
 fn run_tests_supports_subcomponent_references_to_nontest_templates() {
-    let source = "structure Widget { param size : Length = 10mm }\n@test structure TestWidgetFits {\n  sub w : Widget {}\n  constraint w.size > 0mm\n}";
+    let source = "structure Widget { param size : Length = 10mm }\n@test structure TestWidgetFits {\n  sub w = Widget()\n  constraint self.w.size > 0mm\n}";
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
