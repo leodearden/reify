@@ -43,20 +43,21 @@ assert_sync_ref_exists() {
 assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
-# Helper: extract the function body (excluding the signature line) to the next
-# line that begins with } at column 0.  The signature line is stripped so that
-# legitimate differences (visibility modifiers like pub(crate), doc comments,
-# SYNC markers) do not affect the body comparison.
+# Helper: extract from the fn signature line to the next line that begins with }
+# at column 0.  Content above the fn keyword is naturally excluded by the awk
+# range anchor, so doc comments and SYNC markers (which may legitimately differ
+# between the two copies) do not affect the body comparison.
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '/^(pub\([^)]*\)[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[(<[:space:]]/,/^}/' "$file" \
-        | tail -n +2
+    awk '/^(pub\([^)]*\)[[:space:]]+)?fn[[:space:]]+'"$fn_name"'[(<]/,/^}/' "$file"
 }
 
 # Both copies of sanitize_value must have identical function bodies.
 # Capture output first so we can assert non-empty before diffing — an empty
 # result from either side would mean the function was not found (e.g. renamed),
 # and `diff <() <()` would silently succeed (false negative).
+# The signature line (line 1) is skipped when diffing because visibility
+# modifiers like pub(crate) may legitimately differ between the two copies.
 expr_body=$(extract_fn sanitize_value "$EXPR_FILE")
 stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
 [ -z "$expr_body" ] && assert "extract_fn sanitize_value found in reify-expr" false
@@ -64,7 +65,7 @@ stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
 assert \
     "sanitize_value body is identical in reify-expr and reify-stdlib" \
     diff \
-        <(printf '%s' "$expr_body") \
-        <(printf '%s' "$stdlib_body")
+        <(printf '%s' "$expr_body" | tail -n +2) \
+        <(printf '%s' "$stdlib_body" | tail -n +2)
 
 test_summary
