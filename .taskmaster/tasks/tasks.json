@@ -28143,15 +28143,16 @@
         "description": "Improve check-pm-standardization.sh and its test coverage in test_npm_ci_hardening.sh",
         "details": "1. Test 7 (test_npm_ci_hardening.sh:87-88): Broaden awk pattern to `/^[[:space:]]*for /,/^[[:space:]]*done/` so indented for-loops (like the new Check 3 diagnostic loop) are scanned. Optionally tighten the `-v` grep to a word-boundary match.\n2. scripts/check-pm-standardization.sh: Move `LOCK_FILES=` definition (currently inline in Check 3, line 44) up next to `PKG_FILES=` (line 16) for consistency.\n3. Add a behavioral test that exercises the Check 3 diagnostic path — e.g., copy the script into a temporary non-git directory and assert the rev-parse preflight fails, or use a fixture .gitignore to trigger the DIAGNOSTIC: output.\n\nSource: review suggestions from task 1325 (esc-1325-49)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:57:12.558Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:57:12.225Z",
+      "lastModified": "2026-04-09T19:57:12.558Z",
       "taskCount": 1360,
       "completedCount": 1029,
       "tags": [
