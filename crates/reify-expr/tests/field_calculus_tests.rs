@@ -528,6 +528,93 @@ fn curl_rotation_field() {
     );
 }
 
+/// Same as `curl_rotation_field` but the sample point is
+/// supplied as `Value::Vector` instead of `Value::Point`.
+/// Prior to the fix this returns `Value::Undef` because
+/// `compute_numerical_curl_at_point` only matched `Value::Point`.
+#[test]
+fn curl_accepts_vector_sample_point() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(-y, x, 0)
+    let neg_y = CompiledExpr::unop(
+        UnOp::Neg,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = make_function_call(
+        "vec3",
+        vec![
+            neg_y,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    // sample(curl_field, Vector3(1.0, 2.0, 3.0))  ← Vector, not Point
+    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3(0.0, 0.0, 2.0)
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 2.0],
+        1e-3,
+        "curl of [-y,x,0] at Vector(1,2,3)",
+    );
+}
+
 // ── Step 4: Laplacian test ────────────────────────────────────────────────────
 
 /// Laplacian of f(x,y,z)=x²+y²+z² at (1,2,3) ≈ 6.0.
