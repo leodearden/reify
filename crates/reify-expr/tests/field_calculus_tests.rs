@@ -2592,3 +2592,600 @@ fn laplacian_1d_quadratic_accuracy() {
         val
     );
 }
+
+// ── Step 9: Mixed-dim divergence fallback tests ───────────────────────────────
+
+/// Divergence of Point{3, Real} → Vector{3, Scalar<Length>}: the domain is
+/// dimensionless (Real), so the unified preserve-codomain strategy should
+/// preserve the Vector's component type (Scalar<Length>) as the result codomain.
+///
+/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+#[test]
+fn divergence_real_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let component_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::vec3(component_type.clone());
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Real}}→Vector{{3,Length}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            component_type,
+            "divergence of Point{{3,Real}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Divergence of Point{3, Scalar<Length>} → Vector{3, Real}: the codomain
+/// component is dimensionless (Real), so the result codomain is Real.
+///
+/// Under the unified preserve-codomain strategy this coincides with the current
+/// fallback, but this test documents the intended behavior explicitly.
+#[test]
+fn divergence_dim_domain_preserves_real_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain_type = Type::point3(domain_quantity);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Length}}→Vector{{3,Real}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "divergence of Point{{3,Length}}→Vector{{3,Real}} should preserve codomain Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Divergence of Point{3, Int} → Vector{3, Scalar<Length>}: Int is treated as
+/// dimensionless, so the unified preserve-codomain strategy preserves Scalar<Length>.
+///
+/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+#[test]
+fn divergence_int_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Int);
+    let component_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::vec3(component_type.clone());
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Int}}→Vector{{3,Length}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            component_type,
+            "divergence of Point{{3,Int}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+// ── Step 10: Mixed-dim laplacian fallback tests ───────────────────────────────
+
+/// Laplacian of Point{3, Real} → Scalar<Length>: domain is dimensionless (Real),
+/// so the preserve-codomain strategy preserves Scalar<Length> unchanged.
+///
+/// This already coincides with the current `_ => codomain_type.clone()` fallback,
+/// but documents the intended behavior under the unified strategy.
+#[test]
+fn laplacian_real_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Real}}→Scalar<Length> should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+            "laplacian of Point{{3,Real}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Laplacian of Point{3, Scalar<Length>} → Real: codomain is dimensionless (Real),
+/// so the result codomain is Real.
+///
+/// This already coincides with the current fallback but documents intended behavior.
+#[test]
+fn laplacian_dim_domain_preserves_real_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain_type = Type::point3(domain_quantity);
+    let codomain_type = Type::Real;
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Length}}→Real should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "laplacian of Point{{3,Length}}→Real should preserve codomain Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Laplacian of Point{3, Scalar<Length>} → Scalar{DIMENSIONLESS}: the codomain is
+/// explicitly dimensionless, so the result should be downgraded to Type::Real.
+///
+/// The current fallback (`_ => codomain_type.clone()`) returns Scalar{DIMENSIONLESS}
+/// instead of Real — this test exposes that bug.
+#[test]
+fn laplacian_explicit_dimensionless_scalar_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain_type = Type::point3(domain_quantity);
+    // Explicitly-dimensionless Scalar (not Type::Real, but Scalar<DIMENSIONLESS>).
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Length}}→Scalar{{DIMENSIONLESS}} should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "laplacian of Point{{3,Length}}→Scalar{{DIMENSIONLESS}} should downgrade codomain to Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Laplacian of Point{3, Int} → Scalar<Length>: Int is treated as dimensionless,
+/// so the preserve-codomain strategy preserves Scalar<Length>.
+///
+/// This already coincides with the current fallback but documents intended behavior.
+#[test]
+fn laplacian_int_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Int);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Int}}→Scalar<Length> should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+            "laplacian of Point{{3,Int}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+// ── Step 11: Mixed-dim gradient fallback tests ────────────────────────────────
+
+/// Gradient of Point{3, Real} → Scalar<Length>: domain is dimensionless (Real),
+/// so the preserve-codomain strategy returns Vector{3, Scalar<Length>}.
+///
+/// Gradient already handles this correctly via its fallback arm.
+/// This test documents the behavior and serves as a regression guard.
+#[test]
+fn gradient_real_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Point{{3,Real}}→Scalar<Length> should return a Field, got {:?}",
+        grad_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        let expected = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        };
+        assert_eq!(
+            *codomain_type,
+            expected,
+            "gradient of Point{{3,Real}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Gradient of Point{3, Int} → Scalar<Length>: Int is treated as dimensionless,
+/// so the preserve-codomain strategy returns Vector{3, Scalar<Length>}.
+///
+/// Gradient already handles this correctly via its fallback arm.
+/// This test documents the behavior and serves as a regression guard.
+#[test]
+fn gradient_int_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Int);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Point{{3,Int}}→Scalar<Length> should return a Field, got {:?}",
+        grad_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        let expected = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        };
+        assert_eq!(
+            *codomain_type,
+            expected,
+            "gradient of Point{{3,Int}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
+            codomain_type
+        );
+    }
+}
