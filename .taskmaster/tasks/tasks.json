@@ -10884,8 +10884,8 @@
             "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-eval/src"
+            "crates/reify-compiler",
+            "crates/reify-eval"
           ]
         }
       },
