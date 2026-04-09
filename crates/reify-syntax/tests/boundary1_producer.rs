@@ -294,6 +294,63 @@ fn parse_mixed_auto_and_normal_params() {
     assert!(z.default.is_none());
 }
 
+/// Structure with both bare `auto` and `auto(free)` params produces correct flags.
+#[test]
+fn parse_mixed_auto_and_auto_free() {
+    let source = r#"structure S {
+    param a: Scalar = auto
+    param b: Scalar = auto(free)
+    param c: Scalar = 5mm
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    assert_eq!(structure.members.len(), 3);
+
+    // a: bare auto → free: false
+    let a = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(a.name, "a");
+    assert!(
+        matches!(a.default.as_ref().unwrap().kind, ExprKind::Auto { free: false }),
+        "expected Auto {{ free: false }}, got {:?}",
+        a.default.as_ref().unwrap().kind
+    );
+
+    // b: auto(free) → free: true
+    let b = match &structure.members[1] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(b.name, "b");
+    assert!(
+        matches!(b.default.as_ref().unwrap().kind, ExprKind::Auto { free: true }),
+        "expected Auto {{ free: true }}, got {:?}",
+        b.default.as_ref().unwrap().kind
+    );
+
+    // c: QuantityLiteral
+    let c = match &structure.members[2] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+    assert_eq!(c.name, "c");
+    assert!(matches!(
+        c.default.as_ref().unwrap().kind,
+        ExprKind::QuantityLiteral { .. }
+    ));
+}
+
 /// Line comment with `//` on its own line should parse without errors.
 #[test]
 fn parse_line_comment_double_slash() {
