@@ -783,6 +783,18 @@ mod completion_items_tests {
             items[0]["label"]
         );
     }
+
+    #[test]
+    fn completion_items_extracts_from_list_response() {
+        let val = json!({"isIncomplete": false, "items": [{"label": "bar"}]});
+        let items = completion_items(&val);
+        assert_eq!(items.len(), 1, "expected one item, got {}", items.len());
+        assert_eq!(
+            items[0]["label"], "bar",
+            "first item label should be 'bar', got: {}",
+            items[0]["label"]
+        );
+    }
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
