@@ -1803,18 +1803,46 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
 
 // --- Task 899: resolve_source precondition test ---
 
-/// resolve_source panics (via debug_assert) when called without a loaded module.
+/// resolve_source returns None when called without a loaded module.
 ///
-/// The debug_assert!(self.compiled.is_some()) in resolve_source is the contract
-/// guard — this test verifies it fires when the precondition is violated.
-#[cfg(debug_assertions)]
+/// After the Option refactor, resolve_source gracefully returns None when compiled
+/// is None rather than panicking via debug_assert.
 #[test]
-#[should_panic(expected = "compiled")]
-fn resolve_source_panics_without_loaded_module() {
+fn resolve_source_returns_none_without_loaded_module() {
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
-    // No load — compiled is None. debug_assert should fire.
-    let _ = session.resolve_source_for_test();
+    // No load — compiled is None. resolve_source should return None gracefully.
+    assert_eq!(session.resolve_source_for_test(), None);
+}
+
+/// resolve_source returns None when module_name has been cleared (broken invariant).
+///
+/// After the Option refactor, resolve_source gracefully returns None instead of
+/// panicking via expect() when module_name is None.
+#[test]
+fn resolve_source_returns_none_when_module_name_broken() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    session.break_module_name_for_test();
+    assert_eq!(session.resolve_source_for_test(), None);
+}
+
+/// resolve_source returns None when source_map has been cleared (broken invariant).
+///
+/// After the Option refactor, resolve_source gracefully returns None instead of
+/// panicking via expect() when source_map.get_key_value returns None.
+#[test]
+fn resolve_source_returns_none_when_source_map_broken() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    session.break_source_map_for_test();
+    assert_eq!(session.resolve_source_for_test(), None);
 }
 
 // --- Task 899: module_key unit tests ---
@@ -1904,18 +1932,15 @@ fn resolve_source_returns_key_and_source_after_load() {
 // --- Task 1194: invariant regression test ---
 
 /// Calling get_diagnostics when module_name has been cleared (while compiled
-/// remains Some) must panic, because resolve_source hits the unconditional
-/// expect() on module_name (line ~252 in engine.rs).
+/// remains Some) returns an empty vec.
 ///
-/// break_module_name_for_test deliberately violates the invariant so that
-/// this test can verify the panic guard fires reliably in all build configs.
+/// After the Option refactor, resolve_source returns None instead of panicking
+/// when module_name is None, so get_diagnostics gracefully returns an empty vec.
 ///
-/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
-/// so we inject a synthetic diagnostic after breaking the invariant to ensure
-/// resolve_source is still reached and the panic guard fires.
+/// NOTE: get_diagnostics early-exits when diagnostics is empty, so we inject a
+/// synthetic diagnostic to ensure resolve_source is actually reached.
 #[test]
-#[should_panic(expected = "module_name is None")]
-fn get_diagnostics_panics_on_broken_module_name() {
+fn get_diagnostics_returns_empty_when_module_name_broken() {
     use reify_types::Diagnostic;
 
     let checker = SimpleConstraintChecker;
@@ -1926,26 +1951,28 @@ fn get_diagnostics_panics_on_broken_module_name() {
     // Deliberately break the invariant: compiled is Some, module_name is None.
     session.break_module_name_for_test();
     // Inject a diagnostic so the early-exit branch is skipped and resolve_source
-    // is reached — which must panic with "module_name is None".
-    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
-    let _ = session.get_diagnostics();
+    // is reached — which must return None, causing get_diagnostics to return [].
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-none"));
+    let diags = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "expected empty diagnostics when module_name is broken, got: {:?}",
+        diags
+    );
 }
 
-// --- Task 1212: source_map panic guard test ---
+// --- Task 1212: source_map graceful fallback test ---
 
 /// Calling get_diagnostics when source_map has been cleared (while compiled
-/// and module_name remain Some) must panic, because resolve_source hits the
-/// unconditional expect() on source_map.get_key_value().
+/// and module_name remain Some) returns an empty vec.
 ///
-/// break_source_map_for_test deliberately violates the invariant so that
-/// this test can verify the panic guard fires reliably in all build configs.
+/// After the Option refactor, resolve_source returns None instead of panicking
+/// when source_map.get_key_value returns None, so get_diagnostics returns [].
 ///
-/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
-/// so we inject a synthetic diagnostic after breaking the invariant to ensure
-/// resolve_source is still reached and the panic guard fires.
+/// NOTE: get_diagnostics early-exits when diagnostics is empty, so we inject a
+/// synthetic diagnostic to ensure resolve_source is actually reached.
 #[test]
-#[should_panic(expected = "source_map missing key")]
-fn get_diagnostics_panics_on_broken_source_map() {
+fn get_diagnostics_returns_empty_when_source_map_broken() {
     use reify_types::Diagnostic;
 
     let checker = SimpleConstraintChecker;
@@ -1956,25 +1983,27 @@ fn get_diagnostics_panics_on_broken_source_map() {
     // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
     session.break_source_map_for_test();
     // Inject a diagnostic so the early-exit branch is skipped and resolve_source
-    // is reached — which must panic with "source_map missing key".
-    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
-    let _ = session.get_diagnostics();
+    // is reached — which must return None, causing get_diagnostics to return [].
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-none"));
+    let diags = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "expected empty diagnostics when source_map is broken, got: {:?}",
+        diags
+    );
 }
 
-// --- Task 1225: resolve_source panic contract via real warning source ---
+// --- Task 1225: resolve_source graceful fallback via real warning source ---
 
 /// Calling get_diagnostics when module_name has been cleared (while compiled
-/// remains Some) must panic via the unconditional expect() in resolve_source.
+/// remains Some) returns an empty vec.
 ///
-/// Unlike get_diagnostics_panics_on_broken_module_name (Task 1194), this test
+/// Unlike get_diagnostics_returns_empty_when_module_name_broken above, this test
 /// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
-/// This pins the panic contract on the user-visible failure mode: real source
-/// that the compiler emits warnings for, with a deliberately broken invariant.
-/// If a future refactor removes the inject_diagnostic_for_test helper or changes
-/// injection semantics, this test continues to pin the contract independently.
+/// This pins the graceful-return behavior on the user-visible failure mode: real
+/// source that the compiler emits warnings for, with a deliberately broken invariant.
 #[test]
-#[should_panic(expected = "module_name is None")]
-fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
+fn get_diagnostics_returns_empty_when_module_name_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
@@ -1989,22 +2018,25 @@ fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
     // Deliberately break the invariant: compiled is Some, module_name is None.
     // compiled.diagnostics is non-empty (real warning), so the early-exit in
     // get_diagnostics is skipped and resolve_source is reached — which must
-    // panic with "module_name is None".
+    // return None, causing get_diagnostics to return [].
     session.break_module_name_for_test();
-    let _ = session.get_diagnostics();
+    let diags = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "expected empty diagnostics when module_name is broken, got: {:?}",
+        diags
+    );
 }
 
 /// Calling get_diagnostics when source_map has been cleared (while compiled
-/// and module_name remain Some) must panic via the unconditional expect() in
-/// resolve_source on source_map.get_key_value().
+/// and module_name remain Some) returns an empty vec.
 ///
-/// Unlike get_diagnostics_panics_on_broken_source_map (Task 1212), this test
+/// Unlike get_diagnostics_returns_empty_when_source_map_broken above, this test
 /// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
-/// This pins the panic contract on the user-visible failure mode and removes
-/// coupling to the test injection helper — complementary, not duplicative.
+/// This pins the graceful-return behavior on the user-visible failure mode and
+/// removes coupling to the test injection helper — complementary, not duplicative.
 #[test]
-#[should_panic(expected = "source_map missing key")]
-fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
+fn get_diagnostics_returns_empty_when_source_map_broken_with_real_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
@@ -2017,10 +2049,15 @@ fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
 
     // Deliberately break the invariant: compiled and module_name are Some,
     // source_map is empty. compiled.diagnostics is non-empty (real warning), so
-    // the early-exit in get_diagnostics is skipped, module_name.as_deref()
-    // succeeds, and source_map.get_key_value(&key).expect(…) fires.
+    // the early-exit in get_diagnostics is skipped, but resolve_source returns
+    // None — causing get_diagnostics to return [].
     session.break_source_map_for_test();
-    let _ = session.get_diagnostics();
+    let diags = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "expected empty diagnostics when source_map is broken, got: {:?}",
+        diags
+    );
 }
 
 // --- Task 1212: update_source path test ---
@@ -2040,7 +2077,7 @@ fn resolve_source_returns_updated_content_after_update_source() {
     // Baseline: resolve_source reflects the initial load.
     assert_eq!(
         session.resolve_source_for_test(),
-        ("bracket.ri", bracket_source()),
+        Some(("bracket.ri", bracket_source())),
     );
     // Update the source with modified content (different width parameter).
     let updated = bracket_source_with_width("120mm");
@@ -2050,6 +2087,45 @@ fn resolve_source_returns_updated_content_after_update_source() {
     // After update: key stays the same, content is the new text.
     assert_eq!(
         session.resolve_source_for_test(),
-        ("bracket.ri", updated.as_str()),
+        Some(("bracket.ri", updated.as_str())),
+    );
+}
+
+/// get_source_location returns the updated file_path after update_source changes the module name.
+///
+/// After load_from_source with 'initial' then update_source("updated.ri", ...),
+/// get_source_location must use the new module name key "updated.ri" for the file_path,
+/// not the stale "initial.ri". Fills test-analyst gap S11.
+#[test]
+fn get_source_location_file_key_updates_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Load with a warning-producing source that has an S.width parameter.
+    session
+        .load_from_source(warn_source_with_unknown_port_type_with_width(), "initial")
+        .expect("initial load should succeed");
+
+    // Verify the baseline: file_path reflects the initial module name.
+    let loc_before = session
+        .get_source_location("S.width")
+        .expect("S.width should be found after initial load");
+    assert_eq!(
+        loc_before.file_path, "initial.ri",
+        "before update: file_path should be 'initial.ri'"
+    );
+
+    // Update with the same source but a different module name.
+    session
+        .update_source("updated.ri", warn_source_with_unknown_port_type_with_width())
+        .expect("update_source should succeed");
+
+    // After update: file_path must reflect the new module name "updated".
+    let loc_after = session
+        .get_source_location("S.width")
+        .expect("S.width should be found after update_source");
+    assert_eq!(
+        loc_after.file_path, "updated.ri",
+        "after update_source: file_path should be 'updated.ri', not 'initial.ri'"
     );
 }
