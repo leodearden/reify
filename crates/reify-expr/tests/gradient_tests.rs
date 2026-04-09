@@ -3838,72 +3838,24 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
 /// arithmetic like `Real * Scalar<LENGTH>` returns `Scalar<LENGTH>` regardless of
 /// the declared codomain — the codomain_type is metadata, not a runtime constraint.
 ///
-/// Setup:
-/// - domain_type = Type::length() = Scalar{LENGTH}
-/// - codomain_type = Type::Scalar { dimension: MASS } (declared mass)
-/// - lambda body: |x| 2*x — at runtime receives Scalar{LENGTH}, returns Scalar{LENGTH}
-///   (not MASS as declared)
-///
-/// Expected: gradient codomain_type = Scalar{MASS/LENGTH} (trusts declaration,
-/// not the runtime Scalar{LENGTH} the lambda actually returns).
+/// Setup: see `make_dimensioned_domain_mismatch_gradient`.
+/// Expected: gradient codomain_type = Scalar{MASS/LENGTH} (trusts declaration).
 /// This is a structural test — no sampling is performed.
 #[test]
 fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let dim_kg = DimensionVector::MASS;
-
-    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH},
-    // NOT Scalar{MASS} as codomain_type declares.
-    let body = CompiledExpr::binop(
-        BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::length()),
-        Type::length(),
-    );
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
-    let domain_type = Type::length();
-    let codomain_type = Type::Scalar { dimension: dim_kg };
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::length()),
-            codomain: Box::new(codomain_type.clone()),
-        },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+    let (grad_result, _domain_type, grad_codomain_type) =
+        make_dimensioned_domain_mismatch_gradient();
 
     // The gradient field's codomain_type must be Scalar{MASS/LENGTH} — derived from
     // the declared codomain (MASS) divided by the domain dimension (LENGTH).
     // This demonstrates trust-the-declaration: the runtime Scalar{LENGTH} returned
     // by the lambda is ignored; the declared MASS drives the gradient dimension.
-    let expected_codomain = Type::Scalar {
-        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
-    };
     match &grad_result {
         Value::Field {
             codomain_type: ct, ..
         } => {
             assert_eq!(
-                ct, &expected_codomain,
+                ct, &grad_codomain_type,
                 "gradient codomain_type should be Scalar[MASS/LENGTH] (trusts declaration), got {:?}",
                 ct
             );
