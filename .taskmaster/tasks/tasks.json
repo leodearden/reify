@@ -27431,11 +27431,11 @@
         "description": "Review suggestions S1+S6 from task 1039 review. In tree-sitter-reify/tests/build_logic_tests.rs, `find_bare_self_path_violations` (lines 897-908) is an almost-verbatim copy of `find_bare_build_rs_violations` (lines 867-877); the only difference is the needle strings, and the doc-comments explicitly acknowledge the parallel. Any future change (multi-line awareness, comment-stripping refinement, raw-string handling) must be made in two places.\n\nAdditionally, both helpers currently miss raw-string literals — `r\"tests/build_logic_tests.rs\"` or `r#\"tests/build_logic_tests.rs\"#` would compile, perform a bare relative read, and escape the guard. `test_find_bare_self_path_violations` has no coverage for the raw-string case.\n\nRequired changes:\n1. Extract a shared helper `fn find_bare_path_violations<'a>(source: &'a str, needles: &[&str]) -> Vec<(usize, &'a str)>`; rewrite the two existing functions as thin wrappers that pass their needle arrays. Keep the public call sites unchanged.\n2. Either (a) extend the helper to also match `r\"...\"` / `r#\"...\"#` raw-string forms for each needle, OR (b) add an explicit negative test in `test_find_bare_self_path_violations` that documents the known raw-string gap so future contributors know it is out of scope. Prefer (a) if the unit-test cost is small.\n3. Verify: `cargo test -p tree-sitter-reify test_find_bare_self_path_violations test_find_bare_build_rs_violations test_self_read_paths_use_manifest_dir`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:12:54.182Z",
+        "updatedAt": "2026-04-09T19:09:03.333Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests/build_logic_tests.rs"
@@ -27808,9 +27808,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:07:48.497Z",
+      "lastModified": "2026-04-09T19:09:03.333Z",
       "taskCount": 1339,
-      "completedCount": 1012,
+      "completedCount": 1013,
       "tags": [
         "master"
       ]
