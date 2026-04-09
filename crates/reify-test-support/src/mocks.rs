@@ -2097,4 +2097,54 @@ mod tests {
         });
         assert_eq!(result.len(), 4, "all 4 scoped threads should complete");
     }
+
+    // step-1: failing tests for FailingMockGeometryKernel (struct not yet defined)
+    #[test]
+    fn failing_kernel_execute_returns_err() {
+        let mut kernel = FailingMockGeometryKernel;
+        let op = GeometryOp::Box {
+            width: Value::length(0.08),
+            height: Value::length(0.1),
+            depth: Value::length(0.005),
+        };
+        let result = kernel.execute(&op);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GeometryError::OperationFailed(ref msg) if msg.contains("simulated kernel failure")),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn failing_kernel_query_returns_ok_real_zero() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.query(&GeometryQuery::Volume(id));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Value::Real(0.0));
+    }
+
+    #[test]
+    fn failing_kernel_export_writes_bogus_export() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let mut buf: Vec<u8> = Vec::new();
+        let result = kernel.export(id, ExportFormat::Step, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(&buf, b"BOGUS_EXPORT");
+    }
+
+    #[test]
+    fn failing_kernel_tessellate_returns_ok_empty_mesh() {
+        let kernel = FailingMockGeometryKernel;
+        let id = GeometryHandleId(1);
+        let result = kernel.tessellate(id, 0.01);
+        assert!(result.is_ok());
+        let mesh = result.unwrap();
+        assert!(mesh.vertices.is_empty());
+        assert!(mesh.indices.is_empty());
+        assert!(mesh.normals.is_none());
+    }
 }
