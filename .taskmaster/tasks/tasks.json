@@ -7075,9 +7075,15 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
+            "examples",
             "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/pattern_composition.ri",
+            "examples/large_assembly.ri",
+            "crates/reify-eval/tests/stress_error_messages.rs"
+          ]
         },
         "subtasks": [],
         "details": "Two tests: (1) patterns — pattern of patterns, count=0/1, 10×10 grid, pattern+union_all; (2) large_assembly — 50+ structures with geometry+material+ports, computed mass propagation, simulation_ready purpose. Target: <5s eval.",
@@ -7485,11 +7491,11 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/src/ty.rs"
+            "crates/reify-types/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-types/src"
+            "crates/reify-compiler",
+            "crates/reify-types"
           ]
         }
       },
