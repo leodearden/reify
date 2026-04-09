@@ -158,5 +158,14 @@ THIS_FILE="${BASH_SOURCE[0]}"
 assert "t2_rc dead variable removed" \
     bash -c "! grep -qE 't2_rc=[0\$]' '$THIS_FILE'"
 
+assert "trap cleanup EXIT is registered" \
+    bash -c "grep -Eq '^trap cleanup EXIT' '$THIS_FILE'"
+
+assert "_TMPDIRS array is declared" \
+    bash -c "grep -Eq '^_TMPDIRS=\(\)' '$THIS_FILE'"
+
+assert "cleanup() function defined" \
+    bash -c "grep -Eq '^cleanup\(\) \{' '$THIS_FILE'"
+
 # -- Summary --------------------------------------------------------------------
 test_summary
