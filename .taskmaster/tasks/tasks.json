@@ -18047,10 +18047,16 @@
         "updatedAt": "2026-04-03T23:36:54.192Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-lsp",
             "crates/reify-stdlib",
+            "crates/reify-expr/tests",
+            "crates/reify-lsp",
             "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-stdlib/src/lib.rs",
+            "crates/reify-expr/tests/complex_eval_tests.rs",
+            "crates/reify-lsp/src/completion.rs",
+            "crates/reify-types/src/value.rs"
           ]
         }
       },
@@ -18068,7 +18074,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs"
           ]
         }
       },
