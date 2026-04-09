@@ -28342,11 +28342,16 @@
         "description": "The tests in crates/reify-eval/tests/e2e_meta.rs (around line 412) use \"meta\" as a broad substring needle for two distinct error conditions: missing key and no meta block. Replace with more specific needles that distinguish the two error paths to prevent false greens.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:06:19.151Z"
+        "updatedAt": "2026-04-09T21:07:43.430Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "1371",
@@ -28411,7 +28416,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:07:37.060Z",
+      "lastModified": "2026-04-09T21:07:43.430Z",
       "taskCount": 1375,
       "completedCount": 1050,
       "tags": [
