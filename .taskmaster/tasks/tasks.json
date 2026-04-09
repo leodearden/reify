@@ -24562,7 +24562,10 @@
         "updatedAt": "2026-04-08T22:58:46.475Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
           ]
         }
       },
