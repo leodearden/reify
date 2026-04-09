@@ -23060,7 +23060,7 @@
             "crates/reify-types/src/value.rs"
           ],
           "modules": [
-            "crates/reify-types/src"
+            "crates/reify-types"
           ]
         }
       },
