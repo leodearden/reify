@@ -1180,6 +1180,15 @@ mod tests {
         }
     }
 
+    /// Constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Reduces boilerplate in tests that use all-fixed line segments.
+    fn fixed_line(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> LineRef {
+        LineRef {
+            start: PointRef::Fixed { x: x0, y: y0, z: z0 },
+            end: PointRef::Fixed { x: x1, y: y1, z: z1 },
+        }
+    }
+
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
     /// Shared by the three add_auto_coord tests that need a standard single-param setup.
     fn auto_params_for(cell_id: &ValueCellId) -> Vec<AutoParam> {
