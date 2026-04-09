@@ -566,5 +566,21 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         exit "$_check_rc"
     '
 
+# -- Test 22: structural: post-wait orphan cleanup uses SIGKILL not SIGTERM ---
+echo ""
+echo "--- Test 22: post-wait orphan cleanup uses SIGKILL not SIGTERM ---"
+
+# After the timer escalates to SIGKILL because the command ignored SIGTERM,
+# the post-wait orphan cleanup (line 149) must also use SIGKILL.  Sending
+# SIGTERM at that point is internally inconsistent — the whole reason we
+# reached this code path is that SIGTERM was ineffective.  The '|| true'
+# suffix is unique to this line, distinguishing it from the timer subshell
+# SIGKILL lines.
+assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)" \
+    grep -qF 'kill -9 -- -$cmd_pid 2>/dev/null || true' "$LIB_PORTABLE"
+
+assert "no remaining line sends SIGTERM (plain kill) to the command process group" \
+    bash -c '! grep -qF "kill -- -\$cmd_pid 2>/dev/null || true" "$1"' _ "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
