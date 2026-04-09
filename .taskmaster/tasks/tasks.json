@@ -16371,7 +16371,8 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/units.rs"
           ],
           "modules": [
             "crates/reify-compiler"
@@ -16413,8 +16414,12 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler",
-            "crates/reify-lsp",
             "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-types/src/diagnostics.rs"
           ]
         }
       },
