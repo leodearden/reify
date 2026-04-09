@@ -23760,7 +23760,7 @@
         "description": "self_keyword_tests.rs jumps from step-8 to step-11 (steps 9-10 missing). Additionally, there is no test for `self` inside a lambda/closure defined within an entity body. Since `is_entity_scope` is inherited through the scope reference, `self` would resolve inside lambdas — a test should verify whether this is intended behavior or should be rejected.\n\nFix: Add tests for (a) `self` inside inline closures/lambdas within entity scope, and (b) whatever steps 9-10 were meant to cover (or renumber if intentionally skipped).\n\nmemory_hints: search \"self keyword lambda closure scope\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -23771,7 +23771,8 @@
           "modules": [
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T19:26:36.240Z"
       },
       {
         "id": "1128",
@@ -27924,7 +27925,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:26:35.134Z",
+      "lastModified": "2026-04-09T19:26:36.240Z",
       "taskCount": 1344,
       "completedCount": 1020,
       "tags": [
