@@ -28748,11 +28748,11 @@
         "description": "Three related follow-ups from Task 973 review to tighten PartialEq↔Ord contract coverage via the assert_ord_consistent helper in crates/reify-types/src/value.rs:\n\n(1) value_ord_real_negative_nan (around line 2744): add `assert_ord_consistent(&neg_qnan, &pos_qnan, false);` at the end so the cross-sign NaN pair runs the full two-sided helper (currently only covered by the (neg_qnan, neg_inf) helper call plus manual cmp/antisymmetry assertions).\n\n(2) value_ord_real_signaling_nan (around line 2748): add `assert_ord_consistent(&neg_snan, &neg_inf, false);` and `assert_ord_consistent(&pos_snan, &pos_qnan, false);` so every ordering claim in the test — in particular the single most interesting negative-side sNaN boundary (neg_snan < neg_inf) and the pos_snan < pos_qnan boundary — is exercised through the two-sided helper.\n\n(3) value_ord_real_negative_zero (around line 2480): replace the manual pos_cmp_neg / neg_cmp_pos / antisymmetry / assert!(neg < pos) / assert_eq!(pos.cmp(&neg), Greater) block with a single `assert_ord_consistent(&neg, &pos, false);` call, for consistency with the rest of the module. The `assert_ne!(pos, neg)` PartialEq check above can stay or be subsumed by the helper.\n\nAll three are pure test cleanups — no production code changes. Verify with `cargo test -p reify-types value_ord_real_`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:23:02.362Z",
+        "updatedAt": "2026-04-09T22:25:58.925Z",
         "metadata": {
           "modules": [
             "crates/reify-types/src"
@@ -28856,7 +28856,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:25:58.222Z",
+      "lastModified": "2026-04-09T22:25:58.925Z",
       "taskCount": 1397,
       "completedCount": 1073,
       "tags": [
