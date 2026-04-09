@@ -384,5 +384,15 @@ echo "--- Test 20: portable_timeout header documents SIGTERM-only termination --
 assert "portable_timeout header documents SIGTERM-only termination" \
     grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
 
+# -- Test 21: structural: header gives caller guidance for SIGKILL escalation --
+echo ""
+echo "--- Test 21: portable_timeout header gives caller guidance for SIGKILL escalation ---"
+
+# S3 requires that the portable_timeout header comment extends the existing
+# 'caller is responsible' sentence with actionable how-to guidance so readers
+# know concretely what to do when the wrapped command ignores SIGTERM.
+assert "portable_timeout header contains caller guidance for SIGKILL escalation" \
+    grep -qiE 'caller.*wrap|process liveness|callers.*SIGKILL' "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
