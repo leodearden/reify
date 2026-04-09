@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::{ReifyToolContext, SelectionInfo};
-use reify_test_support::{MockGeometryKernel, bracket_source};
+use reify_test_support::{MockGeometryKernel, bracket_source, warning_source};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
@@ -564,11 +564,7 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warning_source();
 
     let ctx = make_tauri_context_with_source(source, "test_warn");
     let diags = ctx
@@ -616,10 +612,22 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     // so end_column = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column
     // 6 is the exclusive one-past position.) This is a multi-line span, so the former
     // `if end_line == line` same-line guard was always false for this fixture.
-    assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
-    assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
-    assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
-    assert_eq!(first.end_column, 6, "exclusive end byte past `}}` maps to column 6 (chars().count() + 1)");
+    assert_eq!(
+        first.line, 2,
+        "`port` keyword starts at line 2 of the fixture"
+    );
+    assert_eq!(
+        first.column, 5,
+        "`port` keyword starts at column 5 (1-indexed)"
+    );
+    assert_eq!(
+        first.end_line, 4,
+        "closing `}}` of port body ends at line 4 of the fixture"
+    );
+    assert_eq!(
+        first.end_column, 6,
+        "exclusive end byte past `}}` maps to column 6 (chars().count() + 1)"
+    );
 
     // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");

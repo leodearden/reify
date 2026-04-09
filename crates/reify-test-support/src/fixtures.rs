@@ -893,6 +893,8 @@ pub fn annotated_module() -> CompiledModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_compiler::ValueCellKind;
+    use reify_types::Severity;
 
     #[test]
     fn bracket_parsed_module_structure() {
@@ -1249,7 +1251,7 @@ mod tests {
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
     fn assert_warning_source_compiles_with_unknown_port_warning(
         source: &str,
-    ) -> reify_compiler::CompiledModule {
+    ) -> CompiledModule {
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1261,7 +1263,7 @@ mod tests {
         let errors: Vec<_> = compiled
             .diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
@@ -1269,7 +1271,7 @@ mod tests {
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == reify_types::Severity::Warning
+                d.severity == Severity::Warning
                     && d.message.contains("unknown port type")
                     && d.message.contains("NonExistentTrait")
             })
@@ -1290,22 +1292,56 @@ mod tests {
     }
 
     #[test]
-    fn warning_source_with_width_compiles_and_has_width_value_cell() {
+    fn warning_source_with_width_produces_length_typed_width_cell_with_span() {
+        let source = warning_source_with_width();
         let compiled =
-            assert_warning_source_compiles_with_unknown_port_warning(warning_source_with_width());
+            assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
             .templates
             .iter()
             .find(|t| t.name == "S")
             .expect("expected S template in compiled module");
+        let width_cell = s_template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "width")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected S template to have a value_cell with member 'width', got: {:?}",
+                    s_template
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            width_cell.cell_type,
+            Type::length(),
+            "expected width cell to be Length-typed (Scalar{{dimension=LENGTH}}), got: {:?}",
+            width_cell.cell_type
+        );
+        let span_text =
+            &source[width_cell.span.start as usize..width_cell.span.end as usize];
+        assert_eq!(
+            span_text,
+            "param width : Length = 80mm",
+            "expected width cell span to cover the full `param width : Length = 80mm` \
+             declaration (bytes 22..49 in warning_source_with_width()), \
+             got span {:?} covering {:?}",
+            width_cell.span,
+            span_text,
+        );
         assert!(
-            s_template.value_cells.iter().any(|vc| vc.id.member == "width"),
-            "expected S template to have a value_cell with member 'width', got: {:?}",
-            s_template
-                .value_cells
-                .iter()
-                .map(|vc| &vc.id.member)
-                .collect::<Vec<_>>()
+            matches!(width_cell.kind, ValueCellKind::Param),
+            "expected width cell to be ValueCellKind::Param \
+             (from `param width : Length = 80mm`), got: {:?}",
+            width_cell.kind,
+        );
+        assert!(
+            width_cell.default_expr.is_some(),
+            "expected width cell to have a default expression (from `= 80mm`), \
+             got default_expr=None",
         );
     }
 }
