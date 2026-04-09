@@ -24833,15 +24833,16 @@
         "description": "compute_divergence, compute_curl, compute_laplacian, and compute_gradient each independently destructure the Field value, check source kind against Analytical|Composed, validate lambda is callable, then validate domain/codomain types. This is ~40 lines of identical boilerplate per function. The numerical computation functions similarly duplicate coordinate extraction, domain_dim detection, single_point_param detection, make_arg closure, and work buffer setup.\n\nConsider extracting:\n1. A shared `validate_differentiable_field(field_val) -> Option<(domain_type, codomain_type, lambda)>` for the common Field destructuring, source validation, and lambda check\n2. A shared numerical setup helper for the coordinate extraction, domain_dim, single_point_param, make_arg pattern\n\nThis is a refactoring-only change — no behavioral changes expected. Lower priority than the robustness and correctness fixes.\n\nmemory_hints: search \"field operator validation pattern compute_gradient\" for the full pattern",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T01:22:51.407Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:22:50.406Z",
+      "lastModified": "2026-04-09T01:22:51.407Z",
       "taskCount": 1223,
       "completedCount": 907,
       "tags": [
