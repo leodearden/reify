@@ -24489,11 +24489,11 @@
         "description": "Four small follow-up improvements to `crates/reify-lsp/tests/in_process_bridge.rs`, all flagged in the Task 1196 review. They are tightly localized to the helper extracted in 1196 (`assert_shutdown_returns_null`, lines 28-46) and the `shutdown_ignores_unexpected_params` test (lines 652-671), so they are bundled into one task.\n\n1. **Documentation brittleness (line 657).** The doc comment for `shutdown_ignores_unexpected_params` references `bridge.rs lines 177-183` by absolute line number — these will rot the moment a new arm is inserted above shutdown. Replace with a stable anchor such as `the \"shutdown\" arm in bridge::InProcessLsp::handle_request`, or quote the relevant snippet inline. Sweep the rest of the file for any other absolute line-number references and apply the same fix.\n\n2. **Test coverage gap (line 665).** `shutdown_ignores_unexpected_params` only exercises the pre-handshake path (`InProcessLsp::new()`). The doc justification (\"the shutdown arm does not consult initialization state\") is exactly the invariant the test should be guarding — relying on it means a regression that conditionally validates params only after `initialize` would slip through. Add a `shutdown_ignores_unexpected_params_after_initialize` mirror that exercises both payloads against `initialized_lsp().await`. (Alternative: parameterise the helper to run both states; the explicit named tests match the existing four-shutdown-test pattern in this file better.)\n\n3. **Test isolation (line 665).** `shutdown_ignores_unexpected_params` calls `assert_shutdown_returns_null` twice on the same `InProcessLsp` instance. This works today only because `LspServer::shutdown` is a no-op `Ok(())` (server.rs:354). If shutdown ever becomes stateful (e.g. flips an `is_shutdown` flag and rejects subsequent calls, which the LSP spec actually permits), the second assertion will fail for a reason unrelated to params handling, masking the real signal. Construct a fresh `InProcessLsp::new()` for each payload (or split into two `#[tokio::test]` functions). Apply the same isolation to the new post-handshake variant from item 2.\n\n4. **API ergonomics (line 36).** `assert_shutdown_returns_null` takes `params: serde_json::Value` by value and then clones it inside (`params.clone()`) so the original can be reused in the panic/assertion messages. Change the signature to `async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::Value)` and clone once when forwarding to `handle_request`. This makes the helper's intent (it does not consume params) clearer and matches the by-reference style of the sibling `assert_malformed_params_returns_error` helper directly above it. Update all call sites in the four shutdown tests + the new post-handshake variant to pass `&json!(...)`.\n\nVerify with `cargo test -p reify-lsp --test in_process_bridge`.\n\nmemory_hints:\n- search: \"Task 1196 shutdown bridge assert_shutdown_returns_null helper\"\n- entity: \"InProcessLsp\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:08:28.093Z",
+        "updatedAt": "2026-04-09T00:19:11.139Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -24618,9 +24618,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:18:54.124Z",
+      "lastModified": "2026-04-09T00:19:11.139Z",
       "taskCount": 1211,
-      "completedCount": 890,
+      "completedCount": 891,
       "tags": [
         "master"
       ]
