@@ -363,7 +363,19 @@ pub(crate) fn compile_entity(
                         reify_syntax::MemberDecl::Param(param) => {
                             let composite_name = format!("{}.{}", port_decl.name, param.name);
                             let ty = if let Some(type_expr) = &param.type_expr {
-                                resolve_type_name(&type_expr.name).unwrap_or(Type::Real)
+                                resolve_type_name(&type_expr.name).unwrap_or_else(|| {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "unresolved type name '{}' in port parameter",
+                                            type_expr.name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            type_expr.span,
+                                            "unknown type",
+                                        )),
+                                    );
+                                    Type::Real
+                                })
                             } else {
                                 Type::Real
                             };
