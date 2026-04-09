@@ -28170,6 +28170,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1363,
+        "title": "Fix release-mode test coverage gap and DRY String-codomain field test helpers",
+        "description": "Address cfg(not(debug_assertions)) test gap and extract shared helper for duplicated test setup",
+        "details": "1. gradient_of_field_with_non_numeric_lambda_sampling_returns_undef (field_eval_tests.rs:511-558) is gated on #[cfg(not(debug_assertions))] — standard `cargo test` never runs it. Either add a --release CI test job, restructure to avoid cfg-gating, or at minimum add a prominent comment noting the test only runs under `cargo test --release`.\n2. Extract a shared helper `build_string_codomain_grad_expr()` from the three nearly-identical String-codomain Field construction blocks (~50 lines each at lines 467, 513, 569) in field_eval_tests.rs to reduce duplication.\n\nSource: review suggestions from task 1130 (esc-1130-50), items S4+S5",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28182,7 +28193,7 @@
       ],
       "created": "2026-04-09T19:58:11.833Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T19:59:18.367Z"
+      "updated": "2026-04-09T19:59:22.245Z"
     }
   }
 }
