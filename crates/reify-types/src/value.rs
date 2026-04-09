@@ -2616,6 +2616,22 @@ mod tests {
     }
 
     #[test]
+    fn test_assert_ord_consistent_equal_real() {
+        // Meta-test: exercises the to_bits()-based PartialEq and total_cmp()-based
+        // Ord paths through the strengthened helper (including the b.cmp(a) check)
+        // for an equal float pair.
+        assert_ord_consistent(&Value::Real(3.14), &Value::Real(3.14), true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_not_equal_real() {
+        // Meta-test: exercises the total_cmp() ordering and antisymmetry check
+        // for a non-equal float pair. Value::Real(1.0) < Value::Real(2.0) under
+        // total_cmp(), so pass the smaller value first.
+        assert_ord_consistent(&Value::Real(1.0), &Value::Real(2.0), false);
+    }
+
+    #[test]
     fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
         // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
         // for the Scalar variant's bit-identity edge cases.
