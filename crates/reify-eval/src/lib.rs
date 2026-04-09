@@ -3659,16 +3659,15 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let distance =
-                        args.iter()
-                            .find(|(n, _)| n == "distance")
-                            .map(|(_, expr)| {
-                                reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(values, functions)
-                                        .with_meta(meta_map),
-                                )
-                            })?;
+                    let distance = eval_named_arg(
+                        "distance",
+                        kind,
+                        args,
+                        values,
+                        functions,
+                        meta_map,
+                        diagnostics,
+                    )?;
                     let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && *v != 0.0)?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
