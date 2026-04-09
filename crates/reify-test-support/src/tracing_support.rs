@@ -1252,7 +1252,7 @@ mod tests {
 
         // Obtain a fresh counter at 0 — do NOT install the subscriber or emit
         // any warns.  The counter stays at 0.
-        let (_subscriber, counter) = warn_counting_subscriber();
+        let (_subscriber, counter) = warn_counting_subscriber(); // subscriber intentionally unused — we only need the zero-valued counter handle
 
         // Passing before=5 against a counter at 0 is a backwards snapshot.
         // This must panic with "warn counter went backwards"; if it silently
