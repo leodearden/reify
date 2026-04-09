@@ -100,10 +100,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
             );
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp.as_f64().unwrap_or_else(|| {
-                    panic!(
-                        "{label}: component {} should be numeric, got {:?}",
-                        i, comp
-                    )
+                    panic!("{label}: component {} should be numeric, got {:?}", i, comp)
                 });
                 assert!(
                     (val - exp).abs() < tol,
@@ -3001,11 +2998,7 @@ fn gradient_single_point_param_recovery_across_axes() {
     // --- Second sample: Point3(5.0, 7.0, 11.0) → gradient = (10.0, 14.0, 22.0) ---
     // A distinct point confirms the gradient field is reusable and no state from
     // the first sample leaks into the second invocation.
-    let point2 = Value::Point(vec![
-        Value::Real(5.0),
-        Value::Real(7.0),
-        Value::Real(11.0),
-    ]);
+    let point2 = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
 
     let sample_expr2 = make_function_call(
         "sample",
@@ -3638,8 +3631,12 @@ fn gradient_codomain_type_with_dimensioned_domain() {
     let dim_mass = DimensionVector::MASS;
     let dim_mass_per_length = dim_mass.div(&dim_length);
 
-    let scalar_length = Type::Scalar { dimension: dim_length };
-    let scalar_mass = Type::Scalar { dimension: dim_mass };
+    let scalar_length = Type::Scalar {
+        dimension: dim_length,
+    };
+    let scalar_mass = Type::Scalar {
+        dimension: dim_mass,
+    };
     let scalar_mass_per_length = Type::Scalar {
         dimension: dim_mass_per_length,
     };
@@ -3722,7 +3719,10 @@ fn gradient_codomain_type_with_dimensioned_domain() {
 
     // Derivative of 2*x is 2.0. Gradient dimension: MASS/LENGTH.
     match &sample_result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (si_value - 2.0).abs() < 1e-4,
                 "gradient of 2*x at x=1.0m should be ~2.0, got {}",
@@ -3964,8 +3964,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
             codomain_type: ct, ..
         } => {
             assert_eq!(
-                ct,
-                &expected_codomain,
+                ct, &expected_codomain,
                 "gradient codomain_type should be Scalar[MASS/LENGTH] (trusts declaration), got {:?}",
                 ct
             );
@@ -4071,7 +4070,10 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
 
     // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0
     match &sample_result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::MASS.div(&DimensionVector::LENGTH),
