@@ -25135,15 +25135,16 @@
         "description": "Apply four quality improvements to the robustness section of tests/infra/test_test_helpers.sh (lines ~261-327) added by Task 1154:\n\n1. **Stable check descriptions (lines 312-316).** Both branches of the non-underscore ref-guard test currently use different `check` descriptions (\"...should FAIL\" vs \"...guard present → false\"), which makes log grepping inconsistent and the \"should FAIL\" phrasing is misleading inside a runner that prints `FAIL:` for genuine failures. Use a single stable description and let `check` decide PASS/FAIL from a boolean — e.g. `if _check_has_no_ref_guard \"$fixture_guard\"; then ok=false; else ok=true; fi; check \"_check_has_no_ref_guard rejects non-underscore ref variable\" \"$ok\"`.\n\n2. **Trap-based fixture cleanup (lines 295-327).** Three temp fixtures (`fixture`, `fixture_guard`, `fixture_clean`) are removed only on the linear success path, so under `set -euo pipefail` an early failure leaks them. Register cleanup once with `trap`, e.g. `_robust_fixtures=(); cleanup_robust() { rm -f \"${_robust_fixtures[@]}\"; }; trap cleanup_robust EXIT` plus a small `mk_fixture` helper that appends to the array. Collapses three `mktemp`/`rm` blocks and guarantees cleanup on early exit.\n\n3. **Parameterize whitespace-tolerance fixture (line 296).** The `assert_sync_ref_exists` whitespace fixture only covers a single space. Loop over realistic variants the relaxed `\\s*` is meant to admit — at minimum `''`, `' '`, `'  '`, `$'\\t'` — so the relaxed contract is locked in.\n\n4. **Symmetric helper names (lines 261-262).** Rename the file-local helpers from asymmetric `_check_defines_assert_sync_ref_exists` (positive) / `_check_has_no_ref_guard` (negative) to consistent positive form, e.g. `_has_assert_sync_ref_exists` and `_has_ref_guard`, and invert at the call site (`if ! _has_ref_guard \"$SYNC_FILE\"; then ...`). Robustness tests then read more uniformly.\n\nAll four are localized polish in the same robustness section; they should be bundled.\n\nVerification: run `bash tests/infra/test_test_helpers.sh` and confirm 53+ tests pass.\n\nmemory_hints: search(\"test_test_helpers structural checks sync_comments_test robustness\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:29:37.455Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:29:36.133Z",
+      "lastModified": "2026-04-09T02:29:37.455Z",
       "taskCount": 1240,
       "completedCount": 922,
       "tags": [
