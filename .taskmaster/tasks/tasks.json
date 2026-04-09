@@ -20945,7 +20945,7 @@
             "crates/reify-compiler/src/scc.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
@@ -20965,8 +20965,7 @@
             "crates/reify-compiler/src/scc.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler"
           ]
         }
       },
