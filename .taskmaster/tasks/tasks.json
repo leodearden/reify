@@ -24690,11 +24690,11 @@
         "description": "In eval_perturbed_point (crates/reify-expr/src/lib.rs ~line 731), the work_point recovery uses `if let Some(Value::Point(inner)) = work_args.pop()` which silently falls through on mismatch, leaving work_point empty. The debug_assert_eq! on line 735 only fires in debug builds; in release a failed match causes an opaque index-out-of-bounds panic on the next iteration.\n\nTwo changes:\n1. Replace the `if let` (lines 731-734) with a `match` that has an `unreachable!()` arm:\n```rust\nmatch work_args.pop() {\n    Some(Value::Point(inner)) => *work_point = inner,\n    other => unreachable!(\"expected Value::Point after apply_lambda, got {other:?}\"),\n}\n```\nThis makes the infallibility contract explicit at runtime in both debug and release builds.\n\n2. Fix the doc comment for `work_point` (line 694) which says \"Must be empty and unused in the decomposed path\" but this contract is unenforced. Either add `debug_assert!(work_point.is_empty() || single_point_param)` at the function top, or soften the doc to \"ignored in the decomposed path\".\n\nSource: esc-1100-897 review suggestions S1 (reviewer_comprehensive) and S4 (reviewer_comprehensive).\nMemory hints: search for \"eval_perturbed_point work_point recovery\" and \"task 1100 hardening\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:20:14.456Z",
+        "updatedAt": "2026-04-09T19:57:12.224Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -28151,7 +28151,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:57:10.922Z",
+      "lastModified": "2026-04-09T19:57:12.225Z",
       "taskCount": 1360,
       "completedCount": 1029,
       "tags": [
