@@ -22055,6 +22055,9 @@
           "stale_items_removed": [
             "item_1_done_by_task_1022",
             "item_2_superseded_by_task_1059"
+          ],
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
           ]
         },
         "updatedAt": "2026-04-09T09:19:03.886Z"
