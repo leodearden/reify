@@ -5771,6 +5771,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_missing_arg_diagnostic_reaches_build_result() {
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockGeometryKernel,
+            TopologyTemplateBuilder,
+        };
+
+        // Build a Primitive::Box realization with 'width' deliberately missing
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("height".into(), literal_length(0.10)),
+                ("depth".into(), literal_length(0.05)),
+                // width deliberately omitted
+            ],
+        };
+
+        let template = TopologyTemplateBuilder::new("TestShape")
+            .realization("TestShape", 0, vec![box_op])
+            .build();
+
+        let module =
+            CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_width_e2e"))
+                .template(template)
+                .build();
+
+        let mut engine = Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(MockGeometryKernel::new())),
+        );
+        let result = engine.build(&module, reify_types::ExportFormat::Step);
+
+        // The missing-width diagnostic must survive the Engine::build plumbing
+        // and land in BuildResult.diagnostics.
+        let has_width_warning = result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_types::Severity::Warning && d.message.contains("width"));
+        assert!(
+            has_width_warning,
+            "expected a Warning diagnostic mentioning 'width' in BuildResult.diagnostics, got: {:?}",
+            result.diagnostics
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
