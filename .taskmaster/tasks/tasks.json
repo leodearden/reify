@@ -24712,11 +24712,11 @@
         "description": "Add a test in engine_tests.rs that calls `update_source` and asserts the stored key matches `module_key(name)`, mirroring the existing `module_key_matches_load_from_source_insertion` test (engine_tests.rs:1685-1695).\n\nCurrently only `load_from_source` is covered by a module_key consistency test. The `update_source` path (engine.rs:191) also uses `module_key(module_name)` to insert into `source_map`, but has no dedicated test verifying this.\n\nThe new test should:\n1. Create an EngineSession\n2. Call `update_source` with a known path (e.g. \"bracket.ri\") and source content\n3. Call `resolve_source_for_test()` to get `(stored_key, stored_src)`\n4. Assert `stored_key == module_key(\"bracket\")` and `stored_src == &lt;input content&gt;`\n\nmemory_hints: search(\"module_key update_source engine_tests\", project_id=\"reify\"); get_entity(\"module_key\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:48:24.887Z",
+        "updatedAt": "2026-04-09T00:55:25.679Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24743,9 +24743,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:51:35.584Z",
+      "lastModified": "2026-04-09T00:55:25.679Z",
       "taskCount": 1216,
-      "completedCount": 897,
+      "completedCount": 898,
       "tags": [
         "master"
       ]
