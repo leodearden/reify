@@ -943,7 +943,10 @@ async fn error_prefix_constants_match_actual_errors() {
 /// assertion with downstream `didOpen` + `completion` calls.
 #[tokio::test]
 async fn downstream_ops_after_malformed_initialize_without_initialized() {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    with_hang_guard(
+        HANG_GUARD_SECS,
+        "downstream_ops_after_malformed_initialize_without_initialized",
+        async {
         let lsp = InProcessLsp::new();
 
         // Step 1: send initialize with a completely wrong payload type.
@@ -996,9 +999,9 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             // completion_items() panics with an actionable message if the shape is wrong.
             let _items = completion_items(&val);
         }
-    })
-    .await
-    .expect("downstream_ops test body must not hang");
+    },
+    )
+    .await;
 }
 
 /// Unit tests for the `with_hang_guard` helper.
