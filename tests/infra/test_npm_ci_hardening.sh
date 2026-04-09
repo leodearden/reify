@@ -94,6 +94,9 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
 
+assert "script uses 'tr -d' to strip wc whitespace" \
+    grep -q 'tr -d' "$SCRIPT"
+
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""
 echo "--- Test 9: orchestrator command placement and existence guards ---"
