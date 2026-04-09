@@ -1640,6 +1640,100 @@ fn divergence_dimensionless_still_real() {
     }
 }
 
+// ── Step 10: Sample-level dimensional correctness tests ───────────────────────
+
+/// Regression guard: sampling from the divergence of a dimensionless
+/// Point{3,Real}→Vector{3,Real} field returns `Value::Real`, not `Value::Scalar`.
+///
+/// Locks in the dimensionless fallback path in compute_numerical_divergence_at_point
+/// so the step-3 implementation change cannot regress it.
+#[test]
+fn divergence_sample_dimensionless_returns_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(1.0, 1.0, 1.0) (constant vector field, same as
+    // divergence_constant_field_near_zero)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of dimensionless constant field should return a Field, got {:?}",
+        div_result
+    );
+
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Real(_) => {} // ← correct: dimensionless fallback returns Real
+        Value::Scalar { .. } => panic!(
+            "divergence_sample_dimensionless_returns_real: expected Value::Real but got \
+             Value::Scalar — the dimensionless fallback path is broken: {:?}",
+            sample_result
+        ),
+        other => panic!(
+            "divergence_sample_dimensionless_returns_real: expected Value::Real, got {:?}",
+            other
+        ),
+    }
+}
+
 /// Laplacian of a dimensionless Point{3,Real} → Real field still returns
 /// Type::Real as the result codomain (regression guard).
 ///
