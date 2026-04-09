@@ -1603,10 +1603,24 @@ use reify_test_support::warn_capturing_subscriber;
 /// least one event contains every `(key, value)` pair in `expected_fields`.
 /// Returns the value produced by `action` for downstream assertions.
 ///
+/// # Contract checks (applied to every callsite)
+///
+/// In addition to the count and field checks, this helper enforces two
+/// invariants that must hold for every warn site across all 3 families
+/// (helper recovery, into_result inline, shared_fallback inline):
+///
+/// 1. **Canonical message** — at least one captured event has the exact message
+///    text `"lock poisoned, recovering"`.  Verified via
+///    `capture.assert_any_message_equals(...)`.
+///
+/// 2. **`error` field presence** — at least one captured event has an `error`
+///    field key, guarding against silent removal of the `error = %e` structured
+///    field from any warn site.
+///
 /// # Panics
 ///
 /// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
-/// WARN count or field checks fail.
+/// WARN count, field, message, or error-field checks fail.
 #[cfg(feature = "test-utils")]
 fn assert_poison_recovers<T: Send + 'static>(
     action: impl FnOnce() -> T + std::panic::UnwindSafe,
@@ -1624,6 +1638,20 @@ fn assert_poison_recovers<T: Send + 'static>(
     );
     capture.assert_count(expected_warns);
     capture.assert_any_event_has_fields(expected_fields);
+    // Contract: canonical message text must be exactly "lock poisoned, recovering"
+    // on every poison-recovery warn site.  This collapses 11 per-site string
+    // literals into one authoritative check.
+    capture.assert_any_message_equals("lock poisoned, recovering");
+    // Contract: the `error = %e` structured field must be present on at least
+    // one captured event.  Guards against silent removal of the field from any
+    // warn site.
+    let fbe = capture.fields_by_event();
+    assert!(
+        fbe.iter().any(|m| m.contains_key("error")),
+        "no captured WARN event had an `error` field key; \
+         the `error = %e` structured field must be present on every \
+         poison-recovery warn site. fields_by_event: {fbe:?}"
+    );
     result.unwrap()
 }
 
