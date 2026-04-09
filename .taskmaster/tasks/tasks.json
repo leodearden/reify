@@ -19274,11 +19274,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:53:46.048Z",
+        "updatedAt": "2026-04-09T04:53:46.277Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -26120,15 +26120,16 @@
         "description": "Improve the `completion_items` test helper in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Empty-input edge-case tests (S2):** Add unit tests for empty Array (`json!([])`) and empty List (`json!({\"isIncomplete\": false, \"items\": []})`) to confirm the helper returns an empty slice without panicking. This documents the contract for downstream `assert!(!items.is_empty())` guards.\n\n2. **Better malformed-List panic message (S3):** When the response is an object with an `\"items\"` key whose value is not an array (e.g. `{\"items\": null}`, `{\"items\": 42}`), the current code falls through to the generic panic. Add a specific check: if `response` is an object containing `\"items\"` but the value isn't an array, panic with a message like `\"CompletionResponse::List has non-array 'items' field: {response}\"`. Add a `#[should_panic]` test for this case.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context on this helper.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:53:46.187Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:53:46.048Z",
+      "lastModified": "2026-04-09T04:53:46.277Z",
       "taskCount": 1297,
       "completedCount": 965,
       "tags": [
