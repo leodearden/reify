@@ -11836,10 +11836,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/tests/structural_physical.rs"
+            "crates/reify-compiler/tests/structural_physical_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ]
         },
         "updatedAt": "2026-04-07T14:33:05.432Z"
@@ -11857,12 +11857,14 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-test-support/src/lib.rs",
-            "crates/reify-compiler/tests/stdlib.rs"
+            "crates/reify-compiler/tests/stdlib_loader_tests.rs",
+            "crates/reify-eval/tests/stdlib_prelude_tests.rs",
+            "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-test-support/src",
-            "crates/reify-compiler/tests"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests",
+            "crates/reify-test-support"
           ]
         }
       },
