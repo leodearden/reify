@@ -26386,16 +26386,16 @@
         "description": "In `tree-sitter-reify/tests/build_logic_tests.rs`, `find_bare_self_path_violations` and `find_bare_build_rs_violations` are structurally identical (~130 lines of near-duplicate code), differing only in needle strings. Their unit tests and file-level guard tests mirror the same structure.\n\n**Required changes:**\n\n1. **Fix completeness gap (S1):** `find_bare_self_path_violations` only checks `\"tests/build_logic_tests.rs\"` but not `\"./tests/build_logic_tests.rs\"`, while `find_bare_build_rs_violations` checks both `\"build.rs\"` and `\"./build.rs\"`. A contributor could use the `./`-prefixed relative path and bypass the guard.\n\n2. **Deduplicate helpers (S2):** Extract a shared `find_bare_literal_violations(source, needles: &[&str]) -> Vec<(usize, &str)>` that both call sites delegate to. Each passes its own needle list:\n   - build.rs: `&[\"\\\"build.rs\\\"\", \"\\\"./build.rs\\\"\"]`\n   - self-path: `&[\"\\\"tests/build_logic_tests.rs\\\"\", \"\\\"./tests/build_logic_tests.rs\\\"\"]`\n\n3. **Deduplicate unit tests:** Share a `assert_bare_literal_detection(finder_fn, positive_cases, negative_cases)` harness or use a table-driven approach.\n\n4. **Deduplicate file-level guards:** The two `test_no_bare_relative_*` tests could loop over a `[(finder_fn, description)]` table.\n\n5. **Add `./`-prefixed detection test cases** to the self-path test (mirroring the build.rs test which already has a `\"./build.rs\"` positive case on line 1458).\n\nmemory_hints: search \"task 1039 CARGO_MANIFEST_DIR coverage\" in reify project; search \"find_bare_literal_violations deduplication\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:34:48.753Z"
+        "updatedAt": "2026-04-09T09:18:14.651Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:17:36.906Z",
+      "lastModified": "2026-04-09T09:18:14.651Z",
       "taskCount": 1308,
       "completedCount": 972,
       "tags": [
