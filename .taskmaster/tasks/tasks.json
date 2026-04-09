@@ -23648,11 +23648,11 @@
         "description": "In tests/infra/test_test_helpers.sh, two structural-check grep patterns are unnecessarily brittle:\n\n1. Line 263: `'^assert_sync_ref_exists\\(\\)'` requires no whitespace before parens. Relax to `'^assert_sync_ref_exists\\s*\\(\\)'` to tolerate `assert_sync_ref_exists ()` (valid bash syntax).\n\n2. Line 270: `grep -Fq 'if [ -n \"$_'` only catches underscore-prefixed variables. Broaden to `grep -E 'if \\[ -n.*ref' \"$SYNC_FILE\"` (or similar) to catch guards using any variable name referencing ref_fn.\n\nBoth are minor fragility improvements to existing structural checks.\n\nmemory_hints: search(\"test_test_helpers structural checks sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:51:55.546Z",
+        "updatedAt": "2026-04-09T02:11:42.806Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -25023,7 +25023,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:11:41.130Z",
+      "lastModified": "2026-04-09T02:11:42.807Z",
       "taskCount": 1233,
       "completedCount": 919,
       "tags": [
