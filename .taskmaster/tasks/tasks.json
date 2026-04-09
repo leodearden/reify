@@ -24509,11 +24509,11 @@
         "description": "Follow-up from Task 1080 review. The four assertions in tests/infra/test_project_checks_typecheck.sh are all purely lexical greps and do not actually verify what their names claim.\n\nTwo related improvements:\n\n1. Tighten Test 4's package.json check (line 54-55). Current grep `'\\\"typecheck\\\"'` matches the literal substring anywhere in the file (e.g. a dependency name or comment), not specifically a key inside the `scripts` object. Replace with either a regex like `grep -qE '\\\"typecheck\\\"\\\\s*:'` or, better, a node/jq parse asserting `.scripts.typecheck` exists.\n\n2. Add a behavioral assertion that the resolved `scripts.typecheck` value contains `tsc --noEmit`. Today's tests would still pass if someone rewrote `gui/package.json`'s `typecheck` script to `echo ok`, silently breaking the alignment Task 1080 is meant to enforce. Pin the alignment end-to-end with something like `node -e 'process.exit(/tsc --noEmit/.test(require(\\\"./gui/package.json\\\").scripts.typecheck) ? 0 : 1)'` or an equivalent grep/jq check.\n\nBoth changes are scoped to tests/infra/test_project_checks_typecheck.sh; no production code changes.\n\nmemory_hints: search \"Task 1080 typecheck alignment review suggestions\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:35:18.392Z",
+        "updatedAt": "2026-04-09T04:46:55.472Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -26088,9 +26088,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:46:33.816Z",
+      "lastModified": "2026-04-09T04:46:55.473Z",
       "taskCount": 1294,
-      "completedCount": 961,
+      "completedCount": 962,
       "tags": [
         "master"
       ]
