@@ -3674,11 +3674,7 @@ mod tests {
     #[test]
     fn value_complex_sorts_after_tensor() {
         // Complex type_tag=14 > Tensor type_tag=13
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let tensor = Value::Tensor(vec![Value::Int(99)]);
         assert!(
             complex > tensor,
