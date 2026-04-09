@@ -3,6 +3,7 @@ use reify_types::{DimensionVector, Value};
 mod common;
 use crate::common::*;
 
+mod complex;
 mod numeric;
 mod trig;
 mod vector;
