@@ -2566,6 +2566,11 @@ mod tests {
                 std::cmp::Ordering::Equal,
                 "PartialEq↔Ord contract: expected a.cmp(b) == Equal when a == b"
             );
+            assert_eq!(
+                b.cmp(a),
+                std::cmp::Ordering::Equal,
+                "PartialEq↔Ord contract: expected b.cmp(a) == Equal when a == b"
+            );
         } else {
             assert_ne!(a, b, "PartialEq↔Ord contract: expected a != b");
             assert_ne!(
@@ -2593,6 +2598,37 @@ mod tests {
         // Meta-test: verify assert_ord_consistent works for a non-equal pair.
         // Value::Int(1) < Value::Int(2), so pass the smaller value first.
         assert_ord_consistent(&Value::Int(1), &Value::Int(2), false);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_equal_symmetric() {
+        // Meta-test: verify the symmetric PartialEq↔Ord contract — both
+        // a.cmp(b) and b.cmp(a) must equal Equal when a == b.
+        // This documents the gap that the helper only checked a.cmp(b);
+        // after step-2 the helper also asserts b.cmp(a) == Equal.
+        let a = Value::Int(5);
+        let b = Value::Int(5);
+        // Direct assertions on the symmetric contract.
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_eq!(b.cmp(&a), std::cmp::Ordering::Equal);
+        // Helper call — will exercise the strengthened check once step-2 lands.
+        assert_ord_consistent(&a, &b, true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_equal_real() {
+        // Meta-test: exercises the to_bits()-based PartialEq and total_cmp()-based
+        // Ord paths through the strengthened helper (including the b.cmp(a) check)
+        // for an equal float pair.
+        assert_ord_consistent(&Value::Real(3.14), &Value::Real(3.14), true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_not_equal_real() {
+        // Meta-test: exercises the total_cmp() ordering and antisymmetry check
+        // for a non-equal float pair. Value::Real(1.0) < Value::Real(2.0) under
+        // total_cmp(), so pass the smaller value first.
+        assert_ord_consistent(&Value::Real(1.0), &Value::Real(2.0), false);
     }
 
     #[test]
