@@ -157,6 +157,9 @@ fn cmd_test(args: &[String]) -> ExitCode {
             }
         };
         println!("  {:<13}  {}", label, result.name);
+        if result.status == TestStatus::Fail {
+            report_violated_constraints(&result.constraint_results, "    ", &mut std::io::stdout());
+        }
     }
 
     let overall = if failed > 0 { "FAIL" } else { "ok" };
