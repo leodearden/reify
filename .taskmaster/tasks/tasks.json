@@ -25758,6 +25758,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1279,
+        "title": "Add pub+modifier accept tests and PATTERN extraction sanity check in test_sync_comments_grep.sh",
+        "description": "Follow-up from Task 1174 review (esc-1174-1043, S2 + S3). Two small meta-test improvements to tests/infra/test_sync_comments_grep.sh:\n\n**S2 — Additional pub+modifier accept cases (after line 93):**\nTask 1174 added `pub(crate) const fn` and `pub(crate) unsafe fn` accept assertions, but the equally important `pub(crate) async fn` and `pub(super) const fn` combinations are still untested. Add:\n- `accepts: pub(crate) async fn sanitize_value(`\n- `accepts: pub(super) const fn sanitize_value(`\nThese close the remaining symmetric holes in the visibility+modifier cross-product.\n\n**S3 — PATTERN extraction sanity check (after line 44):**\nThe PATTERN extraction sed pipeline is coupled to the exact literal form `'\"${ref_fn}\"'` in sync_comments_test.sh. If the source file is ever refactored (e.g. different variable name, or unquoted `${ref_fn}`), the substitution `s/'\"[^\"]*\"'/sanitize_value/` will silently fail to replace, leaving literal `${ref_fn}` in `$PATTERN` and producing a wall of confusing fixture-failure noise. The existing early-exit guard on line 40 only catches an empty PATTERN, not a malformed one.\n\nAdd after the existing `pattern extraction ... succeeded` assertion:\n```bash\nassert \"extracted pattern contains expected fn name\" \\\n    bash -c \"[[ \\\"$PATTERN\\\" == *sanitize_value* ]]\"\n```\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1174-1043 (steward-triage from Task 1174 post-merge review)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25770,7 +25781,7 @@
       ],
       "created": "2026-04-09T03:44:28.415Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T03:44:28.421Z"
+      "updated": "2026-04-09T03:44:39.170Z"
     }
   }
 }
