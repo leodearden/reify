@@ -169,6 +169,36 @@ pub struct CompiledModule {
     pub content_hash: ContentHash,
 }
 
+impl CompiledModule {
+    /// Returns all templates tagged with `@test`.
+    ///
+    /// This is the canonical filter for test entities — consumers should prefer
+    /// this over scanning `template.annotations` manually. Per Task 267, test
+    /// entities are excluded from the normal evaluation graph.
+    pub fn test_templates(&self) -> Vec<&TopologyTemplate> {
+        self.templates.iter().filter(|t| t.is_test).collect()
+    }
+
+    /// Returns all templates NOT tagged with `@test`.
+    ///
+    /// These are the templates that participate in the normal evaluation graph.
+    pub fn non_test_templates(&self) -> Vec<&TopologyTemplate> {
+        self.templates.iter().filter(|t| !t.is_test).collect()
+    }
+
+    /// Returns all constraint defs tagged with `@test`.
+    ///
+    /// Uses `ConstraintDef::is_test()` as the canonical predicate.
+    pub fn test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| d.is_test()).collect()
+    }
+
+    /// Returns all constraint defs NOT tagged with `@test`.
+    pub fn non_test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| !d.is_test()).collect()
+    }
+}
+
 /// Whether a TopologyTemplate was compiled from a structure or an occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
@@ -212,6 +242,10 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    /// True if this template is tagged with the `@test` annotation.
+    /// Derived at compile time from `annotations`; consumers should prefer this
+    /// flag over scanning `annotations` themselves.
+    pub is_test: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
@@ -4354,8 +4388,13 @@ pub fn compile_with_prelude(
             reify_syntax::Declaration::Purpose(_) => {
                 // Compiled in dedicated purpose pass below.
             }
-            reify_syntax::Declaration::Constraint(_) => {
+            reify_syntax::Declaration::Constraint(c) => {
                 // Constraint definitions: lowering/compilation not yet implemented.
+                // However, validate annotations and pragmas so that unknown or
+                // misplaced annotations are reported the same as for other decls.
+                let lowered_anns = lower_annotations(&c.annotations, &mut diagnostics);
+                validate_annotations(&lowered_anns, "constraint_def", &mut diagnostics);
+                validate_pragmas(&c.pragmas, "constraint_def", &mut diagnostics);
             }
             reify_syntax::Declaration::Unit(_) => {
                 // Already compiled in unit pre-pass above.
@@ -4671,7 +4710,7 @@ fn lower_annotations(
 /// Validate annotations against known annotation rules and context.
 ///
 /// Known annotations and their valid contexts:
-/// - `@test`: valid on structure, occurrence, function
+/// - `@test`: valid on structure, occurrence, function, constraint_def
 /// - `@optimized`: valid on structure, occurrence
 /// - `@solver_hint`: valid on structure, occurrence
 /// - `@deprecated`: valid on any context
@@ -4686,7 +4725,7 @@ fn validate_annotations(
                 // Valid on any context — no warning.
             }
             "test" => {
-                if !matches!(context, "structure" | "occurrence" | "function") {
+                if !matches!(context, "structure" | "occurrence" | "function" | "constraint_def") {
                     diagnostics.push(
                         Diagnostic::warning(format!(
                             "annotation @test is not valid on {context} declarations"
@@ -6342,6 +6381,7 @@ fn compile_entity(
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
+    let is_test = annotations.iter().any(|a| a.name == "test");
 
     TopologyTemplate {
         name: entity_name.to_string(),
@@ -6361,6 +6401,7 @@ fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
+        is_test,
         annotations,
         pragmas: structure.pragmas.to_vec(),
     }
