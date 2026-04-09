@@ -26204,10 +26204,11 @@
         "description": "Silent-defaults violations (unwrap_or, unwrap_or_default, or_default patterns that silently swallow errors or produce incorrect fallback values) keep recurring at 1-3 per review cycle. This wastes review bandwidth and risks shipping silent data corruption.\n\nAdd automated detection: either a custom clippy lint, a check-pm-standardization.sh extension, or a grep-based CI check that flags new occurrences of .unwrap_or/.unwrap_or_default/.or_default in code paths where the default can corrupt downstream results.\n\nThe silent-defaults pattern is specifically dangerous in the OptionNone port/guarded-member typing fix context where it can corrupt downstream results without raising a diagnostic.\n\nmemory_hints: search \"silent-defaults pattern OptionNone\" in reify project; search \"post-merge lint command\" in reify project; get_entity \"silent-defaults\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T08:13:49.795Z"
       },
       {
         "id": "1304",
@@ -26256,7 +26257,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:13:49.222Z",
+      "lastModified": "2026-04-09T08:13:49.795Z",
       "taskCount": 1305,
       "completedCount": 968,
       "tags": [
