@@ -19771,16 +19771,17 @@
         "updatedAt": "2026-04-07T15:20:32.722Z",
         "metadata": {
           "modules": [
-            "scripts/check-pm-standardization.sh",
-            "tests/check-pm-standardization.sh",
-            "tests/infra"
+            "scripts"
           ],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Strengthen PM standardization assertions: value check, consistency, git preflight"
             ]
-          }
+          },
+          "files": [
+            "scripts/check-pm-standardization.sh"
+          ]
         }
       },
       {
@@ -19843,6 +19844,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/conformance.rs",
+            "crates/reify-compiler/src/type_resolution.rs"
           ]
         }
       },
