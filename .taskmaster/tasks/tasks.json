@@ -28627,15 +28627,16 @@
         "description": "The `_has_if_n_guard` regex in tests/infra/test_test_helpers.sh:273 supports the `||` (OR) compound operator via the `(if|&&|\\|\\|)` alternation, but the robustness suite only exercises the `&&` form (fixture_compound_and at ~line 563). If the pipe escaping in the regex were broken, the `||` path would silently fail to match.\n\nAdd a fixture for the `||` form alongside fixture_compound_and, e.g.:\n\n```sh\nfixture_compound_or=$(mk_fixture)\nprintf 'something || [ -n \"$var\" ] && do_work\\n' > \"$fixture_compound_or\"\nif _has_if_n_guard \"$fixture_compound_or\" 2>/dev/null; then ok=true; else ok=false; fi\ncheck \"_has_if_n_guard detects compound || guard: || [ -n\" \"$ok\"\n```\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes with the new fixture and reports the added check.\n\nSource: reviewer_comprehensive suggestion on Task 1267 review.\nmemory_hints: search(\"_check_has_no_if_n_guard compound regex fixture\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:10:45.554Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:10:45.176Z",
+      "lastModified": "2026-04-09T22:10:45.555Z",
       "taskCount": 1384,
       "completedCount": 1066,
       "tags": [
