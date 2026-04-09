@@ -849,4 +849,29 @@ mod tests {
             output
         );
     }
+
+    #[test]
+    fn violated_constraints_multiple_entries_all_printed() {
+        let entries = vec![
+            make_entry("Beam", 0, Some("stress"), Satisfaction::Violated),
+            make_entry("Beam", 1, Some("deflection"), Satisfaction::Violated),
+            make_entry("Beam", 2, Some("buckling"), Satisfaction::Violated),
+        ];
+        let output = run_violated(&entries, "  ");
+        assert!(
+            output.contains("VIOLATED stress"),
+            "output should contain first violated label, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("VIOLATED deflection"),
+            "output should contain second violated label, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("VIOLATED buckling"),
+            "output should contain third violated label, got: {:?}",
+            output
+        );
+    }
 }
