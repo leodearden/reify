@@ -18557,9 +18557,12 @@
         "updatedAt": "2026-04-04T00:20:08.693Z",
         "metadata": {
           "modules": [
-            "crates/reify-lsp",
-            "crates/reify-test-support",
+            "crates/reify-lsp/tests",
             "gui/src-tauri"
+          ],
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs",
+            "gui/src-tauri/src/tests/lsp_bridge_tests.rs"
           ]
         }
       },
@@ -18600,7 +18603,13 @@
           },
           "modules": [
             "crates/reify-compiler",
-            "crates/reify-test-support"
+            "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/module_dag.rs",
+            "crates/reify-types/src/lib.rs",
+            "crates/reify-types/src/constraint.rs"
           ]
         }
       },
