@@ -1238,4 +1238,13 @@ mod tests {
         assert!(source.contains("port mount : NonExistentTrait"));
         assert!(source.contains("param d : Length = 5mm"));
     }
+
+    #[test]
+    fn warning_source_with_width_has_width_param() {
+        let source = warning_source_with_width();
+        assert!(source.contains("structure def S"));
+        assert!(source.contains("param width : Length = 80mm"));
+        assert!(source.contains("port mount : NonExistentTrait"));
+        assert!(source.contains("param d : Length = 5mm"));
+    }
 }
