@@ -378,7 +378,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
         # Assumes no parallel test runs on the same host: kills any sleep 31337 system-wide.
         # Safety-net: kill any lingering sentinel sleep 31337 processes.
         "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" \
+            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
             | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
 
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
