@@ -21216,14 +21216,11 @@
         "metadata": {
           "files": [
             "crates/reify-lsp/tests/in_process_bridge.rs",
-            "crates/reify-lsp/tests/lifecycle.rs",
-            "crates/reify-lsp/tests/interactive_edit_loop.rs",
-            "crates/reify-test-support/src/tracing_support.rs",
-            "crates/reify-test-support/src/lib.rs"
+            "crates/reify-test-support/src/tracing_support.rs"
           ],
           "modules": [
             "crates/reify-lsp/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-test-support"
           ]
         }
       },
@@ -21323,8 +21320,8 @@
             "crates/reify-expr/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-types/src",
-            "crates/reify-expr/src"
+            "crates/reify-types",
+            "crates/reify-expr"
           ]
         }
       },
