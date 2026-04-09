@@ -1492,4 +1492,46 @@ mod tests {
 
         capture.assert_any_event_field_contains("error", "display");
     }
+
+    /// `assert_any_event_field_contains` panics when the given key does not
+    /// exist in any captured event.
+    #[test]
+    fn assert_any_event_field_contains_panics_on_missing_key() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(lock = "values", "test event");
+        });
+
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_field_contains("nonexistent", "values")
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_field_contains must panic when key is absent"
+        );
+    }
+
+    /// `assert_any_event_field_contains` panics when the key exists but the
+    /// value does not contain the substring.
+    #[test]
+    fn assert_any_event_field_contains_panics_on_missing_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(lock = "values", "test event");
+        });
+
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_field_contains("lock", "nonexistent_substring")
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_field_contains must panic when substring is absent"
+        );
+    }
 }
