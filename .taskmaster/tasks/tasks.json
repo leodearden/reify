@@ -24724,11 +24724,11 @@
         "description": "FailingMockGeometryKernel is copy-pasted in 4 test files (~35 lines each): geometry_error_handling.rs, tessellation.rs, stress_error_messages.rs, and stress_sweep_degenerate.rs. Extract it into crates/reify-test-support/src/mocks.rs alongside MockGeometryKernel, and import it in all test files. This reduces maintenance surface and keeps the mock zoo in one place.\n\nmemory_hints: search \"MockGeometryKernel test support mocks\" for related context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:26:20.775Z",
+        "updatedAt": "2026-04-09T21:06:15.346Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -28390,7 +28390,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:14.938Z",
+      "lastModified": "2026-04-09T21:06:15.346Z",
       "taskCount": 1374,
       "completedCount": 1049,
       "tags": [
