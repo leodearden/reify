@@ -13,6 +13,20 @@ use tower_lsp::{LanguageServer, LspService};
 
 use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 
+/// Deserialize an LSP params payload into `T`, attaching `label` to any
+/// resulting error. Used by every deserializing arm of
+/// [`InProcessLsp::handle_request`] to keep the per-arm code one line.
+///
+/// On failure, returns `Err(format!("{label} params error: {e}"))` — this is
+/// the canonical prefix asserted by integration tests in
+/// `tests/in_process_bridge.rs` via the [`error_prefix`] constants.
+fn parse_params<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+    label: &str,
+) -> Result<T, String> {
+    serde_json::from_value(params).map_err(|e| format!("{label} params error: {e}"))
+}
+
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
 /// The `server` field holds a cloned `ReifyLanguageServer` (all `Arc`-wrapped
