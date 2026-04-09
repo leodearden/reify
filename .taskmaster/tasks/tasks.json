@@ -23497,11 +23497,11 @@
         "description": "The `nan_partialeq_bit_identity` test in `crates/reify-types/src/value.rs` (around line 1898) only covers `Value::Real(f64::NAN)`. The PartialEq-via-to_bits contract should also be verified for `Value::Scalar { si_value: f64::NAN, .. }` and `Value::Complex` with NaN components. Add test cases like:\n```rust\nlet s1 = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH };\nassert_eq!(s1, s1.clone());\n```\nand similar for `Value::Complex`.\n\nmemory_hints: search \"NaN PartialEq to_bits Value Ord implementation\" for prior context on the total_cmp and PartialEq implementations.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:40:24.877Z",
+        "updatedAt": "2026-04-09T03:42:12.055Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -25666,7 +25666,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:42:10.174Z",
+      "lastModified": "2026-04-09T03:42:12.055Z",
       "taskCount": 1271,
       "completedCount": 943,
       "tags": [
