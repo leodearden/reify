@@ -1663,18 +1663,7 @@ mod tests {
             missing_coord_setup("LineBStart", "x");
 
         // line_a is fully Fixed — both points will be created before the error
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
+        let line_a = fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
         // line_b.start triggers the error; line_b.end is never reached
         let line_b = LineRef {
             start: PointRef::Auto {
@@ -1714,30 +1703,8 @@ mod tests {
         let current_values = ValueMap::new();
 
         // line_a end == line_b start → the (1,0,0) point is shared
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_a = fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let line_b = fixed_line(1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
