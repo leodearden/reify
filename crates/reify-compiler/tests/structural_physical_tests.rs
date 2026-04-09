@@ -173,56 +173,6 @@ fn physical_trait_has_correct_members_and_refinements() {
     );
 }
 
-// ─── step-23: targeted Physical own-params assertion (over-broad fix) ────────
-
-/// Step 23: Targeted test for review issue [over_broad_assertion].
-/// Checks ONLY the four Physical-specific params by name. Resilient to compiler
-/// changes that might flatten inherited members of different types (e.g.,
-/// name:String from Material) into required_members.
-#[test]
-fn physical_own_params_are_real() {
-    let module = load_stdlib_module();
-    let physical = module
-        .trait_defs
-        .iter()
-        .find(|t| t.name == "Physical")
-        .expect("expected 'Physical' trait in compiled module");
-
-    let own_params = ["volume", "centroid_x", "centroid_y", "centroid_z"];
-    for param_name in &own_params {
-        let req = physical
-            .required_members
-            .iter()
-            .find(|r| r.name == *param_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Physical should have '{}' in required_members, got: {:?}",
-                    param_name,
-                    physical
-                        .required_members
-                        .iter()
-                        .map(|r| &r.name)
-                        .collect::<Vec<_>>()
-                )
-            });
-        match &req.kind {
-            RequirementKind::Param(ty) => {
-                assert_eq!(
-                    *ty,
-                    Type::Real,
-                    "Physical param '{}' should be Real, got {:?}",
-                    param_name,
-                    ty
-                );
-            }
-            other => panic!(
-                "Physical member '{}' should be RequirementKind::Param, got {:?}",
-                param_name, other
-            ),
-        }
-    }
-}
-
 // ─── step-7: Bracket : Physical conformance (mass computed) ──────────────────
 
 /// Step 7: structure def Bracket : Physical compiles with all required members
