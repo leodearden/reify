@@ -5401,6 +5401,57 @@ mod tests {
         );
     }
 
+    // ── non-numeric/non-finite diagnostic tests ──────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_translate_wrong_type_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // dx is a String value, not a numeric f64 — should trigger a non-numeric diagnostic
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "dx".into(),
+                    reify_types::CompiledExpr::literal(
+                        reify_types::Value::String("oops".into()),
+                        reify_types::Type::String,
+                    ),
+                ),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "wrong-type dx should return None, got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                matches!(d.severity, reify_types::Severity::Warning)
+                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("dx")
+                    && d.message.contains("Translate")
+            }),
+            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'Translate', got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
