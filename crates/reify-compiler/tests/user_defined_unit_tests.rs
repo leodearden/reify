@@ -312,3 +312,32 @@ fn compile_project_entry_sees_imported_pub_unit() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ─── step-15: local unit duplicating an imported pub unit produces error ──────
+
+#[test]
+fn local_unit_duplicating_imported_pub_unit_produces_error() {
+    // Prelude module exports pub unit `mil`.
+    let prelude_module = parse_and_compile("pub unit mil : Length = 0.0000254");
+    assert!(
+        errors_only(&prelude_module).is_empty(),
+        "prelude errors: {:?}",
+        errors_only(&prelude_module)
+    );
+
+    // User module tries to re-declare `mil` — the prelude-seeded entry
+    // occupies the registry, so register() returns Err (duplicate).
+    let module = compile_with_prelude_helper("unit mil : Length = 0.001", &[prelude_module]);
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected duplicate unit error when redeclaring an imported pub unit"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("duplicate") && d.message.contains("mil")),
+        "error should mention 'duplicate' and 'mil'; got: {:?}",
+        errors
+    );
+}
