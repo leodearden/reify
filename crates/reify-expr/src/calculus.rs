@@ -574,7 +574,14 @@ pub(crate) fn compute_numerical_gradient_at_point(
     let result_dim = match codomain_type {
         Type::Vector { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => *dimension,
-            _ => DimensionVector::DIMENSIONLESS,
+            _ => {
+                debug_assert!(
+                    matches!(quantity.as_ref(), Type::Real),
+                    "[reify-expr] gradient: unexpected Vector quantity variant in result_dim catch-all: {:?}",
+                    quantity
+                );
+                DimensionVector::DIMENSIONLESS
+            }
         },
         Type::Scalar { dimension } => *dimension,
         _ => {
