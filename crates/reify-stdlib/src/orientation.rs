@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::*;
+use reify_types::{DimensionVector, Value};
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
@@ -114,10 +114,7 @@ pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
             let mag_x = vec3_norm(xc[0], xc[1], xc[2]);
             let mag_y = vec3_norm(yc[0], yc[1], yc[2]);
             let mag_z = vec3_norm(zc[0], zc[1], zc[2]);
-            if (mag_x - 1.0).abs() > tol
-                || (mag_y - 1.0).abs() > tol
-                || (mag_z - 1.0).abs() > tol
-            {
+            if (mag_x - 1.0).abs() > tol || (mag_y - 1.0).abs() > tol || (mag_z - 1.0).abs() > tol {
                 return Some(Value::Undef);
             }
             let dot_xy = xc[0] * yc[0] + xc[1] * yc[1] + xc[2] * yc[2];
@@ -222,8 +219,8 @@ mod dispatch_tests {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
     use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
 
@@ -432,7 +429,9 @@ mod tests {
                 sign_insensitive = 1e-10
             );
         });
-        let err = result.expect_err("expected assert_orientation_approx sign_insensitive to panic for wrong value");
+        let err = result.expect_err(
+            "expected assert_orientation_approx sign_insensitive to panic for wrong value",
+        );
         let msg = err
             .downcast_ref::<String>()
             .map(|s| s.as_str())
@@ -1307,5 +1306,4 @@ mod tests {
             "dot of vector with mixed component dimensions should be Undef"
         );
     }
-
 }

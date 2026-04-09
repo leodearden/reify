@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::*;
+use reify_types::{DimensionVector, Value};
 
 /// Compute the absolute value (modulus) of a complex number.
 ///
@@ -175,10 +175,10 @@ mod dispatch_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
-    use crate::test_helpers::*;
     use crate::common::sanitize_value;
+    use crate::eval_builtin;
+    use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // ── complex() constructor tests (step-1) ──────────────────────────────────
 
@@ -1586,5 +1586,4 @@ mod tests {
             other => panic!("expected Real({expected}), got {other:?}"),
         }
     }
-
 }

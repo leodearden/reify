@@ -1,5 +1,5 @@
-use reify_types::Value;
 use crate::common::*;
+use reify_types::Value;
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
@@ -208,10 +208,10 @@ mod dispatch_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
-    use crate::test_helpers::*;
     use crate::common::normalize_quaternion;
+    use crate::eval_builtin;
+    use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // ── frame3 tests (step-5) ────────────────────────────────────────────────
 
@@ -591,7 +591,6 @@ mod tests {
         );
     }
 
-
     // ── step-7: frame_to_frame tests ─────────────────────────────────────────
 
     /// Helper: build a Frame with given origin (LENGTH) and orientation.
@@ -855,5 +854,4 @@ mod tests {
             "all near-zero components should return None"
         );
     }
-
 }

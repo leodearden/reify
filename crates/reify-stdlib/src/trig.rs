@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::*;
+use reify_types::{DimensionVector, Value};
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {

@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::*;
+use reify_types::{DimensionVector, Value};
 
 /// Validate args for a point/vector constructor and return `Value::Point` or `Value::Vector`.
 ///
@@ -183,10 +183,10 @@ mod dispatch_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
-    use crate::test_helpers::*;
     use super::construct_point_or_vector;
+    use crate::eval_builtin;
+    use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // --- dot() tests: dimensionless vectors (step-1) ---
 
@@ -725,7 +725,6 @@ mod tests {
             DimensionVector::LENGTH
         );
     }
-
 
     // --- non-numeric args → Undef ---
 
@@ -1276,5 +1275,4 @@ mod tests {
             result
         );
     }
-
 }

@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::*;
+use reify_types::{DimensionVector, Value};
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
@@ -285,8 +285,8 @@ mod dispatch_tests {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
     use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     #[test]
     fn abs_real_negative() {

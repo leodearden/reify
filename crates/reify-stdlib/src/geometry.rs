@@ -1,5 +1,5 @@
-use reify_types::{DimensionVector, Value};
 use crate::common::tensor_components_f64;
+use reify_types::{DimensionVector, Value};
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
@@ -200,7 +200,10 @@ mod dispatch_tests {
     #[test]
     fn geometry_dispatch_plane_xy() {
         let result = dispatch("plane_xy", &[Value::length(1.0)]);
-        assert!(result.is_some(), "plane_xy should be handled by geometry dispatch");
+        assert!(
+            result.is_some(),
+            "plane_xy should be handled by geometry dispatch"
+        );
         assert!(
             matches!(result, Some(Value::Plane { .. })),
             "plane_xy should return a Plane value"
@@ -216,8 +219,8 @@ mod dispatch_tests {
 #[cfg(test)]
 mod tests {
     use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
     use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // ── axis_z tests (step-5) ────────────────────────────────────────────────
 
@@ -738,5 +741,4 @@ mod tests {
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
-
 }
