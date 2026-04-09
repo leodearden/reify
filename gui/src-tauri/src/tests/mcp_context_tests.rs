@@ -598,14 +598,14 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.message
     );
 
-    if first.end_line == first.line {
-        assert!(
-            first.end_column >= first.column,
-            "expected end_column ({}) >= column ({}) on same-line span",
-            first.end_column,
-            first.column
-        );
-    }
+    // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
+    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) through
+    // the closing `}` of the port body (L4:C6) — a multi-line span, so the
+    // former `if end_line == line` same-line guard was always false for this fixture.
+    assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
+    assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
+    assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
+    assert_eq!(first.end_column, 6, "closing `}}` of port body ends at column 6 (1-indexed)");
 
     // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
     // TODO: update when code extraction is implemented
