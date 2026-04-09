@@ -153,6 +153,36 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     );
 }
 
+/// Default hang-guard timeout in seconds, applied to all pre-handshake tests.
+///
+/// Five seconds is long enough to be unreachable for any fast local I/O and short
+/// enough that a genuine hang surfaces quickly.  All call sites reference this
+/// constant so that a single change here adjusts the timeout project-wide.
+const HANG_GUARD_SECS: u64 = 5;
+
+/// Wrap `f` in a timeout and panic with a descriptive message if the timeout fires.
+///
+/// This helper guards pre-handshake tests against infinite hangs:
+/// a future that blocks forever (e.g. waiting on a channel that never receives)
+/// will be detected within `seconds` seconds and surface as a named panic rather
+/// than causing the test suite to hang silently.
+///
+/// # Panics
+///
+/// Panics with `"{test_name} must not hang (timed out after {seconds}s)"` if
+/// `f` does not complete within `seconds` seconds.
+async fn with_hang_guard<F: std::future::Future<Output = ()>>(
+    seconds: u64,
+    test_name: &str,
+    f: F,
+) {
+    tokio::time::timeout(Duration::from_secs(seconds), f)
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{test_name} must not hang (timed out after {seconds}s)")
+        });
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
