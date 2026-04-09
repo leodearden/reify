@@ -153,6 +153,36 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     );
 }
 
+/// Default hang-guard timeout in seconds, applied to all pre-handshake tests.
+///
+/// Five seconds is long enough to be unreachable for any fast local I/O and short
+/// enough that a genuine hang surfaces quickly.  All call sites reference this
+/// constant so that a single change here adjusts the timeout project-wide.
+const HANG_GUARD_SECS: u64 = 5;
+
+/// Wrap `f` in a timeout and panic with a descriptive message if the timeout fires.
+///
+/// This helper guards pre-handshake tests against infinite hangs:
+/// a future that blocks forever (e.g. waiting on a channel that never receives)
+/// will be detected within `seconds` seconds and surface as a named panic rather
+/// than causing the test suite to hang silently.
+///
+/// # Panics
+///
+/// Panics with `"{test_name} must not hang (timed out after {seconds}s)"` if
+/// `f` does not complete within `seconds` seconds.
+async fn with_hang_guard<F: std::future::Future<Output = ()>>(
+    seconds: u64,
+    test_name: &str,
+    f: F,
+) {
+    tokio::time::timeout(Duration::from_secs(seconds), f)
+        .await
+        .unwrap_or_else(|_| {
+            panic!("{test_name} must not hang (timed out after {seconds}s)")
+        });
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
@@ -173,32 +203,35 @@ async fn set_default_guard_captures_warn_on_current_thread() {
 
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_returns_server_capabilities", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp
-        .handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed");
+        let result = lsp
+            .handle_request("initialize", json!({"capabilities": {}}))
+            .await
+            .expect("initialize should succeed");
 
-    // Should return ServerCapabilities with our providers
-    let caps = &result["capabilities"];
-    assert!(
-        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
-        "should advertise hover provider"
-    );
-    assert!(
-        caps["definitionProvider"].as_bool().unwrap_or(false)
-            || caps["definitionProvider"].is_object(),
-        "should advertise definition provider"
-    );
-    assert!(
-        caps["completionProvider"].is_object(),
-        "should advertise completion provider"
-    );
-    assert!(
-        caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
-        "should advertise text document sync"
-    );
+        // Should return ServerCapabilities with our providers
+        let caps = &result["capabilities"];
+        assert!(
+            caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
+            "should advertise hover provider"
+        );
+        assert!(
+            caps["definitionProvider"].as_bool().unwrap_or(false)
+                || caps["definitionProvider"].is_object(),
+            "should advertise definition provider"
+        );
+        assert!(
+            caps["completionProvider"].is_object(),
+            "should advertise completion provider"
+        );
+        assert!(
+            caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
+            "should advertise text document sync"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -359,9 +392,12 @@ async fn diagnostics_captured_after_did_open_with_syntax_error() {
 /// [`error_prefix::INITIALIZE_PARAMS`].
 #[tokio::test]
 async fn initialize_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
-        .await;
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+            .await;
+    })
+    .await;
 }
 
 /// Notifications with malformed params should propagate deserialization errors as Err,
@@ -371,12 +407,15 @@ async fn initialize_with_malformed_params_returns_error() {
 /// — deserialization failures are surfaced to the caller even for one-way messages.
 #[tokio::test]
 async fn notification_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didOpen",
-        error_prefix::DID_OPEN_PARAMS,
-    )
+    with_hang_guard(HANG_GUARD_SECS, "notification_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didOpen",
+            error_prefix::DID_OPEN_PARAMS,
+        )
+        .await;
+    })
     .await;
 }
 
@@ -385,46 +424,52 @@ async fn notification_with_malformed_params_returns_error() {
 /// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
 #[tokio::test]
 async fn unsupported_method_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "unsupported_method_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
+        let result = lsp.handle_request("textDocument/foobar", json!({})).await;
 
-    assert!(
-        result.is_err(),
-        "unsupported method should return Err, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    // The constant covers the prefix; the method name appears as a suffix after the colon.
-    assert!(
-        err.contains(error_prefix::UNSUPPORTED_METHOD),
-        "error message should contain '{}', got: {err}",
-        error_prefix::UNSUPPORTED_METHOD
-    );
+        assert!(
+            result.is_err(),
+            "unsupported method should return Err, got: {:?}",
+            result
+        );
+        let err = result.unwrap_err();
+        // The constant covers the prefix; the method name appears as a suffix after the colon.
+        assert!(
+            err.contains(error_prefix::UNSUPPORTED_METHOD),
+            "error message should contain '{}', got: {err}",
+            error_prefix::UNSUPPORTED_METHOD
+        );
+    })
+    .await;
 }
 
 /// Wrong field type within a valid-looking object should return Err containing
 /// "initialize params error".
 #[tokio::test]
 async fn initialize_with_invalid_field_type_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_invalid_field_type_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    // processId is an Option<u32> in InitializeParams — passing a string makes
-    // deserialization fail, exercising the error-propagation path.
-    let result = lsp
-        .handle_request("initialize", json!({ "processId": "not_a_number" }))
-        .await;
+        // processId is an Option<u32> in InitializeParams — passing a string makes
+        // deserialization fail, exercising the error-propagation path.
+        let result = lsp
+            .handle_request("initialize", json!({ "processId": "not_a_number" }))
+            .await;
 
-    assert!(
-        result.is_err(),
-        "server should return Err on invalid field type"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::INITIALIZE_PARAMS),
-        "error message should contain '{}', got: {err}",
-        error_prefix::INITIALIZE_PARAMS
-    );
+        assert!(
+            result.is_err(),
+            "server should return Err on invalid field type"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error message should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    })
+    .await;
 }
 
 /// Missing required `capabilities` field should return Err containing
@@ -435,20 +480,23 @@ async fn initialize_with_invalid_field_type_returns_error() {
 /// rather than silently substituting a default.
 #[tokio::test]
 async fn initialize_with_missing_capabilities_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_missing_capabilities_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp.handle_request("initialize", json!({})).await;
+        let result = lsp.handle_request("initialize", json!({})).await;
 
-    assert!(
-        result.is_err(),
-        "server should return Err when capabilities field is missing"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::INITIALIZE_PARAMS),
-        "error message should contain '{}', got: {err}",
-        error_prefix::INITIALIZE_PARAMS
-    );
+        assert!(
+            result.is_err(),
+            "server should return Err when capabilities field is missing"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error message should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    })
+    .await;
 }
 
 /// A failed initialize call should not corrupt server state — a subsequent valid
@@ -459,25 +507,28 @@ async fn initialize_with_missing_capabilities_returns_error() {
 /// pre-initialized state.
 #[tokio::test]
 async fn initialize_error_does_not_corrupt_server_state() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_error_does_not_corrupt_server_state", async {
+        let lsp = InProcessLsp::new();
 
-    // First call: should fail.
-    let err_result = lsp.handle_request("initialize", json!(42)).await;
-    assert!(
-        err_result.is_err(),
-        "initialize with json!(42) should return Err, got: {:?}",
-        err_result
-    );
+        // First call: should fail.
+        let err_result = lsp.handle_request("initialize", json!(42)).await;
+        assert!(
+            err_result.is_err(),
+            "initialize with json!(42) should return Err, got: {:?}",
+            err_result
+        );
 
-    // Second call on the same instance: should succeed and return a well-formed response.
-    let ok_result = lsp
-        .handle_request("initialize", json!({"capabilities": {}}))
-        .await;
-    let val = ok_result.expect("initialize after a failed attempt should succeed");
-    assert!(
-        val.get("capabilities").is_some(),
-        "recovery response should contain capabilities"
-    );
+        // Second call on the same instance: should succeed and return a well-formed response.
+        let ok_result = lsp
+            .handle_request("initialize", json!({"capabilities": {}}))
+            .await;
+        let val = ok_result.expect("initialize after a failed attempt should succeed");
+        assert!(
+            val.get("capabilities").is_some(),
+            "recovery response should contain capabilities"
+        );
+    })
+    .await;
 }
 
 /// The `initialized` notification should return exactly `Ok(Value::Null)`.
@@ -490,19 +541,22 @@ async fn initialize_error_does_not_corrupt_server_state() {
 /// arm separately.
 #[tokio::test]
 async fn initialized_returns_ok_null() {
-    let lsp = InProcessLsp::new();
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed before testing initialized");
+    with_hang_guard(HANG_GUARD_SECS, "initialized_returns_ok_null", async {
+        let lsp = InProcessLsp::new();
+        lsp.handle_request("initialize", json!({"capabilities": {}}))
+            .await
+            .expect("initialize should succeed before testing initialized");
 
-    let result = lsp.handle_request("initialized", json!({})).await;
+        let result = lsp.handle_request("initialized", json!({})).await;
 
-    let val = result.expect("initialized should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "initialized should return exactly Ok(Value::Null)"
-    );
+        let val = result.expect("initialized should return Ok");
+        assert_eq!(
+            val,
+            serde_json::Value::Null,
+            "initialized should return exactly Ok(Value::Null)"
+        );
+    })
+    .await;
 }
 
 /// A valid `textDocument/didOpen` notification should return exactly `Ok(Value::Null)`.
@@ -537,9 +591,12 @@ async fn did_open_returns_ok_null() {
 /// surfaced to the caller rather than silently ignored.
 #[tokio::test]
 async fn initialized_with_malformed_params_returns_error() {
-    let lsp = InProcessLsp::new();
-    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
-        .await;
+    with_hang_guard(HANG_GUARD_SECS, "initialized_with_malformed_params_returns_error", async {
+        let lsp = InProcessLsp::new();
+        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+            .await;
+    })
+    .await;
 }
 
 /// LSP clients (e.g. some VS Code extensions, Neovim) may send `params: null` for
@@ -714,8 +771,11 @@ async fn shutdown_with_null_params_returns_ok_null() {
 /// a panic or an unexpected error being introduced on this path.
 #[tokio::test]
 async fn shutdown_before_initialize() {
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!({})).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize", async {
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!({})).await;
+    })
+    .await;
 }
 
 /// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
@@ -727,8 +787,11 @@ async fn shutdown_before_initialize() {
 /// path because the shutdown arm in the bridge ignores params entirely.
 #[tokio::test]
 async fn shutdown_before_initialize_with_null_params() {
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize_with_null_params", async {
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    })
+    .await;
 }
 
 /// The `shutdown` bridge arm ignores params entirely — it never deserializes or
@@ -745,12 +808,15 @@ async fn shutdown_before_initialize_with_null_params() {
 /// shutdown arm does not consult initialization state.
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params() {
-    // Object with unexpected extra fields — bridge must not reject this.
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
-    // Wrong JSON type entirely — bridge must not reject this either.
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_ignores_unexpected_params", async {
+        // Object with unexpected extra fields — bridge must not reject this.
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+        // Wrong JSON type entirely — bridge must not reject this either.
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    })
+    .await;
 }
 
 /// Mirror of `shutdown_ignores_unexpected_params` for the post-handshake path.
@@ -853,41 +919,44 @@ mod completion_items_tests {
 /// otherwise this test will fail at runtime, catching the drift immediately.
 #[tokio::test]
 async fn error_prefix_constants_match_actual_errors() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "error_prefix_constants_match_actual_errors", async {
+        let lsp = InProcessLsp::new();
 
-    // Verify each constant is contained in the error for its matching method.
-    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        // Verify each constant is contained in the error for its matching method.
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+            .await;
+        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+            .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didOpen",
+            error_prefix::DID_OPEN_PARAMS,
+        )
         .await;
-    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didChange",
+            error_prefix::DID_CHANGE_PARAMS,
+        )
         .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didOpen",
-        error_prefix::DID_OPEN_PARAMS,
-    )
-    .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didChange",
-        error_prefix::DID_CHANGE_PARAMS,
-    )
-    .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didClose",
-        error_prefix::DID_CLOSE_PARAMS,
-    )
-    .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didClose",
+            error_prefix::DID_CLOSE_PARAMS,
+        )
+        .await;
 
-    // The unsupported-method constant covers the prefix portion of the error.
-    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
-    assert!(result.is_err(), "unsupported method should return Err");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::UNSUPPORTED_METHOD),
-        "error should contain '{}', got: {err}",
-        error_prefix::UNSUPPORTED_METHOD
-    );
+        // The unsupported-method constant covers the prefix portion of the error.
+        let result = lsp.handle_request("textDocument/foobar", json!({})).await;
+        assert!(result.is_err(), "unsupported method should return Err");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::UNSUPPORTED_METHOD),
+            "error should contain '{}', got: {err}",
+            error_prefix::UNSUPPORTED_METHOD
+        );
+    })
+    .await;
 }
 
 /// Document the server behavior when `initialize` fails (malformed params) and the
@@ -913,7 +982,10 @@ async fn error_prefix_constants_match_actual_errors() {
 /// assertion with downstream `didOpen` + `completion` calls.
 #[tokio::test]
 async fn downstream_ops_after_malformed_initialize_without_initialized() {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    with_hang_guard(
+        HANG_GUARD_SECS,
+        "downstream_ops_after_malformed_initialize_without_initialized",
+        async {
         let lsp = InProcessLsp::new();
 
         // Step 1: send initialize with a completely wrong payload type.
@@ -966,7 +1038,30 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             // completion_items() panics with an actionable message if the shape is wrong.
             let _items = completion_items(&val);
         }
-    })
-    .await
-    .expect("downstream_ops test body must not hang");
+    },
+    )
+    .await;
+}
+
+/// Unit tests for the `with_hang_guard` helper.
+mod hang_guard_tests {
+    use super::*;
+
+    /// A future that completes immediately should not panic.
+    #[tokio::test]
+    async fn completes_fast_future() {
+        with_hang_guard(5, "completes_fast_future", async {}).await;
+    }
+
+    /// A future that exceeds the timeout should panic with "must not hang".
+    #[tokio::test]
+    #[should_panic(expected = "must not hang")]
+    async fn panics_on_timeout() {
+        with_hang_guard(
+            0,
+            "panics_on_timeout",
+            tokio::time::sleep(Duration::from_secs(60)),
+        )
+        .await;
+    }
 }

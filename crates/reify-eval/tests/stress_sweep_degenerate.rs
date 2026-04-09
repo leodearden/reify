@@ -12,52 +12,7 @@ use std::f64::consts::PI;
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 use reify_test_support::*;
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, Severity, TessError, Type, Value,
-};
-
-// ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// (copied from geometry_error_handling.rs pattern)
-// ---------------------------------------------------------------------------
-
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        writer
-            .write_all(b"BOGUS_EXPORT")
-            .map_err(|e| ExportError::IoError(e.to_string()))
-    }
-
-    fn tessellate(
-        &self,
-        _handle: GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<Mesh, TessError> {
-        Ok(Mesh {
-            vertices: vec![],
-            indices: vec![],
-            normals: None,
-        })
-    }
-}
+use reify_types::{ExportFormat, GeometryOp, ModulePath, Severity, Type, Value};
 
 // ---------------------------------------------------------------------------
 // step-13: zero_extrude_distance — failing test

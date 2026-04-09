@@ -2,10 +2,7 @@
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
 use reify_test_support::*;
-use reify_types::{
-    ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel,
-    GeometryOp, GeometryQuery, Mesh, ModulePath, QueryError, TessError, Value,
-};
+use reify_types::ModulePath;
 
 /// When the module has no realizations and no geometry kernel,
 /// tessellate_realizations() should return empty meshes and populated values.
@@ -180,36 +177,6 @@ fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// FailingMockGeometryKernel — execute() always returns Err
-// ---------------------------------------------------------------------------
-
-struct FailingMockGeometryKernel;
-
-impl GeometryKernel for FailingMockGeometryKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-        Err(GeometryError::OperationFailed(
-            "simulated kernel failure".into(),
-        ))
-    }
-
-    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-        Ok(Value::Real(0.0))
-    }
-
-    fn export(
-        &self,
-        _handle: GeometryHandleId,
-        _format: ExportFormat,
-        _writer: &mut dyn std::io::Write,
-    ) -> Result<(), ExportError> {
-        Ok(())
-    }
-
-    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-        Err(TessError::TessellationFailed("should not reach".into()))
-    }
-}
 
 /// tessellate_realizations records geometry execution errors as diagnostics
 /// when kernel operations fail.

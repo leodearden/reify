@@ -2736,12 +2736,13 @@
         "dependencies": [
           "163"
         ],
-        "status": "in-progress",
+        "status": "pending",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests",
             "crates/reify-expr/src",
+            "crates/reify-expr/tests",
             "crates/reify-syntax/src",
             "crates/reify-syntax/tests",
             "crates/reify-types/src",
@@ -2761,7 +2762,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:06:13.770Z"
+        "updatedAt": "2026-04-09T21:12:52.085Z"
       },
       {
         "id": "165",
@@ -3761,7 +3762,7 @@
         "dependencies": [
           "208"
         ],
-        "status": "pending",
+        "status": "in-progress",
         "metadata": {
           "modules": [
             "crates/reify-compiler/src",
@@ -3784,7 +3785,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:16:52.149Z"
+        "updatedAt": "2026-04-09T21:12:52.749Z"
       },
       {
         "id": "210",
@@ -5337,8 +5338,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-constraints"
+            "crates/reify-compiler/src",
+            "crates/reify-constraints/src",
+            "crates/reify-constraints/tests",
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-test-support/src",
+            "crates/reify-types/src"
           ],
           "milestone": "M11",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -5348,7 +5354,7 @@
           ]
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-09T21:21:54.446Z"
       },
       {
         "id": "277",
@@ -20432,11 +20438,11 @@
         "description": "Follow-up from task 836 review. Address non-blocking suggestions in gui/src-tauri/src/engine.rs and engine_tests.rs:\n\n1. resolve_source() mixes Option return with unreachable!() panic — choose one coherent strategy (architect S1)\n2. Caller precondition (compiled.is_some()) enforced only by doc comment, not type system (architect S2)\n3. Test comments reference task numbers instead of behavior (architect S3, test analyst S10)\n4. Warning source fixture duplicated 3x — extract to reify-test-support/src/fixtures.rs (reuse auditor)\n5. Non-atomic state mutation in load_from_source/update_source — module_name/source_map set before compiled (robustness, pre-existing)\n6. source_map key-miss path in resolve_source untested; update_source pinning test only checks get_diagnostics not get_source_location (test analyst S8, S11)\n\nModules: gui/src-tauri, crates/reify-test-support",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:36:00.198Z",
+        "updatedAt": "2026-04-09T21:19:26.202Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -20682,11 +20688,11 @@
         "description": "In crates/reify-types/src/value.rs tests: (1) Fix stale 'line 968' reference (PartialEq is at line 976). (2) Unify test naming convention (value_ord_real_* vs value_ord_within_*). (3) Pin concrete ordering direction in value_ord_real_negative_zero (assert pos.cmp(&neg) == Greater). (4) Add Ord tests for non-canonical NaN bit patterns (negative NaN via f64::from_bits, signaling NaN).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.462Z",
+        "updatedAt": "2026-04-09T21:18:06.243Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -20946,7 +20952,7 @@
         "description": "Two items from the file->file_path rename review (task 881): (1) Add negative assertion to GUI-side SourceLocation test verifying serialized output does NOT contain \"file\" key, mirroring the assertion in crates/reify-mcp/tests/registry_tests.rs. (2) Standardize GUI-to-MCP type boundary: gui/src-tauri/src/commands.rs imports reify_mcp::SourceLocationInfo directly while other IPC types use local adapters in gui/src-tauri/src/types.rs. Either add adapter type or document the deliberate choice.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20960,7 +20966,8 @@
             "crates/reify-mcp",
             "gui/src-tauri"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T21:19:29.796Z"
       },
       {
         "id": "986",
@@ -24626,11 +24633,11 @@
         "description": "Extract a shared `make_gradient_field(body_builder, ...)` helper that both `make_3d_dot_product_gradient_field` and `make_3d_quadratic_gradient_field` delegate to, reducing ~30 lines of duplicated setup/assert/return boilerplate. Also add a brief test or assertion sampling the quadratic gradient at the origin (0,0,0) to confirm the zero-vector edge case is handled correctly.\n\nmemory_hints: search \"make_3d_quadratic_gradient_field make_3d_dot_product_gradient_field factory\"; get_entity \"gradient_tests.rs\"",
         "details": "Two changes in crates/reify-expr/tests/gradient_tests.rs:\n\n(1) Factory dedup (S2): `make_3d_quadratic_gradient_field` (lines 2768-2816) and `make_3d_dot_product_gradient_field` (lines 2707-2756) are structurally identical — same domain/codomain setup, field creation, gradient expression building, eval, and assertion — differing only in the lambda body. Extract a parameterised `make_gradient_field(body_builder)` that accepts a closure for building the lambda body expression, and have both existing factories delegate to it.\n\n(2) Origin edge case (S3): The quadratic test `gradient_single_point_param_quadratic` (line 2866) only tests at (2,3,5). Add a test or assertion at (0,0,0) where the expected gradient is (0,0,0) — a zero-vector edge case for `dot(p,p)`.\n\nSource: review suggestions S2 and S3 from esc-1099-879 (task 1099 review triage).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:58:46.475Z",
+        "updatedAt": "2026-04-09T21:39:20.237Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -24724,11 +24731,11 @@
         "description": "FailingMockGeometryKernel is copy-pasted in 4 test files (~35 lines each): geometry_error_handling.rs, tessellation.rs, stress_error_messages.rs, and stress_sweep_degenerate.rs. Extract it into crates/reify-test-support/src/mocks.rs alongside MockGeometryKernel, and import it in all test files. This reduces maintenance surface and keeps the mock zoo in one place.\n\nmemory_hints: search \"MockGeometryKernel test support mocks\" for related context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:06:15.346Z",
+        "updatedAt": "2026-04-09T21:39:20.569Z",
         "metadata": {
           "modules": [
             "crates/reify-test-support",
@@ -24772,11 +24779,11 @@
         "description": "The sweep degenerate tests cover zero-distance extrude and zero-angle revolve, but miss negative-distance extrude and negative-angle revolve. Negative values may be valid (reverse direction/clockwise rotation) or should be rejected — either way, explicit tests should document the intended behavior. Add test cases like negative_extrude_distance_is_valid (or _is_rejected) and negative_revolve_angle to crates/reify-eval/tests/stress_sweep_degenerate.rs.\n\nmemory_hints: search \"sweep degenerate stress test extrude revolve\" for related test context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:23:11.083Z",
+        "updatedAt": "2026-04-09T21:39:22.663Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -24997,11 +25004,11 @@
         "description": "Two related follow-ups to task 864 for the reify-expr copy of sanitize_value (crates/reify-expr/src/lib.rs ~line 1030-1071):\n\nS1 (stale_documentation): The doc comment still claims \"only the Value::Real and Value::Scalar arms are reachable from current call sites; the Value::Orientation arm is unreachable today but is included for structural parity\". After the recent diff, Value::Complex is also present in the match. Update the comment to list Complex alongside Orientation as an arm that is currently unreachable from reify-expr call sites but kept for structural parity with reify-stdlib::sanitize_value (defense-in-depth). E.g.: \"the Value::Complex and Value::Orientation arms are unreachable today but are included for structural parity...\".\n\nS2 (test_coverage_gap): reify-expr has direct sanitize_value unit tests for the Real, Scalar, and Orientation arms (lib.rs:4451-4615) but no equivalent direct tests for the newly-added Value::Complex arm. The reify-stdlib copy tests Complex through eval_builtin overflow paths; reify-expr should mirror its existing Orientation-style direct tests for Complex (NaN re, NaN im, +Inf re, -Inf im, finite passthrough). Without these, a future edit that breaks the Complex arm in only one crate would only be caught by the shell-level body-diff guard (added in task 864), not by Rust unit tests.\n\nAdd a new \"── sanitize_value Complex arm tests ──\" section adjacent to the Orientation arm tests in reify-expr/src/lib.rs, exercising NaN re, NaN im, +Inf re, -Inf im, and a finite passthrough. Use Value::Complex { re, im, dimension: DimensionVector::DIMENSIONLESS }.\n\nSource: review of task 864 (esc-864-918).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:44:51.815Z",
+        "updatedAt": "2026-04-09T21:19:03.694Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25119,11 +25126,11 @@
         "description": "In crates/reify-eval/src/lib.rs (around lines 3636 and 3666), the new `v.abs() < 1e-12` checks silently drop extrudes with sub-picometer distances and revolves with sub-picoradian angles by returning `None`. A model author writing e.g. `extrude(profile, 1nm)` will see geometry vanish with no diagnostic.\n\n1. Add a brief inline comment at each guard explaining the rationale, e.g. \"reject sub-picometer / sub-picoradian magnitudes as degenerate geometry\".\n2. Consider emitting a `tracing::warn!` (consistent with how other degenerate cases in this file are reported) so authors get a hint when their op is dropped. Check the existing `diagnostics: &mut Vec<Diagnostic>` parameter — pushing a degenerate-geometry diagnostic there may be more appropriate than tracing.\n\nCross-reference: search memory for existing degenerate-geometry diagnostic patterns in reify-eval before deciding between tracing::warn and Diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:57:37.335Z",
+        "updatedAt": "2026-04-09T21:21:54.967Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -25610,11 +25617,11 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs, two tests are functionally identical:\n\n- `gradient_runtime_codomain_dim_mismatch_panics` (line ~3542)\n- `gradient_codomain_type_vs_runtime_mismatch` (line ~3695)\n\nBoth are gated by `#[cfg(debug_assertions)]`, both use `#[should_panic(expected = \"codomain_type does not match\")]`, both build a `|x| 2*x` lambda with `domain_type = Type::Real` and `codomain_type = Scalar[MASS]`, both call `gradient` and sample at `Real(1.0)`. Only the doc-comments and the `grad_field_type` extraction style differ.\n\nDelete one of the two duplicates. A reasonable choice is to keep `gradient_codomain_type_vs_runtime_mismatch` (it uses the refactored `grad_field_type` binding from Task 1010 and sits adjacent to its companion `gradient_codomain_type_vs_runtime_mismatch_field_structure`) and delete `gradient_runtime_codomain_dim_mismatch_panics`. Alternatively keep the other and apply the `grad_field_type` extraction simplification.\n\nAfter consolidation verify the Step-8 section remains correctly scoped and all tests still pass (`cargo test -p reify-expr --test gradient_tests`).\n\nNote: distinct from Task 1160, which addresses the dimensioned-domain test pair and the repeated trust-the-declaration doc block.\n\nMemory hints: search for \"gradient codomain mismatch test\" and \"trust-the-declaration design decision gradient\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:43:49.469Z",
+        "updatedAt": "2026-04-09T21:39:21.458Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -25743,11 +25750,11 @@
         "description": "Seven small follow-up improvements to the SETUP_POSIX_FALLBACK_ENV helper added in Task 1142 (tests/infra/test_portable_timeout.sh). All seven items are from the post-merge review of esc-1142-1006.\n\n## S1 — Fix helper docstring call-site list (lines 207-211, documentation_accuracy)\nThe docstring says \"(16b, 18b)\" and \"all 4 tests (16a/b, 18a/b)\" but the helper is actually used by Tests 16a/b and 21a/b — never by Test 18 (Test 18 uses POSIX_FALLBACK_SETUP for monitor-mode preservation). Replace `(16b, 18b)` with `(16b, 21b)` and `all 4 tests (16a/b, 18a/b)` with `all 4 tests (16a/b, 21a/b)`.\n\n## S2 — Fix rescue_dir cleanup contract violation (lines 234, 333, 370, 518; contract_violation)\nThe helper docstring says \"Callers must clean up rescue_dir explicitly\" but only Test 21b (line 549) actually does. The other 4 call sites — self-test (~234), Test 16a (~333), Test 16b (~370), Test 21a (~518) — leak a temp dir per run, bloating /tmp under repeated CI runs and making the contract unenforceable.\n\nPreferred fix: bake cleanup into the helper itself by exposing a sibling `CLEANUP_POSIX_FALLBACK_ENV='rm -rf \"$rescue_dir\"'` (or a single combined wrapper) so future call sites cannot forget. Alternative: add explicit `rm -rf \"$rescue_dir\"` to each of the 4 leaking sites mirroring the Test 21b pattern. If S4 is taken at the same time, fold into the unified helper instead.\n\n## S3 — Strengthen helper self-test with load-bearing assertions (lines 233-239, test_coverage)\nSelf-test currently only verifies that timeout/gtimeout are absent from PATH and rescue_dir was created. It does NOT assert the helper's two most load-bearing properties:\n1. `declare -f portable_timeout >/dev/null` — proves LIB_PORTABLE was actually sourced.\n2. `[ -z \"$(trap -p EXIT)\" ]` — proves no EXIT trap is installed (the entire reason this helper exists; a regression that re-adds an EXIT trap would silently reintroduce the false-positive bug in 16b/21b).\n\nBoth are one-liners and would catch the exact regressions the helper guards against.\n\n## S4 — Deduplicate the three setup blobs (lines 188-205 vs 212-228 vs MKTEMP_FAIL_SETUP, code_duplication)\nSETUP_POSIX_FALLBACK_ENV, POSIX_FALLBACK_SETUP, and MKTEMP_FAIL_SETUP are now three near-identical ~15-line PATH-stripping blobs. Differences are: (a) symlink command list (POSIX_FALLBACK_SETUP omits `ps`/`bash`), (b) presence of EXIT trap, (c) TMPDIR override (MKTEMP_FAIL_SETUP). It has already drifted: `bash` was added to the new helper but not to POSIX_FALLBACK_SETUP.\n\nRefactor: define a helper function `_build_posix_fallback_env()` taking the symlink command list (and trap/TMPDIR knobs) as args, and have all three SETUP variables call it. Or collapse to a single setup with environment knobs (`_PT_RESCUE_EXTRA_CMDS`, `_PT_INSTALL_EXIT_TRAP`, `_PT_OVERRIDE_TMPDIR`). This is the substantive refactor — S2 falls out of it naturally if cleanup is centralized.\n\n## S5 — Fix Test 16a polling-loop comment arithmetic (lines 319-321, documentation_accuracy)\nComment says \"polls up to 5×200ms (1s total)\" but the loop body sleeps AFTER each ps check, so the 5th iteration's sleep is wasted (loop exits next). Total realized worst-case wait is 4×0.2s = 0.8s, not 1s. Either reword the comment to \"5 checks separated by 4×200ms sleeps (~0.8s worst case)\" or move the sleep to the start of the loop (skipped on first iteration via a guard) so the worst case actually equals 1s.\n\n## S6 — Test 16a safety-net cleanup robustness (lines 361-364, robustness)\nTwo minor concerns with the safety-net `kill` block:\n1. Uses `grep -E` not `grep -qE` — match would write to stdout (harmless under assert's `>/dev/null` redirect, but inconsistent with the `-qE` form used in the polling loop above and noisy if anyone debugs by removing the redirect).\n2. Pattern matches system-wide on `[[:space:]]sleep 31337$`, so if Test 16a runs in parallel with itself (CI matrix on shared host, developer running suite twice), each instance terminates the other's sentinel and produces flaky positive-spawn checks.\n\nFix: switch to `grep -qE` for consistency, and at minimum document the \"no-parallel-runs\" assumption next to the safety-net. Per-run sentinel tagging is harder (the integer sleep duration can't easily encode `$$`) and probably not worth the complexity.\n\n## S7 — Rename SETUP_POSIX_FALLBACK_ENV to match `*_SETUP` convention (line 212, naming_consistency)\nExisting helpers use suffix `_SETUP` (`MKTEMP_FAIL_SETUP`, `POSIX_FALLBACK_SETUP`) but the new helper uses prefix `SETUP_` (`SETUP_POSIX_FALLBACK_ENV`). Rename to `POSIX_FALLBACK_SETUP_NO_TRAP` to (a) match the existing `*_SETUP` pattern and (b) telegraph the distinguishing property (\"no EXIT trap\") at every call site. Update all 5 call sites and the env-passing wrappers.\n\n## Memory hints\n- search: \"SETUP_POSIX_FALLBACK_ENV helper duplication test_portable_timeout\"\n- search: \"Task 1142 portable_timeout helper extraction\"\n- entity: \"test_portable_timeout.sh\"\n\n## Notes\n- All seven suggestions live in `tests/infra/test_portable_timeout.sh` only. No production code changes (`scripts/lib_portable.sh`) are needed.\n- S2 and S4 are coupled: a unified helper (S4) with built-in cleanup naturally satisfies S2.\n- S1, S5, S7 are pure docstring/naming fixes and could ship as a single trivial commit.\n- S3 strengthens the existing self-test added in Task 1142 — keep it minimal (two extra one-liners).\n- Existing pending Task 1214 covers `scripts/lib_portable.sh` hardening; it does NOT overlap with this test-file polish task.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:18:44.687Z",
+        "updatedAt": "2026-04-09T21:22:48.228Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -26381,11 +26388,11 @@
         "description": "The `_check_has_no_if_n_guard` helper in tests/infra/test_test_helpers.sh:265 uses the regex `if \\[ -n`, which has two related gaps flagged by reviewer_comprehensive on Task 1241:\n\n1. **Alternate guard forms slip through.** The regex only matches the single-bracket single-line `if [ -n` form. Equivalent defensive guards that a future author might (re)introduce without realizing they're prohibited are not caught:\n   - `if [[ -n \"$x\" ]]`\n   - `if test -n \"$x\"`\n   - `if [ ! -z \"$x\" ]`\n   - split-line variants with a newline after `[`\n   The stated intent of the new comment (\"any `if [ -n` conditional regardless of the variable name\") is narrower than the broader goal of banning defensive guards.\n\n2. **False-positive risk from comments and string literals.** Because `grep` inspects every line of the file (including comments and heredocs), a future comment or string literal in `tests/sync_comments_test.sh` containing the literal text `if [ -n` (e.g. a comment explaining *why* the guard was removed) would cause structural check (b) to fail even though no actual guard exists.\n\nResolution: pick one of these approaches and apply it consistently.\n- (a) Extend the regex to e.g. `(if|&&|\\|\\|)[[:space:]]*(\\[\\[?|test)[[:space:]]+-n` to cover `[[` / `test` forms; and anchor to start-of-line (`^[[:space:]]*`) OR strip comment lines before matching (`grep -v '^[[:space:]]*#' | grep -qE ...`) to kill the comment false-positive.\n- (b) Document the limitation explicitly adjacent to `_check_has_no_if_n_guard` so a future contributor debugging a surprising failure finds the explanation, AND add an explicit comment noting that `[[` / `test` forms are intentionally out of scope and must be banned by reviewers rather than the automated check.\n\nIf you choose (a), add fixtures exercising each newly-supported form (`[[`, `test`, `!-z`) in the robustness suite, plus a negative fixture proving a comment line containing `if [ -n` does NOT trip the helper.\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes with the new fixtures.\n\nmemory_hints: search(\"_check_has_no_if_n_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:38:34.835Z",
+        "updatedAt": "2026-04-09T21:06:15.845Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -27032,11 +27039,11 @@
         "description": "In crates/reify-types/src/value.rs: (1) Add a nan_partialeq_bit_identity_orientation test covering NaN in each of w/x/y/z (single-component and all-NaN cases) to match the existing Real/Scalar/Complex family. (2) Change DimensionVector::LENGTH to DimensionVector::DIMENSIONLESS in nan_partialeq_bit_identity_complex and nan_partialeq_bit_identity_scalar for consistency with the existing *_bit_identity_nan_and_neg_zero_consistent tests.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:33.798Z",
+        "updatedAt": "2026-04-09T21:18:04.727Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -27425,7 +27432,7 @@
         "description": "Task 12 plan specifies DependencyMap for static dependency extraction from expressions (extract_value_deps function). But existing code in deps.rs uses runtime DependencyTrace collected during evaluation. The cache.rs already has CacheStore with early cutoff via result_hash. Need to clarify whether to implement static extraction per plan or extend existing runtime tracing approach. The prerequisite module stubs already exist but with different implementations.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -27438,7 +27445,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-09T20:05:24.911Z"
+        "updatedAt": "2026-04-09T21:11:24.131Z"
       },
       {
         "id": "1318",
@@ -27816,11 +27823,11 @@
         "description": "Two low-severity review suggestions on the parse-error early-return added in Task 497 (crates/reify-lsp/src/diagnostics.rs):\n\n1. Line 72 comment: Replace the hard-coded line reference \"Match the behaviour of engine.rs:87-90\" with a function-name reference (\"Match the behaviour of Engine::load_from_source's early-return on parse errors\"). Hard-coded line numbers silently go stale as engine.rs is edited.\n\n2. Line 371 test `parse_error_skips_compile_and_eval`: Strengthen by adding `assert!(result.geometry_output.is_none(), \"geometry_output should be None when parse errors exist\")` to confirm eval was actually skipped (not just that the count matches). Optionally spot-check diagnostic severity/message to confirm they are parse-error diagnostics.\n\nBoth are in crates/reify-lsp/src/diagnostics.rs. Trivial single-file change, no cross-module impact.\n\nMemory hints: entity names: compute_diagnostics_with_state, parse_error_skips_compile_and_eval",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:27:48.467Z",
+        "updatedAt": "2026-04-09T21:21:38.376Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src"
@@ -27897,11 +27904,11 @@
         "description": "Three consistency/correctness follow-ups to scripts/lib_portable.sh's post-wait orphan-cleanup block (lines 145-152), added in Task 1214 (S2).\n\n**S1: Quote the PGID argument on line 152 for consistency with timer subshells.**\nLines 124 and 134 now use `kill -9 -- \"-$cmd_pid\" 2>/dev/null` (quoted, per Task 1214's S1 fix), but the new post-wait cleanup on line 152 uses `kill -9 -- -$cmd_pid 2>/dev/null || true` (unquoted). If defensive quoting is worth applying in the timer subshells, it should apply here too. Change line 152 to `kill -9 -- \"-$cmd_pid\" 2>/dev/null || true`. This will break Test 23 (currently asserts exactly 2 quoted occurrences) — update it to 3, or rewrite as an invariant (no unquoted `kill -9 -- -$cmd_pid` occurrences anywhere in the file).\n\n**S2: Fix the comment justifying SIGKILL-over-SIGTERM on the post-wait cleanup (lines 149-150).**\nThe current comment says \"if we reached this point the command already ignored SIGTERM, so re-sending SIGTERM here would be ineffective.\" That's only true for the timeout-escalation path — line 152 also runs when the command exited naturally before the timeout fired, in which case the command did NOT ignore SIGTERM and the premise is false. Rewrite to cover both paths, e.g. \"Use SIGKILL rather than SIGTERM: in the timeout path, the command already ignored SIGTERM, so SIGTERM would be ineffective; in the early-exit path, any surviving process-group members are orphans with no opportunity for graceful shutdown anyway.\"\n\n**S3: Address or document the early-exit behavioral change.**\nPreviously, orphans in a normally-exiting command's process group received SIGTERM (giving them a grace window); they now receive SIGKILL unconditionally. This is a silent behavioral change for commands that background children in the same PGID and exit successfully. No existing test exercises the early-exit orphan-cleanup path (Test 16 only checks the timer's inner `sleep 31337`, which is the timeout-escalation path). Two options:\n  (a) Add a behavioral test that launches a command which forks a child in the same PGID, exits fast, and verifies the child is reaped post-call.\n  (b) Document the semantics change in the portable_timeout doc comment so callers know orphaned PGID members no longer get a SIGTERM grace window on early exit.\n\nAll three suggestions come from reviewer_comprehensive's post-merge review of Task 1214. They're small and closely related — one task covers them efficiently.\n\nMemory hints: search \"portable_timeout POSIX fallback SIGKILL orphan cleanup\" for context on the design; Task 1214 established the baseline.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:23:46.126Z",
+        "updatedAt": "2026-04-09T21:22:50.837Z",
         "metadata": {
           "modules": [
             "scripts/lib_portable.sh",
@@ -27951,11 +27958,22 @@
         "description": "Follow-up from Task 1322 review (esc-1322-29, suggestions S1/S2/S3/S6). Improve the hardening self-checks added in Task 1322 to tests/infra/test_sync_comments_grep.sh so they are more robust and self-documenting.\n\nFour related improvements in Section 1 (lines ~46-59):\n\n1. **S1 (readability, line 53):** The `_CHECK='bash'; _CHECK+=' -c \".*\\$PATTERN'` split-concatenation trick prevents the self-check regex from matching its own definition line. This is opaque on first read. Add an inline comment directly above line 53 explaining *why* it is split — something like `# Split assignment so the literal 'bash -c \".*$PATTERN' does not appear contiguously in this file and trip its own self-check below.`\n\n2. **S2 (test_coverage, lines 53-54):** `_no_unhardened_pattern_interp` matches only the exact form `bash -c \"...$PATTERN...`. It does NOT catch the equivalent `${PATTERN}` form (`\\$PATTERN` in the regex requires a literal `$` directly followed by `P`, not `$` followed by `{`), nor variations like `bash -c \"...\\\\\"$PATTERN\\\\\"...\"`. Since this IS the regression trap for the whole refactor, its recall matters. Broaden the regex to at least accept an optional `{` after `$` (e.g. `bash -c \".*\\$\\\\{?PATTERN`). A stronger fix would be to reject any `bash -c \"` line that mentions PATTERN at all in Section 1.\n\n3. **S3 (test_quality, lines 56-57):** The `exports PATTERN` assertion is a purely textual grep for `^[[:space:]]*export[[:space:]]+PATTERN`. An `export PATTERN` inside an `if false; then ... fi` block would pass the textual check while leaving PATTERN unexported. Add (or replace with) a behavioral check: `assert \"PATTERN is actually exported\" bash -c '[ -n \"${PATTERN+x}\" ] && env | grep -q \"^PATTERN=\"'`. This validates the invariant the textual check is trying to enforce.\n\n4. **S6 (diagnostics, line 54):** When `_no_unhardened_pattern_interp` fails, grep's matched lines are printed but the user may not immediately understand they are the cause of the failing assert. Add a louder header, e.g.:\n```bash\n_no_unhardened_pattern_interp() {\n    local m\n    m=$(grep -nE \"$_CHECK\" \"$THIS_SCRIPT\") || return 0\n    echo \"UNHARDENED PATTERN INTERPOLATION FOUND:\" >&2\n    echo \"$m\" >&2\n    return 1\n}\n```\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh` — all assertions should still pass (≥40), and the braced-form negative case should also be caught if you add one.\n\nSource: esc-1322-29 (steward-triage from Task 1322 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:30:39.371Z"
+        "updatedAt": "2026-04-09T21:16:55.534Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Strengthen Section 1 regression guards in test_sync_comments_grep.sh"
+            ]
+          },
+          "modules": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ]
+        }
       },
       {
         "id": "1346",
@@ -27963,11 +27981,11 @@
         "description": "Follow-up from Task 1322 review (esc-1322-29, suggestions S4/S5). Task 1322 hardened only Section 1 of tests/infra/test_sync_comments_grep.sh. Sections 2 (lines 167, 170) and Section 3 (lines 182-220) still use the fragile `bash -c \"...\"` form with parent-shell interpolation of `$SYNC_TEST`, `$_SECT3_HELPER`, and heredoc-style embedded scripts that must escape every `\\\\$`.\n\nWhile these interpolated values are trusted *paths* (not extracted regexes) and so are not currently broken, the file now has two conventions side-by-side, which undermines the \"hardened-everywhere\" story and makes it easy to regress Section 1 by copying from Sections 2/3.\n\n**Work:**\n\n1. **S5 (consistency):** Apply the same env-passing pattern used in Section 1 to Sections 2 and 3. Export `SYNC_TEST` and `_SECT3_HELPER` (or equivalent scoped names) once, and switch the outer quotes of each `bash -c` to single-quotes so the child shell reads the variables from its own environment instead of parent-shell interpolation. For Section 3, the heredoc-style embedded scripts should likewise stop using `\\\\$`-escapes by running inside a single-quoted outer.\n\n2. **S4 (scoping):** While touching these sections, consider the naming/scope of `PATTERN`. `export PATTERN` promotes a very generic name to the environment for the remainder of the script, including Section 3 subshells that `source sync_comments_test.sh`. If that file (now or in future) references a local `PATTERN` variable, the exported one will shadow it. Either (a) rename to `FN_EXISTENCE_PATTERN` and update Section 1 assertions accordingly, or (b) `unset PATTERN` at the end of Section 1 (before the Section 2 header) so it does not leak into sourced scripts downstream. Option (a) is cleaner; option (b) is a narrower cleanup.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh` (all existing assertions must still pass) and `bash tests/infra/run_all.sh` (broader infra suite).\n\nSource: esc-1322-29 (steward-triage from Task 1322 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:03:02.042Z",
+        "updatedAt": "2026-04-09T21:13:00.429Z",
         "metadata": {
           "modules": [
             "tests/infra/test_sync_comments_grep.sh"
@@ -27980,14 +27998,15 @@
         "description": "In bridge.rs (Task 983's refactor), `parse_params` call sites now use hardcoded string labels (\"initialize\", \"didOpen\", etc.) while `error_prefix::*` constants duplicate the full prefixes as parallel string literals. The original invariant — \"editing a constant changes the runtime error\" — has been inverted into \"a test keeps two parallel strings in sync\". The doc comment on `parse_params` (lines 16-22) also still claims the label format is \"the canonical prefix asserted by integration tests via error_prefix constants\", which is misleading after the refactor.\n\nFix: thread `error_prefix::*` constants through as labels by (a) making each constant the exact runtime prefix (e.g. `INITIALIZE_PARAMS = \"initialize params error\"`) and changing `parse_params` to format as `format!(\"{label}: {e}\")`, or (b) adopting an equivalent approach that restores the constants as the literal source of truth. Update call sites to `parse_params::<InitializeParams>(params, error_prefix::INITIALIZE_PARAMS)`. Update the doc comment on `parse_params` to accurately describe the relationship.\n\nVerify by running the existing `error_prefix_constants_match_actual_errors` integration test in `crates/reify-lsp/tests/in_process_bridge.rs`, which should continue to pass once constants and runtime strings are unified.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:06:14.369Z",
+        "updatedAt": "2026-04-09T21:11:11.347Z",
         "metadata": {
           "modules": [
-            "crates/reify-lsp/src"
+            "crates/reify-lsp/src",
+            "crates/reify-lsp/tests"
           ]
         }
       },
@@ -27997,11 +28016,11 @@
         "description": "The three new unit tests added in Task 983 at crates/reify-lsp/src/bridge.rs:237-262 duplicate existing coverage and have inconsistent match strictness:\n\n- `parse_params_returns_ok_for_valid_input` is implicitly exercised by every happy-path integration test in `tests/in_process_bridge.rs`.\n- `parse_params_returns_err_with_label_prefix_on_invalid_input` and `parse_params_substitutes_provided_label` both feed `json!(42)` and check for a label-derived prefix — redundant with each other and with `error_prefix_constants_match_actual_errors`, which already pins the prefix format for every method arm.\n- One asserts `starts_with(\"initialize params error: \")` while the other uses `contains(\"didOpen params error\")` — inconsistent strictness for the same property.\n\nFix: either delete the three unit tests (the integration tests already cover observable behavior) or consolidate into a single table-driven test iterating `[(\"initialize\", InitializeParams), (\"didOpen\", DidOpenTextDocumentParams), ...]` with consistent `starts_with` assertions. Prefer deletion unless helper coverage must be isolated from dispatcher coverage.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:32:54.599Z",
+        "updatedAt": "2026-04-09T22:01:24.971Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src"
@@ -28026,11 +28045,11 @@
         "description": "Deduplicate and harden the per-site structured_field_emission tests added in Task 600, which now overlap with the migrated poison_recovery / poison_recovery_extended / poison_shared_fallback / poison_evaluate suites that already call assert_poison_recovers(..., expected_fields).",
         "details": "Background: Task 600 landed two sets of structured-field coverage: (a) the original per-site module `structured_field_emission` at crates/reify-runtime/tests/concurrent_eval.rs:2386-2672 (≈290 lines, 11 tests, one per warn site), and (b) updated assertions inside the existing poison_* suites after migrating them to assert_poison_recovers(..., expected_fields). The per-site module was the TDD-failing scaffold from commit 1faade68a/a471aac41; its role as a contract guard is now redundant.\n\nActions:\n\n1. Delete the entire `structured_field_emission` module (crates/reify-runtime/tests/concurrent_eval.rs:2386-2672). Rationale: the migrated poison_* suites already cover every site and also assert on data content, so they subsume the per-site checks and cost less to maintain.\n\n2. Before deleting, audit the per-site module for any assertion NOT covered by the migrated suites and lift those into the migrated tests. In particular: add at least one assertion per family (helper recovery, into_result inline recovery, shared_fallback inline recovery) that `capture.fields_by_event().iter().any(|m| m.contains_key(\"error\"))` so the `error = %e` field cannot silently disappear. Reviewer suggestion #1.\n\n3. Centralize the fixed message check in `assert_poison_recovers` (single `message == \"lock poisoned, recovering\"` check) or add `capture.assert_any_message_equals(&str)` in reify-test-support so the exact-equality check lives in one place instead of 11 per-site sites. This addresses reviewer suggestion #6 (brittleness from repeated string literals).\n\n4. After deletion, verify the remaining tests still compile and pass:\n   - cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils\n\n5. Ensure the field contract (lock/access/path/error/message) is still enforced end-to-end by the migrated suites. If any site loses coverage, add it back inside the relevant existing module (poison_recovery / poison_shared_fallback / poison_evaluate) instead of recreating structured_field_emission.\n\nNote: suggestion #4 (misleading test names like `read_values_emits_...` calling public methods) becomes moot once structured_field_emission is deleted. No rename needed.\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter Task 600\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:02:39.081Z",
+        "updatedAt": "2026-04-09T21:39:23.059Z",
         "metadata": {
           "modules": [
             "crates/reify-runtime/tests",
@@ -28044,11 +28063,11 @@
         "description": "Replace free-form string literals in the 11 tracing::warn! sites in crates/reify-runtime/src/concurrent_eval.rs with `const &str` values so typos like `access = \"exlusive\"` become compile errors.",
         "details": "Background: Task 600 established a structured-field schema for lock poisoning recovery warnings (see the module doc comment at crates/reify-runtime/src/concurrent_eval.rs:30-36). The schema is currently documented only in the doc comment; each of the 11 warn sites and the corresponding test assertions hand-repeat the string literals `\"values\"`, `\"snapshot_values\"`, `\"results\"`, `\"read\"`, `\"write\"`, `\"exclusive\"`, `\"into_inner\"`, `\"shared_fallback\"`. A typo in any of these compiles and silently breaks the field contract (Datadog/Jaeger filters would drop the warning). Reviewer suggestion #7.\n\nActions:\n\n1. Introduce a small private module inside concurrent_eval.rs (e.g. `mod poison_fields { ... }`) defining:\n   - `pub(super) const LOCK_VALUES: &str = \"values\";`\n   - `pub(super) const LOCK_SNAPSHOT_VALUES: &str = \"snapshot_values\";`\n   - `pub(super) const LOCK_RESULTS: &str = \"results\";`\n   - `pub(super) const ACCESS_READ: &str = \"read\";`\n   - `pub(super) const ACCESS_WRITE: &str = \"write\";`\n   - `pub(super) const ACCESS_EXCLUSIVE: &str = \"exclusive\";`\n   - `pub(super) const PATH_INTO_INNER: &str = \"into_inner\";`\n   - `pub(super) const PATH_SHARED_FALLBACK: &str = \"shared_fallback\";`\n   - `pub(super) const MSG_LOCK_POISONED: &str = \"lock poisoned, recovering\";`\n\n2. Update all 11 `tracing::warn!` call sites in concurrent_eval.rs (5 helper methods in the lines 108-150 range + 6 into_result paths in the lines 225-263 range) to use the constants:\n   ```rust\n   tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_READ, error = %e, \"{}\", poison_fields::MSG_LOCK_POISONED);\n   ```\n   Note: tracing::warn! accepts expressions as field values, so `lock = poison_fields::LOCK_VALUES` is fine.\n\n3. Export the constants with `pub(crate)` visibility (or via a `#[cfg(feature = \"test-utils\")]` re-export) so the test file can reference them in assertions — so the tests stop repeating literals too.\n\n4. Update the migrated tests in crates/reify-runtime/tests/concurrent_eval.rs to call `assert_poison_recovers(..., &[(\"lock\", poison_fields::LOCK_VALUES), (\"access\", poison_fields::ACCESS_READ)])` instead of string literals. This converts any future rename into a compile error.\n\n5. Update the module doc comment at crates/reify-runtime/src/concurrent_eval.rs:30-36 to point at the `poison_fields` module as the source of truth instead of enumerating values inline.\n\n6. Verify:\n   - cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils\n   - cd /home/leo/src/reify && cargo clippy -p reify-runtime -- -D warnings\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter Task 600 schema\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:32:31.355Z"
+        "updatedAt": "2026-04-09T21:07:35.878Z"
       },
       {
         "id": "1352",
@@ -28107,11 +28126,11 @@
         "description": "Currently only `downstream_ops_after_malformed_initialize_without_initialized` (crates/reify-lsp/tests/in_process_bridge.rs:915) has a `tokio::time::timeout` hang-guard (added in task 1338). Other pre-handshake tests in the same file (e.g., the malformed-params tests that exercise a fresh `InProcessLsp` before handshake) share the same hang exposure but have no guard, making the current guard read as ad-hoc.",
         "details": "Options (reviewer-suggested):\n(a) Factor a `with_hang_guard<F>(seconds: u64, f: F)` helper at the top of the test module and apply it uniformly to all pre-handshake tests in the file.\n(b) Add a one-line comment on the downstream_ops test documenting why it is uniquely at hang risk (e.g., \"exercises compile path where a real stall was historically observed\") and leave siblings ungated.\n\nPrefer (a) unless investigation shows the downstream_ops test is genuinely uniquely hang-prone. Source: esc-1338-39 suggestion from reviewer_comprehensive (test_robustness). Note: reify-lsp Cargo.toml already includes `tokio = { workspace = true, features = [\"time\"] }` in dev-dependencies, so adding more timeouts requires no dependency changes. Low priority.",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:38:43.973Z",
+        "updatedAt": "2026-04-09T21:40:46.739Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -28235,10 +28254,11 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:06:20.243Z",
+        "updatedAt": "2026-04-09T21:19:02.970Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr/src"
+            "crates/reify-expr/src",
+            "crates/reify-expr/tests"
           ]
         }
       },
@@ -28282,10 +28302,11 @@
         "description": "mcp_context.rs:228 still uses `ValueCellKind::Auto { .. } => \"Auto\"` wildcard match. After task 1334 established that `auto(free)` is user-visible in hover text, the MCP context (which exposes cell metadata to external tooling) should also surface this distinction.\n\nSplit the match arm at line 228:\n```rust\nValueCellKind::Auto { free: true } => \"Auto(free)\",\nValueCellKind::Auto { free: false } => \"Auto\",\n```\n\nMemory hints: search for \"ValueCellKind Auto free\" and \"mcp_context parameter info\" for prior context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:06:16.787Z"
       },
       {
         "id": "1366",
@@ -28296,7 +28317,14 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:09:35.460Z",
+        "metadata": {
+          "modules": [
+            "scripts/check-pm-standardization.sh",
+            "tests/infra/test_npm_ci_hardening.sh"
+          ]
+        }
       },
       {
         "id": "1367",
@@ -28304,11 +28332,17 @@
         "description": "Two related issues in conformance.rs from task 823 review:\n\n1. **Misleading diagnostic message (conformance.rs:48):** The diagnostic says \"trait member '{}' has no type annotation\" but `p` is iterated from `structure.members`, not the trait's member list. Users see \"trait member X has no type annotation\" and look at the trait definition instead of the structure. Change message to \"structure member '{}' has no type annotation; cannot infer type for trait conformance check\" or similar wording.\n\n2. **Behavioral change test gap (conformance.rs:58-83):** The Let branch now uses `?` to skip let bindings without type annotations from `structure_members`. Previously `let y = expr` (no annotation) would contribute `(y, Type::Real)` and potentially satisfy a trait requirement. Now it is excluded, so a trait requiring that member gets \"missing required member\" instead. The test `trait_let_no_type_annotation_compiles_clean` only covers the case where the trait does NOT require that let member. Add a test where the trait DOES require member `y` and the structure provides `let y = expr` without a type annotation, asserting the \"missing required member\" diagnostic fires.\n\nmemory_hints: search(\"conformance check trait structure member diagnostic\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:06:14.938Z"
+        "updatedAt": "2026-04-09T21:11:08.558Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1368",
@@ -28319,7 +28353,14 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:09:10.202Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1369",
@@ -28330,7 +28371,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:08:53.542Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       },
       {
         "id": "1370",
@@ -28341,7 +28388,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:07:43.430Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "1371",
@@ -28352,7 +28405,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:10:43.045Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/src"
+          ]
+        }
       },
       {
         "id": "1372",
@@ -28363,7 +28422,13 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:10:36.173Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_test_helpers.sh"
+          ]
+        }
       },
       {
         "id": "1373",
@@ -28371,10 +28436,16 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs (lines 933-940, 962), .expect() messages encode implementation details (e.g. \"bridge has no init-state guard\"). Replace with neutral behavioral descriptions (e.g. \"didOpen should succeed before initialized notification\") so panic messages remain accurate if the implementation changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:40:48.020Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": "1374",
@@ -28385,14 +28456,112 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:10:26.026Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
+      },
+      {
+        "id": "1375",
+        "title": "test_portable_timeout.sh: quote exit var, add grep marker, add with-trap self-test",
+        "description": "Three improvements in tests/infra/test_portable_timeout.sh: (1) Line 407: quote `exit $found` → `exit \"$found\"` for consistency with the _check_rc pattern. (2) Lines 258-263: add a marker comment (e.g. # SAFETY_NET_GREP_LINE) on the critical grep line so the meta-test searches for the marker instead of brittle comment text. (3) Lines 222-234: add a runtime self-test for POSIX_FALLBACK_SETUP (with trap) that verifies EXIT trap IS set and portable_timeout IS defined, matching the no-trap self-test symmetry.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:13:39.798Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_portable_timeout.sh"
+          ]
+        }
+      },
+      {
+        "id": "1376",
+        "title": "Improve trust_the_declaration_tests: fix redundant characterization test and add ungated coverage",
+        "description": "Two improvements to `trust_the_declaration_tests` in `crates/reify-expr/tests/gradient_tests.rs`:\n\n1. **Fix redundant characterization test (from review S1):** `test_make_dimensioned_domain_mismatch_gradient` currently asserts (a) Value is a Field (already checked inside helper), (b) domain_type == Type::length() (trivially true by construction), (c) grad_codomain_type == Scalar{MASS/LENGTH} (trivially true by construction). Either remove the test entirely (the two consumer tests exercise the helper), or make it useful by asserting on the *gradient field's actual codomain_type* — i.e., match on `grad_result` to extract `codomain_type` and assert it equals `grad_codomain_type`. This validates the helper's evaluated result, not just its return-value types.\n\n2. **Add ungated release-mode coverage (from review S3):** `gradient_codomain_mismatch_dimensioned_domain_no_panic` is gated with `#[cfg(debug_assertions)]`. The debug_assert is trivially absent in release mode, but the *numerical result* (derivative ≈ 2.0, dimension MASS/LENGTH) is meaningful in all build profiles. Consider adding an ungated version of the sampling test, or removing the cfg gate, so the derivative value and dimension are validated in release builds too.\n\nMemory hints: search for \"trust-the-declaration design decision gradient\" and \"task 1160 gradient codomain mismatch DRY\".",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:14:18.166Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
+      },
+      {
+        "id": "1377",
+        "title": "Improve engine.rs robustness: debug_assert for broken invariant, extract commit_state helper",
+        "description": "Two code-quality improvements in gui/src-tauri/src/engine.rs from task 962 review:\n\n1. **debug_assert in get_diagnostics None branch (S2)**: When resolve_source() returns None due to a broken invariant AND compiled.diagnostics is non-empty, get_diagnostics silently returns an empty vec — discarding diagnostic info with no indication. Add `debug_assert!(false, \"resolve_source returned None with non-empty diagnostics — invariant broken\")` or `tracing::warn!` in the None branch (around line 327) to catch this during development while preserving graceful degradation in release.\n\n2. **Extract commit_state helper (S5)**: load_from_source (lines 110-116) and update_source (lines 212-218) both follow the identical 5-field commit pattern: clear source_map → insert → set module_name → set compiled → set last_check. Extract a private `commit_state(&mut self, compiled, check_result, module_name, source)` method to deduplicate.\n\nmemory_hints:\n- search \"resolve_source Option refactor task 962\" for context on the invariant change\n- get_entity \"EngineSession\" for the struct's field layout",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:22:53.307Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src"
+          ]
+        }
+      },
+      {
+        "id": "1378",
+        "title": "Strengthen engine test coverage: broken-module-name for get_source_location, line/col assertions",
+        "description": "Two test improvements in gui/src-tauri/src/tests/engine_tests.rs from task 962 review:\n\n1. **Symmetric get_source_location test for broken module_name (S3)**: The new resolve_source_returns_none_* tests verify the None return but there's no symmetric test for get_source_location with broken module_name. Add a test: load a module with a locatable entity, call break_module_name_for_test(), assert get_source_location returns None. This complements the existing broken-source-map test (resolve_source_fallback_when_source_map_missing).\n\n2. **Add line/col assertions to update_source test (S4)**: get_source_location_file_key_updates_after_update_source (around line 2102) only checks file_path after module name change. Add assertions on loc_after.line and loc_after.column matching loc_before values (they should be identical since source text is unchanged). This guards against regressions where update_source corrupts the source map content.\n\nmemory_hints:\n- search \"resolve_source broken invariant test engine_tests\" for test patterns\n- search \"break_module_name_for_test break_source_map_for_test\" for test helper usage",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:22:56.933Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri/src"
+          ]
+        }
+      },
+      {
+        "id": "1379",
+        "title": "Restore defensive error behavior in FailingMockGeometryKernel::tessellate",
+        "description": "The old per-file `FailingMockGeometryKernel` in tessellation.rs had `tessellate()` return `Err(TessError::TessellationFailed(\"should not reach\".into()))` — a deliberate fail-loud guard against unexpected downstream calls after `execute()` fails. The consolidated version in reify-test-support returns `Ok(empty mesh)`, silently masking any regression where `tessellate` is erroneously invoked on a handle that was never created.\n\nFix: Change `FailingMockGeometryKernel::tessellate()` in `crates/reify-test-support/src/mocks.rs` to return `Err(TessError::TessellationFailed(\"should not reach: execute always fails\".into()))`. Update the corresponding unit test `failing_kernel_tessellate_returns_ok_empty_mesh` to assert the error case instead. Optionally, consider whether `export()` should also return a defensive error rather than writing `b\"BOGUS_EXPORT\"`.\n\nmemory_hints: search \"FailingMockGeometryKernel test support mocks\" for the extraction context from task 1179.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:39:21.872Z"
+      },
+      {
+        "id": "1380",
+        "title": "in_process_bridge: auto test_name, fix hang-guard doc/scope, use nonzero timeout",
+        "description": "Three improvements in crates/reify-lsp/tests/in_process_bridge.rs: (1) Replace hand-typed test_name string parameter in with_hang_guard with automatic derivation via #[track_caller] or a macro — currently 12+ call sites must manually match function names. (2) Fix HANG_GUARD_SECS doc comment claiming \"applied to all pre-handshake tests\" — either extend with_hang_guard to remaining unwrapped tests (e.g. did_open_returns_ok_null) or clarify the doc scope. (3) In panics_on_timeout test (line 1075), change with_hang_guard(0, ...) to with_hang_guard(1, ...) — zero-second timeout relies on tokio scheduling implementation detail.",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:40:48.246Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:15.346Z",
-      "taskCount": 1374,
-      "completedCount": 1049,
+      "lastModified": "2026-04-09T22:01:24.971Z",
+      "taskCount": 1380,
+      "completedCount": 1059,
       "tags": [
         "master"
       ]
