@@ -24650,7 +24650,7 @@
         "description": "Two test gaps from the Task 1194 review (S3, S5):\n\n**S3 — source_map panic guard test:** The panic test in engine_tests.rs covers only the module_name-is-None path (via `break_module_name_for_test`). Add a symmetric `break_source_map_for_test()` helper that removes the key from `self.source_map`, and a `#[should_panic(expected = \"source_map missing key\")]` test confirming the second expect() in `resolve_source` (engine.rs ~line 278) fires.\n\n**S5 — update_source path verification:** The positive `resolve_source_returns_key_and_source_after_load` test only verifies state after `load_from_source`. Add assertions after `update_source` with modified source text, confirming resolve_source returns the new content while the key remains the same. This pins that both mutation sites maintain the invariant.\n\nmemory_hints: search(\"resolve_source EngineSession invariant break_module_name_for_test\", project_id=\"reify\"); get_entity(\"EngineSession\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24663,7 +24663,8 @@
             "gui/src-tauri/src",
             "gui/src-tauri/src/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T00:38:02.658Z"
       },
       {
         "id": "1213",
@@ -24712,7 +24713,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:38:01.839Z",
+      "lastModified": "2026-04-09T00:38:02.658Z",
       "taskCount": 1215,
       "completedCount": 895,
       "tags": [
