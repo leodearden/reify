@@ -1495,29 +1495,17 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{Value, ValueCellId};
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (param_id, params) = test_param();
 
         // Original map doesn't contain the param at all
         let solved: HashMap<ValueCellId, Value> = HashMap::new();
 
         // Perturbed has a value very close to zero (so the old unwrap_or(0.0) bug
         // would produce diff ≈ 0 and incorrectly report agreement)
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
-        perturbed.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 1e-15,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(1e-15));
 
         assert!(
             !solutions_agree(&params, &solved, &perturbed),
