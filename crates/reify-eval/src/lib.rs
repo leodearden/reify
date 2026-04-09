@@ -5096,6 +5096,65 @@ mod tests {
     // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
 
     #[test]
+    fn compile_geometry_op_pattern_linear_missing_spacing_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Pattern short-circuits on missing args)
+        assert!(
+            result.is_none(),
+            "missing spacing should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'spacing' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'spacing', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("spacing"),
+            "diagnostic message should mention 'spacing', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Linear"),
+            "diagnostic message should mention 'Linear', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
     fn compile_geometry_op_transform_translate_missing_arg_emits_diagnostic() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
