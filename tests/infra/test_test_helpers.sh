@@ -519,6 +519,13 @@ printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
 
+# Double-bracket form: `if [[ -n "$var" ]]`
+# Requires regex to match `[[` as well as `[`.
+fixture_double_bracket=$(mk_fixture)
+printf 'if [[ -n "$var" ]]; then echo guard; fi\n' > "$fixture_double_bracket"
+if _has_if_n_guard "$fixture_double_bracket" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket form: if [[ -n" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
