@@ -39,7 +39,7 @@ pub fn bracket_source_with_width(width_str: &str) -> String {
 /// Used by tests that need a non-empty `compiled.diagnostics` to exercise
 /// post-early-exit code paths in `get_diagnostics`.
 /// Validated by `crates/reify-compiler/tests/port_compile_tests.rs:101-124`.
-pub fn warning_source() -> &'static str {
+pub fn warn_source_with_unknown_port_type() -> &'static str {
     r#"structure def S {
     port mount : NonExistentTrait {
         param d : Length = 5mm
@@ -47,7 +47,7 @@ pub fn warning_source() -> &'static str {
 }"#
 }
 
-/// Same as [`warning_source`] but with an additional `param width : Length = 80mm`.
+/// Same as [`warn_source_with_unknown_port_type`] but with an additional `param width : Length = 80mm`.
 ///
 /// Used by tests that need both an unknown-port-type warning AND a `width` field
 /// for `get_source_location` lookup.
@@ -1287,8 +1287,8 @@ mod tests {
     }
 
     #[test]
-    fn warning_source_produces_unknown_port_warning_no_errors() {
-        assert_warning_source_compiles_with_unknown_port_warning(warning_source());
+    fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
+        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
     }
 
     #[test]
