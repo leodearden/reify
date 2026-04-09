@@ -28005,10 +28005,11 @@
         "description": "Replace free-form string literals in the 11 tracing::warn! sites in crates/reify-runtime/src/concurrent_eval.rs with `const &str` values so typos like `access = \"exlusive\"` become compile errors.",
         "details": "Background: Task 600 established a structured-field schema for lock poisoning recovery warnings (see the module doc comment at crates/reify-runtime/src/concurrent_eval.rs:30-36). The schema is currently documented only in the doc comment; each of the 11 warn sites and the corresponding test assertions hand-repeat the string literals `\"values\"`, `\"snapshot_values\"`, `\"results\"`, `\"read\"`, `\"write\"`, `\"exclusive\"`, `\"into_inner\"`, `\"shared_fallback\"`. A typo in any of these compiles and silently breaks the field contract (Datadog/Jaeger filters would drop the warning). Reviewer suggestion #7.\n\nActions:\n\n1. Introduce a small private module inside concurrent_eval.rs (e.g. `mod poison_fields { ... }`) defining:\n   - `pub(super) const LOCK_VALUES: &str = \"values\";`\n   - `pub(super) const LOCK_SNAPSHOT_VALUES: &str = \"snapshot_values\";`\n   - `pub(super) const LOCK_RESULTS: &str = \"results\";`\n   - `pub(super) const ACCESS_READ: &str = \"read\";`\n   - `pub(super) const ACCESS_WRITE: &str = \"write\";`\n   - `pub(super) const ACCESS_EXCLUSIVE: &str = \"exclusive\";`\n   - `pub(super) const PATH_INTO_INNER: &str = \"into_inner\";`\n   - `pub(super) const PATH_SHARED_FALLBACK: &str = \"shared_fallback\";`\n   - `pub(super) const MSG_LOCK_POISONED: &str = \"lock poisoned, recovering\";`\n\n2. Update all 11 `tracing::warn!` call sites in concurrent_eval.rs (5 helper methods in the lines 108-150 range + 6 into_result paths in the lines 225-263 range) to use the constants:\n   ```rust\n   tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_READ, error = %e, \"{}\", poison_fields::MSG_LOCK_POISONED);\n   ```\n   Note: tracing::warn! accepts expressions as field values, so `lock = poison_fields::LOCK_VALUES` is fine.\n\n3. Export the constants with `pub(crate)` visibility (or via a `#[cfg(feature = \"test-utils\")]` re-export) so the test file can reference them in assertions — so the tests stop repeating literals too.\n\n4. Update the migrated tests in crates/reify-runtime/tests/concurrent_eval.rs to call `assert_poison_recovers(..., &[(\"lock\", poison_fields::LOCK_VALUES), (\"access\", poison_fields::ACCESS_READ)])` instead of string literals. This converts any future rename into a compile error.\n\n5. Update the module doc comment at crates/reify-runtime/src/concurrent_eval.rs:30-36 to point at the `poison_fields` module as the source of truth instead of enumerating values inline.\n\n6. Verify:\n   - cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils\n   - cd /home/leo/src/reify && cargo clippy -p reify-runtime -- -D warnings\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter Task 600 schema\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:32:31.355Z"
       },
       {
         "id": "1352",
@@ -28035,7 +28036,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:32:30.123Z",
+      "lastModified": "2026-04-09T19:32:31.355Z",
       "taskCount": 1353,
       "completedCount": 1021,
       "tags": [
