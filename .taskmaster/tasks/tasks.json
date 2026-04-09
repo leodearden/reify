@@ -25974,17 +25974,18 @@
         "description": "Fix four documentation inaccuracies in `crates/reify-constraints/src/solver.rs` test module introduced by the Task 1250 refactor:\n\n1. **Line ~915**: Section comment says `---- solutions_agree test helpers ----` but `test_param()` and `scalar()` are now shared with `build_perturbation_anchors` tests. Rename to `---- shared solver test helpers ----` (and update the closing comment on ~943).\n2. **Line ~919**: Doc comment on `test_param()` says \"Used by all `solutions_agree_*` tests\" but it's also used by `build_perturbation_anchors_*` tests. Update to mention both families.\n3. **Lines ~1159-1161**: Integration test comment says \"build_perturbation_anchors unit tests above\" but the unit tests are defined *below* (~line 1277). Fix \"above\" → \"below\".\n4. **In `build_perturbation_anchors_valid_f64` (~line 1280)**: Add a brief comment noting that an empty `missing` list means `verify_uniqueness` will not emit a WARN, since the explicit tracing-silence integration test was removed during the refactor.\n\nAll are comment-only changes, no logic modifications.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1250"
         ],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:31:53.378Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:31:53.155Z",
+      "lastModified": "2026-04-09T04:31:53.378Z",
       "taskCount": 1289,
       "completedCount": 955,
       "tags": [
