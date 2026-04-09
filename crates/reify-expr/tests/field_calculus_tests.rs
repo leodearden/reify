@@ -1140,3 +1140,64 @@ fn divergence_non_field_returns_undef() {
         "divergence of non-Field must return Undef"
     );
 }
+
+/// curl(Field<Point2, Vec2>) returns Undef — curl requires a 3D domain.
+///
+/// compute_curl hardwires `Type::Point { n: 3, .. }` in the domain check
+/// (lib.rs:852). A 2D vector field (n=2) fails that arm and returns Undef.
+/// Mirrors the domain-dimension guard tests in gradient_tests.rs.
+#[test]
+fn curl_2d_vector_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+
+    // Lambda: |x, y| vec2(-y, x)
+    let neg_y = CompiledExpr::unop(
+        UnOp::Neg,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = make_function_call(
+        "vec2",
+        vec![
+            neg_y,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        ],
+        Type::vec2(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point2(Type::Real);
+    let codomain_type = Type::vec2(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "curl of 2D vector field must return Undef (curl requires 3D domain), got {:?}",
+        result
+    );
+}
