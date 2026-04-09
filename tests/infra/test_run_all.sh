@@ -149,5 +149,14 @@ echo "--- Test 5: orchestrator.yaml test_command includes run_all.sh ---"
 assert "orchestrator.yaml references tests/infra/run_all.sh" \
     bash -c "grep -q 'tests/infra/run_all\.sh' '$ORCHESTRATOR_YAML'"
 
+# -- Test 6: structural self-checks (meta-assertions) ---------------------------
+echo ""
+echo "--- Test 6: structural self-checks ---"
+
+THIS_FILE="${BASH_SOURCE[0]}"
+
+assert "t2_rc dead variable removed" \
+    bash -c "! grep -qE 't2_rc=' '$THIS_FILE'"
+
 # -- Summary --------------------------------------------------------------------
 test_summary
