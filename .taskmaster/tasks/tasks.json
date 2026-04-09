@@ -28693,11 +28693,16 @@
         "description": "The doc comment for `downstream_ops_after_malformed_initialize_without_initialized` in crates/reify-lsp/tests/in_process_bridge.rs (lines ~962-978) explicitly lists two permitted outcomes — (a) downstream calls succeed, or (b) they return a well-defined non-empty Err — but the code uses `.expect(...)` which unconditionally panics on Err. The second documented outcome is therefore treated as a test failure. Decide policy: either (1) relax `.expect(...)` to a `match` that accepts `Ok(v)` and `Err(e)` when `!e.is_empty()`, honoring both documented outcomes, or (2) tighten the doc comment to say only success is acceptable today and note that relaxing it to allow Err is a future change. Surfaced by reviewer_comprehensive during task 1373 review; pre-existing mismatch that task 1373's wording change (\"should succeed\") further entrenched.",
         "details": "Reviewer suggestion from esc-1373-107 (suggestion 3, category doc_vs_code_consistency). Touches crates/reify-lsp/tests/in_process_bridge.rs around lines 897-908 (doc comment) and 1005-1040 (code). Preferred resolution likely depends on whether the bridge is expected to add a pre-handshake guard in the near future — if yes, option (1) relaxes the test now so the future change won't need to rewrite this test; if no, option (2) is simpler and removes the dead documentation.",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:18:24.433Z"
+        "updatedAt": "2026-04-09T22:23:15.559Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/tests"
+          ]
+        }
       },
       {
         "id": "1388",
@@ -28837,7 +28842,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:23:09.551Z",
+      "lastModified": "2026-04-09T22:23:15.559Z",
       "taskCount": 1397,
       "completedCount": 1072,
       "tags": [
