@@ -3922,13 +3922,7 @@ mod tests {
             im: 0.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(complex < orient);
+        assert!(complex < orient(1.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
