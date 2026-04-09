@@ -26428,10 +26428,11 @@
         "description": "Rename the test `recursive_sub_inside_block_guard_no_error` in crates/reify-compiler/tests/termination_check_tests.rs (line 618) to something like `recursive_sub_inside_block_guard_emits_unsupported_error`. The test was un-ignored in task 490 and now asserts that exactly one 'not yet supported' error IS emitted — the old name `no_error` is actively misleading.\n\nMemory hints: search \"task 490 guarded block diagnostic\", entity: compile_guarded_members",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T09:31:01.507Z"
       },
       {
         "id": "1312",
@@ -26447,7 +26448,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:31:00.657Z",
+      "lastModified": "2026-04-09T09:31:01.507Z",
       "taskCount": 1312,
       "completedCount": 976,
       "tags": [
