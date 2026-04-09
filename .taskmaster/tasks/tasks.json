@@ -25178,6 +25178,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1243,
+        "title": "verify_uniqueness warn tests: restore solutions_agree cross-coverage and extract helper",
+        "description": "Two related improvements to the three verify_uniqueness warn tests in crates/reify-constraints/src/solver.rs (lines ~1077-1277): (1) Restore the previously-tested invariant that solutions_agree also emits its WARN on the missing/non-numeric path. The current single-param tests (verify_uniqueness_warns_when_param_missing_from_solved_values at ~1086, verify_uniqueness_warns_when_param_is_non_numeric at ~1132) filter on the verify_uniqueness substring and assert == 1, dropping the prior `count == 2` assertion that covered solutions_agree's WARN — if solutions_agree's warn is later removed or downgraded, these tests will not catch it. (2) Reduce ~80% duplication across the three verify_uniqueness warn tests (missing-from-map, Value::Undef, two-missing aggregation) by extracting a small helper.</description>\n<parameter name=\"details\">Source: review_comprehensive S3 + S4 from Task 1228 review (esc-1228-1017).\n\nS3 (lost_test_coverage at ~1086, ~1132):\n- Add a second filter (e.g. count messages containing \"cannot verify uniqueness\" or whatever solutions_agree's WARN substring is) and assert it equals 1 in the single-missing-param tests.\n- Alternative: assert `msgs.len() >= 2` plus the substring filter.\n- Note: this assertion may need to be skipped if Task 1228-S5 (early-return when missing is non-empty) lands first, because early-return would prevent solve_core/solutions_agree from running. Coordinate sequencing — if the early-return task lands first, S3 becomes obsolete (instead, document that the test no longer exercises solutions_agree because the function short-circuits).\n\nS4 (test_duplication at ~1044-1240):\n- Extract a helper like `assert_verify_uniqueness_aggregated_warn(problem, solved_values, expected_param_substrings: &[&str])` that builds the WarnCapturingSubscriber, runs verify_uniqueness, applies the count/substring assertions, and returns the unique flag for the caller to assert against.\n- Each test then becomes a few lines of setup.\n\nCoordinate with S5 sibling task (early-return optimization) — if that lands first, the cross-coverage assertion in S3 becomes moot and the helper from S4 should be designed accordingly.\n\nmemory_hints: search \"WarnCapturingSubscriber verify_uniqueness test helper\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestions S3 + S4).</parameter>\n<parameter name=\"priority\">low",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25190,7 +25201,7 @@
       ],
       "created": "2026-04-09T02:39:07.298Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T02:39:07.304Z"
+      "updated": "2026-04-09T02:39:22.935Z"
     }
   }
 }
