@@ -294,7 +294,14 @@ else
     check "assert_sync_ref_exists uses display_fn fallback variable" "false"
 fi
 
-# (f) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
+# (f) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
+if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn docstring uses 'naturally excluded' wording" "true"
+else
+    check "extract_fn docstring uses 'naturally excluded' wording" "false"
+fi
+
+# (g) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
 echo ""
 echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
 
