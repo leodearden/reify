@@ -27579,7 +27579,16 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:12:08.663Z"
+        "updatedAt": "2026-04-09T17:12:08.663Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "test_npm_ci_hardening structural assertions Tests 4-8",
+              "task 931 check-pm-standardization what was implemented"
+            ]
+          }
+        }
       },
       {
         "id": 1328,
