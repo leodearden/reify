@@ -1522,36 +1522,18 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::ValueCellId;
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (param_id, params) = test_param();
 
-        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
-        solved.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 0.5,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.5));
 
         // Perturbed has NaN — as_f64() returns Some(NaN), which slips through
         // the None guard; NaN comparisons in the tolerance check are always
         // false, so the function incorrectly returns true without this fix.
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
-        perturbed.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: f64::NAN,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(f64::NAN));
 
         assert!(
             !solutions_agree(&params, &solved, &perturbed),
@@ -1564,35 +1546,17 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::ValueCellId;
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (param_id, params) = test_param();
 
-        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
-        solved.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: 0.5,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
+        solved.insert(param_id.clone(), scalar(0.5));
 
         // Perturbed has Infinity — as_f64() returns Some(Inf), which would
         // slip past a None guard; the is_finite() guard rejects it.
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
-        perturbed.insert(
-            param_id.clone(),
-            Value::Scalar {
-                si_value: f64::INFINITY,
-                dimension: DimensionVector::LENGTH,
-            },
-        );
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
+        perturbed.insert(param_id.clone(), scalar(f64::INFINITY));
 
         assert!(
             !solutions_agree(&params, &solved, &perturbed),
@@ -1605,11 +1569,13 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+        use reify_types::{AutoParam, Type, ValueCellId};
 
         // Two params: 'x' agrees within tolerance, 'y' diverges sharply.
         // This verifies the for-loop iterates ALL params and does not
         // short-circuit on the first match.
+        // The multi-param vec is constructed inline (no helper) — test_param()
+        // returns only the canonical single-param shape.
         let param_x = ValueCellId::new("Part", "x");
         let param_y = ValueCellId::new("Part", "y");
         let params = vec![
@@ -1627,18 +1593,13 @@ mod tests {
             },
         ];
 
-        let scalar = |v: f64| Value::Scalar {
-            si_value: v,
-            dimension: DimensionVector::LENGTH,
-        };
-
         // First param ('x') agrees: 0.5 vs 0.5000001 — well within tolerance.
         // Second param ('y') diverges: 0.1 vs 0.9 — should trigger return false.
-        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut solved: HashMap<ValueCellId, _> = HashMap::new();
         solved.insert(param_x.clone(), scalar(0.5));
         solved.insert(param_y.clone(), scalar(0.1));
 
-        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut perturbed: HashMap<ValueCellId, _> = HashMap::new();
         perturbed.insert(param_x.clone(), scalar(0.5000001));
         perturbed.insert(param_y.clone(), scalar(0.9));
 
