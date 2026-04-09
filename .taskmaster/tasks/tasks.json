@@ -26096,15 +26096,16 @@
         "description": "Three related improvements to the `reify test` CLI command output, all from Task 270 review:\n\n**S1 — Print constraint failure details for failing tests (robustness_and_usability)**\nLocation: `crates/reify-cli/src/main.rs:144-159`\nCurrently `cmd_test` only prints status label + test name per result, with no detail about which constraints failed or what the violation was. For `TestStatus::Fail` results, print the `constraint_results` entries that have `Satisfaction::Violated` (and optionally diagnostics). Consider reusing or adapting the existing `report_eval_output()` helper to avoid duplicating formatting logic.\n\n**S2 — Add missing '1 indeterminate' summary assertion (test_coverage)**\nLocation: `crates/reify-cli/tests/cli_test.rs:74-103`\n`test_command_on_mixed_file_shows_summary` asserts '1 passed' and '1 failed' in the summary but does not assert '1 indeterminate'. The test_mixed.ri fixture has exactly 1 indeterminate result. Add: `assert!(stdout.contains(\"1 indeterminate\"), ...);`\n\n**S3 — Fix label column alignment (output_formatting)**\nLocation: `crates/reify-cli/src/main.rs:159`\nPASS (4), FAIL (4), INDETERMINATE (13) have different widths causing misaligned test names. Use `println!(\"  {:<13}  {}\", label, result.name);` for fixed-width alignment.\n\nmemory_hints: search \"cmd_test report_eval_output constraint_results\" and \"reify test CLI output format\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:50:47.186Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:50:46.886Z",
+      "lastModified": "2026-04-09T04:50:47.186Z",
       "taskCount": 1295,
       "completedCount": 963,
       "tags": [
