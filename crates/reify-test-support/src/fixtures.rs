@@ -34,6 +34,32 @@ pub fn bracket_source_with_width(width_str: &str) -> String {
     bracket_source().replace("80mm", width_str)
 }
 
+/// Source that reliably produces an "unknown port type" warning (not error).
+///
+/// Used by tests that need a non-empty `compiled.diagnostics` to exercise
+/// post-early-exit code paths in `get_diagnostics`.
+/// Validated by `crates/reify-compiler/tests/port_compile_tests.rs:101-124`.
+pub fn warning_source() -> &'static str {
+    r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
+}
+
+/// Same as [`warning_source`] but with an additional `param width : Length = 80mm`.
+///
+/// Used by tests that need both an unknown-port-type warning AND a `width` field
+/// for `get_source_location` lookup.
+pub fn warning_source_with_width() -> &'static str {
+    r#"structure def S {
+    param width : Length = 80mm
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
+}
+
 /// Return the bracket source with thickness set to 1mm, which violates the
 /// `thickness > 2mm` constraint.
 pub fn bracket_source_violating() -> String {
@@ -1216,5 +1242,22 @@ mod tests {
         assert_eq!(node_b.sub_components.len(), 1);
         assert_eq!(node_b.sub_components[0].name, "ref_back");
         assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
+    }
+
+    #[test]
+    fn warning_source_is_well_formed() {
+        let source = warning_source();
+        assert!(source.contains("structure def S"));
+        assert!(source.contains("port mount : NonExistentTrait"));
+        assert!(source.contains("param d : Length = 5mm"));
+    }
+
+    #[test]
+    fn warning_source_with_width_has_width_param() {
+        let source = warning_source_with_width();
+        assert!(source.contains("structure def S"));
+        assert!(source.contains("param width : Length = 80mm"));
+        assert!(source.contains("port mount : NonExistentTrait"));
+        assert!(source.contains("param d : Length = 5mm"));
     }
 }
