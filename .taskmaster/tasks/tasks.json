@@ -28282,10 +28282,11 @@
         "description": "mcp_context.rs:228 still uses `ValueCellKind::Auto { .. } => \"Auto\"` wildcard match. After task 1334 established that `auto(free)` is user-visible in hover text, the MCP context (which exposes cell metadata to external tooling) should also surface this distinction.\n\nSplit the match arm at line 228:\n```rust\nValueCellKind::Auto { free: true } => \"Auto(free)\",\nValueCellKind::Auto { free: false } => \"Auto\",\n```\n\nMemory hints: search for \"ValueCellKind Auto free\" and \"mcp_context parameter info\" for prior context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:06:16.787Z"
       },
       {
         "id": "1366",
@@ -28390,7 +28391,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:16.211Z",
+      "lastModified": "2026-04-09T21:06:16.788Z",
       "taskCount": 1374,
       "completedCount": 1049,
       "tags": [
