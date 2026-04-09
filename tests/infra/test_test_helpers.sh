@@ -527,6 +527,17 @@ else
 fi
 check "robustness section defines mk_fixture helper" "$ok"
 
+# Self-check: mk_fixture is subshell-safe.
+# Appending to _robust_fixtures inside mk_fixture is silently lost when called
+# via command substitution ($(...)) because that runs in a subshell.
+# The temp-directory approach (mktemp -p) avoids parent-shell state mutation.
+if ! grep -qE 'mk_fixture\(\).*_robust_fixtures\+=' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "mk_fixture is subshell-safe (no array append lost in command substitution)" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
