@@ -534,7 +534,19 @@ pub(crate) fn compile_entity(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal compiler error: unresolved name '{}' in pass 2",
+                                param.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param.span,
+                                "ICE: name should have been registered in pass 1",
+                            )),
+                        );
+                        Type::Real
+                    });
 
                 // Check if the default is ExprKind::Auto and extract the free flag
                 let auto_free: Option<bool> =
@@ -866,7 +878,19 @@ pub(crate) fn compile_entity(
                             let cell_type = scope
                                 .resolve(&composite_name)
                                 .map(|(_, ty)| ty.clone())
-                                .unwrap_or(Type::Real);
+                                .unwrap_or_else(|| {
+                                    diagnostics.push(
+                                        Diagnostic::error(format!(
+                                            "internal compiler error: unresolved name '{}' in pass 2",
+                                            composite_name
+                                        ))
+                                        .with_label(DiagnosticLabel::new(
+                                            param.span,
+                                            "ICE: name should have been registered in pass 1",
+                                        )),
+                                    );
+                                    Type::Real
+                                });
 
                             let auto_free: Option<bool> =
                                 param.default.as_ref().and_then(|expr| {
