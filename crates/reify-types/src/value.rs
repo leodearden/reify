@@ -2058,11 +2058,11 @@ mod tests {
     fn nan_partialeq_bit_identity_scalar() {
         let s1 = Value::Scalar {
             si_value: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let s2 = Value::Scalar {
             si_value: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             s1, s2,
@@ -2081,12 +2081,12 @@ mod tests {
         let c1 = Value::Complex {
             re: f64::NAN,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c2 = Value::Complex {
             re: f64::NAN,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c1, c2,
@@ -2102,12 +2102,12 @@ mod tests {
         let c3 = Value::Complex {
             re: f64::NAN,
             im: 1.0,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c4 = Value::Complex {
             re: f64::NAN,
             im: 1.0,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c3, c4,
@@ -2123,12 +2123,12 @@ mod tests {
         let c5 = Value::Complex {
             re: 1.0,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         let c6 = Value::Complex {
             re: 1.0,
             im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
+            dimension: DimensionVector::DIMENSIONLESS,
         };
         assert_eq!(
             c5, c6,
