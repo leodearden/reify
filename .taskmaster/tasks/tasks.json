@@ -25689,6 +25689,19 @@
         ],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1274,
+        "title": "Fix tautological unit tests in tests_runner.rs",
+        "description": "Test quality cleanup from Task 268 review (crates/reify-eval/src/tests_runner.rs).\n\nS4 (lines 267-279): `build_isolated_module_preserves_shared_infrastructure` asserts `isolated.X.len() == module.X.len()` for `functions`, `fields`, `type_aliases`, `enum_defs`, `trait_defs` — but the inline source only declares a `constraint def` and one `@test structure`. All of those collections are empty in both modules, so assertions reduce to `0 == 0` and prove nothing. Fix: use a source that actually populates each collection (a `fn`, a module-level `field`, a `type` alias, an `enum def`, a `trait def`), or split into per-field tests each with a minimal populating snippet.\n\nS5 (lines 96-103): `test_status_variants_exist_and_are_distinct` is tautological — the variants are distinct by construction via `PartialEq` derive and separate discriminants. The test cannot fail unless a variant is deleted, in which case the file won't compile anyway. Fix: delete the test. The behavior-carrying `compute_status_*` tests already cover all three variants.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          268
+        ],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25701,7 +25714,7 @@
       ],
       "created": "2026-04-09T03:42:40.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T03:42:48.430Z"
+      "updated": "2026-04-09T03:42:57.205Z"
     }
   }
 }
