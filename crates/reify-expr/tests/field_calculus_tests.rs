@@ -2204,3 +2204,391 @@ fn laplacian_sample_dimensional_correctness_returns_scalar() {
         ),
     }
 }
+
+// ── Step 10: Edge-case Undef return paths ─────────────────────────────────────
+
+/// divergence(Real) returns Undef when the argument is not a Field.
+///
+/// Mirrors gradient_non_field_returns_undef in lambda_eval_tests.rs. Exercises the
+/// first early-return guard in compute_divergence (lib.rs:732–739).
+#[test]
+fn divergence_non_field_returns_undef() {
+    let expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "divergence of non-Field must return Undef"
+    );
+}
+
+/// curl(Field<Point2, Vec2>) returns Undef — curl requires a 3D domain.
+///
+/// compute_curl hardwires `Type::Point { n: 3, .. }` in the domain check
+/// (lib.rs:852). A 2D vector field (n=2) fails that arm and returns Undef.
+/// Mirrors the domain-dimension guard tests in gradient_tests.rs.
+#[test]
+fn curl_2d_vector_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+
+    // Lambda: |x, y| vec2(-y, x)
+    let neg_y = CompiledExpr::unop(
+        UnOp::Neg,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = make_function_call(
+        "vec2",
+        vec![
+            neg_y,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        ],
+        Type::vec2(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point2(Type::Real);
+    let codomain_type = Type::vec2(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "curl of 2D vector field must return Undef (curl requires 3D domain), got {:?}",
+        result
+    );
+}
+
+/// divergence(gradient(f)) returns Undef — gradient-sourced fields are not
+/// accepted by compute_divergence's source-kind whitelist.
+///
+/// Build a 1D analytical field, produce a Gradient-sourced field via gradient(),
+/// then pass that to divergence. The source check fires before domain/codomain
+/// validation, so Undef is returned immediately. Mirrors
+/// gradient_of_gradient_field_returns_undef in gradient_tests.rs.
+#[test]
+fn divergence_gradient_field_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x*x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // gradient(field) — should succeed and produce a Gradient-sourced field
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter here
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "first gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    // divergence(gradient_field) — source=Gradient not in {Analytical, Composed},
+    // so compute_divergence returns Undef immediately (lib.rs:742–747).
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::Real),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(grad_result, grad_field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence(gradient(f)) must return Undef, got {:?}",
+        result
+    );
+}
+
+/// divergence(Field<Point3, Vec2>) returns Undef — domain dim 3 ≠ codomain dim 2.
+///
+/// compute_divergence validates that vec_n (codomain dimension) equals n (domain
+/// dimension) before constructing the result field (lib.rs:795–801). A field
+/// mapping R³ → Vec2 fails that guard and returns Undef.
+#[test]
+fn divergence_field_with_mismatched_dims_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec2(x, y)
+    let body = make_function_call(
+        "vec2",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        Type::vec2(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);   // n=3
+    let codomain_type = Type::vec2(Type::Real);   // n=2 — mismatch!
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence of Field<Point3, Vec2> (mismatched dims) must return Undef, got {:?}",
+        result
+    );
+}
+
+// ── Step 11: Curl irrotational + 1D laplacian coverage ───────────────────────
+
+/// Curl of the conservative field F(x,y,z)=[x,y,z] at (1,2,3) ≈ [0,0,0].
+///
+/// F = ∇φ where φ(x,y,z) = (x²+y²+z²)/2 — a gradient field is always
+/// irrotational, so curl(F) ≡ 0 analytically. Numerical central differences
+/// should give near-zero within 1e-3.
+///
+/// Note: divergence(F)=3 everywhere on the same field (see divergence_identity_vector_field).
+/// These two tests together confirm both operators on the same lambda.
+#[test]
+fn curl_irrotational_field_near_zero() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(x, y, z)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { .. }),
+        "curl of irrotational field should return a Field, got {:?}",
+        curl_result
+    );
+
+    // sample(curl_field, Point3(1.0, 2.0, 3.0)) — expect ≈ [0, 0, 0]
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-3,
+        "curl of conservative field [x,y,z] at (1,2,3)",
+    );
+}
+
+/// Laplacian of the 1D quadratic f(x) = x*x at x=3.0 ≈ 2.0.
+///
+/// d²/dx²(x²) = 2 at every x. Domain is Type::Real (bare scalar, not Point),
+/// which exercises the `Type::Real` arm in compute_laplacian (lib.rs:933) and
+/// the `Value::Real(r) if r.is_finite() => vec![*r]` coords-extraction arm in
+/// compute_numerical_laplacian_at_point (lib.rs:1627). With n=1 and a single
+/// lambda param, single_point_param = (1==1 && 1>1) = false, so the decomposed
+/// per-axis path runs with n=1.
+#[test]
+fn laplacian_1d_quadratic_accuracy() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x*x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of 1D quadratic should return a Field, got {:?}",
+        lap_result
+    );
+
+    // sample(lap_field, Value::Real(3.0)) — d²/dx²(x²) = 2 at every x
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+    });
+    assert!(
+        (val - 2.0).abs() < 1e-2,
+        "laplacian of x*x at x=3.0 should be ≈2.0, got {}",
+        val
+    );
+}

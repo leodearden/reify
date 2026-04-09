@@ -535,13 +535,29 @@ fn get_diagnostics_clean_source_returns_empty() {
     );
 }
 
-/// Spot-check that the TauriToolContext mapping closure passes DiagnosticData
-/// fields through to DiagnosticInfo correctly.
+/// Thin wrapping-path smoke test for [`TauriToolContext::get_diagnostics`].
 ///
-/// Loads source with `port mount : NonExistentTrait` which produces an
-/// "unknown port type" warning. Checks file_path, severity, and message
-/// to verify field passthrough — span arithmetic is already covered by
-/// engine_get_diagnostics_returns_populated_warning.
+/// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
+/// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
+/// mapping closure (including the `offset_to_line_col_fast` span conversion and the
+/// hardcoded `code: None`) lives entirely in `engine.rs`.
+/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs` only
+/// range-checks span fields (`line >= 1`, `column >= 1`, `end_line >= line`,
+/// `end_column >= 1`); it does NOT pin exact coordinates.
+///
+/// This test therefore focuses on two things the engine test cannot cover: (a) that
+/// the wrapping path returns `Result::Ok`, and (b) that every field passes through
+/// without a field-swap bug. The pinned exact-coordinate span assertions
+/// (line/column/end_line/end_column) are the ONLY span-arithmetic regression guard in
+/// the test suite — they catch any accidental transposition that a bare `>= 1` range
+/// check would miss. If a future change improves diagnostic locality (e.g. narrowing
+/// the span to point at just `NonExistentTrait` instead of the whole `port_decl`),
+/// update the pinned values to match the new coordinates — do NOT revert to range
+/// checks, as that would silently remove the span regression coverage.
+/// The `code: None` assertion confirms the `Option<String>` field passes through
+/// unchanged (the mapping closure hardcodes `None`; a future code-extraction change
+/// that starts populating it will break this assertion and prompt the implementing
+/// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     let source = r#"structure def S {
@@ -588,31 +604,19 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.message
     );
 
-    // span fields must represent a valid range (catches field-swap bugs in the mapping closure);
-    // line, column, end_line, and end_column are all checked here.
-    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
-    assert!(
-        first.end_line >= first.line,
-        "expected end_line ({}) >= line ({})",
-        first.end_line,
-        first.line
-    );
-    assert!(first.column >= 1, "expected column >= 1, got {}", first.column);
-    assert!(
-        first.end_column >= 1,
-        "expected end_column >= 1, got {}",
-        first.end_column
-    );
-    if first.end_line == first.line {
-        assert!(
-            first.end_column >= first.column,
-            "expected end_column ({}) >= column ({}) on same-line span",
-            first.end_column,
-            first.column
-        );
-    }
+    // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
+    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) to the
+    // exclusive end byte one past the closing `}` of the port body. The `}` glyph
+    // sits at L4:C5 (four leading spaces → prefix chars().count() = 4, 1-indexed = 5).
+    // Tree-sitter's end_byte is exclusive (one past `}`), so offset_to_line_col_fast
+    // returns column 6 (chars().count() of the prefix through `}` = 5, plus 1 = 6).
+    // This is a multi-line span, so the former `if end_line == line` same-line guard
+    // was always false for this fixture.
+    assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
+    assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
+    assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
+    assert_eq!(first.end_column, 6, "exclusive end byte past `}}` maps to column 6 (chars().count() + 1)");
 
-    // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
-    // TODO: update when code extraction is implemented
+    // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
 }
