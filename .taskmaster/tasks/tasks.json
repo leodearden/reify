@@ -24969,11 +24969,11 @@
         "description": "The three new tests added in Task 1220 (`divergence_accepts_vector_sample_point`, `curl_accepts_vector_sample_point`, `laplacian_accepts_vector_sample_point` in crates/reify-expr/tests/field_calculus_tests.rs around lines 354, 536, 730) are ~85-line near-clones of their existing Point counterparts (S2). They also declare the point-literal type as `Type::point3(Type::Real)` while the value is `Value::Vector(...)` — an inconsistent type/value pairing that would silently break if the literal type checker is strengthened (S3). Happy path is the only covered case for the new Vector variant (S6).\n\nFix:\n1. Extract a parameterized helper per operator — e.g. `fn run_divergence_identity_test(point: Value, label: &str)` — or loop a single `#[test]` body over `[Value::Point(..), Value::Vector(..)]`. Collapse ~240 lines of duplicate boilerplate.\n2. Either change the literal type on the Vector-sample-point tests to `Type::vec3(Type::Real)` (and verify runtime still accepts it), or add an inline comment documenting the intentional type/value mismatch and that these tests only exercise the runtime helper, not surface-syntax type checking.\n3. Add a negative case for curl on a 2-element `Value::Vector` to lock in the `items.len() == 3` dimension guard: `assert!(matches!(eval_expr(&sample_expr, &ctx), Value::Undef));`.\n\nmemory_hints: this is a follow-up from Task 1220's review (esc-1220-999). Search \"Task 1220 Value Vector divergence curl laplacian\" for the original change; the `compute_numerical_*_at_point` helpers are in crates/reify-expr/src/lib.rs around lines 1325-1720.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:04:32.897Z",
+        "updatedAt": "2026-04-09T03:22:51.000Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25532,7 +25532,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:22:50.796Z",
+      "lastModified": "2026-04-09T03:22:51.000Z",
       "taskCount": 1264,
       "completedCount": 936,
       "tags": [
