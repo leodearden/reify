@@ -45,6 +45,16 @@ fn param_without_doc_returns_none_doc() {
     assert_eq!(info.doc, None);
 }
 
+#[test]
+fn let_without_doc_returns_none_doc() {
+    let source = "structure S { let x = 5 }";
+    let members = parse_first_structure_members(source);
+    let result = find_named_member_span(&members, "x");
+    assert!(result.is_some(), "let 'x' should be found");
+    let info = result.unwrap();
+    assert_eq!(info.doc, None);
+}
+
 // ── (b) basic let lookup ──────────────────────────────────────────
 
 #[test]
