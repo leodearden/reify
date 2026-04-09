@@ -1,9 +1,18 @@
+//! Static dependency extraction for evaluation graph nodes.
+//!
+//! Each node's dependencies are extracted once at graph-build time by walking
+//! the compiled expression tree. This is correct for Reify expressions because
+//! they are pure: the set of cells an expression *can* read is exactly the set
+//! it *will* read, regardless of runtime values. There is no benefit to runtime
+//! (Adapton-style) tracing in a pure language.
+
 use reify_types::{CompiledExpr, ValueCellId};
 
-/// Tracks which value cells a node read during evaluation.
+/// Statically extracted value cell dependencies for a node.
 ///
-/// This is a minimal stub for task 12 (content-hash caching).
-/// Task 11 will replace this with a full dependency tracing implementation.
+/// Computed once from the compiled expression tree at graph-build time,
+/// not during evaluation. Params and other root nodes use
+/// `DependencyTrace::default()` (empty reads).
 #[derive(Debug, Clone, Default)]
 pub struct DependencyTrace {
     pub reads: Vec<ValueCellId>,
