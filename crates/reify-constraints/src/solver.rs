@@ -926,6 +926,60 @@ mod tests {
 
     // ---- end solutions_agree test helpers ----
 
+    // ---- verify_uniqueness test helpers ----
+
+    /// Runs `verify_uniqueness(problem, solved_values)` under a warn-capturing tracing
+    /// subscriber and asserts the aggregated WARN contract:
+    ///
+    /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
+    /// 2. Every substring in `expected_param_substrings` appears in the joined WARN messages
+    ///    (verifies that the relevant `ValueCellId`s were included in the event via the
+    ///    `missing_params = ?missing` field).
+    ///
+    /// Returns the `unique` flag so each call site can assert the verdict with its own
+    /// descriptive message, consistent with the named-local style of the sibling tests.
+    ///
+    /// See the section comment at `// ---- verify_uniqueness tracing tests ----` for the
+    /// early-return coverage rationale (solve_core and solutions_agree are NOT invoked on
+    /// the missing/non-numeric path).
+    fn assert_verify_uniqueness_aggregated_warn(
+        problem: &ResolutionProblem,
+        solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
+        expected_param_substrings: &[&str],
+    ) -> bool {
+        use reify_test_support::warn_capturing_subscriber;
+
+        use super::verify_uniqueness;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(problem, solved_values)
+        });
+
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN containing 'midpoint as comparison \
+             anchor'; got {vu_warn_count}; messages: {msgs:?}"
+        );
+
+        let all_msgs = msgs.join("\n");
+        for substring in expected_param_substrings {
+            assert!(
+                all_msgs.contains(substring),
+                "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
+            );
+        }
+
+        unique
+    }
+
+    // ---- end verify_uniqueness test helpers ----
+
     #[test]
     fn dimensional_solver_exists_and_implements_trait() {
         use crate::DimensionalSolver;
@@ -1074,15 +1128,29 @@ mod tests {
     }
 
     // ---- verify_uniqueness tracing tests ----
+    //
+    // Coverage note (S3 rationale — Task 1228 review, resolved by Task 1243):
+    //
+    // These tests exercise ONLY the early-return path in `verify_uniqueness` that was
+    // introduced by Task 1242 (commit 3414dcc11). When `verify_uniqueness` detects a
+    // missing or non-numeric param, it emits the aggregated WARN and immediately returns
+    // `false` — `solve_core` and `solutions_agree` are never called on this path.
+    //
+    // Consequence: Task 1228 review suggestion S3 proposed adding a `solutions_agree`
+    // WARN count assertion here to restore cross-coverage of that function's warn
+    // emission on the single-missing-param path. That assertion is moot: the early-return
+    // short-circuits before `solutions_agree` is reached, so its WARN count would always
+    // be 0 on these tests, making any such assertion vacuous or wrong.
+    //
+    // Any future regression in `solutions_agree`'s own WARN emission is caught by the
+    // `solutions_agree_*` tests in this same module, not by these `verify_uniqueness_*`
+    // tests. The two families are intentionally decoupled.
 
     #[test]
     fn verify_uniqueness_warns_when_param_missing_from_solved_values() {
         use std::collections::HashMap;
 
-        use reify_test_support::warn_capturing_subscriber;
         use reify_types::{AutoParam, Type, ValueCellId};
-
-        use super::verify_uniqueness;
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
@@ -1101,29 +1169,8 @@ mod tests {
         // Empty solved_values: param is missing → None branch fires in verify_uniqueness
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
-        let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        // Exactly 1 verify_uniqueness WARN (filter by new wording from task/1228);
-        // solutions_agree may emit additional WARNs but we count only the aggregated
-        // verify_uniqueness one. Decoupled from any downstream solutions_agree warn
-        // behavior which may change independently.
-        let msgs = capture.messages();
-        let vu_warn_count = msgs
-            .iter()
-            .filter(|m| m.contains("midpoint as comparison anchor"))
-            .count();
-        assert_eq!(
-            vu_warn_count, 1,
-            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
-        );
-        // NB: this assertion implicitly depends on solve_core converging on the perturbed
-        // starting point so that solutions_agree runs and returns false. If solve_core ever
-        // returned Infeasible/NoProgress for this trivial no-constraint problem,
-        // verify_uniqueness would conservatively return true via the early-return branch
-        // (~line 826) and this assertion would flip to a misleading failure.
+        let unique =
+            assert_verify_uniqueness_aggregated_warn(&problem, &solved_values, &["Part.x"]);
         assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
@@ -1131,10 +1178,7 @@ mod tests {
     fn verify_uniqueness_warns_when_param_is_non_numeric() {
         use std::collections::HashMap;
 
-        use reify_test_support::warn_capturing_subscriber;
         use reify_types::{AutoParam, Type, Value, ValueCellId};
-
-        use super::verify_uniqueness;
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
@@ -1154,29 +1198,8 @@ mod tests {
         let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
         solved_values.insert(param_id.clone(), Value::Undef);
 
-        let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        // Exactly 1 verify_uniqueness WARN (filter by new wording from task/1228);
-        // solutions_agree may emit additional WARNs but we count only the aggregated
-        // verify_uniqueness one. Decoupled from any downstream solutions_agree warn
-        // behavior which may change independently.
-        let msgs = capture.messages();
-        let vu_warn_count = msgs
-            .iter()
-            .filter(|m| m.contains("midpoint as comparison anchor"))
-            .count();
-        assert_eq!(
-            vu_warn_count, 1,
-            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
-        );
-        // NB: this assertion implicitly depends on solve_core converging on the perturbed
-        // starting point so that solutions_agree runs and returns false. If solve_core ever
-        // returned Infeasible/NoProgress for this trivial no-constraint problem,
-        // verify_uniqueness would conservatively return true via the early-return branch
-        // (~line 826) and this assertion would flip to a misleading failure.
+        let unique =
+            assert_verify_uniqueness_aggregated_warn(&problem, &solved_values, &["Part.x"]);
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
@@ -1231,10 +1254,7 @@ mod tests {
     fn verify_uniqueness_aggregates_warn_for_multiple_missing_params() {
         use std::collections::HashMap;
 
-        use reify_test_support::warn_capturing_subscriber;
         use reify_types::{AutoParam, Type, ValueCellId};
-
-        use super::verify_uniqueness;
 
         let param_x = ValueCellId::new("Part", "x");
         let param_y = ValueCellId::new("Part", "y");
@@ -1262,34 +1282,11 @@ mod tests {
         // Empty solved_values: both params are missing → both hit the None branch
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
-        let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        // Exactly 1 aggregated WARN from verify_uniqueness (both missing params in one event)
-        let msgs = capture.messages();
-        let vu_warn_count = msgs
-            .iter()
-            .filter(|m| m.contains("midpoint as comparison anchor"))
-            .count();
-        assert_eq!(
-            vu_warn_count, 1,
-            "expected exactly 1 aggregated verify_uniqueness WARN for 2 missing params; \
-             got {vu_warn_count}; messages: {msgs:?}"
+        let unique = assert_verify_uniqueness_aggregated_warn(
+            &problem,
+            &solved_values,
+            &["Part.x", "Part.y"],
         );
-
-        // Both param names must appear in the aggregated WARN (via ?missing_params field)
-        let all_msgs = msgs.join("\n");
-        assert!(
-            all_msgs.contains("Part.x"),
-            "aggregated WARN must mention Part.x; messages: {msgs:?}"
-        );
-        assert!(
-            all_msgs.contains("Part.y"),
-            "aggregated WARN must mention Part.y; messages: {msgs:?}"
-        );
-
         assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
     }
 
