@@ -8320,28 +8320,19 @@
         "description": "Three correctness bugs in crates/reify-compiler/src/lib.rs:\n\n1. compile_purpose() (~line 1719) doesn't call set_unit_registry(), so QuantityLiterals referencing user-declared units inside purpose constraints silently fail to resolve.\n2. Affine units in conversion expressions (evaluate_const_expr QuantityLiteral branch) incorrectly apply the full transform (value*factor+offset). In conversion-factor context, only the scaling factor should be used.\n3. unwrap_or(1.0) in compile_unit silently uses factor=1.0 when conversion expression fails. Per project convention, logic errors should be noisy.\n\nSource: review suggestions from esc-208-28 (task 208).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "208"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:11:28.211Z",
+        "updatedAt": "2026-04-09T09:12:39.081Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "memory_hints": {
-            "entities": [
-              "UnitRegistry",
-              "compile_purpose",
-              "evaluate_const_expr",
-              "CompiledUnit",
-              "UnitEntry"
-            ],
+            "entities": [],
             "queries": [
-              "compile_purpose set_unit_registry threading bug",
-              "affine offset conversion factor scaling only",
-              "unwrap_or silent default factor reify compiler",
-              "task 208 unit declarations registry"
+              "resolution for: Fix correctness bugs in unit compilation (purpose threading, affine offset, silent factor default)"
             ]
           },
           "files": [
@@ -26398,7 +26389,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:11:28.212Z",
+      "lastModified": "2026-04-09T09:12:39.087Z",
       "taskCount": 1308,
       "completedCount": 972,
       "tags": [
