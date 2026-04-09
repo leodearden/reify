@@ -10458,7 +10458,7 @@
         "description": "Bundle of low-severity review findings:\n\n1. gui/src-tauri/src/engine.rs:571-586 — byte_offset_to_line_col may return 0-based column instead of claimed 1-based. The loop breaks before incrementing col for the character at offset. Add a test with known offsets and verify.\n\n2. gui/src/bridge.ts:107 — lspRequest sends un-stringified params (typed as unknown). This is dead code (lspClient.ts has its own copy that correctly JSON.stringifies), but fix the type or remove the dead export to prevent future use.\n\n3. gui/src-tauri/src/engine.rs:404-414 — debug_assert for unit_table ordering vanishes in release. Convert to a const assertion or move to a #[test].\n\n4. crates/reify-lsp/src/diagnostics.rs:66-95 — compute_diagnostics_with_state continues through compile/eval after parse errors, producing misleading secondary diagnostics. Add early return after parse errors (matching engine.rs behavior).\n\n5. crates/reify-eval/Cargo.toml — reify-syntax and reify-compiler appear in both [dependencies] and [dev-dependencies]. Remove from [dev-dependencies].\n\n**Memory hints:** entity names: byte_offset_to_line_col, lspRequest, unit_table, compute_diagnostics_with_state",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10476,7 +10476,8 @@
             "crates/reify-lsp",
             "crates/reify-eval"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T16:50:59.053Z"
       },
       {
         "id": "498",
@@ -27500,11 +27501,11 @@
         "description": "Follow-up from Task 1297 review triage. Two small test-quality improvements in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Tighten `completion_items_panics_on_non_array_items_field`** (S2): The current `#[should_panic(expected = \"CompletionResponse::List has non-array 'items' field\")]` substring would still pass if a future refactor dropped the `{response}` interpolation. Tighten the expected substring to include a portion of the rendered payload (e.g. `\"items\\\": 42\"`) so a regression that loses the interpolation is caught.\n\n2. **Add `completion_items_panics_on_list_missing_items_field` test** (S3): The current tests don't cover the case where a `List` response omits the `items` field entirely (e.g. `json!({\"isIncomplete\": false})`). Under the current code this falls through to the outer `CompletionResponse::Array` panic, which is the right behavior but is not asserted. Add a `#[should_panic(expected = \"CompletionResponse::Array\")]` test to lock in the fallthrough contract.\n\nBoth changes are in the same `mod tests` block near lines 806-838.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:36:33.590Z",
+        "updatedAt": "2026-04-09T16:50:55.583Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -27514,7 +27515,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:50:53.403Z",
+      "lastModified": "2026-04-09T16:50:59.053Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
