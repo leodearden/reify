@@ -3415,32 +3415,32 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let mut eval_arg = |name: &str| -> reify_types::Value {
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 match args.iter().find(|(n, _)| n == name) {
-                    Some((_, expr)) => reify_expr::eval_expr(
+                    Some((_, expr)) => Some(reify_expr::eval_expr(
                         expr,
                         &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                    ),
+                    )),
                     None => {
                         diagnostics.push(Diagnostic::warning(format!(
                             "missing required geometry argument '{}' for {:?}",
                             name, kind
                         )));
-                        reify_types::Value::Undef
+                        None
                     }
                 }
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
                     target: target_id,
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
                 reify_compiler::ModifyKind::Chamfer => Some(reify_types::GeometryOp::Chamfer {
                     target: target_id,
-                    distance: eval_arg("distance"),
+                    distance: eval_arg("distance")?,
                 }),
                 reify_compiler::ModifyKind::Shell => {
-                    let thickness = eval_arg("thickness");
+                    let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
                     let faces_to_remove: Vec<usize> = args
                         .iter()
@@ -3462,7 +3462,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
-                    let angle = eval_arg("angle");
+                    let angle = eval_arg("angle")?;
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
@@ -3474,7 +3474,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Thicken => {
-                    let offset = eval_arg("offset");
+                    let offset = eval_arg("offset")?;
                     Some(reify_types::GeometryOp::Thicken {
                         target: target_id,
                         offset,
