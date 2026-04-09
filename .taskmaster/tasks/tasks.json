@@ -28705,11 +28705,16 @@
         "description": "Three small hygiene improvements to the negative_extrude_distance_is_valid and negative_revolve_angle_is_valid tests added by Task 1181 in crates/reify-eval/tests/stress_sweep_degenerate.rs:\n\n1. Step numbering: the new tests are tagged 'step-1'/'step-2' (lines 221-222, 309-311) while the surrounding tests use 'step-13' through 'step-24'. Readers will assume the numbering is monotonic. Renumber as 'step-25'/'step-26' to continue the file's sequence, or use a namespaced tag like 'task-1181-step-1' so provenance is obvious.\n\n2. Unused 'profile' placeholder arg: both tests pass a 'profile' named arg (lines 255, 347) that is never read by the Extrude/Revolve compile paths (lib.rs:3633-3652 and 3653-3677 only read 'distance' / 'ox..angle'). This mirrors the existing zero_extrude_distance / revolve_zero_angle pattern, but the inline comment 'placeholder expr' under-explains why an unused arg is present. Add a one-line comment at the top of each args vec, e.g. `// 'profile' is an ignored placeholder — Extrude/Revolve compile paths only read 'distance'/'angle'.`\n\n3. Hardcoded SI constant: line 300 compares dist_si against the literal `-0.01` next to the literal `mm(-10.0)`. A refactor of the `mm` helper (unit-factor change) would silently desync literal and assertion. Replace with `let expected_si = mm(-10.0).as_f64().unwrap();` then `(dist_si - expected_si).abs() < 1e-9`.\n\nAll three are non-blocking review suggestions from Task 1181's reviewer_comprehensive pass (esc-1181-108).\n\nmemory_hints: search \"Task 1181 negative extrude revolve test coverage\" for task context.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:19:23.085Z"
+        "updatedAt": "2026-04-09T22:22:07.422Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests"
+          ]
+        }
       },
       {
         "id": "1389",
@@ -28791,36 +28796,4 @@
       {
         "id": "1395",
         "title": "Add compile_project negative test for imported private unit invisibility",
-        "description": "The existing tests cross_module_pub_unit_visible_via_module_dag and cross_module_private_unit_not_visible_via_module_dag (crates/reify-compiler/tests/user_defined_unit_tests.rs:208-240) exercise ModuleDag::compile_module, which was already calling compile_with_prelude before task 209 (module_dag.rs:168-181). Only compile_project_entry_sees_imported_pub_unit covers the new compile_project prelude-seeding branch; there is no negative test that compile_project enforces privacy. Add compile_project_entry_does_not_see_imported_private_unit: mirror the positive test but declare 'unit privmil' (no pub) in the library module, invoke compile_project on the entry file, and assert the entry module reports a semantic error mentioning 'unknown' or 'privmil'. Keeps positive/negative coverage symmetric at the compile_project layer so regressions in either branch are caught. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
-        "details": "",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "medium",
-        "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:27.207Z"
-      },
-      {
-        "id": "1396",
-        "title": "Pin or fix one-hop limitation for transitive pub-unit propagation",
-        "description": "No test covers transitive propagation of pub units: if module A declares 'pub unit mil', and module B has 'pub import a', does module C (which imports B) see 'mil'? Under the current implementation it does NOT — B's compiled_units only stores locally-declared units, so the prelude-seeding loop in lib.rs:237-251 finds nothing in B and mil is not re-exported. This matches the current treatment of constraint_defs (one-hop only), but it's undocumented and untested for units — a cross-module integration gap for task 209's scope. Prefer option (a): add a test that pins the current one-hop limitation (A→B→C where C cannot see mil) so any future fix is deliberate. Option (b) would extend scope: propagate pub-seeded prelude units into the current module's compiled_units when is_pub so they re-export transitively, plus a positive A→B→C test. Go with option (a) for this task; option (b) is a separate design decision. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
-        "details": "",
-        "testStrategy": "",
-        "status": "in-progress",
-        "dependencies": [],
-        "priority": "low",
-        "subtasks": [],
-        "updatedAt": "2026-04-09T22:21:28.648Z"
-      }
-    ],
-    "metadata": {
-      "version": "1.0.0",
-      "lastModified": "2026-04-09T22:21:45.549Z",
-      "taskCount": 1396,
-      "completedCount": 1071,
-      "tags": [
-        "master"
-      ]
-    }
-  }
-}
+        "description": "The existing tests cross_modul
