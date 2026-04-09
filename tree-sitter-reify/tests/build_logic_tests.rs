@@ -1254,6 +1254,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
          literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
         fns
     );
+    assert_eq!(
+        fns.len(),
+        4,
+        "expected exactly 4 discovered functions (cases a, a2, e, f); got: {:?}",
+        fns
+    );
 }
 
 #[test]
