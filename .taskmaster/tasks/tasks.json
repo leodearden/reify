@@ -25373,10 +25373,11 @@
         "description": "Two small improvements to the validation helpers added in Task 1247 to `crates/reify-test-support/src/fixtures.rs`:\n\n**S1 — style_imports (line 1252, 1264, 1272):** The helper return type uses the fully-qualified `reify_compiler::CompiledModule`, but `CompiledModule` is already brought into scope at line 1 (`use reify_compiler::{CompiledModule, RequirementKind};`). Same for `reify_types::Severity` references at lines 1264 and 1272.\n\nFix:\n- Change the return type of `assert_warning_source_compiles_with_unknown_port_warning` to bare `CompiledModule`.\n- Add `use reify_types::Severity;` either to the test mod or to the existing top-level use list, then use `Severity::Error` / `Severity::Warning` directly in the predicates.\n\n**S2 — test_coverage (lines 1293-1310):** `warning_source_with_width_compiles_and_has_width_value_cell` only asserts that some value cell whose `id.member == \"width\"` exists. The fixture's stated purpose (lines 52-53) is to provide a `width` field for `get_source_location` lookup, which depends on the cell having the right *type* (`Length`) and a real source span. A regression that silently swapped `param width : Length = 80mm` to e.g. `Int = 0` would still pass.\n\nFix:\n- After locating the `width` value cell, also assert it is the expected `Length`/`Scalar` shape (inspect `vc.cell_type` against the actual enum variants in `reify_types`).\n- And/or assert that its source span is non-empty, mirroring how `get_source_location` will use it.\n\nSource: review_comprehensive S1 + S2 on Task 1247 (esc-1247-1023).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:54:41.842Z"
       },
       {
         "id": "1257",
@@ -25392,7 +25393,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:54:41.659Z",
+      "lastModified": "2026-04-09T02:54:41.842Z",
       "taskCount": 1257,
       "completedCount": 929,
       "tags": [
