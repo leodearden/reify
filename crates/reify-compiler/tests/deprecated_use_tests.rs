@@ -327,3 +327,55 @@ fn annotation_compile_tests_no_regression() {
         dep_use_warns
     );
 }
+
+// ── Task 272: five dedicated regression tests for @deprecated ────────────────
+
+// Scenario (1): deprecated entity emits warning on use, and the span points at
+// the use-site, not the definition.
+#[test]
+fn task_272_deprecated_entity_emits_warning_on_use() {
+    let source = r#"
+        @deprecated("Use NewBolt")
+        structure OldBolt { param d : Real = 1.0 }
+
+        structure Assembly {
+            sub b = OldBolt()
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "OldBolt");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for OldBolt, got: {:?}",
+        warns
+    );
+
+    // The warning must carry at least one label with a non-empty span.
+    let label = warns[0]
+        .labels
+        .first()
+        .expect("expected at least one diagnostic label");
+    assert!(
+        !label.span.is_empty(),
+        "expected non-empty span in deprecation label, got: {:?}",
+        label.span
+    );
+
+    // The label span must fall at or after the use-site ("sub b"), not at the definition.
+    let use_site_offset = source
+        .find("sub b")
+        .expect("test source must contain 'sub b'") as u32;
+    assert!(
+        label.span.start >= use_site_offset,
+        "expected span.start ({}) >= use-site offset ({}); span is inside definition, not use-site",
+        label.span.start,
+        use_site_offset
+    );
+}
