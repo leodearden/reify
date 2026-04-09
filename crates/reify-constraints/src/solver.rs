@@ -1161,10 +1161,7 @@ mod tests {
     fn verify_uniqueness_warns_when_param_is_non_numeric() {
         use std::collections::HashMap;
 
-        use reify_test_support::warn_capturing_subscriber;
         use reify_types::{AutoParam, Type, Value, ValueCellId};
-
-        use super::verify_uniqueness;
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
@@ -1184,29 +1181,8 @@ mod tests {
         let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
         solved_values.insert(param_id.clone(), Value::Undef);
 
-        let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        // Exactly 1 verify_uniqueness WARN (filter by new wording from task/1228);
-        // solutions_agree may emit additional WARNs but we count only the aggregated
-        // verify_uniqueness one. Decoupled from any downstream solutions_agree warn
-        // behavior which may change independently.
-        let msgs = capture.messages();
-        let vu_warn_count = msgs
-            .iter()
-            .filter(|m| m.contains("midpoint as comparison anchor"))
-            .count();
-        assert_eq!(
-            vu_warn_count, 1,
-            "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
-        );
-        // NB: this assertion implicitly depends on solve_core converging on the perturbed
-        // starting point so that solutions_agree runs and returns false. If solve_core ever
-        // returned Infeasible/NoProgress for this trivial no-constraint problem,
-        // verify_uniqueness would conservatively return true via the early-return branch
-        // (~line 826) and this assertion would flip to a misleading failure.
+        let unique =
+            assert_verify_uniqueness_aggregated_warn(&problem, &solved_values, &["Part.x"]);
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
