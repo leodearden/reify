@@ -709,6 +709,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conjugate_pos_inf_im_returns_undef() {
+        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.conjugate → Undef
+        // The conjugate would flip +Inf → -Inf, still non-finite; should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with +Inf imaginary part should return Undef"
+        );
+    }
+
     // ── method regression: finite conjugate still works ──────────────────────
 
     #[test]
