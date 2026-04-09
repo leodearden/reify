@@ -1427,19 +1427,13 @@ mod tests {
         use std::collections::HashMap;
 
         use super::solutions_agree;
-        use reify_types::{AutoParam, Type, ValueCellId};
+        use reify_types::{Value, ValueCellId};
 
-        let param_id = ValueCellId::new("Part", "x");
-        let params = vec![AutoParam {
-            id: param_id.clone(),
-            param_type: Type::length(),
-            bounds: Some((0.0, 1.0)),
-            free: false,
-        }];
+        let (_param_id, params) = test_param();
 
         // Both maps are empty — neither contains the param
-        let solved: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
-        let perturbed: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+        let solved: HashMap<ValueCellId, Value> = HashMap::new();
+        let perturbed: HashMap<ValueCellId, Value> = HashMap::new();
 
         assert!(
             !solutions_agree(&params, &solved, &perturbed),
