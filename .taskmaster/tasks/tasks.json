@@ -25503,11 +25503,16 @@
         "description": "Follow-up from Task 1235 review (esc-1235-1032, S4, consistency). Curl was not updated by Tasks 1221 or 1235, creating an inconsistent story where div/lap/grad propagate dimensions under the type system but curl silently does not.\n\nLocations:\n- crates/reify-expr/src/lib.rs compute_curl (lines ~863-933): currently preserves the input codomain verbatim (`codomain_type: codomain_type.clone()`) rather than dividing the vector-component dimension by domain_dim.\n- crates/reify-expr/src/lib.rs compute_numerical_curl_at_point (~lines 1717-1725): unconditionally wraps components in Value::Real.\n- crates/reify-expr/src/lib.rs sample-handler dispatch (~lib.rs:170-176): currently does NOT forward codomain_type to compute_numerical_curl_at_point. Will need the equivalent plumbing the Divergence/Laplacian arms already have.\n\nExpected behavior: a curl of Point{3,Length} → Vector{3,Velocity} should produce per-component dimension 1/Time (same as divergence). compute_curl should stamp Vector{3, Scalar{dim = input_component_dim / domain_dim}} and compute_numerical_curl_at_point should wrap components in Value::Scalar when result_dim != DIMENSIONLESS.\n\nTests: mirror the div/lap sample-level dimensional-correctness tests in field_calculus_tests.rs — build a concrete dimensioned analytical lambda, call sample(curl(field), point), assert per-component Value::Scalar with the expected derived dimension.\n\nMemory hints:\n- search \"Task 1235 divergence laplacian dimension drift\" — the parent task that established the pattern\n- search \"compute_numerical_gradient_at_point result_dim Value::Scalar\" — canonical reference\n- get_entity \"Task 1221\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:22:51.430Z"
+        "updatedAt": "2026-04-09T03:29:16.802Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1263",
@@ -25560,7 +25565,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:24:48.502Z",
+      "lastModified": "2026-04-09T03:29:16.802Z",
       "taskCount": 1266,
       "completedCount": 938,
       "tags": [
