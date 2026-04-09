@@ -27309,6 +27309,9 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/purpose_compile_tests.rs"
           ]
         }
       },
@@ -27325,7 +27328,10 @@
         "updatedAt": "2026-04-09T10:08:19.257Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
@@ -27338,7 +27344,16 @@
         "status": "pending",
         "dependencies": [],
         "priority": "high",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/deps.rs",
+            "crates/reify-eval/src/cache.rs"
+          ],
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       }
     ],
     "metadata": {
