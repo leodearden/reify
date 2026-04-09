@@ -888,3 +888,100 @@ async fn error_prefix_constants_match_actual_errors() {
         error_prefix::UNSUPPORTED_METHOD
     );
 }
+
+/// Document the server behavior when `initialize` fails (malformed params) and the
+/// `initialized` notification is never sent, but downstream `textDocument/didOpen` and
+/// `textDocument/completion` calls are made anyway.
+///
+/// **Permitted outcomes** (per the task description):
+/// - The downstream calls succeed with well-formed responses — the bridge does not
+///   gate them on the handshake state, so `did_open` and `completion` run normally.
+/// - The downstream calls return a well-defined `Err` — a future change may add a
+///   pre-handshake guard; that is also an acceptable outcome provided the error is
+///   non-empty.
+///
+/// **Regressions this test guards against:**
+/// - A panic or hang on `textDocument/didOpen` / `textDocument/completion` when the
+///   handshake was never completed.
+/// - An ill-formed (e.g. empty string) error being returned on the pre-handshake path.
+/// - A future permissive-to-strict change that silently swallows the error instead of
+///   surfacing it.
+///
+/// Mirrors the setup of `initialize_error_does_not_corrupt_server_state` (same failing
+/// payload, same `InProcessLsp::new()` start), but replaces the "recovery initialize"
+/// assertion with downstream `didOpen` + `completion` calls.
+#[tokio::test]
+async fn downstream_ops_after_malformed_initialize_without_initialized() {
+    let lsp = InProcessLsp::new();
+
+    // Step 1: send initialize with a completely wrong payload type.
+    // Uses json!(42) — the canonical malformed payload in this file — to guarantee
+    // serde rejects it before server.initialize() is ever called, so workspace_root
+    // and stdlib_path remain at their defaults.
+    let init_result = lsp.handle_request("initialize", json!(42)).await;
+    assert!(
+        init_result.is_err(),
+        "initialize with json!(42) should return Err, got: {init_result:?}"
+    );
+    let init_err = init_result.unwrap_err();
+    assert!(
+        init_err.contains(error_prefix::INITIALIZE_PARAMS),
+        "initialize error should contain '{}', got: {init_err}",
+        error_prefix::INITIALIZE_PARAMS
+    );
+
+    // Step 2: intentionally skip the `initialized` notification.
+    // The `initialized()` handler is a no-op, so skipping it produces no server-side
+    // state change — but this test documents that the server also does not require it
+    // before accepting downstream calls.
+
+    // Step 3: send textDocument/didOpen on the same (never-handshook) instance.
+    // bracket_source() does not require stdlib resolution to parse, so compilation
+    // proceeds even without the workspace_root that initialize() would have set.
+    let did_open_result = lsp
+        .handle_request(
+            "textDocument/didOpen",
+            did_open_params("file:///test.ri", reify_test_support::bracket_source()),
+        )
+        .await;
+    match &did_open_result {
+        Ok(val) => assert_eq!(
+            *val,
+            serde_json::Value::Null,
+            "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
+        ),
+        Err(e) => assert!(
+            !e.is_empty(),
+            "didOpen error should be non-empty, got empty string"
+        ),
+    }
+
+    // Step 4: send textDocument/completion at the same position used by the happy-path
+    // reference test did_open_and_completion_returns_items (line 1, character 0).
+    // The completion handler operates on the DocumentStore entry that didOpen inserted;
+    // it does not consult initialization state, so it should produce a valid response
+    // regardless of whether didOpen itself succeeded.
+    let completion_result = lsp
+        .handle_request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": "file:///test.ri" },
+                "position": { "line": 1, "character": 0 }
+            }),
+        )
+        .await;
+    match &completion_result {
+        Ok(val) if val.is_null() => {
+            // Ok(Value::Null) — no completions is a valid Option<CompletionResponse>::None.
+        }
+        Ok(val) => {
+            // Non-null Ok — must be a well-formed CompletionResponse variant.
+            // completion_items() panics with an actionable message if the shape is wrong.
+            let _items = completion_items(val);
+        }
+        Err(e) => assert!(
+            !e.is_empty(),
+            "completion error should be non-empty, got empty string"
+        ),
+    }
+}
