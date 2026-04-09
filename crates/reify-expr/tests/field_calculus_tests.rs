@@ -1118,3 +1118,25 @@ fn laplacian_linear_field_near_zero() {
         val
     );
 }
+
+// ── Step 9: Edge-case Undef return paths ─────────────────────────────────────
+
+/// divergence(Real) returns Undef when the argument is not a Field.
+///
+/// Mirrors gradient_non_field_returns_undef in lambda_eval_tests.rs. Exercises the
+/// first early-return guard in compute_divergence (lib.rs:732–739).
+#[test]
+fn divergence_non_field_returns_undef() {
+    let expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
+        Type::Real,
+    );
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "divergence of non-Field must return Undef"
+    );
+}
