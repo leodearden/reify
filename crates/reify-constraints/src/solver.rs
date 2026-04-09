@@ -1324,6 +1324,46 @@ mod tests {
         assert_verify_uniqueness_early_returns(&problem, &solved_values, "param-non-numeric");
     }
 
+    /// Proves the early-return contract holds when multiple params are missing.
+    /// The sibling `aggregates_warn` test covers warn-message text; this test
+    /// covers the verdict and event-count contract.
+    #[test]
+    fn verify_uniqueness_skips_solve_core_when_multiple_params_missing() {
+        use std::collections::HashMap;
+
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let problem = ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: ValueCellId::new("Part", "x"),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+                AutoParam {
+                    id: ValueCellId::new("Part", "y"),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+            ],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Empty solved_values: both params are missing → early-return path should fire
+        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        assert_verify_uniqueness_early_returns(
+            &problem,
+            &solved_values,
+            "multiple-params-missing",
+        );
+    }
+
     // ---- build_perturbation_anchors unit tests ----
 
     #[test]
