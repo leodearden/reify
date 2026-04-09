@@ -27952,11 +27952,11 @@
         "description": "Follow-up from Task 1322 review (esc-1322-29, suggestions S1/S2/S3/S6). Improve the hardening self-checks added in Task 1322 to tests/infra/test_sync_comments_grep.sh so they are more robust and self-documenting.\n\nFour related improvements in Section 1 (lines ~46-59):\n\n1. **S1 (readability, line 53):** The `_CHECK='bash'; _CHECK+=' -c \".*\\$PATTERN'` split-concatenation trick prevents the self-check regex from matching its own definition line. This is opaque on first read. Add an inline comment directly above line 53 explaining *why* it is split — something like `# Split assignment so the literal 'bash -c \".*$PATTERN' does not appear contiguously in this file and trip its own self-check below.`\n\n2. **S2 (test_coverage, lines 53-54):** `_no_unhardened_pattern_interp` matches only the exact form `bash -c \"...$PATTERN...`. It does NOT catch the equivalent `${PATTERN}` form (`\\$PATTERN` in the regex requires a literal `$` directly followed by `P`, not `$` followed by `{`), nor variations like `bash -c \"...\\\\\"$PATTERN\\\\\"...\"`. Since this IS the regression trap for the whole refactor, its recall matters. Broaden the regex to at least accept an optional `{` after `$` (e.g. `bash -c \".*\\$\\\\{?PATTERN`). A stronger fix would be to reject any `bash -c \"` line that mentions PATTERN at all in Section 1.\n\n3. **S3 (test_quality, lines 56-57):** The `exports PATTERN` assertion is a purely textual grep for `^[[:space:]]*export[[:space:]]+PATTERN`. An `export PATTERN` inside an `if false; then ... fi` block would pass the textual check while leaving PATTERN unexported. Add (or replace with) a behavioral check: `assert \"PATTERN is actually exported\" bash -c '[ -n \"${PATTERN+x}\" ] && env | grep -q \"^PATTERN=\"'`. This validates the invariant the textual check is trying to enforce.\n\n4. **S6 (diagnostics, line 54):** When `_no_unhardened_pattern_interp` fails, grep's matched lines are printed but the user may not immediately understand they are the cause of the failing assert. Add a louder header, e.g.:\n```bash\n_no_unhardened_pattern_interp() {\n    local m\n    m=$(grep -nE \"$_CHECK\" \"$THIS_SCRIPT\") || return 0\n    echo \"UNHARDENED PATTERN INTERPOLATION FOUND:\" >&2\n    echo \"$m\" >&2\n    return 1\n}\n```\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh` — all assertions should still pass (≥40), and the braced-form negative case should also be caught if you add one.\n\nSource: esc-1322-29 (steward-triage from Task 1322 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:12:59.657Z",
+        "updatedAt": "2026-04-09T21:13:40.323Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -28486,7 +28486,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:13:39.798Z",
+      "lastModified": "2026-04-09T21:13:40.323Z",
       "taskCount": 1376,
       "completedCount": 1051,
       "tags": [
