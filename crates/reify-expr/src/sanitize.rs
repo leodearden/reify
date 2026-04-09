@@ -1,4 +1,4 @@
-use reify_types::{DimensionVector, Value};
+use reify_types::Value;
 
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
@@ -34,6 +34,8 @@ pub(crate) fn sanitize_value(v: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use reify_types::DimensionVector;
+
     use super::*;
 
     // ── sanitize_value direct unit tests ─────────────────────────────────────
