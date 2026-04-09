@@ -1271,12 +1271,8 @@ mod tests {
     #[test]
     fn verify_uniqueness_skips_solve_core_when_param_missing() {
         use std::collections::HashMap;
-        use std::sync::atomic::Ordering;
 
-        use reify_test_support::CountingSubscriberBuilder;
         use reify_types::{AutoParam, Type, ValueCellId};
-
-        use super::verify_uniqueness;
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
@@ -1295,38 +1291,7 @@ mod tests {
         // Empty solved_values: param is missing → early-return path should fire
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
-        let (subscriber, counters) = CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .count_level(tracing::Level::DEBUG)
-            .target_prefix("reify_constraints")
-            .build();
-
-        let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
-        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
-
-        let unique = tracing::subscriber::with_default(subscriber, || {
-            verify_uniqueness(&problem, &solved_values)
-        });
-
-        assert!(
-            !unique,
-            "verify_uniqueness must return false when param is missing from solved_values"
-        );
-
-        let warn_n = warn_count.load(Ordering::Acquire);
-        assert_eq!(
-            warn_n, 1,
-            "expected exactly 1 WARN (the aggregated missing-param early-return warn); \
-             got {warn_n}"
-        );
-
-        let debug_n = debug_count.load(Ordering::Acquire);
-        assert_eq!(
-            debug_n, 0,
-            "expected 0 DEBUG events (early-return skips both the \
-             'verifying uniqueness via perturbation' debug and all solve_core debug events); \
-             got {debug_n}"
-        );
+        assert_verify_uniqueness_early_returns(&problem, &solved_values, "param-missing");
     }
 
     // ---- build_perturbation_anchors unit tests ----
