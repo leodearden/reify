@@ -26341,13 +26341,13 @@
         "description": "reify-stdlib/src/lib.rs (8,643 lines) is a single-file crate with ~25 active tasks contending on it. Split into domain submodules to reduce merge conflicts and enable parallel orchestrator execution.\n\nProposed splits:\n- prelude.rs — Prelude loading, caching, compile_with_prelude, collect_preludes. Unlocks ~8 tasks.\n- geometry.rs — Geometry primitives (cone, torus, chamfer, sweep, loft, pattern, extrude, revolve, boolean). Unlocks ~15 tasks.\n- analysis.rs — Analysis traits, DFM, von_mises, safety_factor, simulation_ready, design_review.\n- units.rs — Unit definitions, imperial, SI prefixes, unit collision detection.\n- lib.rs (remainder) — Thin re-export facade, Engine integration.\n\nTarget: lib.rs under 500 lines, no submodule over 2500 lines.\n\nmemory_hints: search \"stdlib prelude reify\", search \"geometry primitives stdlib\"",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [
           "534"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:35:50.647Z",
+        "updatedAt": "2026-04-09T09:37:19.697Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -26466,7 +26466,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:37:13.293Z",
+      "lastModified": "2026-04-09T09:37:19.702Z",
       "taskCount": 1312,
       "completedCount": 976,
       "tags": [
