@@ -2878,10 +2878,12 @@ fn gradient_3d_field_single_point_param() {
 
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, p) at integer coordinates.
 ///
-/// dot(p, p) = x² + y² + z², so its gradient is 2p = (2x, 2y, 2z). Unlike the
-/// linear dot(p, [1,2,3]) test above (whose gradient is the constant (1,2,3)),
-/// this function's gradient depends on coordinates, so any restore error in one
-/// axis would corrupt its gradient component.
+/// dot(p, p) = x² + y² + z², so its gradient is 2p = (2x, 2y, 2z). The
+/// coordinates (2, 3, 5) are exactly representable in IEEE 754, so there is no
+/// FP-restore error; this test exercises the *analytical correctness* of the
+/// gradient computation on a coordinate-dependent quadratic function. This is a
+/// correctness test, not an FP-restore test; see
+/// `gradient_single_point_param_irrational_coords` for the FP-restore coverage.
 ///
 /// Central difference is mathematically exact for quadratic polynomials — the
 /// O(h²) truncation error vanishes — leaving only FP roundoff. Tolerance 1e-9
