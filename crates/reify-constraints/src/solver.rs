@@ -932,20 +932,20 @@ mod tests {
     /// subscriber and asserts the aggregated WARN contract:
     ///
     /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
-    /// 2. Every substring in `expected_param_substrings` appears in the joined WARN messages
+    /// 2. Every substring in `expected_warn_substrings` appears in the joined WARN messages
     ///    (verifies that the relevant `ValueCellId`s were included in the event via the
     ///    `missing_params = ?missing` field).
     ///
     /// Returns the `unique` flag so each call site can assert the verdict with its own
     /// descriptive message, consistent with the named-local style of the sibling tests.
     ///
-    /// See the section comment at `// ---- verify_uniqueness tracing tests ----` for the
+    /// See the section comment below (above the `verify_uniqueness_warns_*` tests) for the
     /// early-return coverage rationale (solve_core and solutions_agree are NOT invoked on
     /// the missing/non-numeric path).
     fn assert_verify_uniqueness_aggregated_warn(
         problem: &ResolutionProblem,
         solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
-        expected_param_substrings: &[&str],
+        expected_warn_substrings: &[&str],
     ) -> bool {
         use reify_test_support::warn_capturing_subscriber;
 
@@ -968,7 +968,7 @@ mod tests {
         );
 
         let all_msgs = msgs.join("\n");
-        for substring in expected_param_substrings {
+        for substring in expected_warn_substrings {
             assert!(
                 all_msgs.contains(substring),
                 "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
@@ -1145,6 +1145,9 @@ mod tests {
     // Any future regression in `solutions_agree`'s own WARN emission is caught by the
     // `solutions_agree_*` tests in this same module, not by these `verify_uniqueness_*`
     // tests. The two families are intentionally decoupled.
+    //
+    // NB: the early-return invariant is directly asserted by
+    // `verify_uniqueness_skips_solve_core_when_param_missing` below.
 
     #[test]
     fn verify_uniqueness_warns_when_param_missing_from_solved_values() {
