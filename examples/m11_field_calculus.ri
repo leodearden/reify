@@ -12,13 +12,13 @@
 // ── Analytical field definitions ─────────────────────────────────────────────
 
 // f(x) = x*x  — quadratic, gradient is 2*x
-field def quadratic : Scalar -> Scalar { source = analytical { |x| x * x } }
+field def quadratic : Real -> Real { source = analytical { |x| x * x } }
 
 // f(x) = 3*x + 2  — linear, gradient is constant 3.0
-field def linear : Scalar -> Scalar { source = analytical { |x| 3.0 * x + 2.0 } }
+field def linear : Real -> Real { source = analytical { |x| 3.0 * x + 2.0 } }
 
 // f(x) = 42.0  — constant, gradient should be ≈ 0
-field def constant_field : Scalar -> Scalar { source = analytical { |x| 42.0 } }
+field def constant_field : Real -> Real { source = analytical { |x| 42.0 } }
 
 // ── Structure exercising field operations ─────────────────────────────────────
 
