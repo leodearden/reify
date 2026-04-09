@@ -4497,6 +4497,71 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_op_extrude_at_threshold_returns_some() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with 2e-12 m distance — just above the 1e-12 threshold, should return Some
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(2e-12))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("2e-12 extrude distance (just above threshold) should return Some");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance: _ } => {
+                assert_eq!(profile, GeometryHandleId(10));
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_negative_near_zero_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with -1e-15 m distance — small negative, abs() < 1e-12, should return None
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(-1e-15))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "small-negative extrude distance (-1e-15) should return None (abs guard rejects small negatives too)"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_negative_distance_still_legal() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with -0.05 m distance — ordinary negative, abs() >= 1e-12, should return Some
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(-0.05))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("negative extrude distance (-0.05) should return Some (ordinary negatives are legal)");
+
+        match result {
+            reify_types::GeometryOp::Extrude { profile, distance: _ } => {
+                assert_eq!(profile, GeometryHandleId(10));
+            }
+            other => panic!("expected GeometryOp::Extrude, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn compile_geometry_op_revolve_zero_axis_returns_none() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
@@ -4572,6 +4637,38 @@ mod tests {
             result.is_none(),
             "near-zero revolve angle should return None"
         );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_angle_at_threshold_returns_some() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with 2e-12 rad angle — just above the 1e-12 threshold, should return Some
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(2e-12)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let result = result.expect("2e-12 rad revolve angle (just above threshold) should return Some");
+
+        match result {
+            reify_types::GeometryOp::Revolve { profile, angle_rad, .. } => {
+                assert_eq!(profile, GeometryHandleId(10));
+                assert!((angle_rad - 2e-12).abs() < 1e-24, "angle_rad should be 2e-12");
+            }
+            other => panic!("expected GeometryOp::Revolve, got {:?}", other),
+        }
     }
 
     #[test]
