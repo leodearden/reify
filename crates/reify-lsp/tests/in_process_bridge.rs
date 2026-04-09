@@ -121,6 +121,27 @@ async fn open_bracket_doc(lsp: &InProcessLsp) {
     .expect("open_bracket_doc: didOpen should succeed");
 }
 
+/// Extract the completion items slice from a serialized [`CompletionResponse`] value.
+///
+/// The bridge serializes `Option<CompletionResponse>` to `serde_json::Value`, producing
+/// one of two shapes depending on which variant the server returned:
+///
+/// - `CompletionResponse::Array` → JSON array `[...]`
+/// - `CompletionResponse::List`  → JSON object `{"isIncomplete": bool, "items": [...]}`
+///
+/// This helper handles both shapes so that tests remain valid regardless of which
+/// variant the server returns.  Panics with an actionable message (including the actual
+/// value received) if neither shape matches.
+fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
+    if let Some(arr) = response.as_array() {
+        return arr;
+    }
+    panic!(
+        "completion response should be CompletionResponse::Array (JSON array) or \
+         CompletionResponse::List (JSON object with \"items\" field), got: {response}"
+    );
+}
+
 /// Regression guard: the set_default guard pattern must capture WARN events when
 /// running on a current_thread tokio runtime.
 ///
