@@ -17507,10 +17507,11 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/connect.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
@@ -17597,8 +17598,7 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-compiler/tests/compiler_tests.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
             "crates/reify-compiler"
@@ -17640,9 +17640,7 @@
         "metadata": {
           "files": [
             "crates/reify-types/src/value.rs",
-            "crates/reify-compiler/src/lib.rs",
-            "crates/reify-types/tests/value_tests.rs",
-            "crates/reify-compiler/tests/compiler_tests.rs"
+            "crates/reify-compiler/src/lib.rs"
           ],
           "modules": [
             "crates/reify-types",
