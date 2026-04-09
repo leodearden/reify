@@ -5041,6 +5041,118 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Transform::Translate — all three required args present
+        let translate_op = CompiledGeometryOp::Transform {
+            kind: reify_compiler::TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &translate_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Translate with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Translate with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Pattern::LinearPattern — all required args present
+        let linear_op = CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "LinearPattern with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for LinearPattern with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Extrude — distance present
+        let extrude_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.05))],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &extrude_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Extrude with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Extrude with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Revolve — all seven args present with a valid axis
+        let revolve_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Revolve,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &revolve_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Revolve with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Revolve with all args, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
 
     #[test]
