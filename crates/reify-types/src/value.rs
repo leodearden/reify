@@ -326,6 +326,15 @@ impl Value {
     /// `PartialEq` if exact bit-pattern identity of the NaN payload matters.
     /// See `nan_payload_hash_equality_invariant_exception` for the invariant
     /// exception test.
+    ///
+    /// **Known intentional exception — incremental cache**: the incremental
+    /// evaluation cache (`CacheStore::record_evaluation` in
+    /// `crates/reify-eval/src/cache.rs`) performs hash-only comparison for its
+    /// early-cutoff check and does *not* follow the "re-check `PartialEq`"
+    /// guidance above.  This is deliberate: two results that differ only in NaN
+    /// payload are considered equivalent for the purposes of invalidating
+    /// downstream nodes, so collapsing them via the canonical hash is the
+    /// correct behaviour there, not a bug.
     pub fn content_hash(&self) -> ContentHash {
         // Content-hash tag registry (first byte of every ContentHash payload):
         // 0=Bool, 1=Int, 2=Real, 3=String, 4=Scalar, 5=Undef, 6=Enum, 7=List,
