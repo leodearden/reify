@@ -284,6 +284,33 @@ fn e2e_meta_sub_structure_child_meta() {
 
     let compiled = parse_and_compile(source);
 
+    // Assert both templates are present in compiled output.
+    let _part = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Part")
+        .expect("Part template should be present in compiled output");
+    let assembly = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Assembly")
+        .expect("Assembly template should be present in compiled output");
+
+    // Assert Assembly's sub-component wiring: `sub part = Part()` must compile
+    // to a SubComponentDecl with name "part" and structure_name "Part".
+    assert_eq!(
+        assembly.sub_components.len(),
+        1,
+        "Assembly should have exactly one sub-component"
+    );
+    let sub = &assembly.sub_components[0];
+    assert_eq!(sub.name, "part", "sub-component binding name should be 'part'");
+    assert_eq!(
+        sub.structure_name,
+        "Part",
+        "sub-component structure_name should be 'Part'"
+    );
+
     // Eval
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
