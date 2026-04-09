@@ -3450,96 +3450,6 @@ fn gradient_decomposed_n3_irrational_coords() {
     );
 }
 
-// ── Step-8: Declaration-vs-runtime type contract ──────────────────────
-
-/// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
-/// Sampling a gradient field panics in debug mode when codomain_type does not match
-/// the runtime dimension returned by the lambda.
-///
-/// **DESIGN DECISION: trust-the-declaration**
-/// The gradient computation trusts `codomain_type` for dimensioning the result.
-/// In debug builds, a hard assertion catches dimensionless-domain mismatches
-/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
-/// This is a deliberate design choice to avoid false positives from dimensioned-domain
-/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
-/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
-/// emitted instead of a hard assertion.
-///
-/// This test validates the #[cfg(debug_assertions)] assertion in
-/// compute_numerical_gradient_at_point. The assertion fires after the first f_plus
-/// evaluation when the declared codomain dimension does not match the actual runtime
-/// return dimension.
-///
-/// Setup:
-/// - domain_type = Type::Real (1D, dimensionless)
-/// - codomain_type = Type::Scalar { dimension: MASS } (declared as kg)
-/// - lambda body: |x| 2*x — returns Value::Real at runtime (dimensionless, NOT MASS)
-///
-/// The mismatch: declared says dimension=MASS, but f_plus.dimension() = DIMENSIONLESS.
-/// The assertion should fire with message containing "codomain_type does not match".
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "codomain_type does not match")]
-fn gradient_runtime_codomain_dim_mismatch_panics() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let dim_kg = DimensionVector::MASS;
-
-    // Lambda: |x| 2*x — body returns Value::Real at runtime (dimensionless)
-    let body = CompiledExpr::binop(
-        BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
-    let domain_type = Type::Real;
-    let codomain_type = Type::Scalar { dimension: dim_kg };
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(codomain_type.clone()),
-        },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    // Sampling triggers the assertion: f_plus returns Real (dimensionless) but
-    // codomain declares MASS — the debug assertion should fire here.
-    let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(codomain_type),
-    };
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        ],
-        Type::Scalar { dimension: dim_kg },
-    );
-    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-    // Expected to panic before reaching here
-}
-
 /// Gradient of a 1D field with heterogeneous dimensions: domain=Scalar[LENGTH],
 /// codomain=Scalar[MASS], lambda |x| 2*x (coefficient carries MASS/LENGTH).
 ///
@@ -3904,7 +3814,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
 
 /// Sampling a gradient field with dimensioned-domain codomain mismatch does NOT panic.
 ///
-/// This is the dimensioned-domain counterpart to `gradient_runtime_codomain_dim_mismatch_panics`.
+/// This is the dimensioned-domain counterpart to `gradient_codomain_type_vs_runtime_mismatch`.
 /// For a dimensionless domain, sampling panics in debug mode because the hard assertion
 /// fires (`domain_dim.is_none()`). For a dimensioned domain, the assertion is intentionally
 /// skipped — dimensioned lambda arithmetic produces apparent type mismatches that are not
@@ -3994,7 +3904,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
         grad_codomain,
     );
 
-    // This must not panic (contrast: gradient_runtime_codomain_dim_mismatch_panics does panic)
+    // This must not panic (contrast: gradient_codomain_type_vs_runtime_mismatch does panic)
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0
