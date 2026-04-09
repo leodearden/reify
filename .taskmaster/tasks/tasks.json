@@ -4525,11 +4525,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
           "milestone": "M10",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/connect_compile_tests.rs",
+            "crates/reify-eval/tests/connect_eval.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-07T16:03:56.659Z"
@@ -4609,8 +4613,9 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests",
+            "examples"
           ],
           "milestone": "M10",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -4619,7 +4624,12 @@
             "queries": [
               "resolution for: Port mapping: tests and .ri example"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/tests/port_compile_tests.rs",
+            "crates/reify-eval/tests/connect_eval.rs",
+            "examples/m10_connect_advanced.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-07T16:03:56.686Z"
