@@ -25417,14 +25417,15 @@
         "description": "The non-empty guards on lines 61-62 of sync_comments_test.sh use `[ -z \"$expr_body\" ] && assert ... false` which records a FAIL but does not short-circuit execution. If both bodies are empty (e.g. function renamed), the subsequent `diff <(printf '%s' \"\") <(printf '%s' \"\")` succeeds, recording a spurious PASS for 'sanitize_value body is identical'. The overall test still fails (FAIL count > 0), but the misleading PASS in the output could confuse debugging.\n\nFix: convert the guards to early returns that also record the failure, either by calling `test_summary` after the assert (which exits non-zero due to FAIL count), or by wrapping the diff in a conditional that only runs when both bodies are non-empty.\n\nSource: review of task 1195 (esc-1195-971), suggestion S1.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:50:44.688Z",
+        "updatedAt": "2026-04-09T16:55:18.374Z",
         "metadata": {
           "modules": [
-            "tests"
+            "tests/infra/test_test_helpers.sh",
+            "tests/sync_comments_test.sh"
           ],
           "files": [
             "tests/sync_comments_test.sh"
@@ -27515,7 +27516,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:54:56.365Z",
+      "lastModified": "2026-04-09T16:55:18.389Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
