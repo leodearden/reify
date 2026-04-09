@@ -2568,8 +2568,8 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
 /// Gradient of an Imported field returns Undef.
 ///
 /// Mirrors gradient_sampled_field_returns_undef. Imported fields don't have a
-/// callable lambda. compute_gradient rejects non-Analytical/Composed sources at
-/// line 586, so gradient(ImportedField) → Undef immediately.
+/// callable lambda. compute_gradient rejects non-Analytical/Composed sources via
+/// its FieldSourceKind whitelist, so gradient(ImportedField) → Undef immediately.
 #[test]
 fn gradient_imported_field_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -2611,7 +2611,7 @@ fn gradient_imported_field_returns_undef() {
 
 /// Gradient of a Composed field returns a gradient Field and produces correct values.
 ///
-/// Composed is whitelisted at compute_gradient line 586. This test verifies:
+/// Composed is whitelisted in compute_gradient's FieldSourceKind check. This test verifies:
 /// 1. gradient(ComposedField) produces Value::Field { source: Gradient, .. }
 ///    rather than Undef, so that the Composed path doesn't silently regress.
 /// 2. Sampling the gradient field at x=1.0 yields ≈ 2.0 for lambda |x| 2*x,
@@ -3115,7 +3115,8 @@ fn gradient_sample_with_inf_point_returns_undef() {
 /// Treating Tensor the same as Point/Vector extracts wrong coords and computes
 /// a meaningless Jacobian of flattened elements instead of a gradient.
 ///
-/// Pre-fix: Tensor is matched alongside Point/Vector at line 699, coords are
+/// Pre-fix: Tensor is matched alongside Point/Vector in
+/// compute_numerical_gradient_at_point's point-decomposition match, coords are
 /// extracted, gradient succeeds → test FAILS.
 /// Post-fix: Tensor falls through to `_ => Undef` → test passes.
 #[test]
@@ -3375,7 +3376,7 @@ fn gradient_decomposed_n3_dimensionless() {
 /// Lambda: |x, y, z| x + 2*y + 3*z.  Gradient is the constant vector (1, 2, 3).
 /// Sample at Point3(1/3, π/7, √2) — coordinates not exactly representable in IEEE 754.
 ///
-/// The exact-restore at line ~853 (`work_coords[i] = coord_i`) affects both the
+/// The exact-restore (`work_coords[i] = coord_i`) in compute_numerical_gradient_at_point affects both the
 /// single_point_param and decomposed code paths.  The companion test
 /// `gradient_single_point_param_irrational_coords` covers single_point_param=true;
 /// this test covers single_point_param=false at the same irrational inputs.
