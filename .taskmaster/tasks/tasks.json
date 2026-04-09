@@ -8010,7 +8010,11 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:19.374Z"
@@ -8026,10 +8030,14 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests",
+            "crates/reify-expr/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/meta_compile_tests.rs",
+            "crates/reify-expr/tests/meta_eval_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:19.418Z"
@@ -8047,7 +8055,19 @@
           "modules": [
             "crates/reify-compiler/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/common/mod.rs",
+            "crates/reify-compiler/tests/connect_compile_tests.rs",
+            "crates/reify-compiler/tests/field_compile_tests.rs",
+            "crates/reify-compiler/tests/meta_compile_tests.rs",
+            "crates/reify-compiler/tests/purpose_compile_tests.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs",
+            "crates/reify-compiler/tests/trait_merge_tests.rs",
+            "crates/reify-compiler/tests/determinacy_compile_tests.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs",
+            "crates/reify-compiler/tests/recursive_detection_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-25T20:59:19.454Z"
