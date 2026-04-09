@@ -179,7 +179,7 @@ pub fn extract_realization_dependencies(
 mod tests {
     use super::*;
     use crate::cache::NodeId;
-    use reify_types::{ConstraintNodeId, ValueCellId};
+    use reify_types::{BinOp, ConstraintNodeId, Type, Value, ValueCellId};
 
     #[test]
     fn reverse_index_new_is_empty() {
@@ -396,6 +396,71 @@ mod tests {
             height_deps.contains(&NodeId::Realization(reify_types::RealizationNodeId::new(
                 e, 0
             )))
+        );
+    }
+
+    // --- extract_dependency_trace unit tests ---
+
+    /// Step 1: Verify extract_dependency_trace captures ValueRef ids from a simple BinOp.
+    ///
+    /// This documents the baseline static extraction behavior: every ValueRef in the
+    /// compiled expression tree contributes to the dependency trace, regardless of position.
+    #[test]
+    fn extract_dependency_trace_captures_value_refs_from_binop() {
+        let a = ValueCellId::new("A", "x");
+        let b = ValueCellId::new("A", "y");
+        let expr = CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(a.clone(), Type::Real),
+            CompiledExpr::value_ref(b.clone(), Type::Real),
+            Type::Real,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(trace.reads.len(), 2, "BinOp of two ValueRefs should yield 2 reads");
+        assert!(trace.reads.contains(&a), "reads should contain 'x'");
+        assert!(trace.reads.contains(&b), "reads should contain 'y'");
+    }
+
+    /// Step 2: Verify extract_dependency_trace handles nested Conditional expressions —
+    /// condition, then-branch, and else-branch all contribute ValueRef reads.
+    ///
+    /// This is the key 'all branches' static extraction property: unlike runtime tracing,
+    /// static extraction conservatively includes all reachable ValueRefs across every branch.
+    #[test]
+    fn extract_dependency_trace_captures_all_branches_of_conditional() {
+        let cond_cell = ValueCellId::new("A", "flag");
+        let then_cell = ValueCellId::new("A", "then_val");
+        let else_cell = ValueCellId::new("A", "else_val");
+        let condition = CompiledExpr::value_ref(cond_cell.clone(), Type::Bool);
+        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::Real);
+        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::Real);
+        let expr = reify_test_support::builders::expr::conditional_expr(
+            condition,
+            then_branch,
+            else_branch,
+        );
+        let trace = extract_dependency_trace(&expr);
+        assert_eq!(
+            trace.reads.len(),
+            3,
+            "Conditional with 3 distinct ValueRefs should yield 3 reads"
+        );
+        assert!(trace.reads.contains(&cond_cell), "reads should contain condition cell");
+        assert!(trace.reads.contains(&then_cell), "reads should contain then-branch cell");
+        assert!(trace.reads.contains(&else_cell), "reads should contain else-branch cell");
+    }
+
+    /// Step 3: Verify extract_dependency_trace returns empty reads for a Literal expression.
+    ///
+    /// Confirms root/leaf behavior: a literal has no value-cell dependencies.
+    #[test]
+    fn extract_dependency_trace_returns_empty_for_literal() {
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let trace = extract_dependency_trace(&expr);
+        assert!(
+            trace.reads.is_empty(),
+            "Literal expression should have no reads, got: {:?}",
+            trace.reads
         );
     }
 }
