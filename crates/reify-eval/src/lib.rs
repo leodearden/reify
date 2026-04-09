@@ -5067,6 +5067,59 @@ mod tests {
     // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
 
     #[test]
+    fn compile_geometry_op_sweep_extrude_missing_distance_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with no args at all — 'distance' is missing
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None
+        assert!(
+            result.is_none(),
+            "missing 'distance' should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'distance' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'distance', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("distance"),
+            "diagnostic message should mention 'distance', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Extrude"),
+            "diagnostic message should mention 'Extrude', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
     fn compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic() {
         let step_handles = vec![GeometryHandleId(10)];
         let values = ValueMap::new();
