@@ -5,6 +5,7 @@ pub mod dirty;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
+pub mod tests_runner;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
