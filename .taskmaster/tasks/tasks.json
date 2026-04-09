@@ -26197,10 +26197,11 @@
         "description": "Follow-up from task 1230 review (reviewer_comprehensive, all suggestions).\n\nS1: `curl_two_element_vector_sample_point_returns_undef` (field_calculus_tests.rs:596-675) duplicates ~55 lines of field/lambda/curl-expr construction that the refactor in task 1230 eliminated elsewhere. Extract a `build_curl_rotation_field()` helper or let `run_curl_rotation_test` take an `ExpectedCurl` enum so the negative test can share setup.\n\nS2: Only curl has a 2-element dimension-guard test. `compute_numerical_divergence_at_point` and `compute_numerical_laplacian_at_point` have the same `items.len() == 3` guard. Add `divergence_two_element_vector_sample_point_returns_undef` and `laplacian_two_element_vector_sample_point_returns_undef`.\n\nS3: The `vec2`/`point3` type mismatch in the dimension-guard test could use a clarifying inline comment explaining the runtime only inspects the Value shape.\n\nS4: Helper API takes `(Value, Type)` pair that callers must keep in sync. Consider deriving `point_literal_type` from the Value variant inside the helper, or using a `SamplePoint` enum.\n\nAll in crates/reify-expr/tests/field_calculus_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T08:14:06.303Z"
       },
       {
         "id": "1303",
@@ -26261,7 +26262,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:14:04.838Z",
+      "lastModified": "2026-04-09T08:14:06.304Z",
       "taskCount": 1305,
       "completedCount": 968,
       "tags": [
