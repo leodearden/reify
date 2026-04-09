@@ -3896,83 +3896,38 @@ mod tests {
 
     #[test]
     fn value_orientation_construction() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         // Should not be undef
         assert!(!o.is_undef());
     }
 
     #[test]
     fn value_orientation_eq_same() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_different() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 1.0, 0.0, 0.0);
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_nan_bitwise() {
         // NaN == NaN via to_bits (bitwise equality)
-        let a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let b = orient(f64::NAN, 0.0, 0.0, 0.0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_neg_zero() {
         // -0.0 != 0.0 via to_bits
-        let a = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(-0.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 0.0, 0.0, 0.0);
         assert_ne!(a, b);
     }
 
