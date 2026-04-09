@@ -1649,6 +1649,54 @@ mod tests {
     }
 
     #[test]
+    fn solutions_agree_multi_param_second_diverges_returns_false() {
+        use std::collections::HashMap;
+
+        use super::solutions_agree;
+        use reify_types::{AutoParam, DimensionVector, Type, Value, ValueCellId};
+
+        // Two params: 'x' agrees within tolerance, 'y' diverges sharply.
+        // This verifies the for-loop iterates ALL params and does not
+        // short-circuit on the first match.
+        let param_x = ValueCellId::new("Part", "x");
+        let param_y = ValueCellId::new("Part", "y");
+        let params = vec![
+            AutoParam {
+                id: param_x.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+            AutoParam {
+                id: param_y.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+        ];
+
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+
+        // First param ('x') agrees: 0.5 vs 0.5000001 — well within tolerance.
+        // Second param ('y') diverges: 0.1 vs 0.9 — should trigger return false.
+        let mut solved: HashMap<ValueCellId, Value> = HashMap::new();
+        solved.insert(param_x.clone(), scalar(0.5));
+        solved.insert(param_y.clone(), scalar(0.1));
+
+        let mut perturbed: HashMap<ValueCellId, Value> = HashMap::new();
+        perturbed.insert(param_x.clone(), scalar(0.5000001));
+        perturbed.insert(param_y.clone(), scalar(0.9));
+
+        assert!(
+            !solutions_agree(&params, &solved, &perturbed),
+            "second param divergence should make solutions_agree return false"
+        );
+    }
+
+    #[test]
     fn single_param_feasibility() {
         use crate::DimensionalSolver;
         use reify_types::{
