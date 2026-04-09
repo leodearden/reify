@@ -5753,8 +5753,22 @@ fn compile_entity(
                 }
 
                 // Compile the sub's where_clause into guard_expr (used by termination check).
-                let sub_guard_expr = sub.where_clause.as_ref().map(|wc| {
-                    compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics)
+                // If compilation emits any diagnostics (errors), store None rather than
+                // Some(broken_expr). This prevents the termination check from seeing a guard
+                // that has no ValueRefs (because the identifier failed to resolve) and then
+                // emitting a spurious "guard references no Int/Bool param" error on top of the
+                // real compilation error.
+                let sub_guard_expr = sub.where_clause.as_ref().and_then(|wc| {
+                    let diag_count_before = diagnostics.len();
+                    let compiled =
+                        compile_expr(&wc.condition, &scope, enum_defs, functions, diagnostics);
+                    if diagnostics.len() > diag_count_before {
+                        // Guard compilation emitted diagnostics — guard is unusable for
+                        // termination analysis. Return None to avoid cascading errors.
+                        None
+                    } else {
+                        Some(compiled)
+                    }
                 });
 
                 sub_components.push(SubComponentDecl {
