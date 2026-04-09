@@ -24139,6 +24139,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/annotations.rs",
+            "crates/reify-compiler/tests/deprecated_use_tests.rs"
           ]
         }
       },
@@ -24155,10 +24160,14 @@
         "updatedAt": "2026-04-08T21:52:03.121Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-lsp",
+            "crates/reify-types",
             "crates/reify-syntax",
-            "crates/reify-types"
+            "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-types/src/traits.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
