@@ -25313,8 +25313,7 @@
             "crates/reify-eval/tests/geometry_error_handling.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -25331,8 +25330,10 @@
         "updatedAt": "2026-04-09T08:13:46.220Z",
         "metadata": {
           "modules": [
-            "scripts/lib_portable.sh",
-            "tests/infra"
+            "scripts"
+          ],
+          "files": [
+            "scripts/lib_portable.sh"
           ]
         }
       },
@@ -25400,7 +25401,9 @@
         "updatedAt": "2026-04-09T01:11:28.303Z",
         "metadata": {
           "modules": [
-            "tests/infra",
+            "tests"
+          ],
+          "files": [
             "tests/sync_comments_test.sh"
           ]
         }
