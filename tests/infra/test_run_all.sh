@@ -72,7 +72,7 @@ if [ -f "$RUN_ALL" ]; then
     chmod +x "$TMPDIR_T3/test_portable_sha256.sh" \
               "$TMPDIR_T3/test_test_helpers.sh" \
               "$TMPDIR_T3/test_helpers.sh"
-    t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" && t3_rc=0 || t3_rc=$?
+    t3_output="$(bash "$RUN_ALL" "$TMPDIR_T3" 2>&1)" || true
     rm -rf "$TMPDIR_T3"
 
     if echo "$t3_output" | grep -q "test_portable_sha256"; then
