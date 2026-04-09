@@ -26868,7 +26868,7 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs, the `initialize_error_does_not_corrupt_server_state` test (lines ~431-451) asserts that the recovery call returns `Ok` but does not inspect the response value. Add a lightweight assertion on the ok_result to verify it contains a `\"capabilities\"` key, making the test self-contained and catching a hypothetical bug where the server returns `Ok(Value::Null)` after a failed first attempt.\n\nSuggested fix:\n```rust\nlet val = ok_result.unwrap();\nassert!(val.get(\"capabilities\").is_some(), \"response should contain capabilities\");\n```\n\nmemory_hints: search(\"initialize error path bridge test coverage\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -26880,7 +26880,7 @@
             "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         },
-        "updatedAt": "2026-04-09T16:13:44.993Z"
+        "updatedAt": "2026-04-09T16:21:05.556Z"
       },
       {
         "id": "1294",
@@ -27365,9 +27365,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:20:39.134Z",
+      "lastModified": "2026-04-09T16:21:05.562Z",
       "taskCount": 1317,
-      "completedCount": 991,
+      "completedCount": 992,
       "tags": [
         "master"
       ]
