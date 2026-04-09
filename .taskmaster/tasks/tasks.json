@@ -20691,7 +20691,12 @@
         "updatedAt": "2026-04-04T19:03:24.888Z",
         "metadata": {
           "modules": [
-            "crates/reify-constraints"
+            "crates/reify-constraints",
+            "crates/reify-test-support"
+          ],
+          "files": [
+            "crates/reify-constraints/src/solvespace.rs",
+            "crates/reify-test-support/src/lib.rs"
           ]
         }
       },
@@ -20708,10 +20713,10 @@
         "updatedAt": "2026-04-04T19:07:44.967Z",
         "metadata": {
           "modules": [
-            "orchestrator.yaml",
-            "scripts/check-pm-standardization.sh",
-            "scripts/test_pm_standardization.sh",
-            "tests/infra"
+            "scripts"
+          ],
+          "files": [
+            "scripts/check-pm-standardization.sh"
           ]
         }
       },
