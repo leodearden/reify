@@ -20483,7 +20483,7 @@
         "description": "Address reviewer suggestions from task 855 review, all in crates/reify-constraints/src/solvespace.rs test module:\n\n- S2: Consider removing meta-tests (missing_coord_setup_returns_expected_tuple, assert_missing_err_passes_on_matching_error) — they test trivial helpers already exercised by 3 real tests (~50 lines of test code for ~30 lines of helper)\n- S3: Use vcid() from reify-test-support instead of ValueCellId::new() in missing_coord_setup, matching convention used in integration tests\n- S4: Rename missing_coord_setup(\"Fixed\", \"y\") field arg — \"y\" is used as x-coordinate in add_point_propagates_missing_value_error\n- S5: Consider adding context parameter to assert_missing_err panic message, or add #[should_panic] negative test\n- S6: builder.params private field access in meta-test couples to internal field name\n\nAll suggestions are in the same file and can be addressed together.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -20495,7 +20495,7 @@
             "crates/reify-constraints/src"
           ]
         },
-        "updatedAt": "2026-04-09T00:50:39.559Z"
+        "updatedAt": "2026-04-09T01:04:50.410Z"
       },
       {
         "id": "990",
@@ -24772,9 +24772,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:00:51.965Z",
+      "lastModified": "2026-04-09T01:04:50.413Z",
       "taskCount": 1218,
-      "completedCount": 901,
+      "completedCount": 902,
       "tags": [
         "master"
       ]
