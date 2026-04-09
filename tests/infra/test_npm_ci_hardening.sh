@@ -77,18 +77,18 @@ assert "Check 1 grep pattern includes 'npm@' prefix match" \
 echo ""
 echo "--- Test 6: script has cross-file packageManager consistency check ---"
 
-assert "script contains 'sort -u' for cross-file consistency comparison" \
-    grep -q 'sort -u' "$SCRIPT"
+assert "Check 2 block uses 'sort -u' for cross-file consistency comparison" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'sort -u'"
 
-assert "script references 'packageManager' in consistency logic" \
-    grep -q 'packageManager' "$SCRIPT"
+assert "Check 2 block references 'packageManager' in consistency logic" \
+    bash -c "grep -A10 'Check 2:' '$SCRIPT' | grep -q 'packageManager'"
 
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
 assert "bare git check-ignore (without -v) is not inside for/done loops" \
-    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -97,8 +97,8 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
 
-assert "script uses 'tr -d' to strip wc whitespace" \
-    grep -q 'tr -d' "$SCRIPT"
+assert "script pipes 'wc -l' into 'tr -d' to strip whitespace" \
+    grep -qE 'wc -l[[:space:]]*\|[[:space:]]*tr -d' "$SCRIPT"
 
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""
