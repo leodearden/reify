@@ -1689,8 +1689,9 @@ fn module_key_matches_load_from_source_insertion() {
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
-    let (stored_key, _) = session.resolve_source_for_test();
+    let (stored_key, stored_src) = session.resolve_source_for_test();
     assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
 }
 
 /// module_key panics (via debug_assert) when called with an empty name.
