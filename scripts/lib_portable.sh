@@ -82,6 +82,14 @@ portable_timeout() {
         local timeout_flag
         timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
 
+        # Save caller's monitor-mode state BEFORE any set -m/set +m manipulation.
+        # Placing this save/restore BEFORE the first set -m ensures that $- still
+        # reflects the caller's original state; the subsequent set +m would clear
+        # 'm' from $- if we saved after it.  Without this, portable_timeout
+        # silently disables the caller's job control when they had set -m active.
+        local _pt_had_monitor=0
+        case $- in *m*) _pt_had_monitor=1 ;; esac
+
         # Start the command in its own process group (PGID=cmd_pid) so that
         # a later 'kill -- -$cmd_pid' can clean up any orphaned children (e.g.
         # if the timer escalates to SIGKILL, killing the command wrapper but
@@ -91,13 +99,6 @@ portable_timeout() {
         "$@" &
         local cmd_pid=$!
         set +m 2>/dev/null || true
-
-        # Save caller's monitor-mode state so we can restore it after temporarily
-        # enabling job control (set -m) to place the timer subshell in its own
-        # process group.  Without this save/restore, portable_timeout silently
-        # disables the caller's job control when they had set -m active.
-        local _pt_had_monitor=0
-        case $- in *m*) _pt_had_monitor=1 ;; esac
 
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
