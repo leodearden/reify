@@ -1467,4 +1467,38 @@ mod tests {
         let result = dim_quotient_type(None, None, 1, fallback.clone());
         assert_eq!(result, fallback);
     }
+
+    // --- gradient result_dim catch-all guard tests ---
+
+    /// Verify that the outer catch-all in `compute_numerical_gradient_at_point`'s
+    /// `result_dim` match panics (in debug mode) when handed an unexpected codomain_type.
+    ///
+    /// `Type::Bool` is not a valid gradient codomain — it is not `Scalar`, `Real`, or `Vector`.
+    /// The current code silently maps it to DIMENSIONLESS; after the debug guard is added the
+    /// test must panic with a message containing "unexpected codomain_type".
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected codomain_type")]
+    fn gradient_result_dim_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_gradient_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
 }
