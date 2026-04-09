@@ -4,7 +4,7 @@
 # Concurrency
 max_concurrent_tasks: 48
 max_per_module: 1
-lock_depth: 2
+lock_depth: 3
 module_overrides:
   tests: 2
   "gui/src": 4    # frontend tasks create separate subdirs (viewport/, editor/, panels/) — safe to parallelize
