@@ -25549,11 +25549,11 @@
         "description": "Three small polish items on the `warning_source_with_width_produces_length_typed_width_cell_with_span` test in `crates/reify-test-support/src/fixtures.rs` (lines ~1294-1346), flagged by reviewer_comprehensive on Task 1259 (esc-1259-1035). All three target the same small test block and can be a single commit.\n\n**S1 — test_maintainability (lines 1329-1334):** The assertion failure message hard-codes the byte range `(bytes 22..49 in warning_source_with_width())`. The test itself is resilient (it derives `span_text` dynamically from `width_cell.span.start/end`), but this diagnostic comment will silently go stale if `warning_source_with_width()` is ever reformatted. The assertion already prints `{width_cell.span:?}` and the covered text, so the literal byte offsets add little value. Fix: drop the `(bytes 22..49 in warning_source_with_width())` parenthetical from the assertion message.\n\n**S2 — test_naming (line 1295):** The test is named `warning_source_with_width_produces_length_typed_width_cell_with_span`, but now also asserts `ValueCellKind::Param` and `default_expr.is_some()`. The name undersells the extra behaviors covered, making it harder to locate this test when scanning failures for kind/default_expr regressions. Fix: rename to reflect all four assertions, e.g. `warning_source_with_width_param_cell_has_length_type_span_kind_and_default`, OR split into two focused tests (one for span, one for kind/default) if the single name gets unwieldy.\n\n**S3 — robustness (lines 1324-1325, optional):** `&source[width_cell.span.start as usize..width_cell.span.end as usize]` will panic with an opaque out-of-bounds / non-char-boundary message if the compiler ever produces a span outside the source or straddling a multibyte boundary. The fixture is ASCII and the compiler-produced span is in-range today, so this is fine in practice. Optional fix:\n```rust\nlet (start, end) = (width_cell.span.start as usize, width_cell.span.end as usize);\nlet span_text = source.get(start..end).unwrap_or_else(|| {\n    panic!(\"width_cell.span {:?} out of bounds for source of len {}\", width_cell.span, source.len())\n});\n```\n\nVerify with `cargo test -p reify-test-support`.\n\nmemory_hints:\n- search: \"Task 1259 warning_source_with_width test assertions\"\n- file: crates/reify-test-support/src/fixtures.rs:1294",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:24:05.210Z"
+        "updatedAt": "2026-04-09T03:31:45.574Z"
       },
       {
         "id": "1266",
@@ -25611,9 +25611,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:31:03.896Z",
+      "lastModified": "2026-04-09T03:31:45.574Z",
       "taskCount": 1269,
-      "completedCount": 939,
+      "completedCount": 940,
       "tags": [
         "master"
       ]
