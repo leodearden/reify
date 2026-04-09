@@ -24918,11 +24918,16 @@
         "description": "Two small test-quality improvements for the warn-emitting tests added in Task 1143 (`crates/reify-constraints/src/solver.rs:1060-1107`): (1) Replace the brittle `assert_count_and_any_message_contains(2, ...)` — which couples the new tests to a secondary WARN from `solutions_agree` — with a filtered assertion that counts only messages containing \"falling back to mid\" (target: 1). This isolates the assertion to the new `verify_uniqueness` branch and is robust to refactors of the downstream pipeline. (2) Bind the return value of `verify_uniqueness` instead of `let _ = ...` and assert the expected uniqueness outcome end-to-end, so a regression where the fallback silently masks the bug is caught.",
         "details": "Locations:\n- crates/reify-constraints/src/solver.rs:1070 (missing-value test)\n- crates/reify-constraints/src/solver.rs:1106 (non-numeric test)\n- crates/reify-constraints/src/solver.rs:1066, 1102 (discarded return values)\n\nSuggested shape:\n```rust\nlet unique = verify_uniqueness(&problem, &solved_values);\nlet n_matching = capture\n    .messages()\n    .iter()\n    .filter(|m| m.contains(\"falling back to mid\"))\n    .count();\nassert_eq!(n_matching, 1, \"expected exactly one fallback warn from verify_uniqueness\");\nassert!(!unique, \"missing/non-numeric solved value should cause uniqueness check to fail\");\n```\n\nNote: Before adding the `!unique` assertion, verify empirically that the empty-constraints problem + missing/Undef value actually results in `verify_uniqueness == false`. `solutions_agree` may also short-circuit on the None branch; the return-value assertion should match observed behavior rather than the reviewer's assumption.\n\nmemory_hints: search \"verify_uniqueness warn tests brittleness\", get_entity \"WarnCapture\"\nParent task: 1143. Reviewer: reviewer_comprehensive (suggestions S1 + S2).",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:43:42.753Z"
+        "updatedAt": "2026-04-09T01:48:11.923Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "1228",
@@ -24951,7 +24956,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:47:21.768Z",
+      "lastModified": "2026-04-09T01:48:11.923Z",
       "taskCount": 1229,
       "completedCount": 915,
       "tags": [
