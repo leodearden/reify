@@ -26435,20 +26435,29 @@
         "subtasks": []
       },
       {
-        "id": 1311,
+        "id": "1311",
         "title": "Rename misleading test recursive_sub_inside_block_guard_no_error",
-        "description": "Rename the test `recursive_sub_inside_block_guard_no_error` in crates/reify-compiler/tests/termination_check_tests.rs (line 618) to something like `recursive_sub_inside_block_guard_emits_unsupported_error`. The test was un-ignored in task 490 and now asserts that exactly one 'not yet supported' error IS emitted — the old name `no_error` is actively misleading.\n\nMemory hints: search \"task 490 guarded block diagnostic\", entity: compile_guarded_members",
-        "details": "",
-        "testStrategy": "",
+        "description": "Rename the test `recursive_sub_inside_block_guard_no_error` in crates/reify-compiler/tests/termination_check_tests.rs (line 618) to something like `recursive_sub_inside_block_guard_emits_unsupported_error`. The test was un-ignored in task 490 and now asserts that exactly one 'not yet supported' error IS emitted — the old name `no_error` is actively misleading.\n\nMemory hints: search \"task 490 guarded block diagnostic\", entity: compile_guarded_members. Attach memory hints for execution-time context lookup.",
         "status": "pending",
         "dependencies": [],
         "priority": "low",
+        "details": "Ensure that the memory hints are attached to facilitate execution-time context lookup for developers working on this task.",
+        "testStrategy": "Verify that the test name change reflects the current behavior of emitting an unsupported error. Ensure no other tests are affected by this change.",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:31:58.116Z",
         "metadata": {
           "modules": [
             "crates/reify-compiler/tests"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [
+              "compile_guarded_members",
+              "termination_check_tests"
+            ],
+            "queries": [
+              "task 490 guarded block diagnostic unsupported error",
+              "recursive_sub_inside_block_guard test name misleading"
+            ]
+          }
         }
       },
       {
