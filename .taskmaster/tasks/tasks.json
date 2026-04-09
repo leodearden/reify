@@ -10458,7 +10458,7 @@
         "description": "Bundle of low-severity review findings:\n\n1. gui/src-tauri/src/engine.rs:571-586 — byte_offset_to_line_col may return 0-based column instead of claimed 1-based. The loop breaks before incrementing col for the character at offset. Add a test with known offsets and verify.\n\n2. gui/src/bridge.ts:107 — lspRequest sends un-stringified params (typed as unknown). This is dead code (lspClient.ts has its own copy that correctly JSON.stringifies), but fix the type or remove the dead export to prevent future use.\n\n3. gui/src-tauri/src/engine.rs:404-414 — debug_assert for unit_table ordering vanishes in release. Convert to a const assertion or move to a #[test].\n\n4. crates/reify-lsp/src/diagnostics.rs:66-95 — compute_diagnostics_with_state continues through compile/eval after parse errors, producing misleading secondary diagnostics. Add early return after parse errors (matching engine.rs behavior).\n\n5. crates/reify-eval/Cargo.toml — reify-syntax and reify-compiler appear in both [dependencies] and [dev-dependencies]. Remove from [dev-dependencies].\n\n**Memory hints:** entity names: byte_offset_to_line_col, lspRequest, unit_table, compute_diagnostics_with_state",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10477,7 +10477,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-09T17:00:07.299Z"
+        "updatedAt": "2026-04-09T17:24:46.194Z"
       },
       {
         "id": "498",
@@ -27718,9 +27718,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:24:41.108Z",
+      "lastModified": "2026-04-09T17:24:46.194Z",
       "taskCount": 1337,
-      "completedCount": 1007,
+      "completedCount": 1008,
       "tags": [
         "master"
       ]
