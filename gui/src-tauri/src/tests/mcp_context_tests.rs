@@ -538,7 +538,7 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// Thin wrapping-path smoke test for [`TauriToolContext::get_diagnostics`].
 ///
 /// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
-/// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
+/// returns `Ok(session.get_diagnostics())`. The `Diagnostic → DiagnosticInfo`
 /// mapping closure (including the `offset_to_line_col_fast` span conversion and the
 /// hardcoded `code: None`) lives entirely in `engine.rs`.
 /// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs` only
