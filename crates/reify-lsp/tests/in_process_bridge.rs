@@ -397,6 +397,59 @@ async fn initialize_with_invalid_field_type_returns_error() {
     );
 }
 
+/// Missing required `capabilities` field should return Err containing
+/// [`error_prefix::INITIALIZE_PARAMS`].
+///
+/// `json!({})` is a valid JSON object, but `InitializeParams` requires a `capabilities`
+/// field. This tests that strict serde deserialization surfaces the missing-field error
+/// rather than silently substituting a default.
+#[tokio::test]
+async fn initialize_with_missing_capabilities_returns_error() {
+    let lsp = InProcessLsp::new();
+
+    let result = lsp.handle_request("initialize", json!({})).await;
+
+    assert!(
+        result.is_err(),
+        "server should return Err when capabilities field is missing"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains(error_prefix::INITIALIZE_PARAMS),
+        "error message should contain '{}', got: {err}",
+        error_prefix::INITIALIZE_PARAMS
+    );
+}
+
+/// A failed initialize call should not corrupt server state — a subsequent valid
+/// initialize call on the same instance should succeed.
+///
+/// Uses `json!(42)` as the failing payload (wrong type entirely) to verify that
+/// deserialization failure in the initialize arm leaves the server in a recoverable
+/// pre-initialized state.
+#[tokio::test]
+async fn initialize_error_does_not_corrupt_server_state() {
+    let lsp = InProcessLsp::new();
+
+    // First call: should fail.
+    let err_result = lsp.handle_request("initialize", json!(42)).await;
+    assert!(
+        err_result.is_err(),
+        "initialize with json!(42) should return Err, got: {:?}",
+        err_result
+    );
+
+    // Second call on the same instance: should succeed.
+    let ok_result = lsp
+        .handle_request("initialize", json!({"capabilities": {}}))
+        .await;
+    assert!(
+        ok_result.is_ok(),
+        "initialize after a failed attempt should succeed, got: {:?}",
+        ok_result
+    );
+}
+
 /// A valid notification should return exactly `Ok(Value::Null)`, not an error and not
 /// any JSON payload.
 ///
