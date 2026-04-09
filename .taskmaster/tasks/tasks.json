@@ -8619,7 +8619,15 @@
               "task 208 unit registry branch status",
               "reference threading compile_expr_guarded"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/scope.rs",
+            "crates/reify-compiler/src/units.rs"
+          ],
+          "modules": [
+            "crates/reify-compiler"
+          ]
         }
       },
       {
@@ -8649,10 +8657,11 @@
             ]
           },
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/units.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
