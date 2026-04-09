@@ -3575,7 +3575,6 @@ fn compile_geometry_op(
                     };
                     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
                     let count = f64_arg("count")? as usize;
-                    drop(f64_arg);
                     let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
@@ -3591,7 +3590,6 @@ fn compile_geometry_op(
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let count = f64_arg("count")? as usize;
-                    drop(f64_arg);
                     let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
