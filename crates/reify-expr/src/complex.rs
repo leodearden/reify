@@ -55,9 +55,15 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
             match obj {
                 Value::Complex { re, im, dimension } => {
                     // Defense-in-depth: reject poisoned inputs before constructing
-                    // the output Complex, mirroring the phase-method pattern.
-                    // sanitize_value's Complex arm provides a secondary layer but a
-                    // direct pre-guard is independent and more robust.
+                    // the output Complex, mirroring the phase-method pattern above.
+                    // Unlike phase (where atan2(y, Inf) = 0.0 is finite and sanitize_value
+                    // alone cannot detect the poisoned input), conjugate does no numeric
+                    // transformation — sanitize_value's Complex arm would also catch Inf/NaN
+                    // here, making the two approaches functionally equivalent for conjugate.
+                    // The pre-guard is still preferred for stylistic parity with the phase
+                    // method and for forward-compatibility: if the Complex arm of
+                    // sanitize_value is ever removed again (see task 860 history, restored
+                    // by task 903 / commit 173921547), conjugate stays safe.
                     if !re.is_finite() || !im.is_finite() {
                         return Some(Value::Undef);
                     }
