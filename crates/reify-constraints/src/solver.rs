@@ -813,6 +813,7 @@ fn verify_uniqueness(
             missing.len(),
             missing
         );
+        return false;
     }
 
     tracing::debug!(
