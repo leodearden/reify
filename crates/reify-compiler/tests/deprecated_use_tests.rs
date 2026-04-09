@@ -479,3 +479,38 @@ fn task_272_message_includes_annotation_argument() {
         "message format mismatch: expected {expected:?}, got {msg:?}"
     );
 }
+
+// Scenario (4): implementing a deprecated trait emits a warning.
+#[test]
+fn task_272_deprecated_trait_emits_warning_when_implemented() {
+    let source = r#"
+        @deprecated("Use NewTrait")
+        trait OldTrait { param w : Real }
+
+        structure S : OldTrait { param w : Real = 1.0 }
+    "#;
+    let module = compile_module(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "OldTrait");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for OldTrait, got: {:?}",
+        warns
+    );
+
+    let msg = &warns[0].message;
+    assert!(
+        msg.contains("trait"),
+        "message must contain entity kind 'trait', got: {msg}"
+    );
+    assert!(
+        msg.contains("Use NewTrait"),
+        "message must contain annotation argument 'Use NewTrait', got: {msg}"
+    );
+}
