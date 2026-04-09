@@ -25354,11 +25354,17 @@
         "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:53:46.116Z"
+        "updatedAt": "2026-04-09T02:57:43.171Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-types"
+          ]
+        }
       },
       {
         "id": "1255",
@@ -25399,7 +25405,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:57:22.232Z",
+      "lastModified": "2026-04-09T02:57:43.171Z",
       "taskCount": 1257,
       "completedCount": 929,
       "tags": [
