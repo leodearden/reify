@@ -5294,7 +5294,7 @@
         "dependencies": [
           "265"
         ],
-        "status": "blocked",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5306,10 +5306,16 @@
             "crates/reify-compiler/src/lib.rs",
             "crates/reify-types/src/lib.rs",
             "crates/reify-types/src/constraint.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: @solver_hint: compiler"
+            ]
+          }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:23:02.079Z"
+        "updatedAt": "2026-04-09T19:23:21.779Z"
       },
       {
         "id": "276",
@@ -27907,9 +27913,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:23:02.080Z",
+      "lastModified": "2026-04-09T19:23:21.779Z",
       "taskCount": 1344,
-      "completedCount": 1018,
+      "completedCount": 1019,
       "tags": [
         "master"
       ]
