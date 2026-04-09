@@ -1294,6 +1294,36 @@ mod tests {
         assert_verify_uniqueness_early_returns(&problem, &solved_values, "param-missing");
     }
 
+    /// Proves that `verify_uniqueness` takes the early-return path when a param's
+    /// solved value is non-numeric (`Value::Undef`) — same contract as the param-missing
+    /// sibling.
+    #[test]
+    fn verify_uniqueness_skips_solve_core_when_param_non_numeric() {
+        use std::collections::HashMap;
+
+        use reify_types::{AutoParam, Type, Value, ValueCellId};
+
+        let param_id = ValueCellId::new("Part", "x");
+        let problem = ResolutionProblem {
+            auto_params: vec![AutoParam {
+                id: param_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            }],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // solved_values has the param key but with a non-numeric value (Undef)
+        let mut solved_values: HashMap<ValueCellId, Value> = HashMap::new();
+        solved_values.insert(param_id, Value::Undef);
+
+        assert_verify_uniqueness_early_returns(&problem, &solved_values, "param-non-numeric");
+    }
+
     // ---- build_perturbation_anchors unit tests ----
 
     #[test]
