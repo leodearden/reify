@@ -24,7 +24,7 @@ assert "running inside a git repository" git -C "$ROOT" rev-parse --is-inside-wo
 # ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
 echo "Check 1: packageManager field set to npm in package.json files"
-for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+for pkg in $PKG_FILES; do
     assert "$pkg has packageManager set to npm" grep -qE '"packageManager"\s*:\s*"npm@' "$ROOT/$pkg"
 done
 
