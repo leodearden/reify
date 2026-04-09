@@ -1135,6 +1135,18 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "#[allow(unused)]\n",
         "fn test_with_attr_gap() {\n",
         "    let _source = std::fs::read_to_string(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (f): a #[test] fn whose body uses the bare relative path
+        // "tests/build_logic_tests.rs" (no THIS_FILE) — should be collected by the
+        // broadened criterion. This RED test forces the step-3 impl that adds
+        // `|| body.contains("\"tests/build_logic_tests.rs\"")` to the scanner.
+        // Note: the escaped form \"tests/build_logic_tests.rs\" inside this Rust
+        // string literal appears at raw-character level as \"-prefixed, so the
+        // 28-char contiguous substring "tests/build_logic_tests.rs" (with literal
+        // quotes) is NOT present here — no false-positive on the synthetic source.
+        "#[test]\n",
+        "fn test_with_bare_path() {\n",
+        "    let _s = std::fs::read_to_string(\"tests/build_logic_tests.rs\").unwrap();\n",
         "}\n",
     );
 
@@ -1169,6 +1181,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         fns.contains(&"fn test_with_attr_gap()".to_string()),
         "should discover test_with_attr_gap (intermediate #[allow] attribute between #[test] and fn — \
          the state machine's starts_with('#') branch keeps saw_test alive); got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_with_bare_path()".to_string()),
+        "should discover test_with_bare_path (broadened criterion: body contains the bare relative-path \
+         literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
         fns
     );
 }
