@@ -4,6 +4,7 @@ mod common;
 use crate::common::*;
 
 mod complex;
+mod frames;
 mod numeric;
 mod orientation;
 mod trig;
