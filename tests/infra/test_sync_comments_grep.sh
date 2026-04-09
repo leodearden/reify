@@ -45,6 +45,9 @@ fi
 assert "pattern extraction from sync_comments_test.sh succeeded" \
     test -n "$PATTERN"
 
+assert "extracted pattern contains expected fn name" \
+    bash -c "[[ \"$PATTERN\" == *sanitize_value* ]]"
+
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
 assert "accepts: fn sanitize_value(" \
