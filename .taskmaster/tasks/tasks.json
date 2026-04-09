@@ -23782,7 +23782,7 @@
         "description": "In crates/reify-expr/tests/gradient_tests.rs:\n\n1. Remove the duplicate test `gradient_runtime_codomain_dim_mismatch_panics` (line ~3449) — it is functionally identical to `gradient_codomain_type_vs_runtime_mismatch` (line ~3584). Same lambda (|x| 2*x returning Real), same domain (Real), same codomain (Scalar[MASS]), same #[cfg(debug_assertions)] gate, same #[should_panic] expectation. Keep `gradient_codomain_type_vs_runtime_mismatch` as the canonical test.\n\n2. In the doc comment for `gradient_codomain_type_vs_runtime_mismatch` (line ~3580), remove the stale sentence \"This test fails initially (no assertion exists yet).\" — the assertion now exists in lib.rs at line ~853.\n\nSource: task 1007 review suggestions S0, S1.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -23794,7 +23794,7 @@
             "crates/reify-expr/tests"
           ]
         },
-        "updatedAt": "2026-04-09T19:21:47.173Z"
+        "updatedAt": "2026-04-09T19:39:20.587Z"
       },
       {
         "id": "1129",
@@ -28139,9 +28139,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:38:44.587Z",
+      "lastModified": "2026-04-09T19:39:20.587Z",
       "taskCount": 1359,
-      "completedCount": 1026,
+      "completedCount": 1027,
       "tags": [
         "master"
       ]
