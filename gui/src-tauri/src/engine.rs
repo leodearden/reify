@@ -510,6 +510,17 @@ impl EngineSession {
     pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
         self.resolve_source()
     }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `module_name` while leaving `compiled` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on module_name fires correctly.
+    pub(crate) fn break_module_name_for_test(&mut self) {
+        self.module_name.take();
+    }
 }
 
 /// Parse a "Entity.member" string into a ValueCellId.
