@@ -1,0 +1,73 @@
+// M11 field calculus: exercises sample() and gradient() operators
+// through the full pipeline with >=6 constraint assertions.
+//
+// Coverage:
+//   1. Direct sampling: sample(field, point) evaluates the field lambda
+//   2. Gradient fields: gradient(field) returns a Field via central differences
+//   3. Sampling gradient fields: sample(gradient(f), x) ≈ f'(x)
+//   4. Constant-field gradient: gradient of a constant should be ≈ 0
+//   5. Accuracy across multiple sample points (quadratic at x=3 and x=5)
+//   6. Determinacy of gradient field bindings
+
+// ── Analytical field definitions ─────────────────────────────────────────────
+
+// f(x) = x*x  — quadratic, gradient is 2*x
+field def quadratic : Scalar -> Scalar { source = analytical { |x| x * x } }
+
+// f(x) = 3*x + 2  — linear, gradient is constant 3.0
+field def linear : Scalar -> Scalar { source = analytical { |x| 3.0 * x + 2.0 } }
+
+// f(x) = 42.0  — constant, gradient should be ≈ 0
+field def constant_field : Scalar -> Scalar { source = analytical { |x| 42.0 } }
+
+// ── Structure exercising field operations ─────────────────────────────────────
+
+structure def FieldCalculusDemo {
+    // ── Feature 1: Direct sampling ────────────────────────────────────────
+    // Evaluate field values at known points using sample().
+    let q3 = sample(quadratic, 3.0)          // 3² = 9.0 (exact)
+    let l2 = sample(linear, 2.0)            // 3*2+2 = 8.0 (exact)
+
+    // ── Feature 2: Gradient fields ────────────────────────────────────────
+    // gradient() returns a Field whose lambda is backed by central differences.
+    let grad_q = gradient(quadratic)         // gradient of x*x → 2*x
+    let grad_l = gradient(linear)            // gradient of 3*x+2 → constant 3.0
+    let grad_c = gradient(constant_field)    // gradient of 42.0 → 0.0
+
+    // ── Feature 3: Sampling gradient fields ──────────────────────────────
+    // sample(gradient_field, point) evaluates the numerical derivative at point.
+    let dq_at_3 = sample(grad_q, 3.0)       // ≈ 2*3 = 6.0
+    let dq_at_5 = sample(grad_q, 5.0)       // ≈ 2*5 = 10.0
+    let dl_at_5 = sample(grad_l, 5.0)       // ≈ 3.0 (constant derivative)
+    let dc_at_1 = sample(grad_c, 1.0)       // ≈ 0.0 (constant field)
+
+    // ── Constraints ────────────────────────────────────────────────────────
+    // All constraints must evaluate to Satisfied.
+
+    // 1-2: sample(quadratic, 3.0) = 9.0 (exact floating point)
+    constraint q3 > 8.999
+    constraint q3 < 9.001
+
+    // 3-4: sample(gradient(quadratic), 3.0) ≈ 6.0 (numerical: f'(3) = 2*3 = 6)
+    constraint dq_at_3 > 5.999
+    constraint dq_at_3 < 6.001
+
+    // 5-6: sample(gradient(linear), 5.0) ≈ 3.0 (constant derivative)
+    constraint dl_at_5 > 2.999
+    constraint dl_at_5 < 3.001
+
+    // 7: gradient of constant_field ≈ 0 (uses abs() for sign-independent check)
+    constraint abs(dc_at_1) < 0.001
+
+    // 8-9: sample(gradient(quadratic), 5.0) ≈ 10.0 (numerical: f'(5) = 2*5 = 10)
+    constraint dq_at_5 > 9.999
+    constraint dq_at_5 < 10.001
+
+    // 10-11: sample(linear, 2.0) = 8.0 (exact floating point: 3*2+2 = 8)
+    constraint l2 > 7.999
+    constraint l2 < 8.001
+
+    // 12-13: Determinacy of gradient field bindings
+    constraint determined(grad_q)
+    constraint determined(grad_l)
+}
