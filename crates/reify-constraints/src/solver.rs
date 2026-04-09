@@ -1272,6 +1272,11 @@ mod tests {
             all_msgs.contains("Part.y"),
             "aggregated WARN must mention Part.y; messages: {msgs:?}"
         );
+        assert!(
+            all_msgs.contains("2 solved value(s)"),
+            "aggregated WARN must include the rendered count '2 solved value(s)' \
+             (via the {{}} placeholder in the format-string body); messages: {msgs:?}"
+        );
 
         assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
     }
