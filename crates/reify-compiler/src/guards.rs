@@ -269,7 +269,19 @@ pub(crate) fn compile_guarded_members(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal compiler error: unresolved guarded member '{}' in pass 2",
+                                param.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param.span,
+                                "ICE: name should have been registered in pass 1",
+                            )),
+                        );
+                        Type::Real
+                    });
 
                 let is_auto = matches!(
                     param.default.as_ref(),
