@@ -167,6 +167,9 @@ THIS_FILE="${BASH_SOURCE[0]}"
 assert "t2_rc dead variable removed" \
     bash -c "! grep -qE 't2_rc=[0\$]' '$THIS_FILE'"
 
+assert "t3_rc dead variable removed" \
+    bash -c "! grep -qE 't3_rc=[0\$]' '$THIS_FILE'"
+
 assert "trap cleanup EXIT is registered" \
     bash -c "grep -Eq '^trap cleanup EXIT' '$THIS_FILE'"
 
