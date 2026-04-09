@@ -27504,11 +27504,11 @@
         "description": "Follow-up from Task 1297 review triage. Two small test-quality improvements in `crates/reify-lsp/tests/in_process_bridge.rs`:\n\n1. **Tighten `completion_items_panics_on_non_array_items_field`** (S2): The current `#[should_panic(expected = \"CompletionResponse::List has non-array 'items' field\")]` substring would still pass if a future refactor dropped the `{response}` interpolation. Tighten the expected substring to include a portion of the rendered payload (e.g. `\"items\\\": 42\"`) so a regression that loses the interpolation is caught.\n\n2. **Add `completion_items_panics_on_list_missing_items_field` test** (S3): The current tests don't cover the case where a `List` response omits the `items` field entirely (e.g. `json!({\"isIncomplete\": false})`). Under the current code this falls through to the outer `CompletionResponse::Array` panic, which is the right behavior but is not asserted. Add a `#[should_panic(expected = \"CompletionResponse::Array\")]` test to lock in the fallthrough contract.\n\nBoth changes are in the same `mod tests` block near lines 806-838.\n\nmemory_hints: search \"completion_items helper LSP bridge\" for prior context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:59:58.014Z",
+        "updatedAt": "2026-04-09T17:00:06.517Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -27518,7 +27518,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:00:05.601Z",
+      "lastModified": "2026-04-09T17:00:06.517Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
