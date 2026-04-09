@@ -548,3 +548,138 @@ fn laplacian_quadratic_accuracy() {
         val
     );
 }
+
+// ── Step 5: Codomain type tests ───────────────────────────────────────────────
+
+/// Gradient of a Real→Real field produces a Field with scalar (Real) codomain.
+///
+/// For a 1D field, the gradient is a scalar derivative (same dimensionality
+/// as the codomain). Verify the gradient Field has codomain_type=Real.
+#[test]
+fn gradient_1d_scalar_codomain_type() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x * x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type.clone())],
+        field_type,
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    // gradient should return a Field
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Real→Real should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Codomain should be scalar (Real for dimensionless domain/codomain)
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        // 1D gradient of Real→Real produces Real codomain
+        match codomain_type {
+            Type::Real => {} // correct
+            Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {} // also fine
+            other => panic!(
+                "gradient_1d_scalar_codomain_type: expected Real or dimensionless Scalar codomain, got {:?}",
+                other
+            ),
+        }
+    }
+}
+
+/// Gradient of a Point3<Real>→Real field produces a Field with Vector3 codomain.
+///
+/// For a 3D scalar field, the gradient is a vector of partial derivatives.
+/// Verify the gradient Field has codomain_type of vector kind.
+#[test]
+fn gradient_3d_vector_codomain_type() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Point3→Real should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Codomain should be a vector type (Vector { n: 3, .. } or equivalent)
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        assert!(
+            matches!(codomain_type, Type::Vector { n: 3, .. }),
+            "gradient of 3D scalar field should have Vector(n=3) codomain, got {:?}",
+            codomain_type
+        );
+    }
+}
