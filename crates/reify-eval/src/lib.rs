@@ -3355,34 +3355,34 @@ fn compile_geometry_op(
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let mut eval_arg = |name: &str| -> reify_types::Value {
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
                 match args.iter().find(|(n, _)| n == name) {
-                    Some((_, expr)) => reify_expr::eval_expr(
+                    Some((_, expr)) => Some(reify_expr::eval_expr(
                         expr,
                         &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                    ),
+                    )),
                     None => {
                         diagnostics.push(Diagnostic::warning(format!(
                             "missing required geometry argument '{}' for {:?}",
                             name, kind
                         )));
-                        reify_types::Value::Undef
+                        None
                     }
                 }
             };
 
             match kind {
                 PrimitiveKind::Box => Some(reify_types::GeometryOp::Box {
-                    width: eval_arg("width"),
-                    height: eval_arg("height"),
-                    depth: eval_arg("depth"),
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                    depth: eval_arg("depth")?,
                 }),
                 PrimitiveKind::Cylinder => Some(reify_types::GeometryOp::Cylinder {
-                    radius: eval_arg("radius"),
-                    height: eval_arg("height"),
+                    radius: eval_arg("radius")?,
+                    height: eval_arg("height")?,
                 }),
                 PrimitiveKind::Sphere => Some(reify_types::GeometryOp::Sphere {
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
             }
         }
