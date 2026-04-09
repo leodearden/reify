@@ -25126,11 +25126,11 @@
         "description": "In crates/reify-eval/src/lib.rs (around lines 3636 and 3666), the new `v.abs() < 1e-12` checks silently drop extrudes with sub-picometer distances and revolves with sub-picoradian angles by returning `None`. A model author writing e.g. `extrude(profile, 1nm)` will see geometry vanish with no diagnostic.\n\n1. Add a brief inline comment at each guard explaining the rationale, e.g. \"reject sub-picometer / sub-picoradian magnitudes as degenerate geometry\".\n2. Consider emitting a `tracing::warn!` (consistent with how other degenerate cases in this file are reported) so authors get a hint when their op is dropped. Check the existing `diagnostics: &mut Vec<Diagnostic>` parameter — pushing a degenerate-geometry diagnostic there may be more appropriate than tracing.\n\nCross-reference: search memory for existing degenerate-geometry diagnostic patterns in reify-eval before deciding between tracing::warn and Diagnostic.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:57:37.335Z",
+        "updatedAt": "2026-04-09T21:21:54.967Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -28525,7 +28525,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:21:54.446Z",
+      "lastModified": "2026-04-09T21:21:54.967Z",
       "taskCount": 1378,
       "completedCount": 1054,
       "tags": [
