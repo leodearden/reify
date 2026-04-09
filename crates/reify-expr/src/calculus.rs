@@ -1648,4 +1648,52 @@ mod tests {
         assert_eq!(work_point.len(), 1);
         assert_eq!(work_point[0], Value::Real(1.0));
     }
+
+    /// Verify the decomposed (non-`single_point_param`) path of `eval_perturbed_point`.
+    ///
+    /// Constructs an identity lambda `|x| x`, calls `eval_perturbed_point` with
+    /// `single_point_param=false` and an empty `work_point`, and verifies:
+    /// (a) the result equals `Value::Real(1.0)`, and
+    /// (b) `work_point` remains empty after the call (the decomposed path never touches it).
+    ///
+    /// Must pass both before and after the step-3 `if let` → `match/unreachable!` refactor.
+    #[test]
+    fn eval_perturbed_point_decomposed_returns_correct_result() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        // Identity lambda: |x| x
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let work_coords = vec![1.0_f64];
+        let mut work_args: Vec<Value> = Vec::new();
+        // Decomposed path: work_point must be empty (doc contract).
+        let mut work_point: Vec<Value> = Vec::new();
+        let make_arg = |v: f64| Value::Real(v);
+
+        let result = eval_perturbed_point(
+            &lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            false, // single_point_param — decomposed path
+            0,     // i (unused in decomposed path)
+            1,     // n
+            &make_arg,
+            &ctx,
+        );
+
+        // The identity lambda returns the scalar it received.
+        assert_eq!(result, Value::Real(1.0));
+        // work_point is never touched by the decomposed path.
+        assert!(work_point.is_empty());
+    }
 }
