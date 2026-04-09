@@ -257,39 +257,39 @@ impl ConcurrentEvalAdapter {
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!(lock = "values", path = "into_inner", error = %e, "lock poisoned, recovering");
+                tracing::warn!(lock = poison_fields::LOCK_VALUES, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(lock = "values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
+                    tracing::warn!(lock = poison_fields::LOCK_VALUES, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!(lock = "snapshot_values", path = "into_inner", error = %e, "lock poisoned, recovering");
+                tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(lock = "snapshot_values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
+                    tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!(lock = "results", path = "into_inner", error = %e, "lock poisoned, recovering");
+                tracing::warn!(lock = poison_fields::LOCK_RESULTS, path = poison_fields::PATH_INTO_INNER, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                 e.into_inner()
             }),
             Err(arc) => arc
                 .lock()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(lock = "results", path = "shared_fallback", error = %e, "lock poisoned, recovering");
+                    tracing::warn!(lock = poison_fields::LOCK_RESULTS, path = poison_fields::PATH_SHARED_FALLBACK, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
                     e.into_inner()
                 })
                 .clone(),
