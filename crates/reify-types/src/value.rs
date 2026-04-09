@@ -3988,7 +3988,9 @@ mod tests {
         // Equal w, different x with non-zero y — catches field-order swap regressions.
         // Correct Ord (w→x→y→z): w=0.5,x=1.0,y=0.5 > w=0.5,x=0.5,y=1.0 because x=1.0 > x=0.5 when w is tied.
         // A wrong impl comparing y before x would say the opposite (y=0.5 < y=1.0).
-        assert!(orient(0.5, 1.0, 0.5, 0.0) > orient(0.5, 0.5, 1.0, 0.0));
+        let higher_x = orient(0.5, 1.0, 0.5, 0.0);
+        let lower_x = orient(0.5, 0.5, 1.0, 0.0);
+        assert!(higher_x > lower_x);
     }
 
     #[test]
