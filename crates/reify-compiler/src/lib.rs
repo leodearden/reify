@@ -212,6 +212,10 @@ pub struct TopologyTemplate {
     /// True if this template participates in a recursive sub-component cycle.
     /// Set by the post-compilation recursive structure detection pass.
     pub is_recursive: bool,
+    /// True if this template is tagged with the `@test` annotation.
+    /// Derived at compile time from `annotations`; consumers should prefer this
+    /// flag over scanning `annotations` themselves.
+    pub is_test: bool,
     /// Compiled annotations carried over from the parsed declaration.
     pub annotations: Vec<reify_types::Annotation>,
     /// Block-level pragmas from the parsed declaration (e.g., `#solver(backend="ipopt")`).
@@ -6342,6 +6346,7 @@ fn compile_entity(
     let annotations = lower_annotations(structure.annotations, diagnostics);
     validate_annotations(&annotations, context, diagnostics);
     validate_pragmas(structure.pragmas, context, diagnostics);
+    let is_test = annotations.iter().any(|a| a.name == "test");
 
     TopologyTemplate {
         name: entity_name.to_string(),
@@ -6361,6 +6366,7 @@ fn compile_entity(
         meta: scope.meta_entries.clone(),
         content_hash,
         is_recursive: false,
+        is_test,
         annotations,
         pragmas: structure.pragmas.to_vec(),
     }
