@@ -27397,10 +27397,11 @@
         "description": "Follow-up from Task 1279 review (esc-1279-4, S1 + S2 + S4). Three related test-quality improvements to tests/infra/test_sync_comments_grep.sh, all touching the pub+modifier assertion block near lines 92-102.\n\n**S1 — Disambiguate duplicate label (line 101-102):**\nTask 1279 added an assertion for `pub(super) const fn sanitize_value(` with the label \"(pub+const combination)\", which is identical to the existing `pub(crate) const fn` label at line 92. Two distinct assertions with the same parenthetical label make it harder to distinguish failures in CI output.\n\nFix: Rename the line 101 label to \"(pub(super)+const combination)\" to differentiate from the existing \"pub(crate)+const\" assertion at line 92.\n\n**S2 — Mirror new accept cases with _raw reject cases (after line 102):**\nThe new accept cases at lines 98-102 exercise `pub(crate) async fn` and `pub(super) const fn`, but there is no matching reject-case coverage for the same prefixes with a suffixed identifier. The existing reject cases only cover bare `fn sanitize_value_raw(`. A bug in the modifier chain could regress prefix+suffix interactions without this being caught.\n\nAdd reject-case mirrors near the existing reject block (~line 106+):\n- `rejects: pub(crate) async fn sanitize_value_raw(`\n- `rejects: pub(super) const fn sanitize_value_raw(`\n\n**S4 — Optional: fill remaining symmetry gaps (after line 102):**\nThe underlying pattern supports `pub(in path::to::mod) fn ...` and several uncovered modifier combinations. This is explicitly flagged by the reviewer as \"optional\" and \"a minor symmetry gap rather than a bug.\" Decide during implementation whether to include:\n- `accepts: pub(in crate::foo) fn sanitize_value(`\n- `accepts: pub(super) unsafe fn sanitize_value(`\n- `accepts: unsafe async fn sanitize_value(`\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1279-4 (steward-triage from Task 1279 post-merge review)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:28:48.469Z"
       },
       {
         "id": "1321",
@@ -27408,10 +27409,11 @@
         "description": "Review suggestions S2+S5 from task 1039 review, both in tree-sitter-reify/tests/build_logic_tests.rs.\n\nS2 (test coherence, lines 1329-1341): The `env!(\"CARGO_MANIFEST_DIR\")` precision guard was added inside `test_self_read_paths_use_manifest_dir`, but that test's stated purpose is to iterate over self-reading functions and assert they use `THIS_FILE`. Checking how the `THIS_FILE` / `BUILD_RS` constants themselves are defined is orthogonal. Bundling both in one test muddies failure messages — a future reader won't immediately know whether the constants' definition broke or a specific test function lacks `(THIS_FILE)`.\n\nS5 (style, line 1546): The comment `// dot-slash prefix variant (reviewer S1: helper must also detect \\\"./tests/build_logic_tests.rs\\\")` bakes a pointer to a review suggestion (\"reviewer S1\") into committed source. Future readers without the review thread will find this reference meaningless.\n\nRequired changes:\n1. Move the `env!(\"CARGO_MANIFEST_DIR\")` assertion out of `test_self_read_paths_use_manifest_dir` into its own `#[test] fn test_self_path_constants_use_manifest_dir()` so each guard has one responsibility and failure messages are unambiguous.\n2. On line 1546, drop the `(reviewer S1: helper must also detect ...)` parenthetical; the rest of the comment already explains the intent.\n3. Verify: `cargo test -p tree-sitter-reify test_self_path_constants_use_manifest_dir test_self_read_paths_use_manifest_dir test_find_bare_self_path_violations`.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T16:28:49.425Z"
       },
       {
         "id": "1322",
@@ -27439,7 +27441,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:28:46.943Z",
+      "lastModified": "2026-04-09T16:28:49.427Z",
       "taskCount": 1323,
       "completedCount": 995,
       "tags": [
