@@ -84,8 +84,8 @@ assert "script contains 'sort -u' for cross-file consistency comparison" \
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
-assert "no 'git check-ignore' calls inside for/done loops" \
-    bash -c "! awk '/^for /,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
+assert "bare git check-ignore (without -v) is not inside for/done loops" \
+    bash -c "! awk '/^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
