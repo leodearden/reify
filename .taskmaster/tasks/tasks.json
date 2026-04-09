@@ -22946,7 +22946,7 @@
         "description": "Post-merge review of task 213 tests in crates/reify-eval/tests/e2e_meta.rs surfaced several test-quality issues that should be addressed:\n\n1. **`e2e_meta_sub_structure_child_meta` (lines 320-365) has a claim/assertion mismatch.** The docstring claims it \"verifies that a child template's meta_map entry is built correctly when the entity is referenced as a sub-component in another structure,\" but the only assertion is on `ValueCellId::new(\"Part\", \"label\")` — i.e., Part's own top-level template. Nothing is asserted about Assembly, its `sub part = Part()` wiring, or any cell that would differ depending on the sub-component path. Deleting the entire `structure def Assembly { ... }` block would leave the test still passing. Fix: either (a) add an assertion that exercises the sub-component path (e.g., assert Assembly compiles without error AND that some cell keyed off the sub-component is present, or that both templates are in `compiled.templates` with correct `template_registry` wiring), or (b) drop the Assembly definition and rename the test to reflect that it just checks Part's own meta resolution.\n\n2. **`e2e_meta_nonexistent_key_error` (lines 239-270) and `e2e_meta_no_meta_block_error` (lines 279-309) duplicate compiler tests.** They are functionally identical to `meta_access_nonexistent_key_error` (crates/reify-compiler/tests/meta_compile_tests.rs:108) and `meta_access_no_meta_block_error` (same file, line 136). They contain no `engine.eval`/`engine.check` step — the assertion is only about compile-time diagnostics. Fix: either delete these two E2E tests, or make them true E2E by additionally asserting `engine.eval(&compiled)` on the errored module does not panic. Option (b) would give them distinct value vs the compiler-side tests. NOTE: Task 213 requires >=8 tests covering 7 scenarios; if these are deleted, ensure the total count still meets the bar (pre-existing `e2e_meta_access_let_binding` covers the \"structure access\" scenario).\n\n3. **`e2e_meta_access_on_structure_resolves` (lines 181-229) duplicates `e2e_meta_access_let_binding` (line 15)** almost exactly. The only incremental coverage is `assert_eq!(compiled.templates[0].entity_kind, EntityKind::Structure)`. Fix: add the `entity_kind == Structure` sanity assertion to the existing `e2e_meta_access_let_binding` and drop `e2e_meta_access_on_structure_resolves`. NOTE: verify `>=8 tests` requirement still holds afterwards.\n\n4. **Brittle `compiled.templates[0]` indexing** (lines 152-157, 210-215). Assumes a deterministic ordering of compiled templates. For single-template tests it happens to work, but is fragile and couples tests to compiler output order. Fix: use `compiled.templates.iter().find(|t| t.name == \"Welding\").unwrap()` / `\"Bracket\"` etc. instead of `compiled.templates[0]`. This pattern should be applied to any future template lookups too.\n\nCoordination note: Task 1043 (e2e_meta.rs DRY cleanup) will touch the same file. These two tasks should be sequenced (do 1043 first, then this one, or merge them) to avoid churn.\n\nSource: review suggestions from esc-213-4, reviewer_comprehensive.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "1043"
         ],
@@ -22959,7 +22959,8 @@
           "modules": [
             "crates/reify-eval/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T19:15:01.754Z"
       },
       {
         "id": "1085",
@@ -27845,7 +27846,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:14:59.964Z",
+      "lastModified": "2026-04-09T19:15:01.754Z",
       "taskCount": 1340,
       "completedCount": 1015,
       "tags": [
