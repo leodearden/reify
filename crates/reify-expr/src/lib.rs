@@ -1051,14 +1051,7 @@ fn sanitize_value(v: Value) -> Value {
         }
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z }
-            if w.is_nan()
-                || w.is_infinite()
-                || x.is_nan()
-                || x.is_infinite()
-                || y.is_nan()
-                || y.is_infinite()
-                || z.is_nan()
-                || z.is_infinite() =>
+            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
         {
             Value::Undef
         }
