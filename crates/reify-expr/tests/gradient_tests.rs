@@ -3716,19 +3716,15 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
         lambda: Box::new(lambda),
     };
 
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
     let grad_expr = make_function_call(
         "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(codomain_type.clone()),
-        },
+        vec![CompiledExpr::literal(field, grad_field_type.clone())],
+        grad_field_type.clone(),
     );
 
     let values = ValueMap::new();
@@ -3736,10 +3732,6 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
 
     // Sampling triggers the debug assertion: f_plus returns Real (dimensionless) but
     // codomain declares MASS — the assertion fires here.
-    let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(codomain_type),
-    };
     let sample_expr = make_function_call(
         "sample",
         vec![
