@@ -211,6 +211,65 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
     );
 }
 
+// ── task-823 step-5: conformance.rs no-type-annotation diagnostics ──────────
+
+#[test]
+fn trait_member_no_type_annotation_emits_diagnostic() {
+    // A structure implementing a trait where one of the structure's params
+    // has no type annotation should produce a diagnostic (conformance.rs:46
+    // outer unwrap_or). Currently defaults silently to Type::Real.
+    let source = r#"
+        trait T {
+            param x : Real
+        }
+        structure S : T {
+            param x = 5.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_type_annotation_error = errors.iter().any(|d| {
+        d.message.contains("no type annotation")
+            || d.message.contains("missing type annotation")
+            || d.message.contains("cannot infer type")
+    });
+    assert!(
+        has_type_annotation_error,
+        "expected diagnostic about missing type annotation for conformance, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn trait_let_no_type_annotation_emits_diagnostic() {
+    // A structure implementing a trait where a let declaration has no type
+    // annotation should produce a diagnostic (conformance.rs:73 outer
+    // unwrap_or). Currently defaults silently to Type::Real.
+    let source = r#"
+        trait T {
+            param x : Real
+        }
+        structure S : T {
+            param x : Real = 5.0
+            let y = x * 2.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_type_annotation_error = errors.iter().any(|d| {
+        d.message.contains("no type annotation")
+            || d.message.contains("missing type annotation")
+            || d.message.contains("cannot infer type")
+    });
+    assert!(
+        has_type_annotation_error,
+        "expected diagnostic about missing type annotation for let in conformance, got: {:?}",
+        errors
+    );
+}
+
 // ── task-823 step-3: entity.rs ICE paths — green path (no ICE on valid code) ──
 
 #[test]
