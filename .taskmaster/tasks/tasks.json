@@ -20311,7 +20311,10 @@
         "updatedAt": "2026-04-04T09:14:36.189Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/collection_sub_eval.rs"
           ]
         }
       },
@@ -20391,8 +20394,11 @@
         "updatedAt": "2026-04-04T09:07:45.810Z",
         "metadata": {
           "modules": [
-            "crates/reify-test-support",
             "gui/src-tauri"
+          ],
+          "files": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs"
           ]
         }
       },
