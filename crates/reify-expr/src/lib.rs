@@ -1329,7 +1329,7 @@ fn compute_numerical_divergence_at_point(
     ctx: &EvalContext,
 ) -> Value {
     let coords: Vec<f64> = match point {
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
@@ -1360,6 +1360,18 @@ fn compute_numerical_divergence_at_point(
         Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] divergence: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
 
     let make_arg = |val: f64| -> Value {
         match domain_dim {
@@ -1466,7 +1478,7 @@ fn compute_numerical_curl_at_point(
 ) -> Value {
     // Only defined for 3D Point domains
     let coords: Vec<f64> = match point {
-        Value::Point(items) if items.len() == 3 => {
+        Value::Point(items) | Value::Vector(items) if items.len() == 3 => {
             let mut v = Vec::with_capacity(3);
             for item in items {
                 match item.as_f64() {
@@ -1490,7 +1502,7 @@ fn compute_numerical_curl_at_point(
     };
 
     let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1,
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
 
@@ -1629,7 +1641,7 @@ fn compute_numerical_laplacian_at_point(
         Value::Int(i) => vec![*i as f64],
         Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
         Value::Scalar { .. } => return Value::Undef,
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
@@ -1660,6 +1672,18 @@ fn compute_numerical_laplacian_at_point(
         Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] laplacian: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
 
     let make_arg = |val: f64| -> Value {
         match domain_dim {
