@@ -361,7 +361,7 @@ _beh_out=$(bash -c "
     echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
     source '${HELPER_FILE}'
     test_summary() { :; }
-    source '${SYNC_FILE}'
+    source <(sed -n '/^assert_sync_ref_exists()/,/^}/p' '${SYNC_FILE}')
     PASS=0; FAIL=0
     assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
     rm -f \"\$tmp_src\" \"\$tmp_tgt\"
