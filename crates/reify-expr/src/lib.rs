@@ -651,18 +651,23 @@ fn compute_gradient(field_val: &Value) -> Value {
     // Mirrors the runtime logic in compute_numerical_gradient_at_point (line 756).
     let gradient_quantity = {
         // Extract domain dimension from the domain type.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
         let domain_dim = match domain_type {
             Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
             Type::Point { quantity, .. } => match quantity.as_ref() {
                 Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
                 _ => None,
             },
             _ => None,
         };
 
         // Extract codomain dimension.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
         let codomain_dim = match codomain_type {
             Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
             _ => None,
         };
 
