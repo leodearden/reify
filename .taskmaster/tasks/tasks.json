@@ -20022,6 +20022,10 @@
         "metadata": {
           "modules": [
             "gui/src-tauri"
+          ],
+          "files": [
+            "gui/src-tauri/src/tests/mcp_context_tests.rs",
+            "gui/src-tauri/src/tests/mod.rs"
           ]
         }
       },
@@ -20055,9 +20059,15 @@
         "updatedAt": "2026-04-04T09:04:07.627Z",
         "metadata": {
           "modules": [
+            "crates/reify-types",
             "crates/reify-expr",
-            "crates/reify-stdlib",
-            "crates/reify-types"
+            "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-types/src/value.rs",
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-stdlib/src/lib.rs"
           ]
         }
       },
@@ -20075,6 +20085,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs"
           ]
         }
       },
