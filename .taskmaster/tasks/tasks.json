@@ -27687,11 +27687,18 @@
         "description": "The `parse_and_compile(source: &str) -> reify_compiler::CompiledModule` and `make_engine() -> reify_eval::Engine` helpers are duplicated across 9+ test files in crates/reify-eval/tests: e2e_meta.rs, test_runner.rs, m5_integration.rs, m9_constraint_def.rs, m9_trait_conformance.rs, purpose_eval.rs, m10_geometric_types.rs, m11_field_calculus.rs, determinacy_predicates.rs. Each copy does: parse → assert no parse errors → compile → assert no error-severity diagnostics → return CompiledModule. The make_engine helper wraps `Engine::new(Box::new(MockConstraintChecker::new()), None)`.\n\nThere is existing precedent (completed task 2) that moved `compile_source`/`eval_source` helpers into reify-test-support. This follow-up would extend the same consolidation to these two helpers.\n\n**Fix:**\n1. Add `parse_and_compile` and `make_engine` as pub fns in reify-test-support (likely in a new `helpers.rs` or `pipeline.rs` module).\n2. Consider also including `parse_compile_expect_err(source, needle)` — introduced in task 1043's e2e_meta.rs — since the error-diagnostic assertion pattern is also useful across files.\n3. Replace the per-file copies in the 9 reify-eval test files with `use reify_test_support::...;`.\n4. Audit for subtle behavior differences: e2e_meta.rs uses `.any()` + lazy format args (no allocation on success path); m5_integration.rs uses pre-collected `errors: Vec<_>`. Choose one as the canonical form. The `.any()` variant is marginally more efficient on success (no Vec alloc) but the pre-collect variant is simpler — pick whichever the team prefers and apply uniformly.\n\n**Priority:** low. Reviewer (task 1043) flagged this as \"low priority\" because the current per-file pattern is an established convention; this is a maintainability / drift-prevention improvement.\n\n**Source:** review-suggestion triage for task 1043 (esc-1043-12, suggestion 3: code_reuse_cross_file).\n\nmemory_hints: search \"compile_source eval_source reify-test-support task 2 consolidate\" for the prior consolidation precedent; reference crates/reify-eval/tests/e2e_meta.rs:15-41 for the canonical helpers extracted by task 1043.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:22:15.484Z"
+        "updatedAt": "2026-04-09T19:07:09.161Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/tests",
+            "crates/reify-test-support/Cargo.toml",
+            "crates/reify-test-support/src"
+          ]
+        }
       },
       {
         "id": "1333",
@@ -27801,7 +27808,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:07:03.486Z",
+      "lastModified": "2026-04-09T19:07:09.161Z",
       "taskCount": 1339,
       "completedCount": 1011,
       "tags": [
