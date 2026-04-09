@@ -52,6 +52,9 @@ assert "gui/package.json exists" \
     test -f "$PKG"
 
 assert "gui/package.json defines a 'typecheck' script" \
-    bash -c "grep -q '\"typecheck\"' '$PKG'"
+    bash -c "grep -qE '\"typecheck\"\\s*:' '$PKG'"
+
+assert "gui/package.json scripts.typecheck contains tsc --noEmit" \
+    bash -c "node -e 'process.exit(/tsc --noEmit/.test(require(\"$PKG\").scripts.typecheck) ? 0 : 1)'"
 
 test_summary
