@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYNC_TEST="$REPO_ROOT/tests/sync_comments_test.sh"
+SYNC_REF_HELPERS="$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
@@ -32,13 +33,13 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 # If extraction fails (empty result) we exit early with a diagnostic so the
 # cause is visible rather than producing cryptic fixture failures.
 PATTERN=$(
-    grep 'grep -qE' "$SYNC_TEST" | \
+    grep 'grep -qE' "$SYNC_REF_HELPERS" | \
     grep -F '[[:space:](<]' | \
     head -1 | \
     sed "s/^[[:space:]]*grep -qE '//; s/'[[:space:]]*\"[^\"]*\"[[:space:]]*$//; s/'\"[^\"]*\"'/sanitize_value/"
 )
 if [ -z "$PATTERN" ]; then
-    echo "ERROR: could not extract fn-existence regex from $SYNC_TEST" >&2
+    echo "ERROR: could not extract fn-existence regex from $SYNC_REF_HELPERS" >&2
     echo "       Expected a 'grep -qE' line containing '[[:space:](<]'" >&2
     exit 1
 fi
@@ -145,19 +146,19 @@ echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 assert "sync_comments_test.sh exists" \
     test -f "$SYNC_TEST"
 
-assert "sync_comments_test.sh uses POSIX-portable [[:space:](<] post-name class" \
-    grep -qF '[[:space:](<]' "$SYNC_TEST"
+assert "sync_ref_helpers.sh uses POSIX-portable [[:space:](<] post-name class" \
+    grep -qF '[[:space:](<]' "$SYNC_REF_HELPERS"
 
 # Scoped assertions check only non-comment grep invocation lines
 # (^[^#]*grep matches lines where 'grep' appears before any '#').
 # File-wide fixed-string searches were replaced because a documentation comment
 # like '# POSIX: do not use \b here' would trigger them as false positives,
 # breaking CI without any real regression.
-assert "no \\b in grep invocations (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_TEST'"
+assert "no \\b in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]].*\\\\b' '$SYNC_REF_HELPERS'"
 
-assert "no grep -P in grep invocations (non-comment lines, scoped)" \
-    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
+assert "no grep -P in grep invocations in sync_ref_helpers.sh (non-comment lines, scoped)" \
+    bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_REF_HELPERS'"
 
 echo ""
 echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
