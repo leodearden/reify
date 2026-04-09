@@ -1205,10 +1205,19 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         // "tests/build_logic_tests.rs" (no THIS_FILE) — should be collected by the
         // broadened criterion. This RED test forces the step-3 impl that adds
         // `|| body.contains("\"tests/build_logic_tests.rs\"")` to the scanner.
-        // Note: the escaped form \"tests/build_logic_tests.rs\" inside this Rust
-        // string literal appears at raw-character level as \"-prefixed, so the
-        // 28-char contiguous substring "tests/build_logic_tests.rs" (with literal
-        // quotes) is NOT present here — no false-positive on the synthetic source.
+        //
+        // Two contexts to keep distinct:
+        //   Evaluated string — concat! fuses these string literals at compile time;
+        //     the escaped \"...\" sequences in the fragment below become real
+        //     double-quote characters in the runtime value, so the 28-char
+        //     contiguous substring "tests/build_logic_tests.rs" (with literal
+        //     quotes) IS present in the evaluated string. That is precisely why
+        //     case (f) IS collected by the scanner.
+        //   Raw source file on disk — the .rs file contains the two-character
+        //     escape sequence backslash-quote rather than a bare double-quote,
+        //     so the contiguous 28-char substring does NOT appear. This prevents
+        //     false-positives when test_self_read_paths_use_manifest_dir scans
+        //     the real file and encounters this very comment block.
         "#[test]\n",
         "fn test_with_bare_path() {\n",
         "    let _s = std::fs::read_to_string(\"tests/build_logic_tests.rs\").unwrap();\n",
@@ -1254,6 +1263,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
          literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
         fns
     );
+    assert_eq!(
+        fns.len(),
+        4,
+        "expected exactly 4 discovered functions (cases a, a2, e, f); got: {:?}",
+        fns
+    );
 }
 
 #[test]
@@ -1293,15 +1308,15 @@ fn test_self_read_paths_use_manifest_dir() {
         .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
         .collect();
 
-    // Sanity-check: the scanner must find at least 5 self-reading tests (the actual
-    // count after self-filter on this codebase is 6). This catches a broken scanner
-    // that silently returns empty or near-empty. The threshold is strictly above the
-    // previous stale value of 3 while leaving slack for one test to be temporarily
-    // removed without immediate breakage.
+    // Sanity-check: the scanner must find at least 6 self-reading tests (the
+    // deterministic count after self-filter on this codebase is 6). This catches a
+    // broken scanner that silently returns empty or near-empty. The threshold is a
+    // lower bound rather than an exact count because the real file may gain more
+    // self-reading tests over time.
     assert!(
-        self_reading_fns.len() >= 5,
-        "find_self_reading_test_fns should discover at least 5 self-reading test functions \
-         after excluding this meta-test (actual count is ~6); but found {:?}",
+        self_reading_fns.len() >= 6,
+        "find_self_reading_test_fns should discover at least 6 self-reading test functions \
+         after excluding this meta-test (actual count is 6); but found {:?}",
         self_reading_fns
     );
 
