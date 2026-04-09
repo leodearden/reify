@@ -24603,6 +24603,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1211,
+        "title": "Add missing-arg tests for Circular/Mirror patterns + fix stale compile_geometry_op docstring",
+        "description": "Two small cleanup items from Task 1186 review:\n\n1. **Test coverage gap (S3):** The new missing-arg diagnostic tests cover Linear (spacing), Translate (dy), Extrude (distance), and Revolve (ox), but there are no tests for `PatternKind::Circular` (e.g., missing 'angle') or `PatternKind::Mirror` (e.g., missing 'nx'). Add these to complete coverage of the Pattern branch refactoring.\n\n2. **Stale docstring (S4):** The `compile_geometry_op` docstring at line ~3378 says \"Returns None... which signals the caller to skip this op and emit a diagnostic.\" With the eval_named_arg/eval_named_arg_f64 helpers, missing-argument diagnostics are now emitted internally by the function itself, not by the caller. Update to: \"Returns None when a required argument is missing, non-finite, or invalid. Missing arguments emit a Warning diagnostic before returning None.\"\n\nmemory_hints: search \"compile_geometry_op docstring\" \"pattern missing-arg test\" entity \"compile_geometry_op\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24615,7 +24626,7 @@
       ],
       "created": "2026-04-09T00:18:34.322Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T00:18:34.329Z"
+      "updated": "2026-04-09T00:18:40.614Z"
     }
   }
 }
