@@ -784,10 +784,18 @@ fn verify_uniqueness(
         .map(|param| {
             let (lo, hi) = effective_bounds(param);
             let mid = (lo + hi) / 2.0;
-            let solution_val = solved_values
-                .get(&param.id)
-                .and_then(|v| v.as_f64())
-                .unwrap_or(mid);
+            let solution_val = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
+                Some(v) => v,
+                None => {
+                    tracing::warn!(
+                        param = %param.id,
+                        mid,
+                        "verify_uniqueness: solved value missing or non-numeric, \
+                         falling back to mid for perturbation start"
+                    );
+                    mid
+                }
+            };
             if solution_val < mid {
                 // Solution is in the lower half — start near the high end
                 lo + 0.9 * (hi - lo)
