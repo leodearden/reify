@@ -18137,8 +18137,13 @@
         "updatedAt": "2026-04-03T23:34:35.500Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval/tests",
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/incremental.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs"
           ]
         }
       },
@@ -18385,6 +18390,9 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs"
           ]
         }
       },
