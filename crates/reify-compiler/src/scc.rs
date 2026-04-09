@@ -317,6 +317,7 @@ mod tests {
             meta: HashMap::new(),
             content_hash: ContentHash(0),
             is_recursive: false,
+            is_test: false,
             annotations: vec![],
             pragmas: vec![],
         }
