@@ -26509,13 +26509,13 @@
         "description": "Test quality improvement from Task 268 review (crates/reify-eval/tests/test_runner.rs:138-151).\n\n`run_tests_propagates_violation_diagnostics` currently only asserts that `diagnostics` is non-empty when a test fails. Because diagnostics flow through `eval_result.diagnostics` over the whole isolated module, an unrelated eval warning could satisfy this assertion — so a regression that zeroed out constraint diagnostics but left an unrelated eval warning would still pass.\n\nAction: assert that at least one diagnostic references the violated constraint — e.g. `id.entity == \"TestA\"` on the constraint result, or that a diagnostic mentions the `Positive` constraint id / text / label. Exact form depends on which Diagnostic fields are populated for constraint violations; inspect `reify_types::Diagnostic` structure.\n\nNote: coordinate with the task that clarifies `TestResult.diagnostics` semantics (S2 follow-up) — if that task decides to filter diagnostics to target-template only, this assertion becomes trivially enforceable.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "268"
         ],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:13:36.112Z",
+        "updatedAt": "2026-04-09T16:20:39.132Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -27365,9 +27365,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:19:17.030Z",
+      "lastModified": "2026-04-09T16:20:39.134Z",
       "taskCount": 1317,
-      "completedCount": 990,
+      "completedCount": 991,
       "tags": [
         "master"
       ]
