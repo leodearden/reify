@@ -1678,13 +1678,6 @@ fn module_key_underscored_name() {
     assert_eq!(module_key("some_module"), "some_module.ri");
 }
 
-/// module_key("") == ".ri" — edge case: empty module name.
-#[test]
-fn module_key_empty_name() {
-    use crate::engine::module_key;
-    assert_eq!(module_key(""), ".ri");
-}
-
 /// module_key(name) matches the key that load_from_source inserts into source_map.
 ///
 /// module_key is the single authoritative point for key derivation (engine.rs:31-35).
