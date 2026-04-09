@@ -20025,11 +20025,11 @@
         "description": "In gui/src-tauri/src/tests/mcp_context_tests.rs, update stale doc-comment on get_diagnostics test (references removed mapping closure). In gui/src-tauri/src/tests/mod.rs, add assert_clone_debug::<DiagnosticInfo>() to public_api_types_are_accessible.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.673Z",
+        "updatedAt": "2026-04-09T17:24:58.514Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -27718,7 +27718,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:24:46.194Z",
+      "lastModified": "2026-04-09T17:24:58.515Z",
       "taskCount": 1337,
       "completedCount": 1008,
       "tags": [
