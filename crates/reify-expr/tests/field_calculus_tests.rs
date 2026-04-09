@@ -441,3 +441,110 @@ fn curl_rotation_field() {
         "curl of [-y,x,0] at (1,2,3)",
     );
 }
+
+// ── Step 4: Laplacian test ────────────────────────────────────────────────────
+
+/// Laplacian of f(x,y,z)=x²+y²+z² at (1,2,3) ≈ 6.0.
+///
+/// Laplacian = divergence(gradient(f)).
+/// Second partials: ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z² = 2+2+2 = 6.
+/// Tolerance 1e-2 accounts for two levels of numerical differentiation.
+#[test]
+fn laplacian_quadratic_accuracy() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    let xx = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let yy = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let zz = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        zz,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of quadratic field should return a Field, got {:?}",
+        lap_result
+    );
+
+    // sample(laplacian_field, Point3(1.0, 2.0, 3.0))
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result
+        .as_f64()
+        .unwrap_or_else(|| panic!("laplacian sample should be numeric, got {:?}", sample_result));
+    assert!(
+        (val - 6.0).abs() < 1e-2,
+        "laplacian of x²+y²+z² at (1,2,3) should be ≈6.0, got {}",
+        val
+    );
+}
