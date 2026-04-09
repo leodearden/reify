@@ -203,32 +203,35 @@ async fn set_default_guard_captures_warn_on_current_thread() {
 
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_returns_server_capabilities", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp
-        .handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed");
+        let result = lsp
+            .handle_request("initialize", json!({"capabilities": {}}))
+            .await
+            .expect("initialize should succeed");
 
-    // Should return ServerCapabilities with our providers
-    let caps = &result["capabilities"];
-    assert!(
-        caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
-        "should advertise hover provider"
-    );
-    assert!(
-        caps["definitionProvider"].as_bool().unwrap_or(false)
-            || caps["definitionProvider"].is_object(),
-        "should advertise definition provider"
-    );
-    assert!(
-        caps["completionProvider"].is_object(),
-        "should advertise completion provider"
-    );
-    assert!(
-        caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
-        "should advertise text document sync"
-    );
+        // Should return ServerCapabilities with our providers
+        let caps = &result["capabilities"];
+        assert!(
+            caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
+            "should advertise hover provider"
+        );
+        assert!(
+            caps["definitionProvider"].as_bool().unwrap_or(false)
+                || caps["definitionProvider"].is_object(),
+            "should advertise definition provider"
+        );
+        assert!(
+            caps["completionProvider"].is_object(),
+            "should advertise completion provider"
+        );
+        assert!(
+            caps["textDocumentSync"].is_number() || caps["textDocumentSync"].is_object(),
+            "should advertise text document sync"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -421,22 +424,25 @@ async fn notification_with_malformed_params_returns_error() {
 /// This documents the `other => Err(...)` arm of `handle_request`'s match expression.
 #[tokio::test]
 async fn unsupported_method_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "unsupported_method_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
+        let result = lsp.handle_request("textDocument/foobar", json!({})).await;
 
-    assert!(
-        result.is_err(),
-        "unsupported method should return Err, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    // The constant covers the prefix; the method name appears as a suffix after the colon.
-    assert!(
-        err.contains(error_prefix::UNSUPPORTED_METHOD),
-        "error message should contain '{}', got: {err}",
-        error_prefix::UNSUPPORTED_METHOD
-    );
+        assert!(
+            result.is_err(),
+            "unsupported method should return Err, got: {:?}",
+            result
+        );
+        let err = result.unwrap_err();
+        // The constant covers the prefix; the method name appears as a suffix after the colon.
+        assert!(
+            err.contains(error_prefix::UNSUPPORTED_METHOD),
+            "error message should contain '{}', got: {err}",
+            error_prefix::UNSUPPORTED_METHOD
+        );
+    })
+    .await;
 }
 
 /// Wrong field type within a valid-looking object should return Err containing
@@ -535,19 +541,22 @@ async fn initialize_error_does_not_corrupt_server_state() {
 /// arm separately.
 #[tokio::test]
 async fn initialized_returns_ok_null() {
-    let lsp = InProcessLsp::new();
-    lsp.handle_request("initialize", json!({"capabilities": {}}))
-        .await
-        .expect("initialize should succeed before testing initialized");
+    with_hang_guard(HANG_GUARD_SECS, "initialized_returns_ok_null", async {
+        let lsp = InProcessLsp::new();
+        lsp.handle_request("initialize", json!({"capabilities": {}}))
+            .await
+            .expect("initialize should succeed before testing initialized");
 
-    let result = lsp.handle_request("initialized", json!({})).await;
+        let result = lsp.handle_request("initialized", json!({})).await;
 
-    let val = result.expect("initialized should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "initialized should return exactly Ok(Value::Null)"
-    );
+        let val = result.expect("initialized should return Ok");
+        assert_eq!(
+            val,
+            serde_json::Value::Null,
+            "initialized should return exactly Ok(Value::Null)"
+        );
+    })
+    .await;
 }
 
 /// A valid `textDocument/didOpen` notification should return exactly `Ok(Value::Null)`.
@@ -910,41 +919,44 @@ mod completion_items_tests {
 /// otherwise this test will fail at runtime, catching the drift immediately.
 #[tokio::test]
 async fn error_prefix_constants_match_actual_errors() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "error_prefix_constants_match_actual_errors", async {
+        let lsp = InProcessLsp::new();
 
-    // Verify each constant is contained in the error for its matching method.
-    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+        // Verify each constant is contained in the error for its matching method.
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS)
+            .await;
+        assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+            .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didOpen",
+            error_prefix::DID_OPEN_PARAMS,
+        )
         .await;
-    assert_malformed_params_returns_error(&lsp, "initialized", error_prefix::INITIALIZED_PARAMS)
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didChange",
+            error_prefix::DID_CHANGE_PARAMS,
+        )
         .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didOpen",
-        error_prefix::DID_OPEN_PARAMS,
-    )
-    .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didChange",
-        error_prefix::DID_CHANGE_PARAMS,
-    )
-    .await;
-    assert_malformed_params_returns_error(
-        &lsp,
-        "textDocument/didClose",
-        error_prefix::DID_CLOSE_PARAMS,
-    )
-    .await;
+        assert_malformed_params_returns_error(
+            &lsp,
+            "textDocument/didClose",
+            error_prefix::DID_CLOSE_PARAMS,
+        )
+        .await;
 
-    // The unsupported-method constant covers the prefix portion of the error.
-    let result = lsp.handle_request("textDocument/foobar", json!({})).await;
-    assert!(result.is_err(), "unsupported method should return Err");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::UNSUPPORTED_METHOD),
-        "error should contain '{}', got: {err}",
-        error_prefix::UNSUPPORTED_METHOD
-    );
+        // The unsupported-method constant covers the prefix portion of the error.
+        let result = lsp.handle_request("textDocument/foobar", json!({})).await;
+        assert!(result.is_err(), "unsupported method should return Err");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::UNSUPPORTED_METHOD),
+            "error should contain '{}', got: {err}",
+            error_prefix::UNSUPPORTED_METHOD
+        );
+    })
+    .await;
 }
 
 /// Document the server behavior when `initialize` fails (malformed params) and the
