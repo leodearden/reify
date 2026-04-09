@@ -2632,6 +2632,23 @@ mod tests {
     }
 
     #[test]
+    fn test_assert_ord_consistent_real_neg_zero() {
+        // Meta-test: exercises the to_bits()-based PartialEq path for bare
+        // Value::Real with the -0.0 vs +0.0 edge case.
+        // PartialEq uses to_bits(): -0.0 and +0.0 have different bit patterns → not equal.
+        // Under f64::total_cmp(), -0.0 < +0.0, so pass -0.0 as the smaller value first.
+        assert_ord_consistent(&Value::Real(-0.0), &Value::Real(0.0), false);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_real_nan() {
+        // Meta-test: exercises the to_bits()-based PartialEq path for bare
+        // Value::Real with the NaN self-equality edge case.
+        // PartialEq uses to_bits(): identical NaN bit patterns → equal.
+        assert_ord_consistent(&Value::Real(f64::NAN), &Value::Real(f64::NAN), true);
+    }
+
+    #[test]
     fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
         // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
         // for the Scalar variant's bit-identity edge cases.
