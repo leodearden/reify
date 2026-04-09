@@ -936,22 +936,13 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
                 did_open_params("file:///test.ri", reify_test_support::bracket_source()),
             )
             .await;
-        // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
-        // currently exists in bridge.rs (did_open is dispatched without an init-state check),
-        // so this branch is unreachable today.  A future change that adds an init-state guard
-        // returning a well-defined error will make it reachable; the !e.is_empty() assertion
-        // is the first line of defense against an empty-string regression at that point.
-        match &did_open_result {
-            Ok(val) => assert_eq!(
-                *val,
-                serde_json::Value::Null,
-                "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
-            ),
-            Err(e) => assert!(
-                !e.is_empty(),
-                "didOpen error should be non-empty, got empty string"
-            ),
-        }
+        let val = did_open_result
+            .expect("didOpen should succeed pre-handshake (bridge has no init-state guard)");
+        assert_eq!(
+            val,
+            serde_json::Value::Null,
+            "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
+        );
 
         // Step 4: send textDocument/completion at the same position used by the happy-path
         // reference test did_open_and_completion_returns_items (line 1, character 0).
