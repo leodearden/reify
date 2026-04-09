@@ -27,13 +27,14 @@
 //! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
 //! the receiver; see `into_result()`'s doc comment for the full rationale.
 //!
-//! Each recovery warning is emitted with structured fields:
-//! `lock = <"values"|"snapshot_values"|"results">`,
-//! `access = <"read"|"write"|"exclusive">` (for helper methods) or
-//! `path = <"into_inner"|"shared_fallback">` (for `into_result()` inline sites),
-//! and `error = %e`, with fixed message `"lock poisoned, recovering"`.
-//! New helpers must follow this schema so operators can filter by `lock` and `access`
-//! in Datadog/Jaeger without updating alerting rules.
+//! Each recovery warning is emitted with structured fields whose values are defined
+//! as `pub const &str` items in the [`poison_fields`] submodule — see that module
+//! for the authoritative schema. New helpers MUST use those constants so that
+//! Datadog/Jaeger filter rules stay in sync with the emitted field values.
+//! In brief: `lock` names the affected lock, `access` or `path` describes how it was
+//! acquired (helper methods use `access`, `into_result()` inline sites use `path`),
+//! and `error = %e` carries the poison error. The message is always the value of
+//! [`poison_fields::MSG_LOCK_POISONED`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
