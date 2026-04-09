@@ -25993,10 +25993,11 @@
         "description": "The dimension-extraction pattern (match on Scalar/Real/Int/Point→inner) is duplicated across compute_gradient, compute_divergence, and compute_laplacian with ~9 match blocks after Task 1236 added Real/Int arms. Extract two helpers:\n\n1. `fn scalar_dimension(ty: &Type) -> Option<DimensionVector>` — handles Scalar→Some(dim), Real|Int→Some(DIMENSIONLESS), _→None\n2. `fn domain_dimension(ty: &Type) -> Option<DimensionVector>` — additionally unwraps Point{quantity}\n\nReplace the repeated match blocks in all three operators with calls to these helpers.\n\nAdditionally:\n- Replace the dead `_ => Type::Real` arm at lib.rs:861 (divergence fallback for non-Vector codomain) with `unreachable!()` or `debug_assert!`, since validation already guarantees codomain is Vector at that point.\n- The structural style difference between gradient (matches scalar codomain directly) and divergence (unwraps Vector then matches quantity) is inherently resolved by the shared helpers.\n\nFrom Task 1236 review suggestions S1, S2, S5.\n\nMemory hints:\n- search \"compute_gradient gradient_quantity dimensionless fallback\" for the canonical pattern\n- search \"scalar_dimension domain_dimension helper extraction\" for this task's origin",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:32:34.359Z"
       },
       {
         "id": "1291",
@@ -26012,7 +26013,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:32:34.050Z",
+      "lastModified": "2026-04-09T04:32:34.359Z",
       "taskCount": 1291,
       "completedCount": 956,
       "tags": [
