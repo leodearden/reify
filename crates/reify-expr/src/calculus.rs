@@ -211,15 +211,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     // Domain must be a Point with scalar quantity
     let n = match domain_type {
-        Type::Point { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
-        }
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -230,17 +222,9 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
         }
     };
 
-    // Codomain must be Vector{n, scalar}
-    let vec_n = match codomain_type {
-        Type::Vector { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
-        }
+    // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
+    let (vec_n, codomain_quantity) = match codomain_type {
+        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => (*n, quantity.as_ref()),
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -261,17 +245,17 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
 
     // Compute result codomain type: codomain_component_dim / domain_dim.
     // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
-    let divergence_fallback = match codomain_type {
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {
-                Type::Real
-            }
-            _ => quantity.as_ref().clone(),
-        },
-        _ => Type::Real,
+    // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
+    let divergence_fallback = match codomain_quantity {
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        _ => codomain_quantity.clone(),
     };
-    let result_codomain =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 1, divergence_fallback);
+    let result_codomain = dim_quotient_type(
+        scalar_dimension(codomain_quantity),
+        domain_dimension(domain_type),
+        1,
+        divergence_fallback,
+    );
 
     // Result: scalar field with dimensionally-correct codomain
     Value::Field {
