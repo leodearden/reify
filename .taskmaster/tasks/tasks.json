@@ -8305,10 +8305,12 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/traits.rs",
+            "crates/reify-compiler/tests/trait_conformance_tests.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
