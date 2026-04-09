@@ -68,7 +68,7 @@ fn parse_compile_expect_err(source: &str, needle: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// step-13: E2E — let binding using meta.key resolves to Value::String
+// --- let binding uses meta.key ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with meta block + let binding using `meta.key`,
@@ -100,7 +100,7 @@ fn e2e_meta_access_let_binding() {
 }
 
 // ---------------------------------------------------------------------------
-// step-15: E2E — multiple meta keys in one block
+// --- multiple meta keys in one block ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with two meta keys, two let bindings each reading
@@ -141,7 +141,7 @@ fn e2e_meta_access_multiple_keys() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213: E2E — meta.key on an `occurrence def` entity
+// --- meta.key on occurrence entity ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with an `occurrence def` that has a meta block
@@ -184,7 +184,7 @@ fn e2e_meta_access_on_occurrence() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-1/2: E2E — meta access on a `structure def` entity (Structure kind)
+// --- meta.key on structure entity ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse a `structure def` with a meta block + let binding, compile
@@ -226,7 +226,7 @@ fn e2e_meta_access_on_structure_resolves() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-3/4: E2E — nonexistent meta key produces compile error
+// --- nonexistent meta key produces compile error ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `meta.nonexistent` where only `a` is defined.
@@ -247,7 +247,7 @@ fn e2e_meta_nonexistent_key_error() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-5/6: E2E — meta access without a meta block produces error
+// --- meta access without meta block produces error ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `meta.foo` on a structure that has no meta block.
@@ -266,7 +266,7 @@ fn e2e_meta_no_meta_block_error() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-7/8: E2E — child structure's meta.key resolves when used as sub-component
+// --- child structure meta.key resolves as sub-component ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: two structures — `Part` with a meta block + let binding, and
@@ -306,7 +306,7 @@ fn e2e_meta_sub_structure_child_meta() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-9/10: E2E — meta value stored in let binding propagates downstream
+// --- meta let binding propagates downstream ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `v` holds meta.version, and `is_v2` compares `v == "2"`.
@@ -347,7 +347,7 @@ fn e2e_meta_let_binding_downstream() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-11/12: E2E — meta.key string equality (matching case → true)
+// --- meta.key string equality (match) ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `matches` is set to `meta.tag == "valid"`.  When tag IS "valid"
@@ -379,7 +379,7 @@ fn e2e_meta_string_eq_match() {
 }
 
 // ---------------------------------------------------------------------------
-// task-213 step-13/14: E2E — meta.key string equality (non-matching case → false)
+// --- meta.key string equality (mismatch) ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: `mismatch` is set to `meta.tag == "invalid"`.  When tag IS "valid"
@@ -411,13 +411,7 @@ fn e2e_meta_string_eq_mismatch() {
 }
 
 // ---------------------------------------------------------------------------
-// task-1045 regression: missing key and no-meta-block error paths
-//
-// These two tests are named regression guards for the same error paths covered
-// by task-213's e2e_meta_nonexistent_key_error and e2e_meta_no_meta_block_error
-// above (which additionally assert exact message substrings).  The task-1045
-// tests use a different source scenario and broader assertions (≥1 Error
-// diagnostic exists) so they remain valid even if error message text is reworded.
+// --- regression guards: missing key and no meta block ---
 // ---------------------------------------------------------------------------
 
 /// Regression guard (suggestion 8): accessing a meta key that does not exist
@@ -458,7 +452,7 @@ fn e2e_meta_access_no_meta_block() {
 }
 
 // ---------------------------------------------------------------------------
-// step-17: E2E — meta.key in a constraint expression
+// --- meta.key in constraint expression ---
 // ---------------------------------------------------------------------------
 
 /// Full pipeline: parse source with `constraint meta.tag == "valid"`.
