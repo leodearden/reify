@@ -28213,11 +28213,16 @@
         "description": "Follow-up from task 1322 comprehensive review (S3, S4, S5, S6). Four improvements to tests/infra/test_sync_comments_grep.sh:\n\nS3 (test_quality): Replace textual 'export PATTERN' grep with behavioral check that PATTERN is actually exported at runtime (e.g. `bash -c '[ -n \"${PATTERN+x}\" ]'`). Location: line ~57.\n\nS4 (scoping): Scope the exported PATTERN to Section 1 only — either `unset PATTERN` after Section 1 or rename to `FN_EXISTENCE_PATTERN`. Prevents leaking into Section 2/3 subshells that source sync_comments_test.sh. Location: line ~46 (export) and end of Section 1.\n\nS5 (consistency): Apply the same env-passing hardening pattern to Sections 2 and 3 — export `SYNC_TEST`, `_SECT3_HELPER` and switch outer quotes to single. Location: lines ~167-220.\n\nS6 (diagnostics): Improve `_no_unhardened_pattern_interp` failure output — prefix grep matches with a header so the cause of assertion failure is immediately clear. Location: line ~56.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T20:01:27.872Z"
+        "updatedAt": "2026-04-09T20:08:00.862Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ]
+        }
       },
       {
         "id": "1362",
@@ -28256,7 +28261,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T20:07:24.575Z",
+      "lastModified": "2026-04-09T20:08:00.862Z",
       "taskCount": 1363,
       "completedCount": 1035,
       "tags": [
