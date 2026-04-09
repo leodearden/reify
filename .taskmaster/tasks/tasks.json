@@ -19274,11 +19274,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs: (1) Extract a shared initialized_lsp() async helper to deduplicate 6+ identical setup blocks. (2) Change valid_notification_returns_ok_null to test didOpen instead of initialized. (3) Add error message content assertions to notification_with_malformed_params and unsupported_method tests. (4) Add malformed-params tests for didChange and didClose. (5) Add shutdown_returns_ok_null test.",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:29:08.029Z",
+        "updatedAt": "2026-04-09T00:29:07.650Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp"
@@ -24271,7 +24271,7 @@
         "description": "Strengthen the meta-test in tree-sitter-reify/tests/build_logic_tests.rs that guards against bare-relative `read_to_string(\"build.rs\")` calls. Three small improvements were suggested in review of Task 1040:\n\n1. **Inline comments not stripped (line 1281-1284)**: The current filter only skips lines whose trimmed text starts with `//`. A trailing inline comment like `let x = 0; // example: read_to_string(\"build.rs\")` would be misflagged. Fix: strip everything after `//` before doing `contains`, e.g.:\n   ```rust\n   let code = line.split(\"//\").next().unwrap_or(line);\n   code.contains(bare_pattern)\n   ```\n   Also consider `/* ... */` block comments.\n\n2. **Detection too narrow (line 1276)**: Only matches the literal `read_to_string(\"build.rs\")`. Variants such as `read_to_string( \"build.rs\" )`, `read_to_string(\"./build.rs\")`, or `File::open(\"build.rs\")` would silently bypass the guard. Fix: use a regex (the `regex` dev-dep is already used elsewhere in the crate) like `read_to_string\\s*\\(\\s*\"\\.?\\/?build\\.rs\"\\s*\\)` or scan for any `\"build.rs\"` literal outside the BUILD_RS doc string.\n\n3. **Test name awkward (line 1259)**: Rename `test_build_rs_reads_use_manifest_dir` → `test_no_bare_relative_build_rs_reads` (or `test_build_rs_reads_use_const_path`) to match the descriptive style of nearby tests (`test_no_redundant_rerun_if_changed`, `test_out_dir_no_silent_fallback`). Update the doc comment accordingly.\n\nAll three are quality-of-life hardening. None are urgent — the meta-test currently catches the actual regression it was created for. Source: review_suggestions on Task 1040 by reviewer_comprehensive.\n\nmemory_hints: search \"Task 1040 CARGO_MANIFEST_DIR build_logic_tests\" in reify project",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24280,7 +24280,8 @@
           "modules": [
             "tree-sitter-reify/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T00:29:08.017Z"
       },
       {
         "id": "1191",
@@ -24571,11 +24572,11 @@
         "description": "Two small improvements to the module_key test section in gui/src-tauri/src/tests/engine_tests.rs from Task 1192's review:\n\n1. **Add debug_assert guard in module_key** (engine.rs:36-38) — `module_key(\"\")` produces `.ri` which is never a valid production key (load_file falls back to `\"unnamed\"`). Add `debug_assert!(!name.is_empty())` inside `module_key` to make the precondition explicit. This replaces the removed `module_key_empty_name` test with a stronger contract.\n\n2. **Assert stored source in integration test** (engine_tests.rs:1692) — `module_key_matches_load_from_source_insertion` currently discards the source text with `let (stored_key, _)`. Change to `let (stored_key, stored_src)` and add `assert_eq!(stored_src, bracket_source());` to also verify `load_from_source` stores the correct content, not just the correct key.\n\nmemory_hints: search(\"module_key engine.rs debug_assert empty name\", project_id=\"reify\"); get_entity(\"module_key\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:13:40.330Z",
+        "updatedAt": "2026-04-09T00:29:08.167Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24688,7 +24689,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:29:08.031Z",
+      "lastModified": "2026-04-09T00:29:08.167Z",
       "taskCount": 1213,
       "completedCount": 893,
       "tags": [
