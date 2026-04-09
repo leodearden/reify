@@ -25339,6 +25339,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1254,
+        "title": "Resolve @test-on-function half-support",
+        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25351,7 +25362,7 @@
       ],
       "created": "2026-04-09T02:52:56.642Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T02:53:08.287Z"
+      "updated": "2026-04-09T02:53:12.449Z"
     }
   }
 }
