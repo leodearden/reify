@@ -352,6 +352,111 @@ fn self_error_at_module_scope() {
     }
 }
 
+// ─── task-1125 step-1: self.collection_sub emits error ───
+
+#[test]
+fn self_dot_collection_sub_emits_error() {
+    // `self.items` where `items` is a collection sub should emit an error,
+    // not silently return StructureRef("Bolt") as if it were a single-instance sub.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items` on collection sub, got no errors"
+    );
+    let has_helpful_msg = errors.iter().any(|d| {
+        let msg = &d.message;
+        msg.contains("items")
+            && (msg.contains("collection")
+                || msg.contains("indexed")
+                || msg.contains("index"))
+    });
+    assert!(
+        has_helpful_msg,
+        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1125 step-3: self.collection_sub.member emits error ───
+
+#[test]
+fn self_dot_collection_sub_dot_member_emits_error() {
+    // `self.items.diameter` where `items` is a collection sub should emit an error,
+    // not silently return ValueRef(S.items, diameter) pointing at a nonexistent cell.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.diameter` on collection sub, got no errors"
+    );
+    let has_helpful_msg = errors.iter().any(|d| {
+        let msg = &d.message;
+        msg.contains("items")
+            && (msg.contains("collection")
+                || msg.contains("indexed")
+                || msg.contains("index"))
+    });
+    assert!(
+        has_helpful_msg,
+        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1125 step-5: non-collection sub still returns StructureRef ───
+
+#[test]
+fn self_dot_non_collection_sub_still_returns_structure_ref() {
+    // `self.bolt` where `bolt` is a single-instance sub should still compile cleanly
+    // and produce a StructureRef("Bolt") cell — regression guard for steps 2 & 4.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let b = self.bolt
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let b_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .expect("b value cell");
+    assert_eq!(
+        b_cell.cell_type,
+        reify_types::Type::StructureRef("Bolt".to_string()),
+        "self.bolt on a non-collection sub should resolve to StructureRef(\"Bolt\")"
+    );
+}
+
 // ─── step-11: self.param equivalence with bare param ───
 
 #[test]
