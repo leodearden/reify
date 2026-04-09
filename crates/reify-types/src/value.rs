@@ -5569,6 +5569,18 @@ mod tests {
         assert_ne!(p1, p3);
     }
 
+    #[test]
+    fn value_vector_partial_eq() {
+        // (a) two identically-constructed Vectors are equal
+        let v1 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        let v2 = Value::Vector(vec![Value::length(1.0), Value::length(2.0)]);
+        assert_eq!(v1, v2);
+
+        // (b) Vectors with a differing element are unequal
+        let v3 = Value::Vector(vec![Value::length(1.0), Value::length(9.0)]);
+        assert_ne!(v1, v3);
+    }
+
     // ── Consolidated wrapper-delegation & NaN-canonicalization tests ──────────
     // Covers the PartialEq impl (~lines 987-1162) and content_hash()
     // NaN canonicalization (~lines 266-494).
