@@ -26188,11 +26188,17 @@
         "description": "Two doc-comments are actively misleading:\n1. crates/reify-constraints/src/solvespace.rs:639-641 — The entity count range in add_line_pair's doc-comment is logically inconsistent. Drop the conditional framing and state the full range: 'between 3 (all four corners identical: 1 point + 2 lines) and 6 (all distinct: 4 points + 2 lines)'.\n2. gui/src-tauri/src/engine.rs:527-533 — The doc-comment on break_module_name_for_test claims 'any get_* call will panic' and forbids use for anything other than panic verification, but the new test uses it for graceful-fallback verification. Update to document both legitimate uses.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:14:03.775Z"
+        "updatedAt": "2026-04-09T08:17:58.836Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints/src",
+            "gui/src-tauri/src"
+          ]
+        }
       },
       {
         "id": "1301",
@@ -26282,7 +26288,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:17:36.368Z",
+      "lastModified": "2026-04-09T08:17:58.836Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
