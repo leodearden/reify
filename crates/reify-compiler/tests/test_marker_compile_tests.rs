@@ -205,3 +205,27 @@ fn compiled_module_test_templates_returns_only_marked() {
     assert_eq!(non_test_tmpls.len(), 1, "expected 1 non-test template");
     assert_eq!(non_test_tmpls[0].name, "B");
 }
+
+// ── Steps 14-15: CompiledModule::test_constraint_defs() / non_test_constraint_defs() ──
+
+#[test]
+fn compiled_module_test_constraint_defs_returns_only_marked() {
+    let source = r#"
+        @test constraint def TestC { param x : Length
+            x > 0
+        }
+        constraint def NormalC { param y : Length
+            y > 0
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let test_defs = module.test_constraint_defs();
+    assert_eq!(test_defs.len(), 1, "expected 1 test constraint def");
+    assert_eq!(test_defs[0].name, "TestC");
+
+    let non_test_defs = module.non_test_constraint_defs();
+    assert_eq!(non_test_defs.len(), 1, "expected 1 non-test constraint def");
+    assert_eq!(non_test_defs[0].name, "NormalC");
+}
