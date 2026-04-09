@@ -26807,8 +26807,11 @@
         "updatedAt": "2026-04-09T04:38:28.889Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr",
-            "crates/reify-types"
+            "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/calculus.rs"
           ]
         }
       },
@@ -26825,7 +26828,10 @@
         "updatedAt": "2026-04-09T04:38:53.878Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
