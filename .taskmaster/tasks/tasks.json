@@ -25850,11 +25850,16 @@
         "description": "Extend crates/reify-compiler/tests/self_keyword_tests.rs with the coverage gaps the reviewer flagged on Task 1125 (lines ~356-459):\n\n1. Negative test for `self.items.count` / `self.items.sum` — pins the current (or improved) error message so a future fix is deliberate. Pair this with whatever is decided in the aggregation-error-message cleanup task.\n2. Test for `self.items[0].diameter` (MemberAccess over IndexAccess over MemberAccess(self, items)) — currently likely falls through the new error branches; document whether it errors or works, and assert which.\n3. Exact-count assertion: verify the collection-sub error branches emit exactly ONE error diagnostic (a doubly-matched pattern could double-push).\n4. Replace fragile `msg.contains(\"items\") && contains(\"collection\"|\"indexed\"|\"index\")` substring checks with a DiagnosticLabel-span assertion or a more specific prefix like `cannot access ... collection sub`.\n5. Regression guard: add a mixed-scope test containing BOTH `sub bolt = Bolt()` and `sub items : List<Bolt>`, asserting that `self.bolt.d` still resolves correctly while `self.items` errors — i.e. a sibling single-instance sub with a colliding member name is not affected by the collection-sub guard.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; look at self_keyword_tests.rs:356-459 for existing test patterns.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:47:41.163Z"
+        "updatedAt": "2026-04-09T04:11:56.161Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
       },
       {
         "id": "1283",
@@ -25871,7 +25876,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:11:43.862Z",
+      "lastModified": "2026-04-09T04:11:56.161Z",
       "taskCount": 1283,
       "completedCount": 948,
       "tags": [
