@@ -437,17 +437,21 @@ fi
 # Robustness tests for sync_comments_test.sh structural checks
 # ==============================================================================
 
+_robust_fixtures=()
+cleanup_robust() { rm -f "${_robust_fixtures[@]}"; }
+trap cleanup_robust EXIT
+mk_fixture() { local f; f=$(mktemp); _robust_fixtures+=("$f"); echo "$f"; }
+
 echo ""
 echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
 
-fixture=$(mktemp)
+fixture=$(mk_fixture)
 printf 'assert_sync_ref_exists () {\n  : trivial body\n}\n' > "$fixture"
 if _has_assert_sync_ref_exists "$fixture" 2>/dev/null; then
     check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "true"
 else
     check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "false"
 fi
-rm -f "$fixture"
 
 echo ""
 echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
@@ -455,30 +459,27 @@ echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
 # Fixture with a guard using $ref_fn (non-underscore).
 # The helper should detect this and return non-zero (guard IS present → check
 # for "no guard" must be FALSE).
-fixture_guard=$(mktemp)
+fixture_guard=$(mk_fixture)
 printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
 if _has_if_n_guard "$fixture_guard" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects non-underscore ref variable" "$ok"
-rm -f "$fixture_guard"
 
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
-fixture_clean=$(mktemp)
+fixture_clean=$(mk_fixture)
 printf '# no guards here\necho hello\n' > "$fixture_clean"
 if ! _has_if_n_guard "$fixture_clean" 2>/dev/null; then
     check "if-guard pattern returns true for clean file (no guard)" "true"
 else
     check "if-guard pattern returns true for clean file (no guard)" "false"
 fi
-rm -f "$fixture_clean"
 
 # Fixture with a non-ref-named guard variable ($marker): the broadened regex
 # 'if \[ -n' matches regardless of the variable name, so this guard is
 # correctly detected and the helper returns non-zero.
-fixture_marker=$(mktemp)
+fixture_marker=$(mk_fixture)
 printf 'if [ -n "$marker" ]; then echo skip; fi\n' > "$fixture_marker"
 if _has_if_n_guard "$fixture_marker" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects non-ref-named variable \$marker" "$ok"
-rm -f "$fixture_marker"
 
 # Historical regression pin: this fixture reproduces the exact guard that was
 # removed from tests/sync_comments_test.sh in commit ff0880bfe
@@ -486,11 +487,10 @@ rm -f "$fixture_marker"
 # to something narrower (e.g. requiring 'ref' in the variable name), this
 # fixture will fail while the broader $marker test still passes, making the
 # regression visible rather than silent.
-fixture_historical=$(mktemp)
+fixture_historical=$(mk_fixture)
 printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
-rm -f "$fixture_historical"
 
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
