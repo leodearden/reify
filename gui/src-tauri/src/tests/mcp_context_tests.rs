@@ -525,7 +525,7 @@ fn get_diagnostics_clean_source_returns_empty() {
     let ctx = make_tauri_context();
     let diags = ctx
         .get_diagnostics()
-        .expect("get_diagnostics should return Ok");
+        .expect("get_diagnostics should not fail for a healthy lock");
 
     // bracket_source() compiles cleanly → no diagnostics expected
     assert!(
@@ -587,4 +587,16 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         "expected message to mention 'NonExistentTrait', got: '{}'",
         first.message
     );
+
+    // span fields must represent a valid range (catches field-swap bugs in the mapping closure)
+    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
+    assert!(
+        first.end_line >= first.line,
+        "expected end_line ({}) >= line ({})",
+        first.end_line,
+        first.line
+    );
+
+    // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
+    assert!(first.code.is_none(), "expected code to be None");
 }
