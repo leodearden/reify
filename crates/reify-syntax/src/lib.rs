@@ -456,6 +456,16 @@ pub struct ConstraintDef {
     pub annotations: Vec<Annotation>,
 }
 
+impl ConstraintDef {
+    /// Returns `true` if this constraint def is tagged with the `@test` annotation.
+    ///
+    /// Callers can use this instead of scanning `annotations` manually.
+    /// Mirrors the `is_test` field on `TopologyTemplate` for symmetry.
+    pub fn is_test(&self) -> bool {
+        self.annotations.iter().any(|a| a.name == "test")
+    }
+}
+
 /// A unit declaration: `unit meter : Length` or `unit degC : Temperature = 1 offset 273.15`
 ///
 /// Declares a named measurement unit with an optional conversion factor and offset.

@@ -159,6 +159,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             (
@@ -183,6 +184,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -1397,13 +1399,19 @@ fn compute_numerical_gradient_at_point(
 /// For an n-dimensional vector field F: R^n → R^n, the divergence is:
 ///   div F(p) = Σ_i ∂Fi/∂xi ≈ Σ_i (F(p+h*ei)[i] - F(p-h*ei)[i]) / (2h)
 ///
+/// `codomain_type` is the divergence field's already-divided codomain (stamped by
+/// compute_divergence). Mirrors the gradient handler's trust-the-declaration pattern:
+/// no further division is performed here — `result_dim` is extracted directly from it.
+///
 /// Returns:
+/// - Scalar with the declared codomain dimension for dimensioned fields
 /// - Real scalar for dimensionless fields
 /// - Undef if any perturbation evaluation fails or the lambda returns non-vector
 fn compute_numerical_divergence_at_point(
     lambda: &Value,
     point: &Value,
     domain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     let coords: Vec<f64> = match point {
@@ -1432,6 +1440,15 @@ fn compute_numerical_divergence_at_point(
             _ => None,
         },
         _ => None,
+    };
+
+    // Extract result dimension from the already-divided codomain_type (stamped by
+    // compute_divergence). Divergence always produces a scalar codomain, so only
+    // Type::Scalar needs the dimensioned arm — no Type::Vector arm is needed here.
+    // Mirrors compute_numerical_gradient_at_point (lib.rs:1206-1213).
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
     };
 
     let single_point_param = match lambda {
@@ -1533,7 +1550,16 @@ fn compute_numerical_divergence_at_point(
     if !divergence.is_finite() {
         return Value::Undef;
     }
-    Value::Real(divergence)
+    // Mirror the gradient handler's return-site pattern (lib.rs:1368-1375):
+    // wrap in Value::Scalar when result_dim is non-trivial, else Value::Real.
+    if result_dim != DimensionVector::DIMENSIONLESS {
+        Value::Scalar {
+            si_value: divergence,
+            dimension: result_dim,
+        }
+    } else {
+        Value::Real(divergence)
+    }
 }
 
 /// Compute the numerical curl of a 3D vector field at a given point via central differences.
@@ -1704,13 +1730,19 @@ fn compute_numerical_curl_at_point(
 /// For a scalar field f: R^n → R, the Laplacian is:
 ///   Δf(p) = Σ_i ∂²f/∂xi² ≈ Σ_i (f(p+h*ei) − 2*f(p) + f(p−h*ei)) / h²
 ///
+/// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
+/// compute_laplacian). Mirrors the gradient handler's trust-the-declaration pattern:
+/// no further division is performed here — `result_dim` is extracted directly from it.
+///
 /// Returns:
-/// - Real scalar
+/// - Scalar with the declared codomain dimension for dimensioned fields
+/// - Real scalar for dimensionless fields
 /// - Undef if any evaluation fails
 fn compute_numerical_laplacian_at_point(
     lambda: &Value,
     point: &Value,
     domain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     let coords: Vec<f64> = match point {
@@ -1744,6 +1776,15 @@ fn compute_numerical_laplacian_at_point(
             _ => None,
         },
         _ => None,
+    };
+
+    // Extract result dimension from the already-divided codomain_type (stamped by
+    // compute_laplacian). Laplacian always produces a scalar codomain, so only
+    // Type::Scalar needs the dimensioned arm.
+    // Mirrors compute_numerical_gradient_at_point (lib.rs:1206-1213).
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
     };
 
     let single_point_param = match lambda {
@@ -1852,7 +1893,16 @@ fn compute_numerical_laplacian_at_point(
     if !laplacian.is_finite() {
         return Value::Undef;
     }
-    Value::Real(laplacian)
+    // Mirror the gradient handler's return-site pattern (lib.rs:1368-1375):
+    // wrap in Value::Scalar when result_dim is non-trivial, else Value::Real.
+    if result_dim != DimensionVector::DIMENSIONLESS {
+        Value::Scalar {
+            si_value: laplacian,
+            dimension: result_dim,
+        }
+    } else {
+        Value::Real(laplacian)
+    }
 }
 
 /// Convert a Value that carries NaN or Inf to Undef.
