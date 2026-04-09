@@ -412,6 +412,39 @@ else
     check "sync_ref_helpers.sh uses display_fn fallback variable" "false"
 fi
 
+# ==============================================================================
+# assert_sync_ref_exists behavioral test (sourceable helper)
+# Sources sync_ref_helpers.sh directly — no sed text extraction.
+# S5 hardening applied from inception: rc -eq 0 AND anchored ^  FAIL: grep.
+# ==============================================================================
+
+echo ""
+echo "--- assert_sync_ref_exists behavioral test (sourceable helper) ---"
+
+_src_beh_rc=0
+_src_beh_out=$(bash -c "
+    tmp_src=\$(mktemp)
+    tmp_tgt=\$(mktemp)
+    trap 'rm -f \"\$tmp_src\" \"\$tmp_tgt\"' EXIT
+    echo '// SYNC: reify-bogus::missing_fn' > \"\$tmp_src\"
+    echo 'pub fn other_thing() {}' > \"\$tmp_tgt\"
+    source '${SYNC_REF_HELPERS_FILE}'
+    PASS=0; FAIL=0
+    assert_sync_ref_exists src-crate reify-nonexistent \"\$tmp_src\" \"\$tmp_tgt\"
+" 2>&1) || _src_beh_rc=$?
+
+if [ "$_src_beh_rc" -eq 0 ]; then
+    check "behavioral subshell exits cleanly (rc=0)" "true"
+else
+    check "behavioral subshell exits cleanly (rc=0, got rc=$_src_beh_rc)" "false"
+fi
+
+if echo "$_src_beh_out" | grep -q '^  FAIL:'; then
+    check "guard fires: assert records anchored FAIL when ref_fn extraction yields nothing" "true"
+else
+    check "guard fires: assert records anchored FAIL when ref_fn extraction yields nothing (got: $_src_beh_out)" "false"
+fi
+
 # (j) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
 echo ""
 echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
