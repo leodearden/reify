@@ -3769,16 +3769,8 @@ mod tests {
 
     #[test]
     fn value_complex_hash_determinism() {
-        let a = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(3.0, 4.0);
+        let b = complex_with(3.0, 4.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
