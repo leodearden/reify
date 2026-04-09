@@ -387,12 +387,8 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 
     // Domain can be 1D scalar or nD Point
     match domain_type {
-        Type::Real | Type::Int | Type::Scalar { .. } => {}
-        Type::Point { quantity, .. }
-            if matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) => {}
+        _ if scalar_dimension(domain_type).is_some() => {}
+        Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -404,7 +400,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     }
 
     // Codomain must be scalar
-    if !matches!(codomain_type, Type::Real | Type::Int | Type::Scalar { .. }) {
+    if scalar_dimension(codomain_type).is_none() {
         #[cfg(debug_assertions)]
         eprintln!(
             "[reify-expr] laplacian: codomain must be scalar, got {:?}",
@@ -419,8 +415,12 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
         Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
         _ => codomain_type.clone(),
     };
-    let result_codomain =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 2, laplacian_fallback);
+    let result_codomain = dim_quotient_type(
+        scalar_dimension(codomain_type),
+        domain_dimension(domain_type),
+        2,
+        laplacian_fallback,
+    );
 
     // Result: scalar field with dimensionally-correct codomain
     Value::Field {
