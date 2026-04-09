@@ -27771,15 +27771,16 @@
         "description": "Clean up the downstream_ops_after_malformed_initialize_without_initialized test in crates/reify-lsp/tests/in_process_bridge.rs",
         "details": "1. Replace inline malformed-params assertion (lines 921-931) with call to assert_malformed_params_returns_error(&lsp, \"initialize\", error_prefix::INITIALIZE_PARAMS).await — the helper is defined at line 15 and used at 11 other sites\n2. Fix Step-4 comment (lines 961-963) to clarify the bridge dispatches regardless of init state and the response may be Null if didOpen failed\n3. Tighten Err-branch assertions (lines 953-956 and 982-985): either require a known error prefix or add a doc comment explaining these are forward-compatible scaffolding for a future pre-handshake guard\n4. Wrap the async test body in tokio::time::timeout(Duration::from_secs(5), ...) to match the doc comment's claim about guarding against hangs\n\nSource: review suggestions from task 939 (esc-939-24)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T17:47:49.357Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:47:48.859Z",
+      "lastModified": "2026-04-09T17:47:49.357Z",
       "taskCount": 1338,
       "completedCount": 1011,
       "tags": [
