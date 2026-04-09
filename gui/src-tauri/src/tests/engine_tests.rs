@@ -1132,7 +1132,7 @@ fn resolve_source_fallback_when_source_map_missing() {
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
         diags.is_empty(),
-        "get_diagnostics should return [] when source is clean and source_map is missing"
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when source_map is missing"
     );
 
     // get_source_location must return None without panicking
@@ -1140,6 +1140,42 @@ fn resolve_source_fallback_when_source_map_missing() {
     assert!(
         loc.is_none(),
         "get_source_location should return None when source_map is missing"
+    );
+}
+
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the module_name invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_module_name_for_test() clears module_name while leaving compiled and
+/// source_map intact. This exercises the fallible path at engine.rs line 302:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no module_name needed)
+/// - get_source_location uses self.module_name.as_deref()? and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_module_name_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the module_name invariant
+    session.break_module_name_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when module_name is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when module_name is missing"
     );
 }
 
