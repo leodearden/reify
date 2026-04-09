@@ -25096,11 +25096,16 @@
         "description": "Task 1221's new tests in crates/reify-expr/tests/field_calculus_tests.rs:1132-1438 only cover the happy path (3D Point → Vector{3,Velocity} for divergence; 3D Point → Scalar<Temperature> for laplacian) plus one dimensionless regression. Missing branches that the new dim-extraction code traverses:\n\n(a) 1D and 2D fields — laplacian validation accepts both, none are tested.\n(b) Type::Int domains and codomains — laplacian validation explicitly accepts Int, but the new dim-extraction returns None for Int and falls through. No test exercises this path.\n(c) The result-is-dimensionless-from-dimensioned-inputs branch — e.g. laplacian of Point{Length} → Scalar<Length²> should produce Real via the inner `if result_dim != DIMENSIONLESS … else Type::Real` branch. The smallest case is Length²/Length².\n(d) Composed source kinds — laplacian validation accepts Composed but no test uses one.\n(e) The cross-dimensional mixed cases tracked in the \"unify fallback semantics\" follow-up.\n\nFix: add parameterized cases for (a)-(d). Defer (e) to the unify-fallback task. Each test should mirror the existing dimensional_correctness pattern: build a Field with the target domain/codomain, call divergence()/laplacian(), assert the metadata. Once the metadata-vs-runtime drift task lands, also add sample() calls to these tests.\n\nMemory hints:\n- search \"field_calculus_tests dimensional_correctness\" — existing pattern\n- get_entity \"FieldSourceKind::Composed\" — how to construct one in tests",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:17:47.664Z"
+        "updatedAt": "2026-04-09T02:24:31.086Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1239",
@@ -25117,7 +25122,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:23:31.089Z",
+      "lastModified": "2026-04-09T02:24:31.086Z",
       "taskCount": 1239,
       "completedCount": 922,
       "tags": [
