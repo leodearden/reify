@@ -615,6 +615,94 @@ fn curl_accepts_vector_sample_point() {
     );
 }
 
+/// Sampling a curl field with a 2-element `Value::Vector` returns `Value::Undef`.
+///
+/// `compute_numerical_curl_at_point` requires exactly 3 components to compute
+/// the cross-product derivatives.  A 2-element input falls through the
+/// `items.len() == 3` guard and must return `Value::Undef`.  This test locks in
+/// that dimension guard as a regression check.
+#[test]
+fn curl_two_element_vector_sample_point_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(-y, x, 0)
+    let neg_y = CompiledExpr::unop(
+        UnOp::Neg,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = make_function_call(
+        "vec3",
+        vec![
+            neg_y,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    // sample(curl_field, Vector2(1.0, 2.0))  ← only 2 components, guard fires
+    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]);
+    let point_literal_type = Type::vec2(Type::Real);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, point_literal_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(sample_result, Value::Undef),
+        "curl with 2-element Vector sample point should return Value::Undef (dimension guard), got {:?}",
+        sample_result
+    );
+}
+
 // ── Step 4: Laplacian test ────────────────────────────────────────────────────
 
 /// Laplacian of f(x,y,z)=x²+y²+z² at (1,2,3) ≈ 6.0.
