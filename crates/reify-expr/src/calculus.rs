@@ -1,0 +1,1337 @@
+use reify_types::{DimensionVector, FieldSourceKind, Type, Value};
+
+use super::{apply_lambda, EvalContext};
+
+pub(crate) fn compute_gradient(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] gradient: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    // Only Analytical and Composed fields support gradient.
+    // Gradient fields are excluded: their lambda slot contains a Value::Field (the
+    // original field), not a callable Value::Lambda, so numerical differentiation
+    // via apply_lambda is not possible.
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    // Lambda must be a callable Lambda
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Determine dimensionality and validate scalar domain quantity
+    let n = match domain_type {
+        Type::Real | Type::Int | Type::Scalar { .. } => 1,
+        Type::Point { n, quantity } => {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => return Value::Undef,
+    };
+
+    // Compute gradient quantity type: R/Q (codomain dimension / domain dimension).
+    // Mirrors the runtime logic in compute_numerical_gradient_at_point.
+    let gradient_quantity = {
+        // Extract domain dimension from the domain type.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let domain_dim = match domain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain dimension.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let codomain_dim = match codomain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            _ => None,
+        };
+
+        // Divide codomain by domain dimension when both are non-trivial.
+        match (codomain_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let grad_dim = cd.div(&dd);
+                if grad_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: grad_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => match codomain_type {
+                Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {
+                    Type::Real
+                }
+                _ => codomain_type.clone(),
+            },
+        }
+    };
+
+    // Construct result codomain type:
+    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
+    // nD → Vector{n, gradient_quantity}
+    let result_codomain = if n == 1 {
+        gradient_quantity
+    } else {
+        Type::Vector {
+            n,
+            quantity: Box::new(gradient_quantity),
+        }
+    };
+
+    // Return a gradient field: source=Gradient, lambda slot stores the original field.
+    // The sample handler detects lambda=Field + source=Gradient and dispatches to
+    // compute_numerical_gradient_at_point.
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::Gradient,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the divergence of a vector field.
+///
+/// Returns a new scalar Field with `FieldSourceKind::Divergence` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_divergence_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be `Point{n, scalar}` (n ≥ 1)
+/// - Codomain must be `Vector{n, scalar}` with matching dimension n
+pub(crate) fn compute_divergence(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain must be a Point with scalar quantity
+    let n = match domain_type {
+        Type::Point { n, quantity } => {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: domain must be Point{{n}}, got {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    };
+
+    // Codomain must be Vector{n, scalar}
+    let vec_n = match codomain_type {
+        Type::Vector { n, quantity } => {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: codomain must be Vector{{n}}, got {:?}",
+                codomain_type
+            );
+            return Value::Undef;
+        }
+    };
+
+    if vec_n != n {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}"
+        );
+        return Value::Undef;
+    }
+
+    // Compute result codomain type using the preserve-codomain strategy:
+    // when both sides are non-trivially-dimensioned, divide component_dim by domain_dim;
+    // otherwise preserve the Vector's component type, downgrading dimensionless Scalar to Real.
+    let result_codomain = {
+        // Extract domain dimension from the Point's quantity.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let domain_dim = match domain_type {
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain component dimension from the Vector's quantity.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let codomain_component_dim = match codomain_type {
+            Type::Vector { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Divide codomain component by domain dimension when both are non-trivial.
+        // Fallback: preserve the Vector's component type, downgrading dimensionless Scalar to Real.
+        match (codomain_component_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let result_dim = cd.div(&dd);
+                if result_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: result_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => match codomain_type {
+                Type::Vector { quantity, .. } => match quantity.as_ref() {
+                    Type::Scalar { dimension }
+                        if *dimension == DimensionVector::DIMENSIONLESS =>
+                    {
+                        Type::Real
+                    }
+                    _ => quantity.as_ref().clone(),
+                },
+                _ => Type::Real,
+            },
+        }
+    };
+
+    // Result: scalar field with dimensionally-correct codomain
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::Divergence,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the curl of a 3D vector field.
+///
+/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be `Point{3, scalar}`
+/// - Codomain must be `Vector{3, scalar}`
+pub(crate) fn compute_curl(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain must be Point{3, scalar}
+    match domain_type {
+        Type::Point { n: 3, quantity }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: domain must be Point{{3}}, got {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Codomain must be Vector{3, scalar}
+    match codomain_type {
+        Type::Vector { n: 3, quantity }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: codomain must be Vector{{3}}, got {:?}",
+                codomain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Result: vector field (same type as input — curl of R^3→R^3 is R^3→R^3)
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Curl,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the Laplacian of a scalar field.
+///
+/// Returns a new scalar Field with `FieldSourceKind::Laplacian` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_laplacian_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be scalar or `Point{n, scalar}`
+/// - Codomain must be scalar (Real, Int, or Scalar)
+pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] laplacian: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain can be 1D scalar or nD Point
+    match domain_type {
+        Type::Real | Type::Int | Type::Scalar { .. } => {}
+        Type::Point { quantity, .. }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] laplacian: unsupported domain type {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Codomain must be scalar
+    if !matches!(codomain_type, Type::Real | Type::Int | Type::Scalar { .. }) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] laplacian: codomain must be scalar, got {:?}",
+            codomain_type
+        );
+        return Value::Undef;
+    }
+
+    // Compute result codomain type using the preserve-codomain strategy:
+    // when both sides are non-trivially-dimensioned, divide codomain_dim by domain_dim²;
+    // otherwise preserve the codomain type, downgrading dimensionless Scalar to Real.
+    let result_codomain = {
+        // Extract domain dimension from the domain type.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let domain_dim = match domain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain dimension.
+        // Real/Int are treated as DIMENSIONLESS so the guard below handles them explicitly.
+        let codomain_dim = match codomain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            _ => None,
+        };
+
+        // Divide codomain by domain² when both are non-trivial.
+        // Fallback: preserve the codomain type, downgrading dimensionless Scalar to Real.
+        match (codomain_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let result_dim = cd.div(&dd.pow(2));
+                if result_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: result_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => match codomain_type {
+                Type::Scalar { dimension }
+                    if *dimension == DimensionVector::DIMENSIONLESS =>
+                {
+                    Type::Real
+                }
+                _ => codomain_type.clone(),
+            },
+        }
+    };
+
+    // Result: scalar field with dimensionally-correct codomain
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: result_codomain,
+        source: FieldSourceKind::Laplacian,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Evaluate the lambda at a single perturbed point and recover `work_point`.
+///
+/// This helper encapsulates the duplicated eval-and-recover sequence for the
+/// `single_point_param` and decomposed paths in `compute_numerical_gradient_at_point`.
+/// It is called twice per axis (f_plus and f_minus), so factoring it out eliminates
+/// the verbatim duplication in the hot loop.
+///
+/// # Arguments
+///
+/// * `lambda` — The original field lambda to evaluate.
+/// * `work_coords` — The already-perturbed coordinate slice (length n).
+/// * `work_args` — Scratch `Vec<Value>` reused across calls; cleared and filled here.
+/// * `work_point` — Scratch inner `Vec<Value>` for the `single_point_param` path;
+///   transferred into `work_args` via `std::mem::take` and recovered after the call.
+///   Must be empty and unused in the decomposed path.
+/// * `single_point_param` — Whether the lambda expects one `Point` arg or n scalar args.
+/// * `i` — The perturbed axis index (used to update `work_point[i]` efficiently).
+/// * `n` — Total domain dimension; used for the post-recovery `debug_assert_eq!`.
+/// * `make_arg` — Converts an `f64` coordinate to the appropriate `Value` variant
+///   (e.g., `Value::Real` for dimensionless, `Value::Scalar { … }` for dimensioned).
+/// * `ctx` — Evaluation context forwarded to `apply_lambda`.
+///
+/// # Invariant
+///
+/// After the call (when `single_point_param` is true), `work_point.len() == n`.
+/// A `debug_assert_eq!` enforces this in debug builds.
+#[allow(clippy::too_many_arguments)]
+fn eval_perturbed_point<F: Fn(f64) -> Value>(
+    lambda: &Value,
+    work_coords: &[f64],
+    work_args: &mut Vec<Value>,
+    work_point: &mut Vec<Value>,
+    single_point_param: bool,
+    i: usize,
+    n: usize,
+    make_arg: &F,
+    ctx: &EvalContext,
+) -> Value {
+    work_args.clear();
+    if single_point_param {
+        // Update only the perturbed element; transfer ownership via take.
+        work_point[i] = make_arg(work_coords[i]);
+        work_args.push(Value::Point(std::mem::take(work_point)));
+    } else {
+        work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
+    }
+    let result = apply_lambda(lambda, work_args, ctx);
+    // Recover work_point from work_args (single_point_param only).
+    // Infallible: apply_lambda borrows &[Value] and cannot mutate work_args;
+    // we pushed exactly one Value::Point, so pop() always succeeds.
+    if single_point_param {
+        if let Some(Value::Point(inner)) = work_args.pop() {
+            *work_point = inner;
+        }
+        debug_assert_eq!(
+            work_point.len(),
+            n,
+            "work_point must be recovered to n={n} elements after eval_perturbed_point; \
+             got {} — apply_lambda may have changed the Point's inner Vec length",
+            work_point.len(),
+        );
+    }
+    result
+}
+
+/// Compute the numerical gradient of a field at a given point via central differences.
+///
+/// For each axis i, perturbs coordinate i by ±h where h = 1e-6 * max(|coord_i|, 1e-3),
+/// evaluates the original lambda, and computes df/dx_i ≈ (f(x+h) - f(x-h)) / (2h).
+///
+/// Returns:
+/// - Scalar (Real) for 1D fields
+/// - Vector for nD fields
+/// - Undef if any perturbation evaluation fails
+pub(crate) fn compute_numerical_gradient_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Decompose point into f64 coordinates.
+    // Guard every extracted value with is_finite() — NaN/Inf coordinates
+    // would produce NaN step sizes and silently corrupt gradient results.
+    let coords: Vec<f64> = match point {
+        Value::Real(r) if r.is_finite() => vec![*r],
+        Value::Real(_) => return Value::Undef, // NaN or Inf
+        Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
+        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
+        Value::Scalar { .. } => return Value::Undef, // NaN or Inf
+        Value::Point(items) | Value::Vector(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef, // None (non-numeric) or NaN/Inf
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    // Determine if domain is dimensioned (for constructing perturbed args)
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    // Detect calling convention: single-Point param vs decomposed params.
+    // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
+    // If lambda has n params, pass individual scalar values (current behavior).
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    // Warn in debug builds when arity doesn't match and calling convention is
+    // decomposed. An arity mismatch silently produces Undef via apply_lambda;
+    // the warning surfaces the root cause during development.
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] gradient: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
+
+    // DESIGN DECISION: trust-the-declaration
+    // result_dim is derived from the declared codomain_type, not from the runtime return
+    // type of the lambda. This means a misconfigured codomain_type will silently produce
+    // gradient values with the declared (wrong) dimension rather than the runtime dimension.
+    // This is intentional: changing to runtime-driven dimensioning would require propagating
+    // dimension metadata through all arithmetic operations, which is architecturally expensive
+    // and error-prone. The two-tier validation strategy is:
+    //   - Dimensionless domains (domain_dim = None): hard assert_eq! below catches mismatches;
+    //     the lambda's return type is unambiguous (receives Real, must return Real or Scalar).
+    //   - Dimensioned domains (domain_dim = Some): soft eprintln! warning below catches
+    //     mismatches; hard assertions would produce false positives because arithmetic like
+    //     `Real * Scalar<LENGTH>` naturally returns `Scalar<LENGTH>` regardless of the
+    //     declared codomain.
+    //
+    // Extract per-component gradient dimension from codomain_type.
+    // codomain_type is now the gradient field's codomain (already R/Q-divided by
+    // compute_gradient), so no further division is needed here:
+    //   - 1D field  → Scalar { dimension } or Real
+    //   - nD field  → Vector { n, quantity: Scalar { dimension } } or Vector { n, quantity: Real }
+    let result_dim = match codomain_type {
+        Type::Vector { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            _ => DimensionVector::DIMENSIONLESS,
+        },
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    };
+
+    // Hoist make_arg before the loop — it only captures domain_dim (Copy),
+    // so constructing it once per axis would be redundant.
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    // Take ownership of coords — no clone needed.
+    // work_coords[i] equals the original coords[i] bit-for-bit at the start of
+    // every axis iteration: at the bottom of the loop, work_coords[i] is restored
+    // via direct assignment (`work_coords[i] = coord_i`), which is an exact
+    // bit-identical restore of the value captured at the top of the iteration.
+    let mut work_coords = coords;
+    // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+
+    // work_point: reusable inner Vec for the single_point_param path.
+    // Pre-allocated once; only the perturbed element is updated each axis,
+    // eliminating the per-axis .collect() allocation on the caller side.
+    // (apply_lambda still clones the Vec once per eval when populating its
+    // eval_map, so the savings are roughly halving inner-Vec allocations,
+    // not reducing to O(1) overall.)
+    // Invariant: work_point[j] == make_arg(work_coords[j]) at axis start.
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut gradient_components = Vec::with_capacity(n);
+
+    for i in 0..n {
+        // Read from work_coords — the original coords Vec was taken by ownership
+        // above and is no longer accessible.  work_coords[i] holds the original
+        // value bit-for-bit at this point: on the first iteration it comes
+        // directly from the caller; on subsequent iterations the bottom of the
+        // loop restores it via `work_coords[i] = coord_i` (direct assignment,
+        // not arithmetic, so no ULP drift).
+        let coord_i = work_coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        // Perturb forward (+h), evaluate, recover work_point.
+        work_coords[i] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        // On the first axis, validate the lambda's runtime return dimension against the
+        // declared codomain (via codomain_type). Two-tier strategy:
+        //
+        //   Tier 1 — hard assertion (dimensionless domains, domain_dim = None):
+        //     make_arg passes Real to the lambda, so the return type is unambiguous.
+        //     assert_eq! panics on mismatch — a clear misconfiguration.
+        //
+        //   Tier 2 — soft warning (dimensioned domains, domain_dim = Some):
+        //     make_arg passes Scalar<domain_dim>. Operations like
+        //     `Real * Scalar<LENGTH>` naturally return Scalar<LENGTH> regardless of
+        //     the declared codomain — the codomain_type is metadata, not a runtime
+        //     constraint. Hard assertions here produce false positives. A soft
+        //     eprintln! warns for genuine mismatches without blocking execution.
+        //
+        // result_dim is the gradient's per-component dimension (codomain/domain).
+        // f_plus comes from the original lambda, so its dimension is the ORIGINAL
+        // codomain's dimension. Reconstruct:
+        //   dimensionless domain: original_codomain = result_dim
+        //   dimensioned domain:   original_codomain = result_dim * domain_dim
+        #[cfg(debug_assertions)]
+        if i == 0 && domain_dim.is_none() {
+            let runtime_dim = f_plus.dimension();
+            let expected_codomain_dim = result_dim;
+            assert_eq!(
+                runtime_dim,
+                expected_codomain_dim,
+                "codomain_type does not match runtime return dimension: \
+                 declared codomain expects dimension {:?} but lambda returned {:?}",
+                expected_codomain_dim,
+                runtime_dim,
+            );
+        }
+        // Tier 2: soft warning for dimensioned-domain mismatches.
+        // original_codomain = result_dim * domain_dim; compare with f_plus dimension.
+        #[cfg(debug_assertions)]
+        if i == 0 && let Some(dom_dim) = domain_dim {
+            let expected_original_codomain = result_dim.mul(&dom_dim);
+            let runtime_dim = f_plus.dimension();
+            if runtime_dim != expected_original_codomain {
+                eprintln!(
+                    "[reify-expr] gradient: codomain_type mismatch (non-fatal): \
+                     declared original codomain dimension {:?} but lambda returned {:?}",
+                    expected_original_codomain,
+                    runtime_dim,
+                );
+            }
+        }
+
+        // Swing to backward (−h from original = −2h from current), evaluate, recover work_point.
+        work_coords[i] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        // Restore coord[i] to original value.
+        // Use exact restore (direct assignment) instead of arithmetic
+        // restore (+= h) to avoid IEEE 754 round-trip accumulation (~4 ULP
+        // drift from x + h - 2h + h ≠ x in floating-point).
+        work_coords[i] = coord_i;
+        // Keep work_point in sync with the invariant.
+        if single_point_param {
+            work_point[i] = make_arg(coord_i);
+        }
+
+        // Extract numeric values, propagate Undef.
+        // Guard with is_finite() — as_f64() returns Some(NaN) for
+        // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
+        // the None check alone doesn't catch degenerate values.
+        let fp = match f_plus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+        let fm = match f_minus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+
+        let deriv = (fp - fm) / (2.0 * h);
+        // Guard the derivative: even finite fp/fm can produce
+        // Inf via overflow (e.g., (MAX - (-MAX)) / small_h).
+        if !deriv.is_finite() {
+            return Value::Undef;
+        }
+
+        if result_dim != DimensionVector::DIMENSIONLESS {
+            gradient_components.push(Value::Scalar {
+                si_value: deriv,
+                dimension: result_dim,
+            });
+        } else {
+            gradient_components.push(Value::Real(deriv));
+        }
+    }
+
+    // For n==1 the loop above always pushes exactly one component (or returns
+    // early via Undef). The unwrap_or(Undef) fallback is unreachable in practice;
+    // this assert documents and enforces that invariant in debug builds.
+    debug_assert!(
+        n != 1 || !gradient_components.is_empty(),
+        "gradient loop must push exactly one component for n==1"
+    );
+    if n == 1 {
+        gradient_components
+            .into_iter()
+            .next()
+            .unwrap_or(Value::Undef)
+    } else {
+        Value::Vector(gradient_components)
+    }
+}
+
+/// Compute the numerical divergence of a vector field at a given point via central differences.
+///
+/// For an n-dimensional vector field F: R^n → R^n, the divergence is:
+///   div F(p) = Σ_i ∂Fi/∂xi ≈ Σ_i (F(p+h*ei)[i] - F(p-h*ei)[i]) / (2h)
+///
+/// `codomain_type` is the divergence field's already-divided codomain (stamped by
+/// compute_divergence). Mirrors the gradient handler's trust-the-declaration pattern:
+/// no further division is performed here — `result_dim` is extracted directly from it.
+///
+/// Returns:
+/// - Scalar with the declared codomain dimension for dimensioned fields
+/// - Real scalar for dimensionless fields
+/// - Undef if any perturbation evaluation fails or the lambda returns non-vector
+pub(crate) fn compute_numerical_divergence_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    let coords: Vec<f64> = match point {
+        Value::Point(items) | Value::Vector(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    // Extract result dimension from the already-divided codomain_type (stamped by
+    // compute_divergence). Divergence always produces a scalar codomain, so only
+    // Type::Scalar needs the dimensioned arm — no Type::Vector arm is needed here.
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] divergence: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    let mut work_coords = coords;
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut divergence = 0.0_f64;
+
+    for i in 0..n {
+        let coord_i = work_coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        work_coords[i] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] = coord_i;
+        if single_point_param {
+            work_point[i] = make_arg(coord_i);
+        }
+
+        // Extract the i-th component from the vector output
+        let fp_i = match &f_plus {
+            Value::Vector(comps) if comps.len() > i => match comps[i].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Value::Undef,
+            },
+            _ => return Value::Undef,
+        };
+        let fm_i = match &f_minus {
+            Value::Vector(comps) if comps.len() > i => match comps[i].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Value::Undef,
+            },
+            _ => return Value::Undef,
+        };
+
+        let deriv = (fp_i - fm_i) / (2.0 * h);
+        if !deriv.is_finite() {
+            return Value::Undef;
+        }
+        divergence += deriv;
+    }
+
+    if !divergence.is_finite() {
+        return Value::Undef;
+    }
+    if result_dim != DimensionVector::DIMENSIONLESS {
+        Value::Scalar {
+            si_value: divergence,
+            dimension: result_dim,
+        }
+    } else {
+        Value::Real(divergence)
+    }
+}
+
+/// Compute the numerical curl of a 3D vector field at a given point via central differences.
+///
+/// For a 3D vector field F: R^3 → R^3, the curl is:
+///   curl F = (∂F3/∂y − ∂F2/∂z,  ∂F1/∂z − ∂F3/∂x,  ∂F2/∂x − ∂F1/∂y)
+///
+/// This is computed by building columns of the Jacobian via perturbation along each axis.
+/// For each axis j, perturb to get F(p±h*ej), then for each component i compute:
+///   J[i][j] = (F(p+h*ej)[i] − F(p−h*ej)[i]) / (2h)
+///
+/// Returns:
+/// - Vector3 of Real components
+/// - Undef if any evaluation fails
+pub(crate) fn compute_numerical_curl_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Only defined for 3D Point domains
+    let coords: Vec<f64> = match point {
+        Value::Point(items) | Value::Vector(items) if items.len() == 3 => {
+            let mut v = Vec::with_capacity(3);
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = 3;
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    let mut work_coords = coords;
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    // Jacobian columns: jac[j][i] = ∂Fi/∂xj
+    let mut jac = [[0.0_f64; 3]; 3];
+
+    for j in 0..n {
+        let coord_j = work_coords[j];
+        let h = 1e-6_f64 * coord_j.abs().max(1e-3);
+
+        work_coords[j] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            j,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[j] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            j,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[j] = coord_j;
+        if single_point_param {
+            work_point[j] = make_arg(coord_j);
+        }
+
+        // Extract all 3 components from the vector results
+        let fp = match &f_plus {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let mut arr = [0.0_f64; 3];
+                for (k, c) in comps.iter().enumerate() {
+                    match c.as_f64() {
+                        Some(v) if v.is_finite() => arr[k] = v,
+                        _ => return Value::Undef,
+                    }
+                }
+                arr
+            }
+            _ => return Value::Undef,
+        };
+        let fm = match &f_minus {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let mut arr = [0.0_f64; 3];
+                for (k, c) in comps.iter().enumerate() {
+                    match c.as_f64() {
+                        Some(v) if v.is_finite() => arr[k] = v,
+                        _ => return Value::Undef,
+                    }
+                }
+                arr
+            }
+            _ => return Value::Undef,
+        };
+
+        // jac[j] = column j of Jacobian: ∂Fi/∂xj for i in 0..3
+        for i in 0..3 {
+            let d = (fp[i] - fm[i]) / (2.0 * h);
+            if !d.is_finite() {
+                return Value::Undef;
+            }
+            jac[j][i] = d;
+        }
+    }
+
+    // curl = (J[1][2] - J[2][1], J[2][0] - J[0][2], J[0][1] - J[1][0])
+    // where J[j][i] = ∂Fi/∂xj, so:
+    //   curl_x = ∂F2/∂y - ∂F1/∂z → jac[1][2] - jac[2][1]  (∂F3/∂y - ∂F2/∂z in 1-indexed)
+    //   curl_y = ∂F0/∂z - ∂F2/∂x → jac[2][0] - jac[0][2]
+    //   curl_z = ∂F1/∂x - ∂F0/∂y → jac[0][1] - jac[1][0]
+    let curl_x = jac[1][2] - jac[2][1];
+    let curl_y = jac[2][0] - jac[0][2];
+    let curl_z = jac[0][1] - jac[1][0];
+
+    if !curl_x.is_finite() || !curl_y.is_finite() || !curl_z.is_finite() {
+        return Value::Undef;
+    }
+
+    Value::Vector(vec![
+        Value::Real(curl_x),
+        Value::Real(curl_y),
+        Value::Real(curl_z),
+    ])
+}
+
+/// Compute the numerical Laplacian of a scalar field at a given point via central differences.
+///
+/// For a scalar field f: R^n → R, the Laplacian is:
+///   Δf(p) = Σ_i ∂²f/∂xi² ≈ Σ_i (f(p+h*ei) − 2*f(p) + f(p−h*ei)) / h²
+///
+/// `codomain_type` is the Laplacian field's already-divided codomain (stamped by
+/// compute_laplacian). Mirrors the gradient handler's trust-the-declaration pattern:
+/// no further division is performed here — `result_dim` is extracted directly from it.
+///
+/// Returns:
+/// - Scalar with the declared codomain dimension for dimensioned fields
+/// - Real scalar for dimensionless fields
+/// - Undef if any evaluation fails
+pub(crate) fn compute_numerical_laplacian_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    codomain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    let coords: Vec<f64> = match point {
+        Value::Real(r) if r.is_finite() => vec![*r],
+        Value::Real(_) => return Value::Undef,
+        Value::Int(i) => vec![*i as f64],
+        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
+        Value::Scalar { .. } => return Value::Undef,
+        Value::Point(items) | Value::Vector(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    // Extract result dimension from the already-divided codomain_type (stamped by
+    // compute_laplacian). Laplacian always produces a scalar codomain, so only
+    // Type::Scalar needs the dimensioned arm.
+    let result_dim = match codomain_type {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] laplacian: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    // Evaluate f at the center point once
+    let mut center_args: Vec<Value> = if single_point_param {
+        let inner: Vec<Value> = coords.iter().map(|&v| make_arg(v)).collect();
+        vec![Value::Point(inner)]
+    } else {
+        coords.iter().map(|&v| make_arg(v)).collect()
+    };
+    let f_center_val = apply_lambda(lambda, &center_args, ctx);
+    let f_center = match f_center_val.as_f64() {
+        Some(v) if v.is_finite() => v,
+        _ => return Value::Undef,
+    };
+    // Reuse center_args as work_args; clear it after center eval
+    center_args.clear();
+    let mut work_args = center_args;
+
+    let mut work_coords = coords;
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut laplacian = 0.0_f64;
+
+    for i in 0..n {
+        let coord_i = work_coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        work_coords[i] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] = coord_i;
+        if single_point_param {
+            work_point[i] = make_arg(coord_i);
+        }
+
+        let fp = match f_plus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+        let fm = match f_minus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+
+        let second_deriv = (fp - 2.0 * f_center + fm) / (h * h);
+        if !second_deriv.is_finite() {
+            return Value::Undef;
+        }
+        laplacian += second_deriv;
+    }
+
+    if !laplacian.is_finite() {
+        return Value::Undef;
+    }
+    if result_dim != DimensionVector::DIMENSIONLESS {
+        Value::Scalar {
+            si_value: laplacian,
+            dimension: result_dim,
+        }
+    } else {
+        Value::Real(laplacian)
+    }
+}
