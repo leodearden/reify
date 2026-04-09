@@ -24589,7 +24589,7 @@
         "description": "Three small improvements to find_self_reading_test_fns test suite in tree-sitter-reify/tests/build_logic_tests.rs:\n\n1. **Misleading comment (lines 1155-1158):** The case (f) comment says \"the 28-char contiguous substring ... is NOT present here — no false-positive on the synthetic source.\" This is wrong — the synthetic source (the evaluated concat! result) DOES contain the bare-quote substring, which is why case (f) IS collected. The correct explanation is that in the raw source file on disk, the `\\\"` escape inserts a backslash before each quote, breaking the 28-char contiguous match and preventing false-positives when test_self_read_paths_use_manifest_dir scans the real file. Reword the comment to distinguish between the evaluated concat! string (where the substring IS present) and the raw source file (where it is NOT).\n\n2. **Missing count assertion (lines 1165-1203):** After the individual contains/not-contains assertions, add `assert_eq!(fns.len(), 4, \"expected exactly 4 discovered functions; got: {:?}\", fns);` to guard against double-counting or future state-machine regressions.\n\n3. **Inexact count comment (line 1244, 1251):** Change \"~6\" to \"6\" — the count is deterministic in this codebase. Consider raising threshold from >= 5 to >= 6 to catch ANY accidental removal.\n\nmemory_hints: search \"find_self_reading_test_fns scanner\" for task 1059/1101 context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24600,7 +24600,8 @@
           "modules": [
             "tree-sitter-reify/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T00:49:09.610Z"
       },
       {
         "id": "1210",
@@ -24736,7 +24737,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:49:08.935Z",
+      "lastModified": "2026-04-09T00:49:09.620Z",
       "taskCount": 1216,
       "completedCount": 897,
       "tags": [
