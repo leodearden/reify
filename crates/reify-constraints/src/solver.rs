@@ -926,6 +926,60 @@ mod tests {
 
     // ---- end solutions_agree test helpers ----
 
+    // ---- verify_uniqueness test helpers ----
+
+    /// Runs `verify_uniqueness(problem, solved_values)` under a warn-capturing tracing
+    /// subscriber and asserts the aggregated WARN contract:
+    ///
+    /// 1. Exactly one WARN event containing `"midpoint as comparison anchor"` is emitted.
+    /// 2. Every substring in `expected_param_substrings` appears in the joined WARN messages
+    ///    (verifies that the relevant `ValueCellId`s were included in the event via the
+    ///    `missing_params = ?missing` field).
+    ///
+    /// Returns the `unique` flag so each call site can assert the verdict with its own
+    /// descriptive message, consistent with the named-local style of the sibling tests.
+    ///
+    /// See the section comment at `// ---- verify_uniqueness tracing tests ----` for the
+    /// early-return coverage rationale (solve_core and solutions_agree are NOT invoked on
+    /// the missing/non-numeric path).
+    fn assert_verify_uniqueness_aggregated_warn(
+        problem: &ResolutionProblem,
+        solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
+        expected_param_substrings: &[&str],
+    ) -> bool {
+        use reify_test_support::warn_capturing_subscriber;
+
+        use super::verify_uniqueness;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(problem, solved_values)
+        });
+
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 verify_uniqueness WARN containing 'midpoint as comparison \
+             anchor'; got {vu_warn_count}; messages: {msgs:?}"
+        );
+
+        let all_msgs = msgs.join("\n");
+        for substring in expected_param_substrings {
+            assert!(
+                all_msgs.contains(substring),
+                "expected WARN messages to contain {substring:?}; messages: {msgs:?}"
+            );
+        }
+
+        unique
+    }
+
+    // ---- end verify_uniqueness test helpers ----
+
     #[test]
     fn dimensional_solver_exists_and_implements_trait() {
         use crate::DimensionalSolver;
