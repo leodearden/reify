@@ -582,5 +582,16 @@ assert "post-wait orphan cleanup uses kill -9 (SIGKILL) not plain kill (SIGTERM)
 assert "no remaining line sends SIGTERM (plain kill) to the command process group" \
     bash -c '! grep -qF "kill -- -\$cmd_pid 2>/dev/null || true" "$1"' _ "$LIB_PORTABLE"
 
+# -- Test 23: structural: both timer subshells quote the PGID argument (S1) ---
+echo ""
+echo "--- Test 23: timer subshells use quoted PGID argument for SIGKILL ---"
+
+# Both timer subshells (flag-file branch and degraded branch) must quote the
+# PGID argument: 'kill -9 -- "-$cmd_pid"' rather than 'kill -9 -- -$cmd_pid'.
+# Defensive quoting prevents word-splitting if the value is ever non-numeric.
+# Exactly 2 occurrences are required — one per timer subshell branch.
+assert "both timer subshells use quoted PGID in SIGKILL: exactly 2 occurrences" \
+    bash -c 'count=$(grep -cF "kill -9 -- \"-\$cmd_pid\"" "$1"); [ "$count" -eq 2 ]' _ "$LIB_PORTABLE"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
