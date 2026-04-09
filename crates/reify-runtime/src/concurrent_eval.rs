@@ -100,7 +100,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a read lock on `values`, recovering from poison with a warning.
     fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
         self.values.read().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "values", access = "read", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -108,7 +108,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a write lock on `values`, recovering from poison with a warning.
     fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
         self.values.write().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "values", access = "write", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -118,7 +118,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.read().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "snapshot_values", access = "read", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -128,7 +128,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.write().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "snapshot_values", access = "write", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -136,7 +136,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a lock on `results`, recovering from poison with a warning.
     fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
         self.results.lock().unwrap_or_else(|e| {
-            tracing::warn!("results Mutex poisoned, recovering: {e}");
+            tracing::warn!(lock = "results", access = "exclusive", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -216,41 +216,39 @@ impl ConcurrentEvalAdapter {
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "values", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("values RwLock poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = "values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("snapshot_values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "snapshot_values", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "snapshot_values RwLock poisoned (shared fallback), recovering: {e}"
-                    );
+                    tracing::warn!(lock = "snapshot_values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("results Mutex poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "results", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .lock()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("results Mutex poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = "results", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),
