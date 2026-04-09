@@ -13,6 +13,7 @@ reify-eval.workspace = true
 reify-constraints.workspace = true
 tower-lsp.workspace = true
 tokio.workspace = true
+serde = "1"
 serde_json.workspace = true
 tracing.workspace = true
 
