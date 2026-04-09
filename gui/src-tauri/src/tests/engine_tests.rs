@@ -1132,7 +1132,7 @@ fn resolve_source_fallback_when_source_map_missing() {
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
     assert!(
         diags.is_empty(),
-        "get_diagnostics should return [] when source is clean and source_map is missing"
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when source_map is missing"
     );
 
     // get_source_location must return None without panicking
