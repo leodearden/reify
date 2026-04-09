@@ -17744,7 +17744,7 @@
             "crates/reify-runtime",
             "crates/reify-eval",
             "crates/reify-compiler",
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
           ]
         }
       },
@@ -17832,9 +17832,11 @@
         "metadata": {
           "modules": [
             "crates/reify-constraints",
-            "crates/reify-eval",
-            "crates/reify-test-support",
             "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-constraints/src/solver.rs",
+            "crates/reify-types/src/lib.rs"
           ]
         }
       },
@@ -17920,9 +17922,14 @@
         "updatedAt": "2026-04-07T16:25:54.295Z",
         "metadata": {
           "modules": [
+            "gui/src-tauri",
             "crates/reify-cli",
-            "crates/reify-types",
-            "gui/src-tauri"
+            "crates/reify-types"
+          ],
+          "files": [
+            "gui/src-tauri/src/engine.rs",
+            "crates/reify-cli/src/mcp_context.rs",
+            "crates/reify-types/src/lib.rs"
           ]
         }
       },
