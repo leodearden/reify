@@ -19,6 +19,27 @@ use crate::types::{
 /// Session wrapping an Engine with its compiled module and source text.
 ///
 /// Provides higher-level operations for the GUI: load, update, set parameter, export.
+///
+/// # Invariant: compiled / module_name / source_map must stay in sync
+///
+/// Whenever `compiled` is `Some`, **all three** of the following must hold:
+///
+/// 1. `module_name` is `Some(name)`.
+/// 2. `source_map` contains the key `module_key(name)` (i.e. `"{name}.ri"`).
+/// 3. The value stored at that key is the source text that produced the current
+///    `CompiledModule`.
+///
+/// Any code path that sets one of these fields without setting the others puts
+/// the session in an inconsistent state and will cause a panic in
+/// `get_diagnostics` or `get_source_location` (via `resolve_source`).
+///
+/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
+/// `update_source` (lines ~189–198) — both defer all field writes until after
+/// parse and compile succeed, so they maintain the invariant atomically.
+///
+/// **Future callers** that acquire partial state through serialization,
+/// snapshotting, or test injection **must** restore all three fields together
+/// before any subsequent `get_*` call.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
