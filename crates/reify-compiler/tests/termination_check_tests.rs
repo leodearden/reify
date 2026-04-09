@@ -402,6 +402,43 @@ structure S {
     );
 }
 
+// ─── Task 408 step 1: BinOp::Add is not a valid termination-modifier ─────────
+
+/// A recursive sub with `S(n: n + 1) where n > 0` should emit an error because
+/// addition diverges — `n` increases and never reaches 0. This is a false negative
+/// in the current implementation (BinOp::Add is accepted as a modifying operation).
+#[test]
+fn add_op_does_not_satisfy_termination() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n + 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected error for `n + 1` (diverges — n increases, never reaches base case), got no errors"
+    );
+
+    let msg_ok = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("decrement") || msg.contains("modif") || msg.contains("toward")
+    });
+    assert!(
+        msg_ok,
+        "error should mention decrement/modifying/toward base case, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// A recursive sub inside a block guard `where n > 0 { sub child = S(n: n-1) }`
 /// should be recognized as having a termination condition via the enclosing block guard.
 /// Assert NO error.
