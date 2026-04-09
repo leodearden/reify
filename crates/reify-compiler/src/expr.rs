@@ -888,11 +888,19 @@ pub(crate) fn compile_expr_guarded(
                     )
                 })
                 .collect();
-            // Infer element type from first element, default to Real for empty lists
+            // Infer element type from first element, warn and default to Real for empty lists
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty list literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty list")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
         }
@@ -914,7 +922,15 @@ pub(crate) fn compile_expr_guarded(
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty set literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty set")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
         }
@@ -946,11 +962,23 @@ pub(crate) fn compile_expr_guarded(
             let key_type = compiled_entries
                 .first()
                 .map(|(k, _)| k.result_type.clone())
-                .unwrap_or(Type::String);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer key type of empty map literal, defaulting to String",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty map")),
+                    );
+                    Type::String
+                });
             let val_type = compiled_entries
                 .first()
                 .map(|(_, v)| v.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    // Warning already emitted for empty map at key_type step above;
+                    // no second warning needed for the value type.
+                    Type::Real
+                });
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
