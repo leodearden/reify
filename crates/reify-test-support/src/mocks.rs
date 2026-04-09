@@ -420,6 +420,46 @@ impl GeometryKernel for MockGeometryKernel {
     }
 }
 
+/// A mock geometry kernel whose `execute` always returns `Err`.
+///
+/// Useful for testing how consumers handle geometry operation failures.
+/// All other methods return benign dummy values — `query` returns
+/// `Ok(Value::Real(0.0))`, `export` writes `b"BOGUS_EXPORT"`, and
+/// `tessellate` returns `Ok` with an empty mesh — so that tests can
+/// exercise error-path logic without needing to handle secondary failures.
+pub struct FailingMockGeometryKernel;
+
+impl GeometryKernel for FailingMockGeometryKernel {
+    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(
+            "simulated kernel failure".into(),
+        ))
+    }
+
+    fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+        Ok(Value::Real(0.0))
+    }
+
+    fn export(
+        &self,
+        _handle: GeometryHandleId,
+        _format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        writer
+            .write_all(b"BOGUS_EXPORT")
+            .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
+    fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        Ok(Mesh {
+            vertices: vec![],
+            indices: vec![],
+            normals: None,
+        })
+    }
+}
+
 /// Spy constraint solver that captures the last `ResolutionProblem` passed to it.
 ///
 /// Use this in tests where you need to assert what the engine sent to the solver,
