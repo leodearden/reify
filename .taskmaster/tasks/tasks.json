@@ -26521,16 +26521,21 @@
         "description": "In crates/reify-eval/src/lib.rs, the task-1198 tests for compile_geometry_op threshold behavior need two improvements:\n\n1. Add exact-boundary tests using 1e-12 (not 2e-12) for both extrude distance and revolve angle guards. The extrude guard is `v.abs() >= 1e-12` and the revolve guard is `angle_rad.abs() < 1e-12`, so exactly 1e-12 should return Some for both. Tests at 2e-12 don't catch > vs >= off-by-one regressions.\n\n2. In compile_geometry_op_extrude_negative_distance_still_legal, change `distance: _` to bind and assert the actual distance value (approximately -0.05), confirming the negative sign is preserved through compilation.\n\nmemory_hints: search \"extrude threshold 1e-12\", search \"revolve degenerate guard\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T10:04:52.025Z"
+        "updatedAt": "2026-04-09T10:08:19.257Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T10:07:08.627Z",
+      "lastModified": "2026-04-09T10:08:19.257Z",
       "taskCount": 1316,
       "completedCount": 984,
       "tags": [
