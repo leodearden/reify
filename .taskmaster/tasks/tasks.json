@@ -12911,7 +12911,7 @@
         "description": "Replace plain format-string tracing::warn! calls in ConcurrentEvalAdapter lock helpers and into_result() with structured fields for production observability.",
         "details": "In crates/reify-runtime/src/concurrent_eval.rs, all 11 tracing::warn! calls (5 helper methods + 6 into_result paths) use plain format strings like `tracing::warn!(\"values RwLock poisoned, recovering: {e}\")`.\n\nReplace with structured fields for better querying in production tracing backends (Jaeger, Datadog, etc.):\n\n```rust\n// Helper methods (5 sites):\ntracing::warn!(lock = \"values\", access = \"read\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"values\", access = \"write\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"snapshot_values\", access = \"read\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"snapshot_values\", access = \"write\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"results\", access = \"exclusive\", error = %e, \"lock poisoned, recovering\");\n\n// into_result() paths (6 sites):\ntracing::warn!(lock = \"values\", path = \"into_inner\", error = %e, \"lock poisoned, recovering\");\ntracing::warn!(lock = \"values\", path = \"shared_fallback\", error = %e, \"lock poisoned, recovering\");\n// ... etc for snapshot_values and results\n```\n\nThis enables operators to filter/alert on specific locks or access patterns.\n\nmemory_hints:\n  search: \"structured tracing fields lock poisoning ConcurrentEvalAdapter\"\n  entities: [\"ConcurrentEvalAdapter\"]",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12924,7 +12924,7 @@
             "crates/reify-runtime"
           ]
         },
-        "updatedAt": "2026-04-09T16:32:52.824Z"
+        "updatedAt": "2026-04-09T16:50:37.869Z"
       },
       {
         "id": "601",
@@ -12976,7 +12976,7 @@
         "description": "Review suggestions from task 437. Test gaps: (1) analysis.rs guarded-group tests assert only info.name/info.kind but not info.span or info.cell_type — span is the thing that was broken. (2) goto_def tests check only line number, not character offset. (3) No direct unit tests for find_named_member_span on hand-constructed MemberDecl slices (edge cases: empty slice, name in else_members only, depth-2 match). (4) No regression test for refactored find_parsed_member_span_and_doc (top-level members still resolve). (5) Revolve missing-arg test only exercises missing 'ox', not other required fields.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -12997,7 +12997,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T16:33:34.218Z"
+        "updatedAt": "2026-04-09T16:50:37.945Z"
       },
       {
         "id": "604",
@@ -27513,7 +27513,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:50:37.765Z",
+      "lastModified": "2026-04-09T16:50:37.945Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
