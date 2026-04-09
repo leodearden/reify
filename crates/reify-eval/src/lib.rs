@@ -3358,20 +3358,32 @@ fn eval_named_arg(
 }
 
 /// Look up a named argument, evaluate it, and convert to a finite `f64`.
-/// Returns `None` (without a diagnostic) when the argument is present but
-/// non-finite; returns `None` with a diagnostic when the argument is absent.
+/// Returns `None` with a diagnostic when the argument is absent (delegated
+/// to [`eval_named_arg`]) or when the argument is present but evaluates to a
+/// non-numeric or non-finite value (NaN, ±Infinity, or a non-`f64` type such
+/// as `String` or `Bool`).  In the latter case a `Warning` diagnostic is
+/// pushed with the message `"argument '{name}' for {kind:?} evaluated to
+/// non-numeric/non-finite value"`.
 fn eval_named_arg_f64(
     name: &str,
-    kind_label: impl std::fmt::Debug,
+    kind_label: impl std::fmt::Debug + Copy,
     args: &[(String, reify_types::CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?
-        .as_f64()
-        .filter(|v| v.is_finite())
+    let value = eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?;
+    match value.as_f64() {
+        Some(v) if v.is_finite() => Some(v),
+        _ => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "argument '{}' for {:?} evaluated to non-numeric/non-finite value",
+                name, kind_label
+            )));
+            None
+        }
+    }
 }
 
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
