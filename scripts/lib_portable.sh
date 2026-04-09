@@ -111,7 +111,7 @@ portable_timeout() {
                 touch "$timeout_flag" 2>/dev/null
                 kill "$cmd_pid" 2>/dev/null
               } ) &
-            [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
+            if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
@@ -119,7 +119,7 @@ portable_timeout() {
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
               } ) &
-            [ "$_pt_had_monitor" -eq 0 ] && set +m 2>/dev/null || true
+            if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         fi
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
