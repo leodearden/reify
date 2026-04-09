@@ -525,6 +525,20 @@ printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
 if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
 
+# Positive-direction mirror of the historical pin above: a legitimate early-fail
+# guard using `-z` (not `-n`) must NOT be detected.  The regex uses alternation
+# `(-n|![[:space:]]+-z)` specifically to allow bare `-z` guards while banning
+# `-n` (and `! -z`) guards.  Without this pin a future change like `\[ -[nz]`
+# would ban legitimate production guards silently while the negative-pin tests
+# above all passed.
+# Protected production sites:
+#   - tests/infra/sync_ref_helpers.sh:31   `[ -z "$ref_fn" ]`
+#   - tests/sync_comments_test.sh:63-64    `[ -z "$expr_body" ]`
+fixture_z=$(mk_fixture)
+printf 'if [ -z "$ref_fn" ]; then echo fail; fi\n' > "$fixture_z"
+if ! _has_if_n_guard "$fixture_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "if-guard pattern tolerates legitimate -z early-fail guard (\$ref_fn)" "$ok"
+
 # Double-bracket form: `if [[ -n "$var" ]]`
 # Requires regex to match `[[` as well as `[`.
 fixture_double_bracket=$(mk_fixture)
