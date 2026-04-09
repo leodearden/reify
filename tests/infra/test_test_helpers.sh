@@ -510,6 +510,22 @@ else
 fi
 check "robustness check descriptions avoid ambiguous should-FAIL phrasing" "$ok"
 
+# Self-check: robustness section registers trap-based fixture cleanup.
+if grep -q 'trap cleanup_robust EXIT' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "robustness section registers trap-based fixture cleanup" "$ok"
+
+# Self-check: robustness section defines mk_fixture helper.
+if grep -qE '^mk_fixture\(\)' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "robustness section defines mk_fixture helper" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
