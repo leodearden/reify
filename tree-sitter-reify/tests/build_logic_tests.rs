@@ -894,15 +894,7 @@ fn find_bare_literal_violations<'src>(
 /// the two-character sequence `\"` — that does NOT match the unescaped `"` used as the
 /// search boundary, so this helper's own source does not trigger a false positive.
 fn find_bare_build_rs_violations(source: &str) -> Vec<(usize, &str)> {
-    source
-        .lines()
-        .enumerate()
-        .filter(|(_i, line)| {
-            let code = strip_line_comments(line);
-            code.contains("\"build.rs\"") || code.contains("\"./build.rs\"")
-        })
-        .map(|(i, line)| (i + 1, line))
-        .collect()
+    find_bare_literal_violations(source, &["\"build.rs\"", "\"./build.rs\""])
 }
 
 /// Scans `source` for lines that contain a bare `"tests/build_logic_tests.rs"` or
