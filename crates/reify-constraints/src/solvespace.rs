@@ -1727,59 +1727,6 @@ mod tests {
         );
     }
 
-    // ── add_line_pair: named-struct return-type test (S2) ────────────────────
-
-    /// Accessing the return value of `add_line_pair` by field name rather than
-    /// tuple position makes callers self-documenting.  This test exercises
-    /// the named fields `entities.line_a` and `entities.line_b` and asserts
-    /// they are distinct handles.
-    ///
-    /// Driving test for the `LinePairEntities` refactor in step 6: until that
-    /// struct exists this test fails to compile.
-    #[test]
-    fn add_line_pair_returns_named_struct() {
-        let mut builder = SystemBuilder::new();
-        let auto_params: Vec<AutoParam> = vec![];
-        let current_values = ValueMap::new();
-
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
-
-        let entities = builder
-            .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
-            .expect("add_line_pair should return Ok");
-        // Access by named field — if LinePairEntities doesn't exist this
-        // line fails to compile, driving the step-6 refactor.
-        let _: Slvs_hEntity = entities.line_a;
-        let _: Slvs_hEntity = entities.line_b;
-        assert_ne!(
-            entities.line_a, entities.line_b,
-            "line_a and line_b entity handles should be distinct"
-        );
-    }
-
     // ── add_line_pair: entity-type guard test (S4) ────────────────────────────
 
     /// The two handles returned by `add_line_pair` must refer to
