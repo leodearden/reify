@@ -259,6 +259,7 @@ SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
 _check_defines_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
+_check_has_no_ref_guard() { ! grep -qE 'if \[ -n.*ref' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
@@ -270,11 +271,11 @@ else
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
 fi
 
-# (b) file has NO conditional if [ -n "$_..." ] guard (defensive guards removed)
-if ! grep -Fq 'if [ -n "$_' "$SYNC_FILE" 2>/dev/null; then
-    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "true"
+# (b) file has NO defensive if-guard referencing ref (defensive guards removed)
+if _check_has_no_ref_guard "$SYNC_FILE"; then
+    check "sync_comments_test.sh has no defensive if-guard referencing ref" "true"
 else
-    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "false"
+    check "sync_comments_test.sh has no defensive if-guard referencing ref" "false"
 fi
 
 # (c) head -1 pipeline has adjacent comment documenting single-reference limitation
