@@ -20313,11 +20313,11 @@
         "description": "In crates/reify-eval/tests/collection_sub_eval.rs: (1) Extract shared make_bolt_parent_engine helper to eliminate ~180 lines of duplication. (2) Add Undef->Undef->Int consecutive transition test. (3) Tighten warning assertion predicates to include 'Undef' or 'unexpected'. (4) Assert instance removal in non-Int count warning test.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:04.436Z",
+        "updatedAt": "2026-04-09T16:35:21.581Z",
         "metadata": {
           "modules": [
             "crates/reify-eval/tests"
@@ -27479,7 +27479,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:34:33.695Z",
+      "lastModified": "2026-04-09T16:35:21.582Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
