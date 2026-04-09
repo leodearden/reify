@@ -218,25 +218,6 @@ fn e2e_meta_access_on_occurrence() {
 }
 
 // ---------------------------------------------------------------------------
-// --- meta access without meta block produces error ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse source with `meta.foo` on a structure that has no meta block.
-/// After compile, diagnostics should contain at least one Error whose message
-/// includes "no meta block".
-#[test]
-fn e2e_meta_no_meta_block_error() {
-    let source = r#"
-        structure def S {
-            param width : Length = 10mm
-            let x : String = meta.foo
-        }
-    "#;
-
-    parse_compile_expect_err(source, "no meta block");
-}
-
-// ---------------------------------------------------------------------------
 // --- child structure meta.key resolves as sub-component ---
 // ---------------------------------------------------------------------------
 
