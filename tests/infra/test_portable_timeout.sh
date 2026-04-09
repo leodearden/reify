@@ -235,7 +235,9 @@ assert "SETUP_POSIX_FALLBACK_ENV helper strips timeout from PATH and creates res
         eval "$SETUP_POSIX_FALLBACK_ENV"
         ! command -v timeout >/dev/null 2>&1 &&
         ! command -v gtimeout >/dev/null 2>&1 &&
-        [ -d "$rescue_dir" ]
+        [ -d "$rescue_dir" ] &&
+        declare -f portable_timeout >/dev/null &&
+        [ -z "$(trap -p EXIT)" ]
     '
 
 assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
