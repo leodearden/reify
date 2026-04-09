@@ -28954,15 +28954,16 @@
         "description": "Three improvements for eval_named_arg_f64 diagnostics in crates/reify-eval/src/lib.rs: (1) Add test cases for Value::Bool(true), -Infinity, and Value::Undef to complement existing String/NaN/+Inf coverage — consider parameterized helper to reduce duplication. (2) Change diagnostic assertions from any(contains(...)) to filter(...).count() == 1 to catch double-warning regressions. (3) Split \"non-numeric/non-finite\" diagnostic into two: \"non-numeric value ({type})\" when as_f64() returns None vs \"non-finite value ({v})\" when as_f64() returns non-finite — gives users actionable info about whether it's a type mismatch or upstream computation bug.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:47:02.046Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:47:01.587Z",
+      "lastModified": "2026-04-09T22:47:02.046Z",
       "taskCount": 1405,
       "completedCount": 1076,
       "tags": [
