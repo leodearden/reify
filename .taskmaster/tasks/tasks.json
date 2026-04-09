@@ -23349,6 +23349,10 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs",
+            "crates/reify-compiler/src/lib.rs"
           ]
         }
       },
@@ -23365,7 +23369,10 @@
         "updatedAt": "2026-04-08T20:44:56.694Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/qualified_access_compile_tests.rs"
           ]
         }
       },
@@ -23440,7 +23447,10 @@
         "updatedAt": "2026-04-08T20:51:46.499Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/guard_eval.rs"
           ]
         }
       },
