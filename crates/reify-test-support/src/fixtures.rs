@@ -1292,8 +1292,9 @@ mod tests {
 
     #[test]
     fn warning_source_with_width_produces_length_typed_width_cell_with_span() {
+        let source = warning_source_with_width();
         let compiled =
-            assert_warning_source_compiles_with_unknown_port_warning(warning_source_with_width());
+            assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
             .templates
             .iter()
@@ -1319,10 +1320,16 @@ mod tests {
             "expected width cell to be Length-typed (Scalar{{dimension=LENGTH}}), got: {:?}",
             width_cell.cell_type
         );
-        assert!(
-            !width_cell.span.is_empty(),
-            "expected width cell to have a non-empty source span, got: {:?}",
-            width_cell.span
+        let span_text =
+            &source[width_cell.span.start as usize..width_cell.span.end as usize];
+        assert_eq!(
+            span_text,
+            "param width : Length = 80mm",
+            "expected width cell span to cover the full `param width : Length = 80mm` \
+             declaration (bytes 22..49 in warning_source_with_width()), \
+             got span {:?} covering {:?}",
+            width_cell.span,
+            span_text,
         );
     }
 }
