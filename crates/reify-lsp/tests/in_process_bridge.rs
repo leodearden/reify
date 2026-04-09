@@ -1009,7 +1009,7 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             )
             .await;
         let val = did_open_result
-            .expect("didOpen should succeed pre-handshake (bridge has no init-state guard)");
+            .expect("didOpen should succeed before the initialized notification");
         assert_eq!(
             val,
             serde_json::Value::Null,
@@ -1032,7 +1032,7 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
             )
             .await;
         let val = completion_result
-            .expect("completion should succeed pre-handshake (bridge has no init-state guard)");
+            .expect("completion should succeed before the initialized notification");
         if !val.is_null() {
             // Non-null Ok — must be a well-formed CompletionResponse variant.
             // completion_items() panics with an actionable message if the shape is wrong.
