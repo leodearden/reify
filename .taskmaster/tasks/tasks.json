@@ -27969,11 +27969,16 @@
         "description": "The three new unit tests added in Task 983 at crates/reify-lsp/src/bridge.rs:237-262 duplicate existing coverage and have inconsistent match strictness:\n\n- `parse_params_returns_ok_for_valid_input` is implicitly exercised by every happy-path integration test in `tests/in_process_bridge.rs`.\n- `parse_params_returns_err_with_label_prefix_on_invalid_input` and `parse_params_substitutes_provided_label` both feed `json!(42)` and check for a label-derived prefix — redundant with each other and with `error_prefix_constants_match_actual_errors`, which already pins the prefix format for every method arm.\n- One asserts `starts_with(\"initialize params error: \")` while the other uses `contains(\"didOpen params error\")` — inconsistent strictness for the same property.\n\nFix: either delete the three unit tests (the integration tests already cover observable behavior) or consolidate into a single table-driven test iterating `[(\"initialize\", InitializeParams), (\"didOpen\", DidOpenTextDocumentParams), ...]` with consistent `starts_with` assertions. Prefer deletion unless helper coverage must be isolated from dispatcher coverage.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:30:40.379Z"
+        "updatedAt": "2026-04-09T19:32:54.599Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       },
       {
         "id": "1349",
@@ -28038,7 +28043,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:32:32.054Z",
+      "lastModified": "2026-04-09T19:32:54.599Z",
       "taskCount": 1353,
       "completedCount": 1021,
       "tags": [
