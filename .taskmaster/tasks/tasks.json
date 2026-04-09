@@ -18674,7 +18674,10 @@
         "updatedAt": "2026-04-04T00:19:33.191Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs"
           ]
         }
       },
@@ -18691,9 +18694,18 @@
         "updatedAt": "2026-04-04T00:23:09.493Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-test-support"
+            "crates/reify-test-support",
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-test-support/src/lib.rs",
+            "crates/reify-compiler/tests/constraint_def_compile_tests.rs",
+            "crates/reify-compiler/tests/constraint_inst_tests.rs",
+            "crates/reify-eval/tests/m9_constraint_def.rs",
+            "crates/reify-eval/tests/m9_trait_conformance.rs",
+            "crates/reify-eval/tests/m5_integration.rs",
+            "crates/reify-eval/tests/purpose_eval.rs"
           ]
         }
       },
