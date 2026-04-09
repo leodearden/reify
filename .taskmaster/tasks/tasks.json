@@ -24867,11 +24867,11 @@
         "description": "Three small improvements to mcp_context_tests.rs diagnostic tests from task 921 review:\n\n1. **Column assertions (line ~596):** Add `column >= 1` and `end_column >= column` (or cross-line guard) assertions in `get_diagnostics_maps_warning_fields_to_diagnostic_info` to catch column field-swap bugs in the mapping closure, matching the existing line/end_line assertions.\n\n2. **TODO on code.is_none (line ~601):** Add a `// TODO: update when code extraction is implemented` comment above `assert!(first.code.is_none())` to signal it's intentional scaffolding, not a permanent contract.\n\n3. **Expect message (line ~525):** Change `.expect(\"get_diagnostics should not fail for a healthy lock\")` to `.expect(\"get_diagnostics should succeed for a clean source\")` in `get_diagnostics_clean_source_returns_empty` — the test is about clean source yielding no diagnostics, not lock health.\n\nmemory_hints: search(\"MCP context diagnostic mapping closure DiagnosticInfo\", project_id=\"reify\"); get_entity(\"mcp_context_tests\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:27:34.905Z",
+        "updatedAt": "2026-04-09T01:37:36.716Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24892,7 +24892,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:37:34.811Z",
+      "lastModified": "2026-04-09T01:37:36.716Z",
       "taskCount": 1225,
       "completedCount": 913,
       "tags": [
