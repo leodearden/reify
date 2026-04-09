@@ -27429,7 +27429,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:28:48.469Z"
+        "updatedAt": "2026-04-09T16:28:48.469Z",
+        "metadata": {
+          "files": [
+            "tests/infra/test_sync_comments_grep.sh"
+          ],
+          "modules": [
+            "tests/infra"
+          ]
+        }
       },
       {
         "id": 1321,
