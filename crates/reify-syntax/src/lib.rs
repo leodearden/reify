@@ -234,6 +234,11 @@ fn find_named_member_span_depth<'a>(
     depth: usize,
 ) -> Option<MemberSpanInfo<'a>> {
     if depth > MAX_MEMBER_NESTING_DEPTH {
+        tracing::warn!(
+            name,
+            depth,
+            "find_named_member_span: depth limit exceeded"
+        );
         return None;
     }
     for member in members {
