@@ -402,6 +402,54 @@ structure S {
     );
 }
 
+// ─── Task 408 step 5: failed guard compilation must not cascade to extra error ─
+
+/// A where-clause referencing an undefined name (`where unknown_var > 0`) should
+/// emit only the "unresolved name" diagnostic from compile_expr. It must NOT also
+/// emit a spurious "guard doesn't reference params" error. Currently both are emitted
+/// because the Undef fallback is stored as `guard_expr: Some(Undef)`, causing the
+/// termination check to find no ValueRefs and fire the "references no param" error.
+#[test]
+fn failed_guard_compilation_no_cascading_error() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where unknown_var > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Expect exactly ONE error: the "unresolved name: unknown_var" compile error.
+    // Must NOT have a second "guard references no Int/Bool param" error from the
+    // termination check piling on.
+    let guard_ref_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("guard") && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
+    });
+    assert!(
+        !guard_ref_error,
+        "termination check should NOT emit 'guard references no param' when guard failed to compile; got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // There should be at least the compile error for unknown_var.
+    let has_compile_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("unresolved") || msg.contains("unknown")
+    });
+    assert!(
+        has_compile_error,
+        "expected at least the 'unresolved name: unknown_var' compile error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── Task 408 step 3: undef in non-guard-referenced arg should be allowed ────
 
 /// A recursive sub `S(n: n - 1, label: undef) where n > 0` should NOT emit
