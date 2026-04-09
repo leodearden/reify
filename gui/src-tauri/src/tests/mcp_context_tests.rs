@@ -596,4 +596,7 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.end_line,
         first.line
     );
+
+    // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
+    assert!(first.code.is_none(), "expected code to be None");
 }
