@@ -24781,15 +24781,16 @@
         "description": "Two small test quality improvements in engine_tests.rs from task 900 review:\n\n1. **Fix misleading assertion message** (line 1135): In `resolve_source_fallback_when_source_map_missing`, change the `get_diagnostics` assertion message from \"get_diagnostics should return [] when source is clean and source_map is missing\" to \"get_diagnostics should return [] via the empty-diagnostics early-exit even when source_map is missing\". The current message implies the source_map absence causes the empty result, but the real cause is `compiled.diagnostics.is_empty()` early-exit firing before the source_map lookup.\n\n2. **Add test for module_name=None branch** (new test): Add a companion test or assertion block that uses `break_module_name_for_test()` (or manually sets module_name to None while compiled is Some) and asserts `get_source_location` returns None. This covers the untested `self.module_name.as_deref()?` fallible path in `get_source_location` (engine.rs:302). The `break_module_name_for_test()` helper may need to be added to EngineSession.\n\nmemory_hints: search(\"break_source_map_for_test break_module_name_for_test engine_tests\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T01:16:10.402Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:16:09.402Z",
+      "lastModified": "2026-04-09T01:16:10.404Z",
       "taskCount": 1219,
       "completedCount": 905,
       "tags": [
