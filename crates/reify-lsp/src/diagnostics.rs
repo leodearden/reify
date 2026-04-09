@@ -69,7 +69,8 @@ pub fn compute_diagnostics_with_state(
         diagnostics.push(convert::convert_parse_error(err, source, uri));
     }
     // Early-return on parse errors: the partial AST fed to compile/eval produces
-    // misleading secondary diagnostics. Match the behaviour of engine.rs:87-90.
+    // misleading secondary diagnostics. Match the behaviour of
+    // Engine::load_from_source's early-return on parse errors.
     if !parsed.errors.is_empty() {
         return DiagnosticsResult {
             diagnostics,
