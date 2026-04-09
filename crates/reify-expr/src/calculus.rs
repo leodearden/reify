@@ -1699,4 +1699,48 @@ mod tests {
         // work_point is never touched by the decomposed path.
         assert!(work_point.is_empty());
     }
+
+    /// Verify that calling `eval_perturbed_point` with `single_point_param=false` but a
+    /// non-empty `work_point` panics in debug builds with a message containing
+    /// "work_point must be empty".
+    ///
+    /// The doc contract says `work_point` must be empty in the decomposed path.  This test
+    /// initially FAILS (no panic) because the `debug_assert` guard does not yet exist;
+    /// after step-5 adds it the test must pass.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "work_point must be empty")]
+    fn eval_perturbed_point_decomposed_nonempty_work_point_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        // Identity lambda: |x| x
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let work_coords = vec![1.0_f64];
+        let mut work_args: Vec<Value> = Vec::new();
+        // Violates the doc contract: work_point must be empty in the decomposed path.
+        let mut work_point: Vec<Value> = vec![Value::Real(99.0)];
+        let make_arg = |v: f64| Value::Real(v);
+
+        let _result = eval_perturbed_point(
+            &lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            false, // single_point_param — decomposed path
+            0,
+            1,
+            &make_arg,
+            &ctx,
+        );
+    }
 }
