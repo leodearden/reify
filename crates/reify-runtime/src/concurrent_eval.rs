@@ -141,7 +141,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a read lock on `values`, recovering from poison with a warning.
     fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
         self.values.read().unwrap_or_else(|e| {
-            tracing::warn!(lock = "values", access = "read", error = %e, "lock poisoned, recovering");
+            tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_READ, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -149,7 +149,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a write lock on `values`, recovering from poison with a warning.
     fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
         self.values.write().unwrap_or_else(|e| {
-            tracing::warn!(lock = "values", access = "write", error = %e, "lock poisoned, recovering");
+            tracing::warn!(lock = poison_fields::LOCK_VALUES, access = poison_fields::ACCESS_WRITE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -159,7 +159,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.read().unwrap_or_else(|e| {
-            tracing::warn!(lock = "snapshot_values", access = "read", error = %e, "lock poisoned, recovering");
+            tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, access = poison_fields::ACCESS_READ, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -169,7 +169,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.write().unwrap_or_else(|e| {
-            tracing::warn!(lock = "snapshot_values", access = "write", error = %e, "lock poisoned, recovering");
+            tracing::warn!(lock = poison_fields::LOCK_SNAPSHOT_VALUES, access = poison_fields::ACCESS_WRITE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
@@ -177,7 +177,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a lock on `results`, recovering from poison with a warning.
     fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
         self.results.lock().unwrap_or_else(|e| {
-            tracing::warn!(lock = "results", access = "exclusive", error = %e, "lock poisoned, recovering");
+            tracing::warn!(lock = poison_fields::LOCK_RESULTS, access = poison_fields::ACCESS_EXCLUSIVE, error = %e, "{}", poison_fields::MSG_LOCK_POISONED);
             e.into_inner()
         })
     }
