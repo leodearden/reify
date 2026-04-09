@@ -5869,7 +5869,14 @@
             "crates/reify-lsp"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs",
+            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/completion.rs",
+            "crates/reify-lsp/src/hover.rs",
+            "crates/reify-lsp/src/goto_def.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -5966,13 +5973,15 @@
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
-            "crates/reify-kernel-occt",
-            "crates/reify-kernel-occt/cpp",
-            "crates/reify-types",
             "crates/reify-compiler",
             "crates/reify-eval"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-eval/src/lib.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
