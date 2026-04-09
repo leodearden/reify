@@ -24363,11 +24363,11 @@
         "description": "Three related hardening fixes to the extract_fn helper added in task 864 at tests/sync_comments_test.sh:46-59.\n\nS3 (false_negative_in_test) — lines 46-59: extract_fn returns empty if 'fn sanitize_value' is not found in a file. If a future rename removes the signature from both files simultaneously, diff <(empty) <(empty) returns 0 and the assertion silently PASSes — a false-negative that defeats the body-diff guard. The existing assert_sync_ref_exists check uses a different (grep-based) pattern, so the two checks are not coupled. Fix: capture extract_fn output to a variable, fail the test if either is empty (or assert that the first line starts with 'fn sanitize_value'), then diff.\n\nS4 (regex_robustness) — lines 49-52: The awk pattern '/^fn '\"$fn_name\"'/' is unanchored at the end. Since extract_fn takes fn_name as a parameter (signaling intent for reuse), a future call with a name that is a prefix of another function (e.g. fn_name='sanitize' matching both 'sanitize' and 'sanitize_value') would extract from whichever appears first. For the current sanitize_value call this is harmless, but the helper is more brittle than its docstring implies. Anchor the trailing context, e.g. /^fn '\"$fn_name\"'[(<]/ — requiring the next character to be '(' (non-generic fn) or '<' (generic fn). This matches the conventions already encoded in tests/infra/test_sync_comments_grep.sh.\n\nS5 (misleading_comment) — lines 46-48: The helper comment says 'Excludes doc comments and SYNC markers, which may legitimately differ between the two copies.' extract_fn doesn't actively exclude them — they're simply above the '^fn' anchor and so naturally not captured. Reword as: 'Extracts from the fn signature line to the next line that begins with } at column 0. Doc comments and SYNC markers above the signature are naturally excluded; legitimate per-copy differences in those sections do not trigger a body diff.'\n\nAfter making the helper more robust, consider whether tests/infra/test_sync_comments_grep.sh should grow a meta-test section that exercises extract_fn fixtures (analogous to its existing accept/reject section for the SYNC pattern).\n\nSource: review of task 864 (esc-864-918).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:53:23.094Z",
+        "updatedAt": "2026-04-09T00:34:52.927Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -24700,7 +24700,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:34:50.696Z",
+      "lastModified": "2026-04-09T00:34:52.927Z",
       "taskCount": 1214,
       "completedCount": 894,
       "tags": [
