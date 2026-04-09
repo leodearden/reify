@@ -39,6 +39,15 @@ pub enum FieldSourceKind {
     /// A field produced by `gradient()` — its lambda slot stores the original
     /// field and the sample handler dispatches to central-difference evaluation.
     Gradient,
+    /// A field produced by `divergence()` — its lambda slot stores the original
+    /// vector field and the sample handler dispatches to numerical-divergence evaluation.
+    Divergence,
+    /// A field produced by `curl()` — its lambda slot stores the original
+    /// vector field and the sample handler dispatches to numerical-curl evaluation.
+    Curl,
+    /// A field produced by `laplacian()` — its lambda slot stores the original
+    /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
+    Laplacian,
 }
 
 /// Runtime values in Reify (M1 subset).
