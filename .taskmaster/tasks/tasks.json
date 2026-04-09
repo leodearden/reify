@@ -28366,10 +28366,11 @@
         "description": "In tests/infra/test_test_helpers.sh (around line 326-331), the structural test only checks for `[ -z \"$expr_body\"` but doesn't verify that `test_summary` follows the guard. Add a complementary structural grep to catch regressions where the guard is kept but the test_summary short-circuit call is removed.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:06:21.317Z"
       },
       {
         "id": "1373",
@@ -28396,7 +28397,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:19.771Z",
+      "lastModified": "2026-04-09T21:06:21.317Z",
       "taskCount": 1374,
       "completedCount": 1049,
       "tags": [
