@@ -215,10 +215,8 @@ async fn did_open_and_completion_returns_items() {
         .await
         .expect("completion should succeed");
 
-    // Should return an array of completion items
-    let items = result
-        .as_array()
-        .expect("completion should return an array");
+    // Should return completion items in either CompletionResponse variant.
+    let items = completion_items(&result);
     assert!(
         !items.is_empty(),
         "completion should return non-empty items for bracket source"
