@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Meta-test: verify the fn-existence grep pattern in sync_comments_test.sh is
 # POSIX-portable (no \b word-boundary, no grep -P) and correctly anchors the
-# function name with [[:space:](] instead.
+# function name with [[:space:](<] instead.
 #
 # Section 1 — fixture assertions — exercise the expected regex literal against
 #   synthetic strings and pass on any version of sync_comments_test.sh.
@@ -25,7 +25,7 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 
 # Extract the fn-existence regex from sync_comments_test.sh at runtime so
 # the meta-test stays coupled to the real test.  Pipeline:
-#   1. find the grep -qE invocation line that contains [[:space:](]
+#   1. find the grep -qE invocation line that contains [[:space:](<]
 #   2. strip the leading 'grep -qE '' prefix
 #   3. strip the trailing '' "$filename"' suffix
 #   4. replace the shell variable reference (e.g. '"${ref_fn}"') with 'sanitize_value'
