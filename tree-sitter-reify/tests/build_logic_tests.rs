@@ -1405,6 +1405,9 @@ fn test_strip_line_comments() {
 
     // Multiple /* */ blocks on one line — loop handles successive pairs
     assert_eq!(strip_line_comments("a /* x */ b /* y */ c"), "a  b  c");
+
+    // Block comment then line comment — exercises both steps in sequence
+    assert_eq!(strip_line_comments("code /* block */ more // line"), "code  more ");
 }
 
 #[test]
