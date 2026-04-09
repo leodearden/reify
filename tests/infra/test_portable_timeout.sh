@@ -204,6 +204,29 @@ POSIX_FALLBACK_SETUP='
     source "$LIB_PORTABLE"
 '
 
+# SETUP_POSIX_FALLBACK_ENV — eval-string helper for tests that require POSIX fallback
+# WITHOUT an EXIT trap. Timer subshells inherit EXIT traps, which would prematurely
+# clean up rescue_dir and produce false-positive passes in orphan-detection tests
+# (16b, 18b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 18a/b)
+# share a single helper. Callers must clean up rescue_dir explicitly.
+SETUP_POSIX_FALLBACK_ENV='
+    rescue_dir=$(mktemp -d)
+    for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+    done
+    new_path="$rescue_dir"
+    IFS=: read -ra dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+            continue
+        fi
+        new_path="${new_path:+$new_path:}$d"
+    done
+    export PATH="$new_path"
+    hash -r
+    source "$LIB_PORTABLE"
+'
+
 # -- Helper self-test: SETUP_POSIX_FALLBACK_ENV ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
 # rescue_dir. Placed before Test 12 so a broken helper surfaces early.
