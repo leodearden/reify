@@ -25248,12 +25248,10 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/geometry_error_handling.rs"
+            "crates/reify-eval/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -25270,11 +25268,10 @@
         "metadata": {
           "files": [
             "crates/reify-eval/src/lib.rs",
-            "crates/reify-eval/tests/geometry_error_handling.rs"
+            "crates/reify-eval/tests/sweep_e2e.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
