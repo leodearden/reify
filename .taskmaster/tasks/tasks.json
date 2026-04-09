@@ -25750,13 +25750,18 @@
         "description": "Ergonomic suggestion from Task 268 review (crates/reify-eval/src/tests_runner.rs:78-93).\n\n`run_tests` takes `make_checker: FnMut() -> Box<dyn ConstraintChecker>`, called once per test to produce a fresh checker. For stateless checkers (the common case), every call site writes `|| Box::new(SimpleConstraintChecker)` — seven test call sites in `crates/reify-eval/tests/test_runner.rs` already repeat this boilerplate.\n\nAction: add a thin wrapper — `pub fn run_tests_simple(module: &CompiledModule) -> Vec<TestResult> { run_tests(module, || Box::new(SimpleConstraintChecker)) }` — gated on whether `reify-eval` is allowed to depend on `reify-constraints`. If the crate dependency direction forbids that, instead: document the closure idiom at the item level on `run_tests` and leave callers as-is.\n\nUpdate all seven integration test call sites to use the new wrapper once added.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [
           "268"
         ],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:43:45.006Z"
+        "updatedAt": "2026-04-09T03:48:16.624Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
       },
       {
         "id": "1278",
@@ -25836,7 +25841,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:48:08.108Z",
+      "lastModified": "2026-04-09T03:48:16.624Z",
       "taskCount": 1282,
       "completedCount": 946,
       "tags": [
