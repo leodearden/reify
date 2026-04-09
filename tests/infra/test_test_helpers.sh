@@ -457,11 +457,8 @@ echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
 # for "no guard" must be FALSE).
 fixture_guard=$(mktemp)
 printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
-if ! _has_if_n_guard "$fixture_guard" 2>/dev/null; then
-    check "if-guard pattern detects non-underscore ref variable (should FAIL)" "false"
-else
-    check "if-guard pattern detects non-underscore ref variable (guard present → false)" "true"
-fi
+if _has_if_n_guard "$fixture_guard" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects non-underscore ref variable" "$ok"
 rm -f "$fixture_guard"
 
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
@@ -479,11 +476,8 @@ rm -f "$fixture_clean"
 # correctly detected and the helper returns non-zero.
 fixture_marker=$(mktemp)
 printf 'if [ -n "$marker" ]; then echo skip; fi\n' > "$fixture_marker"
-if ! _has_if_n_guard "$fixture_marker" 2>/dev/null; then
-    check "if-guard pattern detects non-ref-named variable \$marker (should FAIL)" "false"
-else
-    check "if-guard pattern detects non-ref-named variable \$marker (guard present → false)" "true"
-fi
+if _has_if_n_guard "$fixture_marker" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects non-ref-named variable \$marker" "$ok"
 rm -f "$fixture_marker"
 
 # Historical regression pin: this fixture reproduces the exact guard that was
@@ -494,11 +488,8 @@ rm -f "$fixture_marker"
 # regression visible rather than silent.
 fixture_historical=$(mktemp)
 printf 'if [ -n "$_expr_ref_fn" ]; then echo skip; fi\n' > "$fixture_historical"
-if ! _has_if_n_guard "$fixture_historical" 2>/dev/null; then
-    check "historical pin: if-guard on \$_expr_ref_fn detected (should FAIL)" "false"
-else
-    check "historical pin: if-guard on \$_expr_ref_fn detected (ff0880bfe regression)" "true"
-fi
+if _has_if_n_guard "$fixture_historical" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects historical \$_expr_ref_fn (ff0880bfe regression pin)" "$ok"
 rm -f "$fixture_historical"
 
 # Self-check: file-local helpers use symmetric positive _has_ naming.
