@@ -2775,6 +2775,74 @@ fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
     (grad_result, domain_type, Type::vec3(Type::Real))
 }
 
+/// Build a gradient field for a field with dimensioned domain (Type::length()) and
+/// declared codomain `Type::Scalar{MASS}`, where the lambda `|x| 2*x` returns
+/// `Scalar{LENGTH}` at runtime (not MASS as declared).
+///
+/// Returns `(grad_field, domain_type, grad_codomain_type)` where:
+/// - `grad_field` is the evaluated `Value::Field { source: Gradient, .. }`
+/// - `domain_type` is `Type::length()` (Scalar{LENGTH})
+/// - `grad_codomain_type` is `Type::Scalar { dimension: MASS/LENGTH }` (trusts declaration)
+///
+/// The lambda `|x| 2*x` for a Scalar{LENGTH} input returns Scalar{LENGTH},
+/// not the declared Scalar{MASS} — this demonstrates the trust-the-declaration behavior.
+/// Used by `gradient_codomain_mismatch_dimensioned_domain_trusts_declaration` and
+/// `gradient_codomain_mismatch_dimensioned_domain_no_panic`.
+fn make_dimensioned_domain_mismatch_gradient() -> (Value, Type, Type) {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let dim_kg = DimensionVector::MASS;
+
+    // Lambda: |x| 2*x — receives Scalar{LENGTH} at runtime, returns Scalar{LENGTH},
+    // NOT Scalar{MASS} as codomain_type declares.
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::length()),
+        Type::length(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    // Domain: Scalar{LENGTH}; codomain: declared as Scalar{MASS} (mismatches runtime)
+    let domain_type = Type::length();
+    let codomain_type = Type::Scalar { dimension: dim_kg };
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(
+            field,
+            Type::Field {
+                domain: Box::new(domain_type.clone()),
+                codomain: Box::new(codomain_type.clone()),
+            },
+        )],
+        Type::Field {
+            domain: Box::new(Type::length()),
+            codomain: Box::new(codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "make_dimensioned_domain_mismatch_gradient: gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    let grad_codomain_type = Type::Scalar {
+        dimension: DimensionVector::MASS.div(&DimensionVector::LENGTH),
+    };
+    (grad_result, domain_type, grad_codomain_type)
+}
+
 /// Characterization test for `make_dimensioned_domain_mismatch_gradient`.
 ///
 /// Verifies the helper returns a well-formed tuple:
