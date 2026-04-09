@@ -1487,7 +1487,7 @@ mod tests {
     /// other two error-path tests.
     #[test]
     fn add_point_propagates_missing_value_error() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Fixed", "y");
+        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Fixed", "x");
 
         let pt = PointRef::Auto {
             x: Some(cell_id.clone()),
