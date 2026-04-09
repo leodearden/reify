@@ -157,7 +157,7 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_types::ConstraintNodeId,
     pub label: Option<String>,
