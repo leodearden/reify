@@ -4154,13 +4154,8 @@ mod tests {
     fn value_range_content_hash_no_collision_with_orientation() {
         // Range tag=17 should not collide with Orientation tag=16
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert_ne!(range.content_hash(), orient.content_hash());
+        let orient_v = orient(1.0, 0.0, 0.0, 0.0);
+        assert_ne!(range.content_hash(), orient_v.content_hash());
     }
 
     #[test]
@@ -4176,14 +4171,9 @@ mod tests {
     fn value_range_ord_cross_type_after_orientation() {
         // Range has type_tag=16, Orientation=15 → Range > Orientation
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(range > orient);
-        assert!(orient < range);
+        let orient_v = orient(1.0, 0.0, 0.0, 0.0);
+        assert!(range > orient_v);
+        assert!(orient_v < range);
     }
 
     #[test]
