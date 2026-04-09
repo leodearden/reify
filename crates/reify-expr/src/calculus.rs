@@ -36,32 +36,6 @@ fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
     }
 }
 
-/// Extract the physical dimension from a type, if present.
-///
-/// Returns `Some(dim)` for:
-/// - `Scalar { dimension }` — direct scalar
-/// - `Point { quantity: Scalar { dimension }, .. }` — point with scalar quantity
-/// - `Vector { quantity: Scalar { dimension }, .. }` — vector with scalar quantity
-///
-/// Returns `None` for all other types (Real, Int, dimensionless wrappers, etc.).
-/// The callers each validate their types before reaching the dimension-extraction
-/// block, so the broader match here is safe and allows this helper to be reused
-/// across gradient, divergence, and laplacian.
-fn extract_dim(ty: &Type) -> Option<DimensionVector> {
-    match ty {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        Type::Vector { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Compute the quotient Type for a differential operator result.
 ///
 /// Given optional codomain and domain dimensions and an exponent, returns:
@@ -1288,50 +1262,6 @@ pub(crate) fn compute_numerical_laplacian_at_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- extract_dim unit tests ---
-
-    #[test]
-    fn extract_dim_scalar_length_returns_length() {
-        let ty = Type::length();
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::LENGTH));
-    }
-
-    #[test]
-    fn extract_dim_point3_scalar_length_returns_length() {
-        let ty = Type::point3(Type::length());
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::LENGTH));
-    }
-
-    #[test]
-    fn extract_dim_vec3_scalar_mass_returns_mass() {
-        let ty = Type::vec3(Type::Scalar {
-            dimension: DimensionVector::MASS,
-        });
-        assert_eq!(extract_dim(&ty), Some(DimensionVector::MASS));
-    }
-
-    #[test]
-    fn extract_dim_real_returns_none() {
-        assert_eq!(extract_dim(&Type::Real), None);
-    }
-
-    #[test]
-    fn extract_dim_int_returns_none() {
-        assert_eq!(extract_dim(&Type::Int), None);
-    }
-
-    #[test]
-    fn extract_dim_point3_real_returns_none() {
-        let ty = Type::point3(Type::Real);
-        assert_eq!(extract_dim(&ty), None);
-    }
-
-    #[test]
-    fn extract_dim_vec3_real_returns_none() {
-        let ty = Type::vec3(Type::Real);
-        assert_eq!(extract_dim(&ty), None);
-    }
 
     // --- scalar_dimension unit tests ---
 
