@@ -605,13 +605,17 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     );
 
     // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
-    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) through
-    // the closing `}` of the port body (L4:C6) — a multi-line span, so the
-    // former `if end_line == line` same-line guard was always false for this fixture.
+    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) to the
+    // exclusive end byte one past the closing `}` of the port body. The `}` glyph
+    // sits at L4:C5 (four leading spaces → prefix chars().count() = 4, 1-indexed = 5).
+    // Tree-sitter's end_byte is exclusive (one past `}`), so offset_to_line_col_fast
+    // returns column 6 (chars().count() of the prefix through `}` = 5, plus 1 = 6).
+    // This is a multi-line span, so the former `if end_line == line` same-line guard
+    // was always false for this fixture.
     assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
     assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
     assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
-    assert_eq!(first.end_column, 6, "closing `}}` of port body ends at column 6 (1-indexed)");
+    assert_eq!(first.end_column, 6, "exclusive end byte past `}}` maps to column 6 (chars().count() + 1)");
 
     // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
