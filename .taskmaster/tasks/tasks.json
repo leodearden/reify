@@ -22725,6 +22725,9 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/module_dag.rs"
           ]
         }
       },
@@ -22742,6 +22745,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/tests/unit_registry_tests.rs"
           ]
         }
       },
