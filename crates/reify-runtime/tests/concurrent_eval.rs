@@ -3629,3 +3629,27 @@ mod execute_with_config_tests {
         );
     }
 } // mod execute_with_config_tests
+
+#[cfg(feature = "test-utils")]
+mod poison_fields_constants {
+    /// Sanity test: assert every compile-time constant in `poison_fields` holds the
+    /// exact &str value expected by the structured-field schema from Task 600.
+    ///
+    /// This test fails to compile until `poison_fields` is added (Step 2), which is
+    /// intentional TDD discipline: the test encodes the schema contract in the type
+    /// system before the implementation exists.
+    #[test]
+    fn poison_fields_constants_exist_and_match_schema() {
+        use reify_runtime::concurrent_eval::poison_fields;
+
+        assert_eq!(poison_fields::LOCK_VALUES, "values");
+        assert_eq!(poison_fields::LOCK_SNAPSHOT_VALUES, "snapshot_values");
+        assert_eq!(poison_fields::LOCK_RESULTS, "results");
+        assert_eq!(poison_fields::ACCESS_READ, "read");
+        assert_eq!(poison_fields::ACCESS_WRITE, "write");
+        assert_eq!(poison_fields::ACCESS_EXCLUSIVE, "exclusive");
+        assert_eq!(poison_fields::PATH_INTO_INNER, "into_inner");
+        assert_eq!(poison_fields::PATH_SHARED_FALLBACK, "shared_fallback");
+        assert_eq!(poison_fields::MSG_LOCK_POISONED, "lock poisoned, recovering");
+    }
+} // mod poison_fields_constants
