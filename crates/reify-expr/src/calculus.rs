@@ -441,7 +441,8 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 /// * `work_args` — Scratch `Vec<Value>` reused across calls; cleared and filled here.
 /// * `work_point` — Scratch inner `Vec<Value>` for the `single_point_param` path;
 ///   transferred into `work_args` via `std::mem::take` and recovered after the call.
-///   Must be empty and unused in the decomposed path.
+///   Must be empty in the decomposed path (enforced by `debug_assert`); ignored when
+///   `single_point_param` is false.
 /// * `single_point_param` — Whether the lambda expects one `Point` arg or n scalar args.
 /// * `i` — The perturbed axis index (used to update `work_point[i]` efficiently).
 /// * `n` — Total domain dimension; used for the post-recovery `debug_assert_eq!`.
@@ -465,6 +466,12 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     make_arg: &F,
     ctx: &EvalContext,
 ) -> Value {
+    debug_assert!(
+        work_point.is_empty() || single_point_param,
+        "work_point must be empty in decomposed path (single_point_param=false); \
+         got {} element(s)",
+        work_point.len(),
+    );
     work_args.clear();
     if single_point_param {
         // Update only the perturbed element; transfer ownership via take.
