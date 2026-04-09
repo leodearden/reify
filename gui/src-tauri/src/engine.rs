@@ -34,6 +34,7 @@ pub struct EngineSession {
 /// formerly-identical `format!("{}.ri", ...)` call sites in
 /// `load_from_source`, `update_source`, and `resolve_source`.
 pub(crate) fn module_key(name: &str) -> String {
+    debug_assert!(!name.is_empty(), "module_key called with empty name");
     format!("{}.ri", name)
 }
 
