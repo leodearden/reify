@@ -498,6 +498,62 @@ fn compile_mixed_auto_and_auto_free() {
     assert_eq!(c.kind, ValueCellKind::Param);
 }
 
+/// Port param with `auto(free)` default → port member ValueCellDecl has kind Auto { free: true }.
+#[test]
+fn compile_auto_free_in_port_param() {
+    let source = r#"
+trait MyPort {
+    param foo : Scalar
+}
+
+structure def S {
+    port mount : MyPort {
+        param foo : Scalar = auto(free)
+    }
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    // Filter to non-error diagnostics only (unknown port type warnings are ok)
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name.as_str().contains('S'))
+        .expect("expected template S");
+
+    // Port 'mount' should have exactly 1 member
+    assert_eq!(template.ports.len(), 1, "expected 1 port");
+    let port = &template.ports[0];
+    assert_eq!(port.name, "mount");
+    assert_eq!(port.members.len(), 1, "expected 1 port member");
+
+    let foo = &port.members[0];
+    assert!(
+        foo.id.member.contains("mount.foo"),
+        "expected id containing 'mount.foo', got '{}'",
+        foo.id.member
+    );
+    assert_eq!(
+        foo.kind,
+        ValueCellKind::Auto { free: true },
+        "port auto(free) param should compile to Auto {{ free: true }}"
+    );
+    assert!(foo.default_expr.is_none(), "auto(free) port param should have no default_expr");
+}
+
 /// Auto param ValueCellDecl span should be non-zero and match parsed ParamDecl span.
 #[test]
 fn compiled_auto_param_span_not_zero() {
