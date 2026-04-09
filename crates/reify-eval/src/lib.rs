@@ -3644,7 +3644,23 @@ fn compile_geometry_op(
                         meta_map,
                         diagnostics,
                     )?;
-                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && v.abs() >= 1e-12)?;
+                    // Reject sub-picometer magnitudes as degenerate geometry: a
+                    // distance near the f64 rounding floor cannot produce a
+                    // meaningful solid. Emit a warning so model authors see why
+                    // the op was dropped instead of only the caller's generic
+                    // "failed to compile geometry operation" error.
+                    match distance.as_f64() {
+                        Some(v) if v.is_finite() && v.abs() >= 1e-12 => {}
+                        Some(v) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "extrude dropped: distance={} is degenerate \
+                                 (|distance| must be finite and >= 1e-12 m)",
+                                v
+                            )));
+                            return None;
+                        }
+                        None => return None,
+                    }
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3660,11 +3676,28 @@ fn compile_geometry_op(
                     };
                     let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    // Reject sub-picometer axis magnitudes as degenerate: a
+                    // zero-length (or effectively zero) rotation axis cannot
+                    // define a revolve. Warn so model authors see a specific
+                    // explanation instead of only the caller's generic error.
                     if !mag.is_finite() || mag < 1e-12 {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "revolve dropped: rotation axis [{}, {}, {}] has \
+                             degenerate magnitude={} (must be finite and >= 1e-12)",
+                            axis_dir[0], axis_dir[1], axis_dir[2], mag
+                        )));
                         return None;
                     }
                     let angle_rad = f64_arg("angle")?;
+                    // Reject sub-picoradian angles as degenerate: an angle at
+                    // the f64 rounding floor cannot produce a meaningful
+                    // revolve. Warn so model authors see a specific explanation.
                     if angle_rad.abs() < 1e-12 {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "revolve dropped: angle={} rad is degenerate \
+                             (|angle| must be >= 1e-12 rad)",
+                            angle_rad
+                        )));
                         return None;
                     }
                     let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
@@ -4489,10 +4522,20 @@ mod tests {
             args: vec![("distance".into(), literal_length(1e-15))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(
             result.is_none(),
             "near-zero extrude distance should return None"
+        );
+        // A warning diagnostic must be emitted so model authors see why the
+        // op was dropped rather than only the caller's generic error.
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("extrude dropped")
+                && d.message.contains("degenerate")),
+            "expected degenerate-extrude warning, got {:?}",
+            diagnostics,
         );
     }
 
@@ -4516,10 +4559,18 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(
             result.is_none(),
             "zero-length rotation axis should return None"
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("revolve dropped")
+                && d.message.contains("axis")),
+            "expected degenerate-revolve-axis warning, got {:?}",
+            diagnostics,
         );
     }
 
@@ -4543,6 +4594,11 @@ mod tests {
             ],
         };
 
+        // NaN axis components are silently filtered upstream by
+        // eval_named_arg_f64 before reaching the degenerate-magnitude guard
+        // in compile_geometry_op. This test documents that behavior. The
+        // degenerate-magnitude warning path is out of scope here and is
+        // covered by compile_geometry_op_revolve_zero_axis_returns_none.
         let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN rotation axis should return None");
     }
@@ -4567,10 +4623,18 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut diagnostics);
         assert!(
             result.is_none(),
             "near-zero revolve angle should return None"
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(d.severity, reify_types::Severity::Warning)
+                && d.message.contains("revolve dropped")
+                && d.message.contains("angle")),
+            "expected degenerate-revolve-angle warning, got {:?}",
+            diagnostics,
         );
     }
 
