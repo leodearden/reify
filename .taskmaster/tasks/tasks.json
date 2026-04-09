@@ -26423,11 +26423,11 @@
         "description": "In tests/infra/test_test_helpers.sh:409-417, the current \"clean file\" fixture (`printf '# no guards here\\necho hello\\n'`) only proves `_check_has_no_if_n_guard` tolerates a file with *nothing* that looks like a guard. It does NOT prove the helper tolerates the legitimate early-fail `-z` guards that actually exist in `tests/sync_comments_test.sh` — specifically `[ -z \"$ref_fn\" ]` and `[ -z \"$expr_body\" ]`.\n\nSince the whole point of broadening the regex from `if \\[ -n.*ref` to `if \\[ -n` was to keep `-z` guards allowed while banning `-n` guards, a positive fixture that asserts `_check_has_no_if_n_guard` returns 0 (true) for a file containing `if [ -z \"$ref_fn\" ]; then ...` would directly pin that contract and catch a future over-tightening such as someone broadening the regex to `\\[ -[nz]`.\n\nFix (mirror of the historical-pin test, but in the positive direction):\n```bash\nfixture_z=$(mktemp)\nprintf 'if [ -z \"$ref_fn\" ]; then echo fail; fi\\n' > \"$fixture_z\"\nif _check_has_no_if_n_guard \"$fixture_z\" 2>/dev/null; then\n    check \"if-guard pattern tolerates legitimate -z early-fail guard (should PASS)\" \"true\"\nelse\n    check \"if-guard pattern tolerates legitimate -z early-fail guard\" \"false\"\nfi\nrm -f \"$fixture_z\"\n```\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes; the new fixture asserts TRUE.\n\nFlagged by reviewer_comprehensive on Task 1241.\n\nmemory_hints: search(\"_check_has_no_if_n_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:33:23.720Z",
+        "updatedAt": "2026-04-09T22:11:04.205Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -28636,7 +28636,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:10:51.083Z",
+      "lastModified": "2026-04-09T22:11:04.206Z",
       "taskCount": 1384,
       "completedCount": 1067,
       "tags": [
