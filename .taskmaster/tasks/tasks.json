@@ -11147,10 +11147,11 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/tests/geometry_error_handling.rs"
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/sweep_e2e.rs"
           ],
           "modules": [
-            "crates/reify-eval/tests"
+            "crates/reify-eval"
           ]
         }
       },
@@ -11539,14 +11540,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-runtime/src/concurrent_eval.rs",
-            "crates/reify-runtime/src/lib.rs",
-            "crates/reify-runtime/tests/concurrent_eval.rs"
+            "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-runtime/src",
-            "crates/reify-runtime/tests"
+            "crates/reify-runtime"
           ],
           "memory_hints": {
             "entities": [],
