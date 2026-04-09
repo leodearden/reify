@@ -1130,29 +1130,32 @@ mod tests {
     /// matches and whose `message` contains `"missing"`.  Generic over
     /// the `Ok` type so it works for `Result<Slvs_hParam, BuilderError>`,
     /// `Result<Slvs_hEntity, BuilderError>`, and `Result<(), BuilderError>` alike.
+    /// `context` is prepended to every assertion failure message so the
+    /// call site is visible without inspecting the stack trace.
     #[track_caller]
     fn assert_missing_err<T: std::fmt::Debug>(
         result: Result<T, BuilderError>,
         cell_id: &ValueCellId,
+        context: &str,
     ) {
         assert!(
             result.is_err(),
-            "expected Err for missing non-auto coord, got Ok({:?})",
+            "{context}: expected Err for missing non-auto coord, got Ok({:?})",
             result.ok()
         );
         let err = result.unwrap_err();
         assert_eq!(
             err.cell_id, *cell_id,
-            "BuilderError cell_id should match the expected ValueCellId"
+            "{context}: BuilderError cell_id should match the expected ValueCellId"
         );
         assert!(
             err.message.contains("missing"),
-            "BuilderError message should contain 'missing', got: {}",
+            "{context}: BuilderError message should contain 'missing', got: {}",
             err.message
         );
         assert!(
             err.to_string().contains(&cell_id.to_string()),
-            "Display should contain cell_id '{}', got: {}",
+            "{context}: Display should contain cell_id '{}', got: {}",
             cell_id,
             err
         );
@@ -1321,7 +1324,7 @@ mod tests {
 
         let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_auto_coord");
     }
 
     /// add_auto_coord must return a BuilderError carrying the original
@@ -1367,7 +1370,7 @@ mod tests {
 
         let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder");
     }
 
     /// Calling add_auto_coord twice with the same auto-param cell_id must
@@ -1489,14 +1492,14 @@ mod tests {
             cell_id: cell_id.clone(),
             message: format!("non-auto parameter {} missing from current_values", cell_id),
         });
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "assert_missing_err_passes_on_matching_error");
     }
 
     /// assert_missing_err must panic when the error's cell_id does not match the
     /// expected cell_id.  This is a negative test for the helper: it verifies the
     /// mismatch-detection path rather than only the happy-path.
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "panics_on_wrong_cell_id: BuilderError cell_id")]
     fn assert_missing_err_panics_on_wrong_cell_id() {
         let actual_id = ValueCellId::new("A", "x");
         let expected_id = ValueCellId::new("B", "y");
@@ -1505,7 +1508,7 @@ mod tests {
             message: format!("non-auto parameter {} missing from current_values", actual_id),
         });
         // Passes `expected_id` ("B","y") but the error carries `actual_id` ("A","x") — must panic.
-        assert_missing_err(result, &expected_id);
+        assert_missing_err(result, &expected_id, "panics_on_wrong_cell_id");
     }
 
     /// add_point must propagate the Err returned by add_auto_coord when the
@@ -1524,7 +1527,7 @@ mod tests {
         };
         let result = builder.add_point(&pt, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_point");
     }
 
     // ── add_line_pair: additional error-propagation tests (S6) ────────────────
@@ -1547,7 +1550,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_a.end)");
     }
 
     /// `add_line_pair` must propagate Err when `line_b.start` contains a non-auto
@@ -1568,7 +1571,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_b.start)");
     }
 
     /// `add_line_pair` must propagate Err when `line_b.end` contains a non-auto
@@ -1589,7 +1592,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_b.end)");
     }
 
     // ── add_line_pair: partial-mutation contract test (S3) ────────────────────
