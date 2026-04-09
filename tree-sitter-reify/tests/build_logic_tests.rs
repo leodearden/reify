@@ -1406,6 +1406,60 @@ fn test_strip_line_comments() {
 }
 
 #[test]
+fn test_find_bare_literal_violations_generic() {
+    // Helper: returns the detected line numbers for a given source and needles.
+    fn line_nums(source: &str, needles: &[&str]) -> Vec<usize> {
+        find_bare_literal_violations(source, needles)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
+    }
+
+    // ── Single needle: detection in non-comment code ─────────────────────────
+    // Use escaped quotes so the raw source contains \" (backslash+quote) rather
+    // than a bare unescaped quote, preventing a future guard test from flagging
+    // this code as a violation.
+    assert!(
+        !line_nums("read_to_string(\"needle.rs\")", &["\"needle.rs\""]).is_empty(),
+        "needle in code should be detected"
+    );
+
+    // ── Single needle: non-detection in // comment ────────────────────────────
+    assert!(
+        line_nums("// read_to_string(\"needle.rs\")", &["\"needle.rs\""]).is_empty(),
+        "needle inside // comment must not be detected"
+    );
+
+    // ── Single needle: non-detection in /* */ block comment ───────────────────
+    assert!(
+        line_nums("/* read_to_string(\"needle.rs\") */", &["\"needle.rs\""]).is_empty(),
+        "needle inside /* */ block comment must not be detected"
+    );
+
+    // ── 1-based line numbering on multi-line input ────────────────────────────
+    let src = "ok\nread_to_string(\"needle.rs\")\nok";
+    let result = find_bare_literal_violations(src, &["\"needle.rs\""]);
+    assert_eq!(result.len(), 1, "should detect exactly one violation");
+    assert_eq!(result[0].0, 2, "line numbering should be 1-based (hit is on line 2)");
+
+    // ── Multiple needles: any match triggers detection ────────────────────────
+    let multi = find_bare_literal_violations(
+        "File::open(\"other.rs\")",
+        &["\"needle.rs\"", "\"other.rs\""],
+    );
+    assert!(
+        !multi.is_empty(),
+        "second needle should also trigger detection"
+    );
+
+    // ── No false positives when no needle matches ─────────────────────────────
+    assert!(
+        line_nums("let x = 5;", &["\"needle.rs\""]).is_empty(),
+        "source with no needle must not produce violations"
+    );
+}
+
+#[test]
 fn test_find_bare_build_rs_violations() {
     // Helpers that verify detection and non-detection.
     fn detected(line: &str) -> bool {
