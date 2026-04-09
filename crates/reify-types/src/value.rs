@@ -2719,6 +2719,32 @@ mod tests {
     }
 
     #[test]
+    fn value_ord_real_negative_nan() {
+        // Under f64::total_cmp() (IEEE 754 totalOrder), negative NaN bit patterns
+        // sort before -Infinity: neg_qNaN < neg_sNaN < -Inf < ... < +Inf < pos_sNaN < pos_qNaN.
+        //
+        // Negative quiet NaN: sign bit set, exponent all-1s, quiet bit set (0xfff8_0000_0000_0000).
+        let neg_qnan = Value::Real(f64::from_bits(0xfff8_0000_0000_0000));
+        let neg_inf = Value::Real(f64::NEG_INFINITY);
+        let pos_qnan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+
+        // (a) Negative quiet NaN sorts strictly Less than -Infinity.
+        assert_eq!(neg_qnan.cmp(&neg_inf), std::cmp::Ordering::Less);
+
+        // (b) Negative quiet NaN sorts strictly Less than positive quiet NaN.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), std::cmp::Ordering::Less);
+
+        // (c) PartialEq distinguishes negative NaN from positive NaN (different bit patterns).
+        assert_ne!(neg_qnan, pos_qnan);
+
+        // (d) Antisymmetry holds for neg_qnan vs pos_qnan.
+        assert_eq!(neg_qnan.cmp(&pos_qnan), pos_qnan.cmp(&neg_qnan).reverse());
+
+        // (e) Full assert_ord_consistent check for neg_qnan vs neg_inf pair (neg_qnan < neg_inf).
+        assert_ord_consistent(&neg_qnan, &neg_inf, false);
+    }
+
+    #[test]
     fn value_scalar_bit_identity_neg_zero_and_nan_consistent() {
         // Verifies the two-sided contract: a == b IFF a.cmp(&b) == Ordering::Equal,
         // for the Scalar variant's bit-identity edge cases.
