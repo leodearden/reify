@@ -731,4 +731,95 @@ mod tests {
             assert_eq!(outcome, ConstraintOutcome::SomeIndeterminate(2));
         }
     }
+
+    // ── report_violated_constraints unit tests ──────────────────────────────
+
+    fn run_violated(entries: &[ConstraintCheckEntry], indent: &str) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        report_violated_constraints(entries, indent, &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn violated_constraints_empty_slice_produces_no_output() {
+        let output = run_violated(&[], "  ");
+        assert!(
+            output.is_empty(),
+            "empty slice should produce no output, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn violated_constraints_all_satisfied_produces_no_output() {
+        let entries = vec![
+            make_entry("Part", 0, Some("c1"), Satisfaction::Satisfied),
+            make_entry("Part", 1, Some("c2"), Satisfaction::Satisfied),
+        ];
+        let output = run_violated(&entries, "  ");
+        assert!(
+            output.is_empty(),
+            "all-satisfied slice should produce no output, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn violated_constraints_filters_to_only_violated_entries() {
+        let entries = vec![
+            make_entry("Widget", 0, Some("ok_c"), Satisfaction::Satisfied),
+            make_entry("Widget", 1, Some("bad_c"), Satisfaction::Violated),
+            make_entry("Widget", 2, Some("indet_c"), Satisfaction::Indeterminate),
+        ];
+        let output = run_violated(&entries, "  ");
+        assert!(
+            output.contains("bad_c"),
+            "output should contain violated label, got: {:?}",
+            output
+        );
+        assert!(
+            !output.contains("ok_c"),
+            "output should NOT contain satisfied label, got: {:?}",
+            output
+        );
+        assert!(
+            !output.contains("indet_c"),
+            "output should NOT contain indeterminate label, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn violated_constraints_formats_as_violated_prefix() {
+        let entries = vec![make_entry("Arm", 0, Some("reach"), Satisfaction::Violated)];
+        let output = run_violated(&entries, "  ");
+        assert!(
+            output.contains("VIOLATED reach"),
+            "line should start with VIOLATED + label, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn violated_constraints_uses_id_fallback_when_no_label() {
+        let entries = vec![make_entry("Box", 3, None, Satisfaction::Violated)];
+        let output = run_violated(&entries, "  ");
+        // ConstraintNodeId Display: "Box#constraint[3]"
+        assert!(
+            output.contains("VIOLATED Box#constraint[3]"),
+            "unlabeled entry should fall back to id Display, got: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn violated_constraints_honors_custom_indent() {
+        let entries = vec![make_entry("Joint", 0, Some("load"), Satisfaction::Violated)];
+        let output = run_violated(&entries, ">>");
+        assert!(
+            output.starts_with(">>VIOLATED load"),
+            "custom indent should appear at start of line, got: {:?}",
+            output
+        );
+    }
 }
