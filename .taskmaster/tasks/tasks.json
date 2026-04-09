@@ -20683,11 +20683,11 @@
         "description": "In crates/reify-types/src/value.rs tests: (1) Fix stale 'line 968' reference (PartialEq is at line 976). (2) Unify test naming convention (value_ord_real_* vs value_ord_within_*). (3) Pin concrete ordering direction in value_ord_real_negative_zero (assert pos.cmp(&neg) == Greater). (4) Add Ord tests for non-canonical NaN bit patterns (negative NaN via f64::from_bits, signaling NaN).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:57.462Z",
+        "updatedAt": "2026-04-09T21:18:06.243Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -28494,7 +28494,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:18:04.728Z",
+      "lastModified": "2026-04-09T21:18:06.243Z",
       "taskCount": 1376,
       "completedCount": 1052,
       "tags": [
