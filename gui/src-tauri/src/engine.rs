@@ -33,9 +33,10 @@ use crate::types::{
 /// returns `None`, and `get_diagnostics` / `get_source_location` degrade
 /// gracefully rather than panicking.
 ///
-/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
-/// `update_source` (lines ~189–198) — both defer all field writes until after
-/// parse and compile succeed, so they maintain the invariant atomically.
+/// **Current safe mutation sites:** `load_from_source` and `update_source` both
+/// delegate all field writes to `commit_state`, which is the single atomic commit
+/// point.  Neither method touches `compiled`/`module_name`/`source_map` until
+/// after parse, compile, and check have all succeeded.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -108,12 +109,7 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        self.source_map.clear();
-        self.source_map
-            .insert(module_key(module_name), source.to_string());
-        self.module_name = Some(module_name.to_string());
-        self.compiled = Some(compiled);
-        self.last_check = Some(check_result);
+        self.commit_state(compiled, check_result, module_name, source);
 
         self.build_gui_state()
     }
@@ -210,14 +206,35 @@ impl EngineSession {
         let check_result = self.engine.check(&compiled);
 
         // Atomically commit all state after check() succeeds.
-        let normalized_key = module_key(module_name);
+        self.commit_state(compiled, check_result, module_name, content);
+
+        self.build_gui_state()
+    }
+
+    /// Atomically commit all session state after a successful parse+compile+check cycle.
+    ///
+    /// This helper enforces the invariant that `compiled`, `module_name`, and
+    /// `source_map` always change together: either all five fields are updated or
+    /// none are.  Callers **must** only invoke this after both compilation and
+    /// `check()` have succeeded — invoking it on a partially-valid state would
+    /// violate the invariant.
+    ///
+    /// The five-field assignment was previously duplicated in `load_from_source`
+    /// and `update_source`; centralising it here prevents the two sites from
+    /// drifting apart.
+    fn commit_state(
+        &mut self,
+        compiled: CompiledModule,
+        check_result: CheckResult,
+        module_name: &str,
+        source: &str,
+    ) {
         self.source_map.clear();
-        self.source_map.insert(normalized_key, content.to_string());
+        self.source_map
+            .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
-
-        self.build_gui_state()
     }
 
     /// Export geometry to a file.
