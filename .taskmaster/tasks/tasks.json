@@ -24833,11 +24833,11 @@
         "description": "The field_calculus_tests.rs test suite has accuracy and type-checking tests for the differential operators but is missing several edge-case and coverage tests:\n\n1. **Undef return path tests** (matching gradient_tests.rs validation pattern):\n   - divergence(non_field) → Undef\n   - curl(2d_vector_field) → Undef (wrong domain dimension)\n   - divergence(gradient_field) → Undef (wrong source kind)\n   - divergence(field_with_mismatched_dims) → Undef (e.g., Vector{2} on Point{3} domain)\n\n2. **Curl of irrotational field**: curl of a conservative field F=grad(φ) (e.g., F=[x,y,z]) should return approximately [0,0,0]. Other operators have \"near zero\" tests (divergence_constant_field_near_zero, laplacian_linear_field_near_zero) but curl doesn't.\n\n3. **1D laplacian path**: laplacian(x²) at x=3.0 should equal approximately 2.0. The laplacian supports both 1D scalar domains and nD Point domains, but only the 3D case is tested. The 1D path takes a different branch in point extraction (Value::Real) with single_point_param=false and n=1.\n\nmemory_hints: search \"field_calculus_tests gradient_tests validation Undef\" for existing test patterns",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:26:47.039Z",
+        "updatedAt": "2026-04-09T02:18:06.244Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25095,7 +25095,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:18:05.554Z",
+      "lastModified": "2026-04-09T02:18:06.244Z",
       "taskCount": 1238,
       "completedCount": 921,
       "tags": [
