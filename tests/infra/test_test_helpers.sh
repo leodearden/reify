@@ -301,7 +301,14 @@ else
     check "extract_fn docstring uses 'naturally excluded' wording" "false"
 fi
 
-# (g) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
+# (g) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
+if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
+    check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
+else
+    check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
+fi
+
+# (h) behavioral: guard fires and records FAIL when ref_fn extraction yields nothing
 echo ""
 echo "--- assert_sync_ref_exists empty-ref_fn guard behavioral test ---"
 

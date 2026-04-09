@@ -126,4 +126,54 @@ assert "no \\b in grep invocations (non-comment lines, scoped)" \
 assert "no grep -P in grep invocations (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
 
+echo ""
+echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
+
+# extract_fn is defined in sync_comments_test.sh. We source it in a subshell
+# with test_summary stubbed to no-op, following the established behavioral-test
+# pattern from test_test_helpers.sh lines 301-312.
+_SECT3_HELPER="$SCRIPT_DIR/test_helpers.sh"
+
+# accept: regular fn — fn foo( must be extracted when fn_name=foo
+assert "extract_fn: fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo('
+    "
+
+# accept: generic fn — fn foo<T>( must be extracted when fn_name=foo
+assert "extract_fn: fn foo<T>( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foo<T>(\n    x: T,\n) -> T {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo<T>('
+    "
+
+# reject: fn foobar( must NOT be extracted when fn_name=foo (prefix-collision guard)
+assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foobar(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -z \"\$out\" ]
+    "
+
 test_summary
