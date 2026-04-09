@@ -782,8 +782,14 @@ fn find_cfg_unix_test_fns(source: &str) -> Vec<String> {
 /// `#[test]` is seen, the flag `saw_test` is set. Intermediate
 /// attribute/comment lines keep the flag alive. When a line starting with
 /// `fn test_` is reached with the flag set, `extract_test_fn_body` is used to
-/// check whether the function body contains `(THIS_FILE)`. Only functions that
-/// pass this body check are collected.
+/// check whether the function body contains `(THIS_FILE)` as a call argument OR
+/// the bare relative-path literal `"tests/build_logic_tests.rs"` (with literal
+/// double-quote characters). Only functions that pass this body check are collected.
+///
+/// The dual criterion turns `test_self_read_paths_use_manifest_dir`'s loop into
+/// a genuine cross-property check: a test discovered via the bare-path criterion
+/// will fail the loop's `fn_body.contains("(THIS_FILE)")` assertion, catching
+/// regressions where the bare relative path is used instead of THIS_FILE.
 fn find_self_reading_test_fns(source: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut saw_test = false;
@@ -796,9 +802,15 @@ fn find_self_reading_test_fns(source: &str) -> Vec<String> {
             // Extract "fn name()" — everything up to and including the first ')'
             if let Some(end) = trimmed.find(')') {
                 let sig = trimmed[..=end].to_string();
-                // Only collect if the function body contains (THIS_FILE)
+                // Collect if the function body contains (THIS_FILE) as a call argument
+                // OR the bare relative-path literal "tests/build_logic_tests.rs"
+                // (with literal quotes). The second criterion is intentionally broader
+                // so that a test using the bare path is discovered — and then fails
+                // the THIS_FILE assertion in test_self_read_paths_use_manifest_dir.
                 if let Some(body) = extract_test_fn_body(source, &sig) {
-                    if body.contains("(THIS_FILE)") {
+                    if body.contains("(THIS_FILE)")
+                        || body.contains("\"tests/build_logic_tests.rs\"")
+                    {
                         result.push(sig);
                     }
                 }
@@ -1126,6 +1138,27 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "fn test_comment_only_mention() {\n",
         "    // This test does not call THIS_FILE as an argument\n",
         "    let _ = 2;\n",
+        "}\n\n",
+        // Case (e): a #[test] followed by an intermediate #[allow(unused)] attribute,
+        // then a fn using (THIS_FILE) — should be collected. This exercises the state
+        // machine's `starts_with('#')` branch that keeps `saw_test` alive across
+        // intermediate attributes (previously uncovered).
+        "#[test]\n",
+        "#[allow(unused)]\n",
+        "fn test_with_attr_gap() {\n",
+        "    let _source = std::fs::read_to_string(THIS_FILE).unwrap();\n",
+        "}\n\n",
+        // Case (f): a #[test] fn whose body uses the bare relative path
+        // "tests/build_logic_tests.rs" (no THIS_FILE) — should be collected by the
+        // broadened criterion. This RED test forces the step-3 impl that adds
+        // `|| body.contains("\"tests/build_logic_tests.rs\"")` to the scanner.
+        // Note: the escaped form \"tests/build_logic_tests.rs\" inside this Rust
+        // string literal appears at raw-character level as \"-prefixed, so the
+        // 28-char contiguous substring "tests/build_logic_tests.rs" (with literal
+        // quotes) is NOT present here — no false-positive on the synthetic source.
+        "#[test]\n",
+        "fn test_with_bare_path() {\n",
+        "    let _s = std::fs::read_to_string(\"tests/build_logic_tests.rs\").unwrap();\n",
         "}\n",
     );
 
@@ -1156,6 +1189,18 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "should NOT include test_comment_only_mention (THIS_FILE only in comment); got: {:?}",
         fns
     );
+    assert!(
+        fns.contains(&"fn test_with_attr_gap()".to_string()),
+        "should discover test_with_attr_gap (intermediate #[allow] attribute between #[test] and fn — \
+         the state machine's starts_with('#') branch keeps saw_test alive); got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_with_bare_path()".to_string()),
+        "should discover test_with_bare_path (broadened criterion: body contains the bare relative-path \
+         literal \"tests/build_logic_tests.rs\" with literal quotes); got: {:?}",
+        fns
+    );
 }
 
 #[test]
@@ -1178,6 +1223,12 @@ fn test_self_read_paths_use_manifest_dir() {
     // automatically checked without updating a hardcoded list.
     // This test excludes itself from the discovered set to avoid circularity
     // (its body contains (THIS_FILE) in both the read call and assertion code).
+    //
+    // The loop below is a genuine cross-property check: find_self_reading_test_fns
+    // uses a broadened criterion (THIS_FILE call-form OR bare relative-path literal),
+    // while the loop asserts only the THIS_FILE criterion. A test discovered via the
+    // bare-path criterion would pass the scanner but fail this assertion, catching
+    // the exact regression the guard is designed to prevent.
     let source = std::fs::read_to_string(THIS_FILE)
         .expect("should be able to read this test file via THIS_FILE");
 
@@ -1189,12 +1240,15 @@ fn test_self_read_paths_use_manifest_dir() {
         .filter(|sig| !sig.contains("test_self_read_paths_use_manifest_dir"))
         .collect();
 
-    // Sanity-check: the scanner must find at least 3 self-reading tests (the ones
-    // we know about). This catches a broken scanner that silently returns empty.
+    // Sanity-check: the scanner must find at least 5 self-reading tests (the actual
+    // count after self-filter on this codebase is 6). This catches a broken scanner
+    // that silently returns empty or near-empty. The threshold is strictly above the
+    // previous stale value of 3 while leaving slack for one test to be temporarily
+    // removed without immediate breakage.
     assert!(
-        self_reading_fns.len() >= 3,
-        "find_self_reading_test_fns should discover at least 3 self-reading test functions, \
-         but found {:?}",
+        self_reading_fns.len() >= 5,
+        "find_self_reading_test_fns should discover at least 5 self-reading test functions \
+         after excluding this meta-test (actual count is ~6); but found {:?}",
         self_reading_fns
     );
 
