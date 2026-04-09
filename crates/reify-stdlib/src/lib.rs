@@ -5935,6 +5935,74 @@ mod tests {
     // ── sanitize_value Complex arm tests (step-20) ────────────────────────────
 
     #[test]
+    fn sanitize_complex_nan_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_nan_im_returns_undef() {
+        let v = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_finite_passthrough() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        match sanitize_value(v) {
+            Value::Complex { re, im, .. } => {
+                assert!((re - 3.0).abs() < f64::EPSILON);
+                assert!((im - (-4.0)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn complex_mul_overflow_returns_undef() {
         // (f64::MAX + f64::MAX*i) * (f64::MAX + f64::MAX*i)
         // re = MAX*MAX - MAX*MAX = 0 (actually NaN-ish), im = MAX*MAX + MAX*MAX = +Inf
