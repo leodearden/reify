@@ -1399,6 +1399,9 @@ fn test_strip_line_comments() {
 
     // Code before and after `/* comment */` are both preserved
     assert_eq!(strip_line_comments("foo(/* polling */ bar)"), "foo( bar)");
+
+    // Known limitation: // inside string literals is treated as comment start
+    assert_eq!(strip_line_comments(r#"let s = "//"; let x = 1;"#), r#"let s = ""#);
 }
 
 #[test]
