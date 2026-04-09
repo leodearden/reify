@@ -7,6 +7,34 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_types::{ModulePath, Satisfaction, Severity, Value, ValueCellId};
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Parse `source`, assert no parse errors, compile, assert no compile errors.
+/// Returns the compiled module ready for eval.
+fn parse_and_compile(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "compile errors: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
+    );
+
+    compiled
+}
+
+// ---------------------------------------------------------------------------
 // step-13: E2E — let binding using meta.key resolves to Value::String
 // ---------------------------------------------------------------------------
 
@@ -23,22 +51,7 @@ fn e2e_meta_access_let_binding() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -73,22 +86,7 @@ fn e2e_meta_access_multiple_keys() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -131,22 +129,7 @@ fn e2e_meta_access_on_occurrence() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Sanity: the compiled template should be tagged as an Occurrence.
     assert_eq!(compiled.templates.len(), 1);
@@ -189,22 +172,7 @@ fn e2e_meta_access_on_structure_resolves() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Sanity: the compiled template should be tagged as a Structure.
     assert_eq!(compiled.templates.len(), 1);
@@ -333,22 +301,7 @@ fn e2e_meta_sub_structure_child_meta() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -383,22 +336,7 @@ fn e2e_meta_let_binding_downstream() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -438,22 +376,7 @@ fn e2e_meta_string_eq_match() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -486,22 +409,7 @@ fn e2e_meta_string_eq_mismatch() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Eval
     let checker = MockConstraintChecker::new();
@@ -618,22 +526,7 @@ fn e2e_meta_access_in_constraint() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+    let compiled = parse_and_compile(source);
 
     // Check (eval + constraint evaluation) — must not panic when meta.key
     // appears in a constraint expression
