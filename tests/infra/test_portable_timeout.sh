@@ -240,6 +240,27 @@ assert "POSIX_FALLBACK_SETUP_NO_TRAP helper strips timeout from PATH and creates
         [ -z "$(trap -p EXIT)" ]
     '
 
+# -- Builder self-test: _build_posix_fallback_env --------------------------------
+# Assertion (a) FAILS (red) until step-5 defines the builder function.
+# Assertions (b) verify the three generated setup variables have correct
+# properties, guarding the builder's output contract after the refactor.
+assert "_build_posix_fallback_env builder is defined in the test script" \
+    declare -f _build_posix_fallback_env
+
+assert "builder-generated setup variables non-empty with correct trap/TMPDIR properties" \
+    env MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" \
+        POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" \
+        POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
+    bash -c '
+        [ -n "$MKTEMP_FAIL_SETUP" ] &&
+        [ -n "$POSIX_FALLBACK_SETUP" ] &&
+        [ -n "$POSIX_FALLBACK_SETUP_NO_TRAP" ] &&
+        printf "%s" "$MKTEMP_FAIL_SETUP" | grep -q "TMPDIR=/dev/null/nope" &&
+        ! printf "%s" "$POSIX_FALLBACK_SETUP_NO_TRAP" | grep -q "trap.*EXIT" &&
+        printf "%s" "$POSIX_FALLBACK_SETUP" | grep -q "trap.*EXIT" &&
+        printf "%s" "$MKTEMP_FAIL_SETUP" | grep -q "trap.*EXIT"
+    '
+
 assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
