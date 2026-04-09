@@ -220,7 +220,7 @@ fn test_all_three_outputs_verified() {
 #[test]
 fn test_no_redundant_rerun_if_changed() {
     // Source-level regression guard: build.rs must NOT contain rerun-if-changed=src/parser.c
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
     assert!(
         !build_rs.contains("rerun-if-changed=src/parser.c"),
@@ -322,7 +322,7 @@ fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), S
 fn test_try_wait_error_path_kills_child() {
     // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
     // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
     // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
@@ -456,7 +456,7 @@ fn test_out_dir_no_silent_fallback() {
     // Source-level regression guard: build.rs must NOT silently fall back to "." when
     // OUT_DIR is unset. Cargo always sets OUT_DIR for build scripts, so a missing value
     // means something is fundamentally wrong — we should panic, not pollute the source tree.
-    let build_rs = std::fs::read_to_string("build.rs")
+    let build_rs = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"))
         .expect("should be able to read build.rs from tree-sitter-reify crate root");
 
     // Find the line that reads the OUT_DIR env var (not comments mentioning OUT_DIR).
