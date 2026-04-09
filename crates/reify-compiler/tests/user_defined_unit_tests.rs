@@ -277,3 +277,38 @@ fn cross_module_private_unit_not_visible_via_module_dag() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ─── step-13: compile_project entry module resolves imported pub unit ─────────
+
+#[test]
+fn compile_project_entry_sees_imported_pub_unit() {
+    let dir = test_dir("compile_project_pub_unit");
+
+    fs::write(
+        dir.join("units_lib.ri"),
+        "pub unit mil : Length = 0.0000254",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("entry.ri"),
+        "import units_lib\nstructure S { param w : Length = 5mil }",
+    )
+    .unwrap();
+
+    let resolver =
+        reify_compiler::module_dag::ModuleResolver::new(&dir, dir.join("stdlib"));
+    let result =
+        reify_compiler::module_dag::compile_project(&dir.join("entry.ri"), &resolver);
+    assert!(result.is_ok(), "expected Ok, got {:?}", result.unwrap_err());
+
+    let modules = result.unwrap();
+    let entry_module = modules.last().expect("no modules returned");
+    let errors = errors_only(entry_module);
+    assert!(
+        errors.is_empty(),
+        "entry module should see imported pub unit 'mil', got errors: {:?}",
+        errors
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
