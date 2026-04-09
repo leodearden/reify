@@ -49,7 +49,7 @@ assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 # the two copies) do not affect the body comparison.
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '/^fn '"$fn_name"'/,/^}/' "$file"
+    awk '/^fn '"$fn_name"'[(<]/,/^}/' "$file"
 }
 
 # Both copies of sanitize_value must have identical function bodies.
