@@ -21045,7 +21045,13 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests"
+            ]
+          }
         }
       },
       {
@@ -25913,11 +25919,11 @@
         "description": "Three interrelated follow-up suggestions from reviewer_comprehensive on Task 1249 (which itself folded Task 1234's review). All three address the same test block in crates/reify-constraints/src/solver.rs (roughly lines 1141-1372) and should be done together to avoid merge conflicts and to pick a coherent verdict-coverage policy in one pass.\n\n(S1 — stale comment in happy-path test) In `verify_uniqueness_no_warn_when_param_has_valid_f64` (~line 1214), the NB comment block (~lines 1247-1252) still says `` `_unique` keeps captured-value symmetry with the sibling tests `` but Task 1249 already renamed the binding from `_unique` to `_`. The sibling warn tests were also renamed from `let unique = ...` to `let _ = ...` in that same diff, so the \"symmetry\" clause is stale in two ways: the name doesn't exist, and the \"symmetry\" it claims is now \"all bindings are `_`\". Rewrite the comment to drop the `_unique`/symmetry framing and keep only the substantive point: the test's contract is the *absence* of the fallback warn on the happy-path `as_f64() == Some` branch, not any uniqueness verdict. (Do NOT restore the `_unique` binding — `let _ = expr` is idiomatic per Task 1249's S3 rationale.)\n\n(S2 — verdict-policy consistency) `verify_uniqueness_aggregates_warn_for_multiple_missing_params` (~line 1261) still has `assert!(!unique, ...)` at ~line 1297, even though Task 1249 removed the equivalent assertion from the two single-param warn tests on the grounds that the verdict is implicitly coupled to `solve_core` converging on the perturbed point. The exact same fragility applies to the aggregation test (trivial no-constraint problem, perturbation anchor falls back to midpoint for both params). The current mix is inconsistent. Pick one policy and apply it uniformly:\n  (a) Preferred: also drop `assert!(!unique, ...)` from the aggregation test and change `let unique = ...` to `let _ = ...` there, so all three warn-focused tests share a single \"verdict is out-of-contract\" posture. Verdict coverage for the missing-param case is already provided deterministically by `verify_uniqueness_skips_solve_core_when_param_missing` (~line 1314), which uses a `CountingSubscriberBuilder` to prove the early-return via DEBUG==0 and asserts `!unique`.\n  (b) Alternative: restore the assertions in the two single-param tests. Only pick this if review concludes the fragility concern is hypothetical and convergence on the trivial problem is guaranteed. This is NOT the recommended path because it undoes Task 1249 S1.\n\n(S3 — non-numeric verdict coverage gap) The single-param **non-numeric** (`Value::Undef` → `as_f64() == None`) path has no verdict assertion anywhere in the test suite after Task 1249. The single-param **missing** path is still covered by `verify_uniqueness_skips_solve_core_when_param_missing`, and the multi-missing path is covered by the aggregation test (in option 2a above, only until we drop the verdict there — at which point it'd have to also move to a deterministic test). Add a dedicated `verify_uniqueness_skips_solve_core_when_param_non_numeric` test modeled on `verify_uniqueness_skips_solve_core_when_param_missing` (~line 1314): same CountingSubscriberBuilder setup counting WARN+DEBUG with target_prefix \"reify_constraints\", same WARN==1 / DEBUG==0 / !unique assertions, but with `solved_values` containing `Value::Undef` for the single param instead of being empty. This closes the non-numeric verdict-coverage gap and proves the early-return path fires deterministically for that branch too.\n\nAll three suggestions are test-only, single-file (`crates/reify-constraints/src/solver.rs`), and small. Expected net diff: rewrite a ~6-line comment block, delete one `assert!(!unique)` line + rename one `let` binding, add one ~60-line test function.\n\nVerification: `cargo test -p reify-constraints verify_uniqueness`\n\nParent: Task 1249 (which itself is the follow-up to Task 1234's review). Reviewer: reviewer_comprehensive (S1 + S2 + S3 on Task 1249's diff).\n\nmemory_hints: get_task \"1249\", get_task \"1234\", search \"verify_uniqueness solve_core early return skip test\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "blocked",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:57.072Z",
+        "updatedAt": "2026-04-09T08:24:14.877Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -26317,7 +26323,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:24:02.628Z",
+      "lastModified": "2026-04-09T08:24:14.877Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
