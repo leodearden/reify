@@ -158,4 +158,11 @@ echo "--- Test 14: script defines PKG_FILES with all three package.json paths --
 assert "script defines PKG_FILES with all three package.json paths" \
     bash -c "grep -qE '^PKG_FILES=.*gui/package.json.*gui/sidecar/package.json.*tree-sitter-reify/package.json' '$SCRIPT'"
 
+# -- Test 15: Check 1 for-loop iterates $PKG_FILES ----------------------------
+echo ""
+echo "--- Test 15: Check 1 for-loop iterates \$PKG_FILES ---"
+
+assert "Check 1 for-loop iterates \$PKG_FILES" \
+    bash -c "grep -qE 'for pkg in \\\$PKG_FILES' '$SCRIPT'"
+
 test_summary
