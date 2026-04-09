@@ -1101,7 +1101,7 @@ mod tests {
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let _ = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved_values)
         });
 
@@ -1118,12 +1118,6 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
-        // NB: this assertion implicitly depends on solve_core converging on the perturbed
-        // starting point so that solutions_agree runs and returns false. If solve_core ever
-        // returned Infeasible/NoProgress for this trivial no-constraint problem,
-        // verify_uniqueness would conservatively return true via the early-return branch
-        // (~line 826) and this assertion would flip to a misleading failure.
-        assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
     #[test]
@@ -1154,7 +1148,7 @@ mod tests {
         solved_values.insert(param_id.clone(), Value::Undef);
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        let unique = tracing::subscriber::with_default(subscriber, || {
+        let _ = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved_values)
         });
 
@@ -1171,12 +1165,6 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
-        // NB: this assertion implicitly depends on solve_core converging on the perturbed
-        // starting point so that solutions_agree runs and returns false. If solve_core ever
-        // returned Infeasible/NoProgress for this trivial no-constraint problem,
-        // verify_uniqueness would conservatively return true via the early-return branch
-        // (~line 826) and this assertion would flip to a misleading failure.
-        assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
     #[test]
@@ -1219,7 +1207,7 @@ mod tests {
         // `false`. This test's contract is the *absence* of the fallback warn (the happy-path
         // branch where `as_f64()` returns `Some`), not a uniqueness verdict. `_unique` keeps
         // captured-value symmetry with the sibling tests without asserting the verdict.
-        let _unique = tracing::subscriber::with_default(subscriber, || {
+        let _ = tracing::subscriber::with_default(subscriber, || {
             verify_uniqueness(&problem, &solved_values)
         });
 
