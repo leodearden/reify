@@ -24518,11 +24518,11 @@
         "description": "In `crates/reify-test-support/src/tracing_support.rs` lines 19–24, the `before` parameter docstring uses \"happens-before order on the current thread\" language. The function only checks `before > after` at runtime — it doesn't verify happens-before ordering. This overpromises a contract the code doesn't enforce and may confuse readers unfamiliar with memory-model vocabulary.\n\nReword to something like: \"Must be a snapshot taken from the same counter before the code under test ran; passing a value greater than the counter's current load (for example, a stale snapshot from an unrelated counter or a reordered read) will panic.\"\n\nAlso consider dropping the redundant trailing inline comment on line 1259 (`// subscriber intentionally unused …`) since the block comment on lines 1257–1258 already explains the same thing and the `_` prefix is the idiomatic Rust signal.\n\nOrigin: Task 1202 review suggestion S2 (reviewer_comprehensive), folded with dismissed S1.\n\nVerify: `cargo test -p reify-test-support tracing_support` — no behavior change.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:08:04.446Z"
+        "updatedAt": "2026-04-09T00:12:31.669Z"
       },
       {
         "id": "1206",
@@ -24563,9 +24563,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:11:23.302Z",
+      "lastModified": "2026-04-09T00:12:31.670Z",
       "taskCount": 1208,
-      "completedCount": 887,
+      "completedCount": 888,
       "tags": [
         "master"
       ]
