@@ -2750,53 +2750,20 @@ fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
 /// coordinates. Used by `gradient_single_point_param_quadratic` and
 /// `gradient_single_point_param_irrational_coords`.
 fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
-    let p_id = ValueCellId::new("$lambda0.S", "p");
-
-    // Lambda: |p| dot(p, p)
-    let body = make_function_call(
-        "dot",
-        vec![
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-            CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-        ],
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+    // Delegates shared scaffolding to make_gradient_field; only the body differs.
+    make_gradient_field(
+        |p_id| {
+            make_function_call(
+                "dot",
+                vec![
+                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                ],
+                Type::Real,
+            )
         },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&grad_result, Value::Field { .. }),
-        "make_3d_quadratic_gradient_field: gradient should return a Field, got {:?}",
-        grad_result
-    );
-
-    (grad_result, domain_type, Type::vec3(Type::Real))
+        "make_3d_quadratic_gradient_field",
+    )
 }
 
 /// Characterization test: `make_gradient_field` returns a triple matching `make_3d_dot_product_gradient_field`.
