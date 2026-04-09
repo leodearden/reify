@@ -372,17 +372,22 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
     '
 
-# -- Test 17: structural: timer subshell does NOT have SIGKILL escalation ------
+# -- Test 17: structural: SIGKILL escalation uses PID-reuse-safe process-group kill ----
 echo ""
-echo "--- Test 17: lib_portable.sh timer subshell does NOT escalate to SIGKILL ---"
+echo "--- Test 17: lib_portable.sh SIGKILL escalation uses process-group kill ---"
 
-# The SIGKILL escalation (kill -9 / kill -KILL) has been removed from the timer
-# subshell to eliminate the PID-reuse race: by the time the SIGKILL would run,
-# the main shell has already wait(2)ed on cmd_pid and the kernel may have recycled
-# that PID to an unrelated process.  The main shell's process-group kill
-# (kill -- -$timer_pid) handles cleanup atomically instead.
-assert "lib_portable.sh timer subshell does NOT escalate to SIGKILL (PID-reuse safety)" \
-    bash -c '! grep -qE "kill -9[[:space:]]|kill -KILL[[:space:]]" "$1"' _ "$LIB_PORTABLE"
+# SIGKILL escalation was re-added to the timer subshell using process-group kill
+# ('kill -9 -- -$cmd_pid') rather than individual PID kill ('kill -9 $cmd_pid').
+# Process-group kill is PID-reuse safe: the SIGKILL fires BEFORE the main shell's
+# wait(2) returns (the main shell is blocked precisely because SIGTERM was ignored),
+# so cmd_pid cannot have been recycled.  The process-group syntax adds a second
+# safety layer: a stale PGID returns ESRCH harmlessly rather than hitting an
+# unrelated process.
+assert "lib_portable.sh SIGKILL escalation uses process-group kill (PID-reuse safe)" \
+    grep -qF 'kill -9 -- -$cmd_pid' "$LIB_PORTABLE"
+
+assert "lib_portable.sh SIGKILL does NOT use individual PID kill (PID-reuse unsafe)" \
+    bash -c '! grep -qE "kill -(9|KILL) [^-]" "$1"' _ "$LIB_PORTABLE"
 
 # -- Test 18: monitor mode (set -m) preserved after POSIX fallback call --------
 echo ""
