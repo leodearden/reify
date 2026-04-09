@@ -181,3 +181,27 @@ fn test_annotation_on_field_still_warns_invalid_context() {
         bad_warns
     );
 }
+
+// ── Step 12: CompiledModule::test_templates() / non_test_templates() ──────────
+
+#[test]
+fn compiled_module_test_templates_returns_only_marked() {
+    let source = r#"
+        @test structure A { param x : Real }
+        structure B { param y : Real }
+        @test occurrence H { param z : Real }
+    "#;
+    let module = compile_module(source);
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+
+    let test_tmpls = module.test_templates();
+    assert_eq!(test_tmpls.len(), 2, "expected 2 test templates, got {:?}", test_tmpls.iter().map(|t| &t.name).collect::<Vec<_>>());
+    let test_names: std::collections::HashSet<&str> =
+        test_tmpls.iter().map(|t| t.name.as_str()).collect();
+    assert!(test_names.contains("A"), "expected A in test_templates");
+    assert!(test_names.contains("H"), "expected H in test_templates");
+
+    let non_test_tmpls = module.non_test_templates();
+    assert_eq!(non_test_tmpls.len(), 1, "expected 1 non-test template");
+    assert_eq!(non_test_tmpls[0].name, "B");
+}
