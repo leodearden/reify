@@ -2173,3 +2173,135 @@ fn laplacian_int_domain_preserves_dim_codomain() {
         );
     }
 }
+
+// ── Step 11: Mixed-dim gradient fallback tests ────────────────────────────────
+
+/// Gradient of Point{3, Real} → Scalar<Length>: domain is dimensionless (Real),
+/// so the preserve-codomain strategy returns Vector{3, Scalar<Length>}.
+///
+/// Gradient already handles this correctly via its fallback arm.
+/// This test documents the behavior and serves as a regression guard.
+#[test]
+fn gradient_real_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Point{{3,Real}}→Scalar<Length> should return a Field, got {:?}",
+        grad_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        let expected = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        };
+        assert_eq!(
+            *codomain_type,
+            expected,
+            "gradient of Point{{3,Real}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Gradient of Point{3, Int} → Scalar<Length>: Int is treated as dimensionless,
+/// so the preserve-codomain strategy returns Vector{3, Scalar<Length>}.
+///
+/// Gradient already handles this correctly via its fallback arm.
+/// This test documents the behavior and serves as a regression guard.
+#[test]
+fn gradient_int_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Int);
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Lambda body unused (metadata-only test).
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of Point{{3,Int}}→Scalar<Length> should return a Field, got {:?}",
+        grad_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &grad_result {
+        let expected = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        };
+        assert_eq!(
+            *codomain_type,
+            expected,
+            "gradient of Point{{3,Int}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
+            codomain_type
+        );
+    }
+}
