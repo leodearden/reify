@@ -5231,6 +5231,18 @@ mod tests {
     }
 
     #[test]
+    fn value_plane_partial_eq_different_origin() {
+        let p1 = make_plane(make_point3_origin(), make_normal_z());
+        let alt_origin = Value::Point(vec![
+            Value::length(9.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        let p2 = make_plane(alt_origin, make_normal_z());
+        assert_ne!(p1, p2);
+    }
+
+    #[test]
     fn value_plane_display() {
         let origin = Value::Point(vec![
             Value::length(0.0),
