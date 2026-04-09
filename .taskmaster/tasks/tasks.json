@@ -6712,7 +6712,10 @@
           "modules": [
             "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/stdlib_loader.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
@@ -6731,9 +6734,16 @@
         "metadata": {
           "milestone": "stdlib-M8.3",
           "modules": [
-            "crates/reify-syntax"
+            "crates/reify-syntax",
+            "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
