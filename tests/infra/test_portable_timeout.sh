@@ -204,12 +204,12 @@ POSIX_FALLBACK_SETUP='
     source "$LIB_PORTABLE"
 '
 
-# SETUP_POSIX_FALLBACK_ENV — eval-string helper for tests that require POSIX fallback
+# POSIX_FALLBACK_SETUP_NO_TRAP — eval-string helper for tests that require POSIX fallback
 # WITHOUT an EXIT trap. Timer subshells inherit EXIT traps, which would prematurely
 # clean up rescue_dir and produce false-positive passes in orphan-detection tests
 # (16b, 21b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 21a/b)
 # share a single helper. Callers must clean up rescue_dir explicitly.
-SETUP_POSIX_FALLBACK_ENV='
+POSIX_FALLBACK_SETUP_NO_TRAP='
     rescue_dir=$(mktemp -d)
     for cmd in sleep kill grep rm mktemp ln touch ps bash; do
         p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
@@ -227,12 +227,12 @@ SETUP_POSIX_FALLBACK_ENV='
     source "$LIB_PORTABLE"
 '
 
-# -- Helper self-test: SETUP_POSIX_FALLBACK_ENV ----------------------------------
+# -- Helper self-test: POSIX_FALLBACK_SETUP_NO_TRAP ----------------------------------
 # Verifies the helper correctly strips timeout/gtimeout from PATH and creates
 # rescue_dir. Placed before Test 12 so a broken helper surfaces early.
-assert "SETUP_POSIX_FALLBACK_ENV helper strips timeout from PATH and creates rescue_dir" \
-    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
-        eval "$SETUP_POSIX_FALLBACK_ENV"
+assert "POSIX_FALLBACK_SETUP_NO_TRAP helper strips timeout from PATH and creates rescue_dir" \
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
         ! command -v timeout >/dev/null 2>&1 &&
         ! command -v gtimeout >/dev/null 2>&1 &&
         [ -d "$rescue_dir" ] &&
@@ -333,12 +333,12 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 # Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
 
 assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
-    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        eval "$SETUP_POSIX_FALLBACK_ENV"
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Background portable_timeout with a 2s command so the timer has time
         # to spawn its inner "sleep 31337" before we check.
@@ -371,12 +371,12 @@ assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive che
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
-    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        eval "$SETUP_POSIX_FALLBACK_ENV"
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Run a 0.3s command under a long timeout (31337s sentinel).
         # Using sleep 0.3 instead of "true" gives the timer time to spawn
@@ -519,13 +519,13 @@ echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 # This confirms the test has discriminating power and is not vacuous.
 
 assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
-    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
 
-        eval "$SETUP_POSIX_FALLBACK_ENV"
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
         rc=0
@@ -534,7 +534,7 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
     '
 
 assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
-    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -550,7 +550,7 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
             | while read _pid; do "$_abs_kill" -9 "$_pid" 2>/dev/null; done
         "$_abs_sleep" 0.5
 
-        eval "$SETUP_POSIX_FALLBACK_ENV"
+        eval "$POSIX_FALLBACK_SETUP_NO_TRAP"
 
         # Command ignores SIGTERM; timer escalates to SIGKILL.
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
