@@ -27150,7 +27150,15 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:30:00.966Z"
+        "updatedAt": "2026-04-09T08:30:00.966Z",
+        "metadata": {
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
+          ],
+          "modules": [
+            "crates/reify-expr/tests"
+          ]
+        }
       },
       {
         "id": 1308,
@@ -27169,7 +27177,13 @@
             "queries": [
               "resolution for: Deduplicate find_bare_*_violations helpers and fix missing ./ variant"
             ]
-          }
+          },
+          "files": [
+            "tree-sitter-reify/tests/build_logic_tests.rs"
+          ],
+          "modules": [
+            "tree-sitter-reify/tests"
+          ]
         }
       },
       {
@@ -27181,7 +27195,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "tests/sync_comments_test.sh",
+            "crates/reify-constraints/src/solver.rs"
+          ],
+          "modules": [
+            "tests",
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": 1310,
