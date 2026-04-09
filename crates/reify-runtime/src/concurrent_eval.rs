@@ -12,12 +12,12 @@
 //! `snapshot_values()`, `take_results()`, `build_result_shared()`, `into_result()`,
 //! and the `AsyncNodeEvaluator::evaluate()` implementation all guarantee that they
 //! will not panic when an internal lock is poisoned by a prior evaluation task that
-//! panicked while holding it. Each recovery emits a `tracing::warn!` so that
-//! cascading panics in a concurrent batch can be detected and diagnosed. Recovered
-//! data may reflect a partially-completed write from the panicking task. Without this
-//! graceful recovery, one panicking task would cascade to every concurrent task
-//! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
-//! just the faulting node.
+//! panicked while holding it. Each recovery emits a structured `tracing::warn!`
+//! (see maintainer note below) so that cascading panics in a concurrent batch can
+//! be detected and diagnosed. Recovered data may reflect a partially-completed write
+//! from the panicking task. Without this graceful recovery, one panicking task would
+//! cascade to every concurrent task sharing the adapter via `Arc`, taking down the
+//! entire evaluation batch instead of just the faulting node.
 //!
 //! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
 //! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
@@ -26,6 +26,14 @@
 //! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
 //! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
 //! the receiver; see `into_result()`'s doc comment for the full rationale.
+//!
+//! Each recovery warning is emitted with structured fields:
+//! `lock = <"values"|"snapshot_values"|"results">`,
+//! `access = <"read"|"write"|"exclusive">` (for helper methods) or
+//! `path = <"into_inner"|"shared_fallback">` (for `into_result()` inline sites),
+//! and `error = %e`, with fixed message `"lock poisoned, recovering"`.
+//! New helpers must follow this schema so operators can filter by `lock` and `access`
+//! in Datadog/Jaeger without updating alerting rules.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -100,7 +108,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a read lock on `values`, recovering from poison with a warning.
     fn read_values(&self) -> RwLockReadGuard<'_, ValueMap> {
         self.values.read().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "values", access = "read", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -108,7 +116,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a write lock on `values`, recovering from poison with a warning.
     fn write_values(&self) -> RwLockWriteGuard<'_, ValueMap> {
         self.values.write().unwrap_or_else(|e| {
-            tracing::warn!("values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "values", access = "write", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -118,7 +126,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockReadGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.read().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "snapshot_values", access = "read", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -128,7 +136,7 @@ impl ConcurrentEvalAdapter {
         &self,
     ) -> RwLockWriteGuard<'_, PersistentMap<ValueCellId, (Value, DeterminacyState)>> {
         self.snapshot_values.write().unwrap_or_else(|e| {
-            tracing::warn!("snapshot_values RwLock poisoned, recovering: {e}");
+            tracing::warn!(lock = "snapshot_values", access = "write", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -136,7 +144,7 @@ impl ConcurrentEvalAdapter {
     /// Acquire a lock on `results`, recovering from poison with a warning.
     fn lock_results(&self) -> MutexGuard<'_, Vec<ConcurrentNodeResult>> {
         self.results.lock().unwrap_or_else(|e| {
-            tracing::warn!("results Mutex poisoned, recovering: {e}");
+            tracing::warn!(lock = "results", access = "exclusive", error = %e, "lock poisoned, recovering");
             e.into_inner()
         })
     }
@@ -216,41 +224,39 @@ impl ConcurrentEvalAdapter {
     ) -> ConcurrentEditResult {
         let values = match Arc::try_unwrap(self.values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "values", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("values RwLock poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = "values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),
         };
         let snapshot_values = match Arc::try_unwrap(self.snapshot_values) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("snapshot_values RwLock poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "snapshot_values", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .read()
                 .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        "snapshot_values RwLock poisoned (shared fallback), recovering: {e}"
-                    );
+                    tracing::warn!(lock = "snapshot_values", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),
         };
         let node_results = match Arc::try_unwrap(self.results) {
             Ok(lock) => lock.into_inner().unwrap_or_else(|e| {
-                tracing::warn!("results Mutex poisoned (into_inner), recovering: {e}");
+                tracing::warn!(lock = "results", path = "into_inner", error = %e, "lock poisoned, recovering");
                 e.into_inner()
             }),
             Err(arc) => arc
                 .lock()
                 .unwrap_or_else(|e| {
-                    tracing::warn!("results Mutex poisoned (shared fallback), recovering: {e}");
+                    tracing::warn!(lock = "results", path = "shared_fallback", error = %e, "lock poisoned, recovering");
                     e.into_inner()
                 })
                 .clone(),

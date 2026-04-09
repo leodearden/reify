@@ -34,8 +34,9 @@ pub(crate) fn sanitize_value(v: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use reify_types::DimensionVector;
+
+    use super::*;
 
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 

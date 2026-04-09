@@ -26,9 +26,9 @@ assert "scripts/check-pm-standardization.sh is executable" \
 assert "tests/check-pm-standardization.sh does NOT exist" \
     bash -c "! test -f '$REPO_ROOT/tests/check-pm-standardization.sh'"
 
-# -- Test 2: script has only checks 1-3 (no 4-9) ----------------------------
+# -- Test 2: script has only checks 1-4 (no 5-9) ----------------------------
 echo ""
-echo "--- Test 2: script contains only checks 1-3 ---"
+echo "--- Test 2: script contains only checks 1-4 ---"
 
 SCRIPT="$REPO_ROOT/scripts/check-pm-standardization.sh"
 
@@ -80,12 +80,15 @@ echo "--- Test 6: script has cross-file packageManager consistency check ---"
 assert "script contains 'sort -u' for cross-file consistency comparison" \
     grep -q 'sort -u' "$SCRIPT"
 
+assert "script references 'packageManager' in consistency logic" \
+    grep -q 'packageManager' "$SCRIPT"
+
 # -- Test 7: git check-ignore is NOT called inside a for loop ----------------
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
-assert "no 'git check-ignore' calls inside for/done loops" \
-    bash -c "! awk '/^for /,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
+assert "bare git check-ignore (without -v) is not inside for/done loops" \
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -93,6 +96,9 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
+
+assert "script uses 'tr -d' to strip wc whitespace" \
+    grep -q 'tr -d' "$SCRIPT"
 
 # -- Test 9: orchestrator command placement and existence guards ---------------
 echo ""
@@ -144,9 +150,44 @@ echo "--- Test 12: build artifact tracking hygiene ---"
 assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
     bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
 
-# -- Test 13: Check 2 subshell has defensive shell flags (task 1326) ---------
+# -- Test 13: script has rev-parse --is-inside-work-tree preflight -----------
 echo ""
-echo "--- Test 13: Check 2 subshell enables set -euo pipefail ---"
+echo "--- Test 13: script has rev-parse --is-inside-work-tree preflight ---"
+
+assert "script contains 'rev-parse --is-inside-work-tree' preflight" \
+    grep -q 'rev-parse --is-inside-work-tree' "$SCRIPT"
+
+# -- Test 14: script defines PKG_FILES with all three package.json paths ------
+echo ""
+echo "--- Test 14: script defines PKG_FILES with all three package.json paths ---"
+
+assert "script defines PKG_FILES with all three package.json paths" \
+    bash -c "grep -qE '^PKG_FILES=.*gui/package.json.*gui/sidecar/package.json.*tree-sitter-reify/package.json' '$SCRIPT'"
+
+# -- Test 15: Check 1 for-loop iterates $PKG_FILES ----------------------------
+echo ""
+echo "--- Test 15: Check 1 for-loop iterates \$PKG_FILES ---"
+
+assert "Check 1 for-loop iterates \$PKG_FILES" \
+    bash -c "grep -qE 'for pkg in \\\$PKG_FILES' '$SCRIPT'"
+
+# -- Test 16: Check 2 grep arguments expand $PKG_FILES ------------------------
+echo ""
+echo "--- Test 16: Check 2 grep arguments expand \$PKG_FILES ---"
+
+assert "Check 2 grep arguments expand \$PKG_FILES" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q PKG_FILES"
+
+# -- Test 17: Check 3 has git check-ignore -v diagnostic fallback -------------
+echo ""
+echo "--- Test 17: Check 3 has 'git check-ignore -v' diagnostic fallback ---"
+
+assert "Check 3 has 'git check-ignore -v' diagnostic fallback" \
+    grep -q 'git check-ignore -v' "$SCRIPT"
+
+# -- Test 18: Check 2 subshell has defensive shell flags (task 1326) ---------
+echo ""
+echo "--- Test 18: Check 2 subshell enables set -euo pipefail ---"
 
 # Without these flags, a missing package.json file silently produces a PASS
 # because grep's non-zero exit inside the pipeline is masked by `tr -d` and
@@ -154,9 +195,9 @@ echo "--- Test 13: Check 2 subshell enables set -euo pipefail ---"
 assert "Check 2 subshell enables set -euo pipefail" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q 'set -euo pipefail'"
 
-# -- Test 14: Check 2 has dual total==3 AND unique==1 assertion (task 1326) --
+# -- Test 19: Check 2 has dual total==3 AND unique==1 assertion (task 1326) --
 echo ""
-echo "--- Test 14: Check 2 has pre-dedup and post-dedup count assertions ---"
+echo "--- Test 19: Check 2 has pre-dedup and post-dedup count assertions ---"
 
 # Without the pre-dedup total==3 assertion, a package.json missing the
 # packageManager field would be silently accepted: grep emits 2 matching lines,
@@ -173,9 +214,9 @@ assert "Check 2 asserts total equals 3 (catches missing packageManager field)" \
 assert "Check 2 asserts unique equals 1 (catches version disagreement)" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q \"unique.* = '1'\""
 
-# -- Test 15: Check 2 has explicit file existence preflight (task 1326) ------
+# -- Test 20: Check 2 has explicit file existence preflight (task 1326) ------
 echo ""
-echo "--- Test 15: Check 2 has explicit file existence preflight ---"
+echo "--- Test 20: Check 2 has explicit file existence preflight ---"
 
 # Belt-and-braces guard: even if the subshell flags were lost, a preflight
 # `[ -f "$f" ] || exit 1` loop ensures a missing file aborts the subshell
@@ -183,9 +224,9 @@ echo "--- Test 15: Check 2 has explicit file existence preflight ---"
 assert "Check 2 block has an explicit '[ -f ...' file existence check" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -qE '\\[[[:space:]]*-f'"
 
-# -- Test 16: Check 2 logic behavioral verification with fixtures (task 1326) -
+# -- Test 21: Check 2 logic behavioral verification with fixtures (task 1326) -
 echo ""
-echo "--- Test 16: Check 2 logic rejects both bug scenarios ---"
+echo "--- Test 21: Check 2 logic rejects both bug scenarios ---"
 
 # These tests reproduce the Check 2 subshell logic exactly and run it against
 # mktemp fixture directories, independent of the real repo paths. This proves

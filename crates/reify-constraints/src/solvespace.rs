@@ -416,7 +416,9 @@ impl ParamMapping {
 ///
 /// Carries the `cell_id` as a structured field so it can be logged
 /// separately by the `solve()` call site, and a human-readable `message`.
-#[derive(Debug, Clone)]
+/// Implements `std::error::Error` so it can be propagated with `?` or
+/// wrapped by any conforming error-aggregation library.
+#[derive(Debug)]
 struct BuilderError {
     cell_id: ValueCellId,
     message: String,
@@ -1139,27 +1141,22 @@ mod tests {
         cell_id: &ValueCellId,
         context: &str,
     ) {
-        assert!(
-            result.is_err(),
-            "{context}: expected Err for missing non-auto coord, got Ok({:?})",
-            result.ok()
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, *cell_id,
-            "{context}: BuilderError cell_id should match the expected ValueCellId"
-        );
-        assert!(
-            err.message.contains("missing"),
-            "{context}: BuilderError message should contain 'missing', got: {}",
-            err.message
-        );
-        assert!(
-            err.to_string().contains(&cell_id.to_string()),
-            "{context}: Display should contain cell_id '{}', got: {}",
-            cell_id,
-            err
-        );
+        match result {
+            Err(BuilderError { cell_id: id, message }) => {
+                assert_eq!(
+                    id, *cell_id,
+                    "{context}: BuilderError cell_id should match the expected ValueCellId"
+                );
+                assert!(
+                    message.contains("missing"),
+                    "{context}: BuilderError message should contain 'missing', got: {}",
+                    message
+                );
+            }
+            Ok(v) => panic!(
+                "{context}: expected Err for missing non-auto coord, got Ok({v:?})"
+            ),
+        }
     }
 
     /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
@@ -1320,8 +1317,8 @@ mod tests {
 
     /// BuilderError Display must embed the cell_id and the word "missing" so
     /// log messages and SolveResult::NoProgress reasons are human-readable.
-    /// Also verifies the type satisfies std::error::Error so it can be used
-    /// in ? chains with anyhow / thiserror in the future.
+    /// Also verifies the type implements `std::error::Error` so it can be
+    /// propagated with `?` or wrapped by any conforming error-aggregation library.
     #[test]
     fn builder_error_display_contains_cell_id() {
         let cell_id = vcid("Test", "x");
@@ -1345,6 +1342,40 @@ mod tests {
         let _: &dyn std::error::Error = &err;
     }
 
+    /// Guard: `BuilderError` must not implement `Clone`.
+    /// The type is module-private and no call site clones it; `ValueCellId`
+    /// carries heap-allocated `String` fields so the derive is non-trivial dead
+    /// code. Uses the autoref-specialization trick (inherent-method-shadows-
+    /// trait-method) because Rust stable has no negative trait bounds.
+    #[test]
+    fn builder_error_does_not_implement_clone() {
+        use std::marker::PhantomData;
+
+        struct Probe<T>(PhantomData<T>);
+
+        trait NotClone {
+            fn implements_clone(&self) -> bool {
+                false
+            }
+        }
+        impl<T> NotClone for Probe<T> {}
+
+        impl<T: Clone> Probe<T> {
+            #[allow(dead_code)]
+            fn implements_clone(&self) -> bool {
+                true
+            }
+        }
+
+        let p: Probe<BuilderError> = Probe(PhantomData);
+        assert!(
+            !p.implements_clone(),
+            "BuilderError must not derive Clone — it is module-private and no call site \
+             clones it; ValueCellId carries heap-allocated String fields so the derive \
+             is non-trivial dead code"
+        );
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err(BuilderError) — a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
@@ -1355,22 +1386,6 @@ mod tests {
         let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
         assert_missing_err(result, &cell_id, "add_auto_coord");
-    }
-
-    /// add_auto_coord must return a BuilderError carrying the original
-    /// ValueCellId when a non-auto cell_id is absent from current_values,
-    /// preserving the id as typed data for downstream consumers.
-    #[test]
-    fn add_auto_coord_returns_builder_error_with_cell_id() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
-
-        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
-
-        let err = result.expect_err("expected Err, got Ok");
-        assert_eq!(
-            err.cell_id, cell_id,
-            "error should carry the original cell_id"
-        );
     }
 
     /// Error from add_auto_coord should propagate through add_point and

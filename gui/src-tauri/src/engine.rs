@@ -559,6 +559,19 @@ fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
     Ok(ValueCellId::new(parts[0], parts[1]))
 }
 
+/// Unit suffixes ordered by descending length — longest match first.
+///
+/// Exported as `pub(crate)` so tests can directly verify the ordering invariant
+/// without duplicating the table. The `debug_assert!` inside `parse_value_string`
+/// checks the same invariant at call-time in debug builds.
+pub(crate) const UNIT_TABLE: &[(&str, f64, DimensionVector)] = &[
+    ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
+    ("rad", 1.0, DimensionVector::ANGLE),
+    ("mm", 0.001, DimensionVector::LENGTH),
+    ("cm", 0.01, DimensionVector::LENGTH),
+    ("m", 1.0, DimensionVector::LENGTH),
+];
+
 /// Parse a value string into a Value.
 ///
 /// Supported formats:
@@ -578,19 +591,13 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 
     // Try quantity literals (number + unit suffix)
     // Units ordered by descending suffix length — longest match first.
-    // debug_assert! enforces this invariant.
-    let unit_table: &[(&str, f64, DimensionVector)] = &[
-        ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
-        ("rad", 1.0, DimensionVector::ANGLE),
-        ("mm", 0.001, DimensionVector::LENGTH),
-        ("cm", 0.01, DimensionVector::LENGTH),
-        ("m", 1.0, DimensionVector::LENGTH),
-    ];
+    // debug_assert! enforces this invariant; #[test] unit_table_ordering_invariant_holds
+    // covers release builds via UNIT_TABLE.
     debug_assert!(
-        unit_table.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
-        "unit_table must be sorted by descending suffix length"
+        UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
+        "UNIT_TABLE must be sorted by descending suffix length"
     );
-    for &(unit, scale, dimension) in unit_table {
+    for &(unit, scale, dimension) in UNIT_TABLE {
         if let Some(num_str) = s.strip_suffix(unit) {
             let num_str = num_str.trim();
             if let Ok(v) = num_str.parse::<f64>() {

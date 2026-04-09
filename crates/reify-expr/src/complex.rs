@@ -90,7 +90,7 @@ pub(crate) fn eval_complex_method(obj: &Value, method: &str, args: &[Value]) -> 
 mod tests {
     use reify_types::{CompiledExpr, DimensionVector, Type, Value, ValueMap};
 
-    use crate::{eval_expr, EvalContext};
+    use crate::{EvalContext, eval_expr};
 
     // Helper to build a literal expression
     fn lit(v: Value, ty: Type) -> CompiledExpr {
@@ -731,19 +731,14 @@ mod tests {
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Complex { re, im, dimension } => {
-                assert!(
-                    (re - 3.0).abs() < 1e-12,
-                    "expected re=3.0, got {}",
-                    re
-                );
-                assert!(
-                    (im - (-4.0)).abs() < 1e-12,
-                    "expected im=-4.0, got {}",
-                    im
-                );
+                assert!((re - 3.0).abs() < 1e-12, "expected re=3.0, got {}", re);
+                assert!((im - (-4.0)).abs() < 1e-12, "expected im=-4.0, got {}", im);
                 assert_eq!(dimension, DimensionVector::LENGTH);
             }
-            other => panic!("expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}", other),
+            other => panic!(
+                "expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}",
+                other
+            ),
         }
     }
 }
