@@ -3937,66 +3937,26 @@ mod tests {
         // for the Orientation variant's bit-identity edge cases.
 
         // --- NaN in `w` ---
-        let nan_w_a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let nan_w_b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let nan_w_a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let nan_w_b = orient(f64::NAN, 0.0, 0.0, 0.0);
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
         assert_ord_consistent(&nan_w_a, &nan_w_b, true);
 
         // --- neg-zero in `w`: Ord consistency (PartialEq covered by value_orientation_eq_neg_zero) ---
-        let pos_w = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let neg_w = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let pos_w = orient(0.0, 0.0, 0.0, 0.0);
+        let neg_w = orient(-0.0, 0.0, 0.0, 0.0);
         // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_w as the smaller value.
         assert_ord_consistent(&neg_w, &pos_w, false);
 
         // --- Spot-check NaN in a non-w component (`z`) to exercise all component call sites ---
-        let nan_z_a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: f64::NAN,
-        };
-        let nan_z_b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: f64::NAN,
-        };
+        let nan_z_a = orient(0.0, 0.0, 0.0, f64::NAN);
+        let nan_z_b = orient(0.0, 0.0, 0.0, f64::NAN);
         assert_ord_consistent(&nan_z_a, &nan_z_b, true);
 
         // --- neg-zero in `z`: lexicographic fallthrough through w → x → y → z ---
         // w, x, y are all 0.0 (Equal), so comparison chains to z (-0.0 vs +0.0).
-        let pos_z = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let neg_z = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: -0.0,
-        };
+        let pos_z = orient(0.0, 0.0, 0.0, 0.0);
+        let neg_z = orient(0.0, 0.0, 0.0, -0.0);
         // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_z as the smaller value.
         assert_ord_consistent(&neg_z, &pos_z, false);
     }
@@ -4024,8 +3984,8 @@ mod tests {
     #[test]
     fn value_orientation_ord_equal_w_different_x() {
         // Equal w, different x with non-zero y — catches field-order swap regressions.
-        // Correct Ord (w→x→y→z): e > f because x=1.0 > x=0.5 when w is tied.
-        // A wrong impl comparing y before x would say e < f (y=0.5 < y=1.0).
+        // Correct Ord (w→x→y→z): w=0.5,x=1.0,y=0.5 > w=0.5,x=0.5,y=1.0 because x=1.0 > x=0.5 when w is tied.
+        // A wrong impl comparing y before x would say the opposite (y=0.5 < y=1.0).
         assert!(orient(0.5, 1.0, 0.5, 0.0) > orient(0.5, 0.5, 1.0, 0.0));
     }
 
