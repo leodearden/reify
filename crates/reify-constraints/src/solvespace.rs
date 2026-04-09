@@ -1403,6 +1403,57 @@ mod tests {
         assert_missing_err(result, &cell_id, "add_pattern_to_builder");
     }
 
+    /// Exercises the `?` on line 1077 (`eb = builder.add_point(pt_b, ...)?`).
+    /// pt_a is Fixed (no error), pt_b is Auto with a missing cell_id.
+    #[test]
+    fn add_pattern_to_builder_propagates_coincident_pt_b_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "bad_pt_b");
+
+        let pattern = GeometricPattern::Coincident {
+            pt_a: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            pt_b: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+        };
+
+        let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder (pt_b path)");
+    }
+
+    /// Exercises the `?` on the Parallel arm (line 1046,
+    /// `builder.add_line_pair(line_a, line_b, ...)?`).
+    /// line_a is fully fixed; line_b.start is Auto with a missing cell_id
+    /// (the 3rd add_point call inside add_line_pair).
+    #[test]
+    fn add_pattern_to_builder_propagates_parallel_line_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "bad_lb_start");
+
+        let pattern = GeometricPattern::Parallel {
+            line_a: fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            line_b: line(
+                PointRef::Auto {
+                    x: Some(cell_id.clone()),
+                    y: None,
+                    z: None,
+                },
+                fixed_point(2.0, 1.0, 0.0),
+            ),
+        };
+
+        let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder (parallel line_b.start path)");
+    }
+
     /// Calling add_auto_coord twice with the same auto-param cell_id must
     /// return the same Slvs_hParam handle and must NOT grow params on the second call.
     #[test]
