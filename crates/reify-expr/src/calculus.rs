@@ -134,16 +134,8 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
 
     // Determine dimensionality and validate scalar domain quantity
     let n = match domain_type {
-        Type::Real | Type::Int | Type::Scalar { .. } => 1,
-        Type::Point { n, quantity } => {
-            if !matches!(
-                quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
-            ) {
-                return Value::Undef;
-            }
-            *n
-        }
+        _ if scalar_dimension(domain_type).is_some() => 1,
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
         _ => return Value::Undef,
     };
 
@@ -154,7 +146,7 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
         _ => codomain_type.clone(),
     };
     let gradient_quantity =
-        dim_quotient_type(extract_dim(codomain_type), extract_dim(domain_type), 1, gradient_fallback);
+        dim_quotient_type(scalar_dimension(codomain_type), domain_dimension(domain_type), 1, gradient_fallback);
 
     // Construct result codomain type:
     // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
