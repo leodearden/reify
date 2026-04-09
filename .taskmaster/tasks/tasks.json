@@ -21036,7 +21036,7 @@
         "id": "1013",
         "title": "Add dimensioned-domain gradient coverage and NaN/Inf-decomposed tests",
         "description": "In crates/reify-expr/tests/gradient_tests.rs, add three new tests:\n1. gradient_codomain_type_with_dimensioned_domain: domain=Type::Scalar{dimension:LENGTH}, codomain=Type::Scalar{dimension:MASS}, lambda |x| 2*x, sample at x=1.0, assert gradient dimension=MASS/LENGTH and si_value≈2.0. Exercises the codomain_dim/domain_dim arithmetic branch.\n2. gradient_decomposed_nan_returns_undef: reuse the 3-param decomposed lambda setup from gradient_decomposed_n3_dimensionless, sample with a Point3 containing NaN, assert Value::Undef.\n3. gradient_decomposed_inf_returns_undef: same setup, sample with Point3 containing Inf, assert Value::Undef.\n\nMemory hints: search for \"gradient_decomposed_n3_dimensionless\" and \"gradient NaN Inf tests\". When unblocking, check whether the block stems from task 1304's reify-expr/src/lib.rs split (merged at 08:16Z, same session). That split moved sanitize.rs and complex.rs out of lib.rs; any in-flight branch touching types from those areas may have import-path merge conflicts. gradient_tests.rs imports Value types from reify-expr — verify import paths still resolve against the new submodule structure.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "details": "",
@@ -21054,7 +21054,7 @@
           },
           "_causation_id": "498666c7-2e80-4ac4-a25e-ef5dadd03974"
         },
-        "updatedAt": "2026-04-09T09:17:36.906Z"
+        "updatedAt": "2026-04-09T10:01:01.719Z"
       },
       {
         "id": "1014",
@@ -26513,9 +26513,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T10:01:00.783Z",
+      "lastModified": "2026-04-09T10:01:01.719Z",
       "taskCount": 1315,
-      "completedCount": 983,
+      "completedCount": 984,
       "tags": [
         "master"
       ]
