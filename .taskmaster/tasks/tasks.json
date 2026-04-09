@@ -27224,7 +27224,7 @@
         "description": "Two small fixes from task 1289 review: (1) In tests/sync_comments_test.sh, align the extract_fn awk pattern with the assert_sync_ref_exists regex to handle const/unsafe/async modifiers before fn — currently only handles pub(...). Main already has a broader pattern so this may be resolved during merge, but ensure consistency. (2) In crates/reify-constraints/src/solver.rs around line 1291-1293, replace 'removed during the Task 1250 refactor' with a description of what changed, keeping the task reference only in the commit message.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -27237,7 +27237,8 @@
             "tests",
             "crates/reify-constraints"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T17:15:37.478Z"
       },
       {
         "id": "1310",
@@ -27578,7 +27579,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:15:30.644Z",
+      "lastModified": "2026-04-09T17:15:37.478Z",
       "taskCount": 1329,
       "completedCount": 1003,
       "tags": [
