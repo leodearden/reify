@@ -1712,3 +1712,25 @@ fn resolve_source_returns_key_and_source_after_load() {
         ("bracket.ri", bracket_source()),
     );
 }
+
+// --- Task 1194: invariant regression test ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic, because resolve_source hits the unconditional
+/// expect() on module_name (line ~252 in engine.rs).
+///
+/// break_module_name_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    session.break_module_name_for_test();
+    // This must panic — resolve_source hits expect("module_name is None …").
+    let _ = session.get_diagnostics();
+}
