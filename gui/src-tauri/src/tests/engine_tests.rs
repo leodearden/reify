@@ -643,6 +643,31 @@ fn parse_value_string_unit_table_ordering_invariant() {
     }
 }
 
+// --- Task 497: step-3 — UNIT_TABLE ordering invariant test ---
+
+/// Directly assert that UNIT_TABLE is sorted by descending suffix length.
+///
+/// The debug_assert in parse_value_string vanishes in release builds; this
+/// #[test] provides coverage in both debug and release builds. It references
+/// the pub(crate) const UNIT_TABLE extracted from parse_value_string in step-4.
+#[test]
+fn unit_table_ordering_invariant_holds() {
+    use crate::engine::UNIT_TABLE;
+
+    let sorted = UNIT_TABLE
+        .windows(2)
+        .all(|w| w[0].0.len() >= w[1].0.len());
+    assert!(
+        sorted,
+        "UNIT_TABLE entries must be sorted by descending suffix length (longest first). \
+         Adjacent pairs: {:?}",
+        UNIT_TABLE
+            .windows(2)
+            .map(|w| (w[0].0, w[0].0.len(), w[1].0, w[1].0.len()))
+            .collect::<Vec<_>>()
+    );
+}
+
 // --- Task 132: Tessellation integration tests ---
 
 #[test]
