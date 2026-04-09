@@ -24652,7 +24652,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "gui/src-tauri/src/engine.rs",
+            "gui/src-tauri/src/tests/engine_tests.rs"
+          ],
+          "modules": [
+            "gui/src-tauri/src",
+            "gui/src-tauri/src/tests"
+          ]
+        }
       },
       {
         "id": 1213,
@@ -24663,7 +24673,17 @@
         "status": "pending",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "metadata": {
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ],
+          "modules": [
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests"
+          ]
+        }
       }
     ],
     "metadata": {
