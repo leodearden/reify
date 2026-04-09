@@ -25147,15 +25147,16 @@
         "description": "The relaxed `_check_has_no_ref_guard` pattern in tests/infra/test_test_helpers.sh:262 (`grep -qE 'if \\[ -n.*ref'`) and its robustness fixture have two related gaps:\n\n1. **Missing literal historical fixture (line 262 robustness suite).** The robustness suite verifies the relaxed pattern catches `$ref_fn` (non-underscore), but it does NOT include a fixture matching the EXACT historical pre-refactor guard pattern that this work was meant to defend against — `if [ -n \"$_expr_ref_fn\" ]` and `if [ -n \"$_stdlib_ref_fn\" ]` (removed in commit ff0880bfe). Without that fixture, a future tightening of the regex could silently lose coverage of the actual historical regression while the new robustness test still passes. Add a third fixture mimicking the historical guard literally — e.g. `printf 'if [ -n \"$_expr_ref_fn\" ]; then echo skip; fi\\n'` — and assert `_check_has_no_ref_guard` returns non-zero. This pins the regression case the helper exists to prevent.\n\n2. **Pattern scope clarity (line 262).** The pattern `if \\[ -n.*ref` only catches defensive guards whose tested variable name contains the literal substring `ref`. A future guard reintroduced as `if [ -n \"$marker\" ]` or `if [ -n \"$fn_name\" ]` would slip through. The commit message says \"relax if-guard pattern beyond underscore prefix\", but the relaxation is bounded to a different — equally narrow — keyword. Decide between:\n   - (a) Tighten the comment/check description on lines 262/274 to make explicit that the helper only catches guards on `ref`-named variables (the historical regression class), OR\n   - (b) Broaden the regex to catch any defensive existence guard around an extracted-name local — e.g. `if \\[ -n .*\\$.*_fn` or `if \\[ -n.*_(ref_)?fn`.\n\nThese are tightly coupled: deciding the pattern scope (item 2) determines what fixtures should be pinned (item 1). Resolve them together.\n\nVerification: run `bash tests/infra/test_test_helpers.sh` and confirm both new fixtures behave as asserted, total tests still pass.\n\nmemory_hints: search(\"_check_has_no_ref_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:30:08.718Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:30:07.357Z",
+      "lastModified": "2026-04-09T02:30:08.718Z",
       "taskCount": 1241,
       "completedCount": 923,
       "tags": [
