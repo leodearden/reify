@@ -381,6 +381,30 @@ fn report_constraint_results(
     }
 }
 
+/// Report only the violated entries from a constraint check result slice.
+///
+/// Used by [`cmd_test`] to show which constraints failed under a failing test,
+/// visually nested below the parent `FAIL` line. Only [`Satisfaction::Violated`]
+/// entries are printed; satisfied and indeterminate entries are silently skipped.
+///
+/// Each line is formatted as `"{indent}VIOLATED {label}"` where `label` falls
+/// back to the [`ConstraintNodeId`] Display representation when `entry.label`
+/// is `None` — consistent with [`report_constraint_results`].
+fn report_violated_constraints(
+    results: &[reify_eval::ConstraintCheckEntry],
+    indent: &str,
+    out: &mut impl std::io::Write,
+) {
+    for entry in results {
+        if entry.satisfaction != Satisfaction::Violated {
+            continue;
+        }
+        let id_str = format!("{}", entry.id);
+        let label = entry.label.as_deref().unwrap_or(&id_str);
+        let _ = writeln!(out, "{}VIOLATED {}", indent, label);
+    }
+}
+
 /// Report constraint results and eval diagnostics in a consistent order.
 ///
 /// Writes constraint status lines to `out` (via [`report_constraint_results`]),
