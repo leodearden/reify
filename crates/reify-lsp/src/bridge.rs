@@ -13,6 +13,20 @@ use tower_lsp::{LanguageServer, LspService};
 
 use crate::server::{NoOpSink, NotificationSink, ReifyLanguageServer};
 
+/// Deserialize an LSP params payload into `T`, attaching `label` to any
+/// resulting error. Used by every deserializing arm of
+/// [`InProcessLsp::handle_request`] to keep the per-arm code one line.
+///
+/// On failure, returns `Err(format!("{label} params error: {e}"))` — this is
+/// the canonical prefix asserted by integration tests in
+/// `tests/in_process_bridge.rs` via the [`error_prefix`] constants.
+fn parse_params<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+    label: &str,
+) -> Result<T, String> {
+    serde_json::from_value(params).map_err(|e| format!("{label} params error: {e}"))
+}
+
 /// An in-process LSP server that can be called directly without I/O streams.
 ///
 /// The `server` field holds a cloned `ReifyLanguageServer` (all `Arc`-wrapped
@@ -106,8 +120,7 @@ impl InProcessLsp {
 
         match method {
             "initialize" => {
-                let p: InitializeParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZE_PARAMS))?;
+                let p = parse_params::<InitializeParams>(params, "initialize")?;
                 let result = server
                     .initialize(p)
                     .await
@@ -124,32 +137,27 @@ impl InProcessLsp {
                 } else {
                     params
                 };
-                let p: InitializedParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::INITIALIZED_PARAMS))?;
+                let p = parse_params::<InitializedParams>(params, "initialized")?;
                 server.initialized(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didOpen" => {
-                let p: DidOpenTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_OPEN_PARAMS))?;
+                let p = parse_params::<DidOpenTextDocumentParams>(params, "didOpen")?;
                 server.did_open(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didChange" => {
-                let p: DidChangeTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CHANGE_PARAMS))?;
+                let p = parse_params::<DidChangeTextDocumentParams>(params, "didChange")?;
                 server.did_change(p).await;
                 Ok(Value::Null)
             }
             "textDocument/didClose" => {
-                let p: DidCloseTextDocumentParams = serde_json::from_value(params)
-                    .map_err(|e| format!("{}: {e}", error_prefix::DID_CLOSE_PARAMS))?;
+                let p = parse_params::<DidCloseTextDocumentParams>(params, "didClose")?;
                 server.did_close(p).await;
                 Ok(Value::Null)
             }
             "textDocument/completion" => {
-                let p: CompletionParams = serde_json::from_value(params)
-                    .map_err(|e| format!("completion params error: {e}"))?;
+                let p = parse_params::<CompletionParams>(params, "completion")?;
                 let result = server
                     .completion(p)
                     .await
@@ -157,8 +165,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/hover" => {
-                let p: HoverParams = serde_json::from_value(params)
-                    .map_err(|e| format!("hover params error: {e}"))?;
+                let p = parse_params::<HoverParams>(params, "hover")?;
                 let result = server
                     .hover(p)
                     .await
@@ -166,8 +173,7 @@ impl InProcessLsp {
                 serde_json::to_value(result).map_err(|e| format!("serialize error: {e}"))
             }
             "textDocument/definition" => {
-                let p: GotoDefinitionParams = serde_json::from_value(params)
-                    .map_err(|e| format!("definition params error: {e}"))?;
+                let p = parse_params::<GotoDefinitionParams>(params, "definition")?;
                 let result = server
                     .goto_definition(p)
                     .await
@@ -226,4 +232,31 @@ pub mod error_prefix {
     ///
     /// The full error message is `"{UNSUPPORTED_METHOD} {method_name}"`.
     pub const UNSUPPORTED_METHOD: &str = "unsupported LSP method:";
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_params_returns_ok_for_valid_input() {
+        let result = parse_params::<InitializeParams>(json!({"capabilities": {}}), "initialize");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_params_returns_err_with_label_prefix_on_invalid_input() {
+        let result = parse_params::<InitializeParams>(json!(42), "initialize");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().starts_with("initialize params error: "));
+    }
+
+    #[test]
+    fn parse_params_substitutes_provided_label() {
+        let result = parse_params::<DidOpenTextDocumentParams>(json!(42), "didOpen");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("didOpen params error"));
+    }
 }

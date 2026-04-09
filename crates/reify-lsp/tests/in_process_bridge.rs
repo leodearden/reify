@@ -5,6 +5,7 @@ use reify_lsp::bridge::InProcessLsp;
 use reify_test_support::assert_warn_count;
 use reify_test_support::warn_counting_guard;
 use serde_json::json;
+use std::time::Duration;
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
@@ -887,4 +888,85 @@ async fn error_prefix_constants_match_actual_errors() {
         "error should contain '{}', got: {err}",
         error_prefix::UNSUPPORTED_METHOD
     );
+}
+
+/// Document the server behavior when `initialize` fails (malformed params) and the
+/// `initialized` notification is never sent, but downstream `textDocument/didOpen` and
+/// `textDocument/completion` calls are made anyway.
+///
+/// **Permitted outcomes** (per the task description):
+/// - The downstream calls succeed with well-formed responses — the bridge does not
+///   gate them on the handshake state, so `did_open` and `completion` run normally.
+/// - The downstream calls return a well-defined `Err` — a future change may add a
+///   pre-handshake guard; that is also an acceptable outcome provided the error is
+///   non-empty.
+///
+/// **Regressions this test guards against:**
+/// - A panic or hang on `textDocument/didOpen` / `textDocument/completion` when the
+///   handshake was never completed.
+/// - An ill-formed (e.g. empty string) error being returned on the pre-handshake path.
+/// - A future permissive-to-strict change that silently swallows the error instead of
+///   surfacing it.
+///
+/// Mirrors the setup of `initialize_error_does_not_corrupt_server_state` (same failing
+/// payload, same `InProcessLsp::new()` start), but replaces the "recovery initialize"
+/// assertion with downstream `didOpen` + `completion` calls.
+#[tokio::test]
+async fn downstream_ops_after_malformed_initialize_without_initialized() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let lsp = InProcessLsp::new();
+
+        // Step 1: send initialize with a completely wrong payload type.
+        // Uses json!(42) — the canonical malformed payload in this file — to guarantee
+        // serde rejects it before server.initialize() is ever called, so workspace_root
+        // and stdlib_path remain at their defaults.
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
+
+        // Step 2: intentionally skip the `initialized` notification.
+        // The `initialized()` handler is a no-op, so skipping it produces no server-side
+        // state change — but this test documents that the server also does not require it
+        // before accepting downstream calls.
+
+        // Step 3: send textDocument/didOpen on the same (never-handshook) instance.
+        // bracket_source() does not require stdlib resolution to parse, so compilation
+        // proceeds even without the workspace_root that initialize() would have set.
+        let did_open_result = lsp
+            .handle_request(
+                "textDocument/didOpen",
+                did_open_params("file:///test.ri", reify_test_support::bracket_source()),
+            )
+            .await;
+        let val = did_open_result
+            .expect("didOpen should succeed pre-handshake (bridge has no init-state guard)");
+        assert_eq!(
+            val,
+            serde_json::Value::Null,
+            "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
+        );
+
+        // Step 4: send textDocument/completion at the same position used by the happy-path
+        // reference test did_open_and_completion_returns_items (line 1, character 0).
+        // The bridge dispatches textDocument/completion regardless of initialization state:
+        // the match arm in bridge.rs has no init-state guard.  If didOpen failed earlier
+        // and the DocumentStore entry was never created, the completion response will be
+        // Ok(Value::Null) (no completions) rather than an item list.
+        let completion_result = lsp
+            .handle_request(
+                "textDocument/completion",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 1, "character": 0 }
+                }),
+            )
+            .await;
+        let val = completion_result
+            .expect("completion should succeed pre-handshake (bridge has no init-state guard)");
+        if !val.is_null() {
+            // Non-null Ok — must be a well-formed CompletionResponse variant.
+            // completion_items() panics with an actionable message if the shape is wrong.
+            let _items = completion_items(&val);
+        }
+    })
+    .await
+    .expect("downstream_ops test body must not hang");
 }

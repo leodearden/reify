@@ -269,20 +269,33 @@ pub(crate) fn compile_guarded_members(
                 let cell_type = scope
                     .resolve(&param.name)
                     .map(|(_, ty)| ty.clone())
-                    .unwrap_or(Type::Real);
+                    .unwrap_or_else(|| {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "internal compiler error: unresolved guarded member '{}' in pass 2",
+                                param.name
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                param.span,
+                                "ICE: name should have been registered in pass 1",
+                            )),
+                        );
+                        Type::Real
+                    });
 
-                let is_auto = matches!(
-                    param.default.as_ref(),
-                    Some(reify_syntax::Expr {
-                        kind: reify_syntax::ExprKind::Auto,
-                        ..
-                    })
-                );
+                let auto_free: Option<bool> =
+                    param.default.as_ref().and_then(|expr| {
+                        if let reify_syntax::ExprKind::Auto { free } = &expr.kind {
+                            Some(*free)
+                        } else {
+                            None
+                        }
+                    });
 
-                let decl = if is_auto {
+                let decl = if let Some(free) = auto_free {
                     ValueCellDecl {
                         id,
-                        kind: ValueCellKind::Auto { free: false },
+                        kind: ValueCellKind::Auto { free },
                         visibility: Visibility::Public,
                         cell_type,
                         default_expr: None,

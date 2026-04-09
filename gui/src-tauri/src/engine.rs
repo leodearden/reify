@@ -22,24 +22,20 @@ use crate::types::{
 ///
 /// # Invariant: compiled / module_name / source_map must stay in sync
 ///
-/// Whenever `compiled` is `Some`, **all three** of the following must hold:
+/// Whenever `compiled` is `Some`, **all three** of the following should hold:
 ///
 /// 1. `module_name` is `Some(name)`.
 /// 2. `source_map` contains the key `module_key(name)` (i.e. `"{name}.ri"`).
 /// 3. The value stored at that key is the source text that produced the current
 ///    `CompiledModule`.
 ///
-/// Any code path that sets one of these fields without setting the others puts
-/// the session in an inconsistent state and will cause a panic in
-/// `get_diagnostics` or `get_source_location` (via `resolve_source`).
+/// When the invariant is broken (e.g. via test helpers), `resolve_source`
+/// returns `None`, and `get_diagnostics` / `get_source_location` degrade
+/// gracefully rather than panicking.
 ///
 /// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
 /// `update_source` (lines ~189–198) — both defer all field writes until after
 /// parse and compile succeed, so they maintain the invariant atomically.
-///
-/// **Future callers** that acquire partial state through serialization,
-/// snapshotting, or test injection **must** restore all three fields together
-/// before any subsequent `get_*` call.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -107,15 +103,15 @@ impl EngineSession {
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
 
-        // Store source with normalized key; clear stale entries
+        // Evaluate + check constraints (borrows compiled by shared ref, so all
+        // field mutations can safely be deferred until after check() returns).
+        let check_result = self.engine.check(&compiled);
+
+        // Atomically commit all state after check() succeeds.
         self.source_map.clear();
         self.source_map
             .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
-
-        // Evaluate + check constraints
-        let check_result = self.engine.check(&compiled);
-
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
 
@@ -175,8 +171,9 @@ impl EngineSession {
     /// Source changes can alter topology, so we create a fresh parse/compile/eval cycle.
     /// The existing engine state (snapshot, caches) is reused where possible via check().
     ///
-    /// On error (parse or compile failure), the session state is left completely unchanged —
-    /// source_map, module_name, compiled, and last_check all retain their previous values.
+    /// On any error (parse, compile, or a panic in check()), the session state is left
+    /// completely unchanged — source_map, module_name, compiled, and last_check all
+    /// retain their previous values. All mutations are deferred until after check() returns.
     pub fn update_source(&mut self, path: &str, content: &str) -> Result<GuiState, String> {
         let module_name = Path::new(path)
             .file_stem()
@@ -208,14 +205,15 @@ impl EngineSession {
             return Err(format!("Compile errors: {}", msgs.join("; ")));
         }
 
-        // Parse+compile succeeded — now atomically update all state
+        // Parse+compile succeeded — run check() before mutating any state, so
+        // that a panic in check() leaves the session completely unchanged.
+        let check_result = self.engine.check(&compiled);
+
+        // Atomically commit all state after check() succeeds.
         let normalized_key = module_key(module_name);
         self.source_map.clear();
         self.source_map.insert(normalized_key, content.to_string());
         self.module_name = Some(module_name.to_string());
-
-        let check_result = self.engine.check(&compiled);
-
         self.compiled = Some(compiled);
         self.last_check = Some(check_result);
 
@@ -249,35 +247,22 @@ impl EngineSession {
 
     /// Resolve the canonical source key and text for the currently loaded module.
     ///
-    /// Returns `(key, source_text)` where `key` is `"{module_name}.ri"` (a
+    /// Returns `Some((key, source_text))` where `key` is `"{module_name}.ri"` (a
     /// reference into the map's owned key) and `source_text` is the stored
     /// source for that key (a reference into the map's owned value).  Both
     /// references borrow from `self` and require no allocation on the return path.
     ///
-    /// # Precondition
-    ///
-    /// Callers **must** verify `self.compiled.is_some()` before calling.
-    /// `load_from_source` and `update_source` set `module_name`, `source_map`,
-    /// and `compiled` atomically (they fail before mutating state on
-    /// parse/compile errors), so `compiled.is_some()` implies
-    /// `module_name.is_some()` AND `source_map` contains the derived key.
-    /// Violation of this precondition is a programming error caught by
-    /// `debug_assert` in debug/test builds.
-    fn resolve_source(&self) -> (&str, &str) {
-        debug_assert!(
-            self.compiled.is_some(),
-            "resolve_source: compiled must be Some — callers must verify compiled.is_some() first"
-        );
-        let name = self
-            .module_name
-            .as_deref()
-            .expect("resolve_source: module_name is None but compiled is Some — invariant violated");
+    /// Returns `None` when the session has no loaded module (`compiled` is `None`),
+    /// when `module_name` is `None`, or when the source map does not contain the
+    /// derived key.  The last two cases indicate a broken invariant (e.g., from a
+    /// test helper like `break_module_name_for_test`); callers handle `None`
+    /// gracefully instead of panicking.
+    fn resolve_source(&self) -> Option<(&str, &str)> {
+        self.compiled.as_ref()?;
+        let name = self.module_name.as_deref()?;
         let key = module_key(name);
-        let (k, v) = self
-            .source_map
-            .get_key_value(&key)
-            .expect("resolve_source: source_map missing key — load/update_source invariant violated");
-        (k.as_str(), v.as_str())
+        let (k, v) = self.source_map.get_key_value(&key)?;
+        Some((k.as_str(), v.as_str()))
     }
 
     /// Look up source location for an entity path (e.g., "Bracket.width").
@@ -293,16 +278,10 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Fallible source_map lookup — returns None when the invariant is broken
-        // (e.g., in tests via break_source_map_for_test) rather than panicking.
-        // resolve_source() is not used here because get_source_location returns
-        // Option and can propagate None gracefully; callers that require the
-        // invariant guarantee (get_diagnostics with non-empty diagnostics) still
-        // use resolve_source() to get a loud panic on violation.
-        let name = self.module_name.as_deref()?;
-        let key = module_key(name);
-        let (file, source) = self.source_map.get_key_value(key.as_str())?;
-        let (file, source) = (file.as_str(), source.as_str());
+        // Delegate source key resolution to resolve_source — returns None when
+        // no module is loaded or when the invariant is broken (e.g., via
+        // break_source_map_for_test), eliminating duplicated fallible lookup.
+        let (file, source) = self.resolve_source()?;
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
@@ -332,15 +311,21 @@ impl EngineSession {
         };
 
         // Early-exit when there is nothing to map — avoids calling resolve_source
-        // (which panics on a broken invariant) when no work is needed.
+        // when no work is needed.
         if compiled.diagnostics.is_empty() {
             return Vec::new();
         }
 
         // Resolve file_path and source text via the shared helper.
+        // Returns None if no module is loaded or if the invariant is broken
+        // (e.g., in tests via break_module_name_for_test); in that case we
+        // return an empty vec rather than panicking.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
         // file — file_path from multi-file diagnostics would need threading here.
-        let (file_path, source) = self.resolve_source();
+        let (file_path, source) = match self.resolve_source() {
+            Some(pair) => pair,
+            None => return Vec::new(),
+        };
 
         // Build the newline table once (O(M)) so each span lookup is O(log M).
         let line_offsets = build_line_offsets(source);
@@ -518,9 +503,10 @@ impl EngineSession {
     /// Thin wrapper around `resolve_source` for use in tests.
     ///
     /// Exposes the private method so tests can call it directly and verify
-    /// that the `debug_assert!(self.compiled.is_some())` precondition fires
-    /// when no module is loaded.
-    pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
+    /// that `None` is returned when no module is loaded or when the invariant
+    /// is deliberately broken via `break_module_name_for_test` or
+    /// `break_source_map_for_test`.
+    pub(crate) fn resolve_source_for_test(&self) -> Option<(&str, &str)> {
         self.resolve_source()
     }
 
@@ -559,6 +545,19 @@ fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
     Ok(ValueCellId::new(parts[0], parts[1]))
 }
 
+/// Unit suffixes ordered by descending length — longest match first.
+///
+/// Exported as `pub(crate)` so tests can directly verify the ordering invariant
+/// without duplicating the table. The `debug_assert!` inside `parse_value_string`
+/// checks the same invariant at call-time in debug builds.
+pub(crate) const UNIT_TABLE: &[(&str, f64, DimensionVector)] = &[
+    ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
+    ("rad", 1.0, DimensionVector::ANGLE),
+    ("mm", 0.001, DimensionVector::LENGTH),
+    ("cm", 0.01, DimensionVector::LENGTH),
+    ("m", 1.0, DimensionVector::LENGTH),
+];
+
 /// Parse a value string into a Value.
 ///
 /// Supported formats:
@@ -578,19 +577,13 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
 
     // Try quantity literals (number + unit suffix)
     // Units ordered by descending suffix length — longest match first.
-    // debug_assert! enforces this invariant.
-    let unit_table: &[(&str, f64, DimensionVector)] = &[
-        ("deg", std::f64::consts::PI / 180.0, DimensionVector::ANGLE),
-        ("rad", 1.0, DimensionVector::ANGLE),
-        ("mm", 0.001, DimensionVector::LENGTH),
-        ("cm", 0.01, DimensionVector::LENGTH),
-        ("m", 1.0, DimensionVector::LENGTH),
-    ];
+    // debug_assert! enforces this invariant; #[test] unit_table_ordering_invariant_holds
+    // covers release builds via UNIT_TABLE.
     debug_assert!(
-        unit_table.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
-        "unit_table must be sorted by descending suffix length"
+        UNIT_TABLE.windows(2).all(|w| w[0].0.len() >= w[1].0.len()),
+        "UNIT_TABLE must be sorted by descending suffix length"
     );
-    for &(unit, scale, dimension) in unit_table {
+    for &(unit, scale, dimension) in UNIT_TABLE {
         if let Some(num_str) = s.strip_suffix(unit) {
             let num_str = num_str.trim();
             if let Ok(v) = num_str.parse::<f64>() {
