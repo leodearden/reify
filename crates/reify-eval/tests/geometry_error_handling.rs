@@ -1068,3 +1068,78 @@ fn build_primitive_missing_arg_no_kernel_error() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guard: missing modify arg → no Modify kernel call, no 'geometry error'
+// ---------------------------------------------------------------------------
+
+/// When a Fillet modify op is missing its required 'radius' arg, build() should:
+/// 1. Call kernel exactly once — for the preceding Box that provides the target
+///    handle — but never call kernel for the Fillet itself.
+/// 2. Return geometry_output=None (compile failure short-circuits the realization).
+/// 3. Emit a Warning: "missing required geometry argument" mentioning both
+///    'radius' and 'Fillet'.
+/// 4. Emit an Error: "failed to compile geometry operation".
+/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
+///    called for the Fillet op).
+///
+/// Unlike the primitive test (`build_primitive_missing_arg_no_kernel_error`),
+/// this test uses a two-op realization [Box, Fillet(missing radius)] because
+/// `compile_geometry_op` resolves `Modify { target, .. }` via
+/// `step_handles.get(idx).copied()?` *before* reaching arg-validation — so a
+/// lone Fillet with an empty step_handles would short-circuit at target lookup
+/// without ever emitting the warning. The Box is the minimum setup needed to
+/// populate step_handles[0] so the Fillet's target resolves and the
+/// arg-validation path is exercised.
+///
+/// The unit-level counterpart is
+/// `compile_geometry_op_modify_missing_arg_returns_none` in lib.rs:4955-5007.
+#[test]
+fn build_modify_missing_arg_no_kernel_error() {
+    use reify_compiler::ModifyKind;
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Op 0: Box primitive with all three required args — provides step_handles[0]
+    // as the Fillet's target
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("width".into(), mm_literal(80.0)),
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+        ],
+    };
+
+    // Op 1: Fillet modify op with 'radius' deliberately omitted
+    let fillet_op = CompiledGeometryOp::Modify {
+        kind: ModifyKind::Fillet,
+        target: GeomRef::Step(0),
+        args: vec![], // radius deliberately omitted
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "width", Type::length(), Some(mm_literal(80.0)))
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op, fillet_op])
+        .build();
+
+    let module =
+        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_radius"))
+            .template(template)
+            .build();
+
+    // Standard MockGeometryKernel — if execute() were called for the Fillet it
+    // would succeed, but it should never be reached for that op.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // Assertions are filled in step-2 of plan 1286.
+    let _ = (ops_ref, result);
+}
