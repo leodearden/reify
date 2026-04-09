@@ -471,6 +471,19 @@ else
 fi
 rm -f "$fixture_clean"
 
+# Fixture with a non-ref-named guard variable ($marker): the current narrow
+# regex 'if \[ -n.*ref' does NOT match because 'marker' lacks the substring
+# 'ref'.  A properly broadened helper should detect the guard and return
+# non-zero (guard IS present).
+fixture_marker=$(mktemp)
+printf 'if [ -n "$marker" ]; then echo skip; fi\n' > "$fixture_marker"
+if _check_has_no_ref_guard "$fixture_marker" 2>/dev/null; then
+    check "if-guard pattern detects non-ref-named variable \$marker (should FAIL)" "false"
+else
+    check "if-guard pattern detects non-ref-named variable \$marker (guard present → false)" "true"
+fi
+rm -f "$fixture_marker"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
