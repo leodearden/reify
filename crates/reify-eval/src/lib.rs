@@ -4866,7 +4866,7 @@ mod tests {
     // ── compile_geometry_op diagnostic tests ─────────────────────────────────
 
     #[test]
-    fn compile_geometry_op_primitive_missing_arg_emits_diagnostic() {
+    fn compile_geometry_op_primitive_missing_arg_returns_none() {
         let step_handles: Vec<GeometryHandleId> = vec![];
         let values = ValueMap::new();
 
@@ -4890,23 +4890,11 @@ mod tests {
             &mut diagnostics,
         );
 
-        // The op is still constructed (Some), not aborted
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
         assert!(
-            result.is_some(),
-            "compile_geometry_op should return Some even when an arg is missing"
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
         );
-
-        // The missing 'width' arg should produce Value::Undef
-        match result.unwrap() {
-            reify_types::GeometryOp::Box { width, .. } => {
-                assert_eq!(
-                    width,
-                    reify_types::Value::Undef,
-                    "missing arg should default to Value::Undef"
-                );
-            }
-            other => panic!("expected GeometryOp::Box, got {:?}", other),
-        }
 
         // Exactly one diagnostic warning should have been emitted for the missing 'width'
         assert_eq!(
