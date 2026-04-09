@@ -28402,15 +28402,16 @@
         "description": "Three improvements in tests/infra/test_portable_timeout.sh: (1) Line 407: quote `exit $found` → `exit \"$found\"` for consistency with the _check_rc pattern. (2) Lines 258-263: add a marker comment (e.g. # SAFETY_NET_GREP_LINE) on the critical grep line so the meta-test searches for the marker instead of brittle comment text. (3) Lines 222-234: add a runtime self-test for POSIX_FALLBACK_SETUP (with trap) that verifies EXIT trap IS set and portable_timeout IS defined, matching the no-trap self-test symmetry.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T21:07:37.060Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:07:35.879Z",
+      "lastModified": "2026-04-09T21:07:37.060Z",
       "taskCount": 1375,
       "completedCount": 1050,
       "tags": [
