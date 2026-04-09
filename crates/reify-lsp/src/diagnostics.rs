@@ -68,6 +68,14 @@ pub fn compute_diagnostics_with_state(
     for err in &parsed.errors {
         diagnostics.push(convert::convert_parse_error(err, source, uri));
     }
+    // Early-return on parse errors: the partial AST fed to compile/eval produces
+    // misleading secondary diagnostics. Match the behaviour of engine.rs:87-90.
+    if !parsed.errors.is_empty() {
+        return DiagnosticsResult {
+            diagnostics,
+            geometry_output: None,
+        };
+    }
 
     // Compile
     let compiled = reify_compiler::compile(&parsed);
@@ -352,6 +360,37 @@ mod tests {
         let result = compute_diagnostics_with_state(&mut state, "", &uri);
         // Should not panic; result may contain parse errors but should be valid
         let _ = result;
+    }
+
+    // --- parse error early return tests (step-6 / Task 497) ---
+
+    /// When there are parse errors, compile/eval may produce misleading secondary
+    /// diagnostics on a broken AST. After the early return added in step-7, the
+    /// result should contain exactly the parse error diagnostics — no more.
+    #[test]
+    fn parse_error_skips_compile_and_eval() {
+        let source = "structure {";
+        let uri = test_uri();
+
+        // Count parse errors directly using reify_syntax
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+        let parse_error_count = parsed.errors.len();
+        assert!(
+            parse_error_count > 0,
+            "test source must produce at least one parse error"
+        );
+
+        // compute_diagnostics_with_state should return only parse-error diagnostics
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, source, &uri);
+        assert_eq!(
+            result.diagnostics.len(),
+            parse_error_count,
+            "on parse error, diagnostics count ({}) should equal parse error count ({}); \
+             secondary compile/eval diagnostics must not be included",
+            result.diagnostics.len(),
+            parse_error_count
+        );
     }
 
     // --- constraint violation diagnostic range tests (step-31) ---
