@@ -40,6 +40,33 @@ fn make_engine() -> reify_eval::Engine {
     reify_eval::Engine::new(Box::new(checker), None)
 }
 
+/// Parse `source`, compile, assert ≥1 Error-severity diagnostic is produced.
+/// If `needle` is non-empty, also assert at least one error message contains it.
+fn parse_compile_expect_err(source: &str, needle: &str) {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected at least one compile error");
+    if !needle.is_empty() {
+        assert!(
+            errors.iter().any(|d| d.message.contains(needle)),
+            "expected error containing {:?}, got: {:?}",
+            needle,
+            errors
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // step-13: E2E — let binding using meta.key resolves to Value::String
 // ---------------------------------------------------------------------------
@@ -216,27 +243,7 @@ fn e2e_meta_nonexistent_key_error() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect an error diagnostic
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    assert!(
-        errors.iter().any(|d| d.message.contains("no key")),
-        "expected 'no key' error, got: {:?}",
-        errors
-    );
+    parse_compile_expect_err(source, "no key");
 }
 
 // ---------------------------------------------------------------------------
@@ -255,27 +262,7 @@ fn e2e_meta_no_meta_block_error() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect an error diagnostic
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(!errors.is_empty(), "expected at least one compile error");
-    assert!(
-        errors.iter().any(|d| d.message.contains("no meta block")),
-        "expected 'no meta block' error, got: {:?}",
-        errors
-    );
+    parse_compile_expect_err(source, "no meta block");
 }
 
 // ---------------------------------------------------------------------------
@@ -449,25 +436,7 @@ fn e2e_meta_access_missing_key() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect at least one Error diagnostic for the missing key
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one compile error for missing meta key 'nonexistent', got none"
-    );
+    parse_compile_expect_err(source, "");
 }
 
 /// Regression guard (suggestion 9): accessing `meta.description` on a structure
@@ -485,25 +454,7 @@ fn e2e_meta_access_no_meta_block() {
         }
     "#;
 
-    // Parse
-    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-
-    // Compile — expect at least one Error diagnostic for the missing meta block
-    let compiled = reify_compiler::compile(&parsed);
-    let errors: Vec<_> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        !errors.is_empty(),
-        "expected at least one compile error for meta access on structure with no meta block, got none"
-    );
+    parse_compile_expect_err(source, "");
 }
 
 // ---------------------------------------------------------------------------
