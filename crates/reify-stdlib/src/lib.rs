@@ -48,3 +48,21 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     }
     Value::Undef
 }
+
+// SYNC: mirror of reify-expr::sanitize_value — keep in sync
+#[allow(dead_code)]
+fn sanitize_value(v: Value) -> Value {
+    match &v {
+        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
+        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
+            Value::Undef
+        }
+        Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
+        Value::Orientation { w, x, y, z }
+            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
+        {
+            Value::Undef
+        }
+        _ => v,
+    }
+}
