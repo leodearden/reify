@@ -1126,6 +1126,15 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
         "fn test_comment_only_mention() {\n",
         "    // This test does not call THIS_FILE as an argument\n",
         "    let _ = 2;\n",
+        "}\n\n",
+        // Case (e): a #[test] followed by an intermediate #[allow(unused)] attribute,
+        // then a fn using (THIS_FILE) — should be collected. This exercises the state
+        // machine's `starts_with('#')` branch that keeps `saw_test` alive across
+        // intermediate attributes (previously uncovered).
+        "#[test]\n",
+        "#[allow(unused)]\n",
+        "fn test_with_attr_gap() {\n",
+        "    let _source = std::fs::read_to_string(THIS_FILE).unwrap();\n",
         "}\n",
     );
 
@@ -1154,6 +1163,12 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
     assert!(
         !fns.contains(&"fn test_comment_only_mention()".to_string()),
         "should NOT include test_comment_only_mention (THIS_FILE only in comment); got: {:?}",
+        fns
+    );
+    assert!(
+        fns.contains(&"fn test_with_attr_gap()".to_string()),
+        "should discover test_with_attr_gap (intermediate #[allow] attribute between #[test] and fn — \
+         the state machine's starts_with('#') branch keeps saw_test alive); got: {:?}",
         fns
     );
 }
