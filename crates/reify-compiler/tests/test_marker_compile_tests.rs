@@ -229,3 +229,29 @@ fn compiled_module_test_constraint_defs_returns_only_marked() {
     assert_eq!(non_test_defs.len(), 1, "expected 1 non-test constraint def");
     assert_eq!(non_test_defs[0].name, "NormalC");
 }
+
+// ── Step 16: multiple annotations with @test — both preserved, is_test still true ─
+
+#[test]
+fn multiple_annotations_with_test_marks_template() {
+    let module = compile_module(
+        r#"@test @deprecated("old") structure S { param x : Real }"#,
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let template = &module.templates[0];
+
+    assert!(template.is_test, "expected is_test == true");
+    assert_eq!(
+        template.annotations.len(),
+        2,
+        "expected both annotations preserved, got {:?}",
+        template.annotations
+    );
+    assert_eq!(template.annotations[0].name, "test");
+    assert_eq!(template.annotations[1].name, "deprecated");
+    assert_eq!(template.annotations[1].args.len(), 1);
+    assert_eq!(
+        template.annotations[1].args[0],
+        reify_types::AnnotationArg::String("old".into())
+    );
+}
