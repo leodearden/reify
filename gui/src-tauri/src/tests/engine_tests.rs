@@ -1789,9 +1789,15 @@ fn resolve_source_returns_key_and_source_after_load() {
 ///
 /// break_module_name_for_test deliberately violates the invariant so that
 /// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
 #[test]
 #[should_panic(expected = "module_name is None")]
 fn get_diagnostics_panics_on_broken_module_name() {
+    use reify_types::Diagnostic;
+
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     session
@@ -1799,7 +1805,9 @@ fn get_diagnostics_panics_on_broken_module_name() {
         .expect("load_from_source should succeed");
     // Deliberately break the invariant: compiled is Some, module_name is None.
     session.break_module_name_for_test();
-    // This must panic — resolve_source hits expect("module_name is None …").
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "module_name is None".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
     let _ = session.get_diagnostics();
 }
 
@@ -1811,9 +1819,15 @@ fn get_diagnostics_panics_on_broken_module_name() {
 ///
 /// break_source_map_for_test deliberately violates the invariant so that
 /// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
 #[test]
 #[should_panic(expected = "source_map missing key")]
 fn get_diagnostics_panics_on_broken_source_map() {
+    use reify_types::Diagnostic;
+
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     session
@@ -1821,7 +1835,9 @@ fn get_diagnostics_panics_on_broken_source_map() {
         .expect("load_from_source should succeed");
     // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
     session.break_source_map_for_test();
-    // This must panic — resolve_source hits expect("source_map missing key …").
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "source_map missing key".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
     let _ = session.get_diagnostics();
 }
 

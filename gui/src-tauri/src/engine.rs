@@ -293,10 +293,16 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Resolve the source file key and text via the shared helper.
-        // NOTE: Assumes all diagnostic spans refer to the single loaded source
-        // file — file_path from multi-file diagnostics would need threading here.
-        let (file, source) = self.resolve_source();
+        // Fallible source_map lookup — returns None when the invariant is broken
+        // (e.g., in tests via break_source_map_for_test) rather than panicking.
+        // resolve_source() is not used here because get_source_location returns
+        // Option and can propagate None gracefully; callers that require the
+        // invariant guarantee (get_diagnostics with non-empty diagnostics) still
+        // use resolve_source() to get a loud panic on violation.
+        let name = self.module_name.as_deref()?;
+        let key = module_key(name);
+        let (file, source) = self.source_map.get_key_value(key.as_str())?;
+        let (file, source) = (file.as_str(), source.as_str());
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
@@ -324,6 +330,12 @@ impl EngineSession {
             Some(c) => c,
             None => return Vec::new(),
         };
+
+        // Early-exit when there is nothing to map — avoids calling resolve_source
+        // (which panics on a broken invariant) when no work is needed.
+        if compiled.diagnostics.is_empty() {
+            return Vec::new();
+        }
 
         // Resolve file_path and source text via the shared helper.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
