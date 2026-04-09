@@ -195,12 +195,50 @@ fn parse_auto_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto),
-                "expected ExprKind::Auto, got {:?}",
+                matches!(expr.kind, ExprKind::Auto { free: false }),
+                "expected ExprKind::Auto {{ free: false }}, got {:?}",
                 expr.kind
             );
         }
         None => panic!("expected auto default, got None"),
+    }
+}
+
+/// Parse `param x: Scalar = auto(free)` → ExprKind::Auto { free: true } default.
+#[test]
+fn parse_auto_free_param() {
+    let source = r#"structure T {
+    param x: Scalar = auto(free)
+}"#;
+    let module = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    assert_eq!(module.declarations.len(), 1);
+
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+
+    assert_eq!(structure.members.len(), 1);
+    let param = match &structure.members[0] {
+        MemberDecl::Param(p) => p,
+        other => panic!("expected Param, got {:?}", other),
+    };
+
+    assert_eq!(param.name, "x");
+    match &param.default {
+        Some(expr) => {
+            assert!(
+                matches!(expr.kind, ExprKind::Auto { free: true }),
+                "expected ExprKind::Auto {{ free: true }}, got {:?}",
+                expr.kind
+            );
+        }
+        None => panic!("expected auto(free) default, got None"),
     }
 }
 
@@ -242,7 +280,10 @@ fn parse_mixed_auto_and_normal_params() {
         other => panic!("expected Param, got {:?}", other),
     };
     assert_eq!(y.name, "y");
-    assert!(matches!(y.default.as_ref().unwrap().kind, ExprKind::Auto));
+    assert!(matches!(
+        y.default.as_ref().unwrap().kind,
+        ExprKind::Auto { free: false }
+    ));
 
     // z has no default
     let z = match &structure.members[2] {
