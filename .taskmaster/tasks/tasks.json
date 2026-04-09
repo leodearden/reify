@@ -26445,16 +26445,22 @@
         "description": "In crates/reify-compiler/src/guards.rs (line 421-424), the `_ => {}` catch-all silently drops 6 MemberDecl variants (Port, Connect, Chain, AssociatedType, MetaBlock, ConstraintInst) with no diagnostic. A new variant added to MemberDecl in the future would also be silently swallowed without a compiler warning.\n\nReplace the `_ => {}` wildcard with explicit empty arms: `MemberDecl::Port(_) | MemberDecl::Connect(_) | MemberDecl::Chain(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) | MemberDecl::ConstraintInst(_) => {}`. This ensures adding a new MemberDecl variant produces a non-exhaustive match compiler error, forcing a conscious decision.\n\nThe MemberDecl enum is defined in crates/reify-syntax/src/lib.rs (lines 77-91) with 13 variants total. Param, Let, Constraint, and GuardedGroup are handled by earlier arms; Sub, Minimize, and Maximize emit diagnostics (added in task 490).\n\nMemory hints: search \"compile_guarded_members match arms\", entity: MemberDecl, compile_guarded_members",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T09:31:01.899Z"
+        "updatedAt": "2026-04-09T09:34:43.332Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/src",
+            "crates/reify-compiler/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:31:58.116Z",
+      "lastModified": "2026-04-09T09:34:43.340Z",
       "taskCount": 1312,
       "completedCount": 976,
       "tags": [
