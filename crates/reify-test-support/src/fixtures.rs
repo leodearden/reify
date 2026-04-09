@@ -1,4 +1,4 @@
-use reify_compiler::{CompiledModule, RequirementKind, ValueCellKind};
+use reify_compiler::{CompiledModule, RequirementKind};
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
@@ -893,6 +893,7 @@ pub fn annotated_module() -> CompiledModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_compiler::ValueCellKind;
     use reify_types::Severity;
 
     #[test]
