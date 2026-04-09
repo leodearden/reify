@@ -28621,11 +28621,16 @@
         "description": "Test 22 in tests/infra/test_npm_ci_hardening.sh currently covers the Check 2 happy path (22a) and version-mismatch path (22b), but does not independently exercise Check 1 (packageManager field present / npm@ prefix) or Check 3 (npm lockfiles must not be gitignored). Add fixture-based tests that independently fault-detect each check:\n\n- 22c: fixture where one package.json has no packageManager field (or a non-npm@ value) — assert script exits non-zero (Check 1 failure).\n- 22d: fixture where an npm lockfile path (e.g. gui/package-lock.json) IS listed in .gitignore — assert script exits non-zero (Check 3 failure).\n\nThis gives independent fault-detection coverage for each of the script's four checks, so a regression in any single check is caught by at least one behavioral test. Keep the existing 22a/22b cases. Follow the same fixture pattern: mktemp dir, copy scripts/check-pm-standardization.sh in, initialize git, write synthetic package.json files and .gitignore.\n\nSource: review suggestion on task 1328 (reviewer_comprehensive).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T22:09:05.915Z"
+        "updatedAt": "2026-04-09T22:15:55.479Z",
+        "metadata": {
+          "modules": [
+            "tests/infra/test_npm_ci_hardening.sh"
+          ]
+        }
       },
       {
         "id": "1384",
@@ -28671,7 +28676,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:15:03.408Z",
+      "lastModified": "2026-04-09T22:15:55.479Z",
       "taskCount": 1386,
       "completedCount": 1068,
       "tags": [
