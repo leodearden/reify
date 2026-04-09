@@ -3761,8 +3761,9 @@
         "status": "pending",
         "metadata": {
           "modules": [
+            "crates/reify-syntax",
             "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-types"
           ],
           "milestone": "M9",
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
@@ -3771,7 +3772,14 @@
             "queries": [
               "resolution for: Unit declarations: user-defined units"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-syntax/src/ts_parser.rs",
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/units.rs",
+            "crates/reify-types/src/lib.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-09T08:13:45.718Z"
@@ -3789,11 +3797,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/unit_registry_tests.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
