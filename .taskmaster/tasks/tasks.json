@@ -28918,15 +28918,16 @@
         "description": "Five improvements to the poison-recovery test infrastructure: (1) concurrent_eval.rs: restore write-path coverage for access=\"write\" on write_values/write_snapshot_values warn sites lost when structured_field_emission was deleted. (2) concurrent_eval.rs:1606-1623: fix assert_poison_recovers doc — claims coverage of all 11 sites but only covers 9; note which sites (write_values, write_snapshot_values) fall outside the helper. (3) tracing_support.rs:1505-1518: change bare #[should_panic] to #[should_panic(expected = \"no WARN message equaled\")] to prevent false greens from unrelated panics. (4) concurrent_eval.rs:1648-1654: tighten error-field contract to verify error key is on the same event as the canonical message, not just present on any event. (5) concurrent_eval.rs:2159-2190: delete assert_into_result_poison_warn and the three tracing_warn_emitted_on_poison_into_result* tests — fully subsumed by into_result_recovers tests + helper contract.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:43:49.781Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:43:47.701Z",
+      "lastModified": "2026-04-09T22:43:49.781Z",
       "taskCount": 1402,
       "completedCount": 1074,
       "tags": [
