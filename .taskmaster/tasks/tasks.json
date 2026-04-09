@@ -28077,15 +28077,16 @@
         "description": "Two small hygiene fixes in tests/infra/sync_ref_helpers.sh from Task 1260 review (S1 + S5). Both are non-regressions carried over from the pre-move version, but are appropriate to address now that the file has its own home and is explicitly intended to be sourced from multiple places.",
         "details": "Follow-up to Task 1260. Two review suggestions for tests/infra/sync_ref_helpers.sh.\n\n**S1 — Unreachable display_fn fallback (sync_ref_helpers.sh:32)**\n`local display_fn=\"${ref_fn:-<none>}\"` is dead in its fallback form. The early-fail guard on line 31 returns when ref_fn is empty, so ${ref_fn:-<none>} always evaluates to $ref_fn and the `<none>` branch can never fire. Carried over verbatim from sync_comments_test.sh, not a regression.\nFix: either drop display_fn entirely and use ${ref_fn} in the assert description, or drop the early-fail guard and let display_fn legitimately fall back to `<none>`. Keeping both is contradictory. Recommended: drop display_fn (the early-fail guard is the valuable part).\n\n**S5 — exit 1 in sourceable helper can kill caller (sync_ref_helpers.sh:20)**\n`[ -f ... ] || { echo ERROR ...; exit 1; }` inside a file deliberately intended to be sourced from multiple places will terminate the caller's shell on failure. Not a regression (matches pattern in other consumers) but especially worth hardening here because this helper's whole purpose is sourcing.\nFix: `return 1 2>/dev/null || exit 1` — unwinds cleanly when sourced, still errors hard when (improbably) executed directly. Mirrors the `return 0 2>/dev/null || true` idiom already used in the source guard a few lines above.\n\n**Note on structural meta-test coupling**\ntest_test_helpers.sh:396-400 includes a structural check \"sync_ref_helpers.sh uses display_fn fallback variable\". When S1 removes display_fn, that meta-test must be deleted (not updated to some other indicator).\n\nmemory_hints: search(\"Task 1260 sync_ref_helpers\", project_id=\"reify\"); search(\"sourceable helper return 1 exit 1 idiom\", project_id=\"reify\")",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:35:59.733Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:35:59.362Z",
+      "lastModified": "2026-04-09T19:35:59.733Z",
       "taskCount": 1356,
       "completedCount": 1024,
       "tags": [
