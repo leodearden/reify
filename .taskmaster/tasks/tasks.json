@@ -24849,8 +24849,12 @@
         "updatedAt": "2026-04-08T23:49:55.480Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-types"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-types/src/diagnostics.rs"
           ]
         }
       },
@@ -24892,7 +24896,11 @@
             "queries": [
               "resolution for: Expand test coverage for compile_geometry_op missing-arg diagnostics + add e2e plumbing test"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs"
+          ]
         }
       },
       {
