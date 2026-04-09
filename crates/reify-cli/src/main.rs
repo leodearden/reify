@@ -156,7 +156,7 @@ fn cmd_test(args: &[String]) -> ExitCode {
                 "INDETERMINATE"
             }
         };
-        println!("  {}  {}", label, result.name);
+        println!("  {:<13}  {}", label, result.name);
     }
 
     let overall = if failed > 0 { "FAIL" } else { "ok" };
