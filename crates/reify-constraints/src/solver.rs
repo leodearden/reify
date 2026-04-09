@@ -778,25 +778,20 @@ fn verify_uniqueness(
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
     // end of its bounds range from the solution.
+    let mut missing: Vec<String> = Vec::new();
     let perturbed: Vec<f64> = problem
         .auto_params
         .iter()
         .map(|param| {
             let (lo, hi) = effective_bounds(param);
             let mid = (lo + hi) / 2.0;
-            let solution_val = match solved_values.get(&param.id).and_then(|v| v.as_f64()) {
-                Some(v) => v,
-                None => {
-                    tracing::warn!(
-                        param = %param.id,
-                        mid,
-                        "verify_uniqueness: solved value missing or non-numeric; \
-                         using midpoint as comparison anchor \
-                         (perturbation start defaults to lower-half side)"
-                    );
+            let solution_val = solved_values
+                .get(&param.id)
+                .and_then(|v| v.as_f64())
+                .unwrap_or_else(|| {
+                    missing.push(param.id.to_string());
                     mid
-                }
-            };
+                });
             if solution_val < mid {
                 // Solution is in the lower half — start near the high end
                 lo + 0.9 * (hi - lo)
@@ -806,6 +801,16 @@ fn verify_uniqueness(
             }
         })
         .collect();
+    if !missing.is_empty() {
+        tracing::warn!(
+            missing_params = ?missing,
+            "verify_uniqueness: {} solved value(s) missing or non-numeric {:?}; \
+             using midpoint as comparison anchor \
+             (perturbation start defaults to lower-half side)",
+            missing.len(),
+            missing
+        );
+    }
 
     tracing::debug!(
         n_params = problem.auto_params.len(),
