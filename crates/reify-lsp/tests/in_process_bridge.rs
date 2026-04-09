@@ -762,8 +762,11 @@ async fn shutdown_with_null_params_returns_ok_null() {
 /// a panic or an unexpected error being introduced on this path.
 #[tokio::test]
 async fn shutdown_before_initialize() {
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!({})).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize", async {
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!({})).await;
+    })
+    .await;
 }
 
 /// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
@@ -775,8 +778,11 @@ async fn shutdown_before_initialize() {
 /// path because the shutdown arm in the bridge ignores params entirely.
 #[tokio::test]
 async fn shutdown_before_initialize_with_null_params() {
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_before_initialize_with_null_params", async {
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!(null)).await;
+    })
+    .await;
 }
 
 /// The `shutdown` bridge arm ignores params entirely — it never deserializes or
@@ -793,12 +799,15 @@ async fn shutdown_before_initialize_with_null_params() {
 /// shutdown arm does not consult initialization state.
 #[tokio::test]
 async fn shutdown_ignores_unexpected_params() {
-    // Object with unexpected extra fields — bridge must not reject this.
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
-    // Wrong JSON type entirely — bridge must not reject this either.
-    let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    with_hang_guard(HANG_GUARD_SECS, "shutdown_ignores_unexpected_params", async {
+        // Object with unexpected extra fields — bridge must not reject this.
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+        // Wrong JSON type entirely — bridge must not reject this either.
+        let lsp = InProcessLsp::new();
+        assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+    })
+    .await;
 }
 
 /// Mirror of `shutdown_ignores_unexpected_params` for the post-handshake path.
