@@ -19946,11 +19946,11 @@
         "description": "Add a test in crates/reify-lsp/tests/in_process_bridge.rs that sends a malformed initialize, skips the initialized notification, then attempts textDocument/didOpen and completion. Assert expected behavior (functions or returns well-defined error).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T09:03:46.557Z",
+        "updatedAt": "2026-04-09T17:12:09.361Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -27567,7 +27567,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:12:08.663Z",
+      "lastModified": "2026-04-09T17:12:09.362Z",
       "taskCount": 1328,
       "completedCount": 1000,
       "tags": [
