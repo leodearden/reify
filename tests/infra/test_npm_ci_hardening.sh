@@ -172,4 +172,11 @@ echo "--- Test 16: Check 2 grep arguments expand \$PKG_FILES ---"
 assert "Check 2 grep arguments expand \$PKG_FILES" \
     bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q PKG_FILES"
 
+# -- Test 17: Check 3 has git check-ignore -v diagnostic fallback -------------
+echo ""
+echo "--- Test 17: Check 3 has 'git check-ignore -v' diagnostic fallback ---"
+
+assert "Check 3 has 'git check-ignore -v' diagnostic fallback" \
+    grep -q 'git check-ignore -v' "$SCRIPT"
+
 test_summary
