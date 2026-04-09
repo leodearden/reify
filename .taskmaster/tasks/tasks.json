@@ -24884,11 +24884,11 @@
         "description": "Lock in the intentional-panic contract of `resolve_source()` with a complementary test in `gui/src-tauri/src/tests/engine_tests.rs`.\n\nCurrently `resolve_source_fallback_when_source_map_missing` and `resolve_source_fallback_when_module_name_missing` only exercise the *happy* early-exit path in `get_diagnostics`: `bracket_source()` compiles with 0 warnings, so `compiled.diagnostics.is_empty()` fires at engine.rs:336-338 and `resolve_source()` is never reached. The path where diagnostics ARE present AND the invariant is broken — which calls `resolve_source()` and intentionally panics — is uncovered.\n\nAdd a `#[should_panic(expected = \"...\")]` test that:\n1. Loads source that produces at least one warning (or uses `inject_diagnostic_for_test` if appropriate).\n2. Calls `session.break_module_name_for_test()` (or `break_source_map_for_test()`).\n3. Calls `session.get_diagnostics()` and expects a panic from `resolve_source()`.\n\nThis documents that the panic is intentional and will catch accidental softening of that contract (e.g. someone changing `resolve_source` to return Option).\n\nReference: reviewer_comprehensive suggestion on task 900 review (triaged via task 1219).\n\nmemory_hints: search(\"inject_diagnostic_for_test bracket_source warnings engine_tests\", project_id=\"reify\"); search(\"resolve_source panic invariant contract\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T01:40:29.228Z",
+        "updatedAt": "2026-04-09T01:47:21.641Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -24950,7 +24950,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:47:20.741Z",
+      "lastModified": "2026-04-09T01:47:21.641Z",
       "taskCount": 1229,
       "completedCount": 915,
       "tags": [
