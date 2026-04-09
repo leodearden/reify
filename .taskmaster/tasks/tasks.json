@@ -23078,10 +23078,11 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-types/src/value.rs"
+            "crates/reify-types/src/value.rs",
+            "crates/reify-types/src/hash.rs"
           ],
           "modules": [
-            "crates/reify-types/src"
+            "crates/reify-types"
           ]
         }
       },
@@ -23178,6 +23179,12 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/connect.rs",
+            "crates/reify-compiler/tests/port_compile_tests.rs",
+            "crates/reify-compiler/tests/guard_compilation.rs"
           ]
         }
       },
