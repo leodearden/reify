@@ -766,24 +766,21 @@ fn solutions_agree(
     true
 }
 
-/// Verify solution uniqueness by re-solving from a perturbed starting point.
+/// Build the perturbed initial point for uniqueness verification.
 ///
-/// Creates a perturbed initial point by reflecting each parameter to the
-/// opposite end of its effective bounds range. If the solution found from
-/// the perturbed starting point matches the original within tolerance,
-/// the solution is considered unique.
+/// For each auto parameter, computes the perturbed starting value by reflecting
+/// to the opposite end of its effective bounds range from the current solution.
+/// If a solved value is missing or non-numeric (`as_f64()` returns `None`), the
+/// midpoint is used as a fallback and the parameter ID is added to the returned
+/// missing list.
 ///
-/// Returns `true` if the solution is unique, `false` if a different
-/// solution was found (indicating the problem is underdetermined).
-fn verify_uniqueness(
-    problem: &ResolutionProblem,
+/// Returns `(perturbed_anchors, missing_param_ids)`.
+fn build_perturbation_anchors(
+    auto_params: &[reify_types::AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
-) -> bool {
-    // Build perturbed initial point: reflect each param to the opposite
-    // end of its bounds range from the solution.
+) -> (Vec<f64>, Vec<String>) {
     let mut missing: Vec<String> = Vec::new();
-    let perturbed: Vec<f64> = problem
-        .auto_params
+    let perturbed: Vec<f64> = auto_params
         .iter()
         .map(|param| {
             let (lo, hi) = effective_bounds(param);
@@ -804,6 +801,26 @@ fn verify_uniqueness(
             }
         })
         .collect();
+    (perturbed, missing)
+}
+
+/// Verify solution uniqueness by re-solving from a perturbed starting point.
+///
+/// Creates a perturbed initial point by reflecting each parameter to the
+/// opposite end of its effective bounds range. If the solution found from
+/// the perturbed starting point matches the original within tolerance,
+/// the solution is considered unique.
+///
+/// Returns `true` if the solution is unique, `false` if a different
+/// solution was found (indicating the problem is underdetermined).
+fn verify_uniqueness(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+) -> bool {
+    // Build perturbed initial point: reflect each param to the opposite
+    // end of its bounds range from the solution.
+    let (perturbed, missing) =
+        build_perturbation_anchors(&problem.auto_params, solved_values);
     if !missing.is_empty() {
         tracing::warn!(
             missing_params = ?missing,
@@ -1290,6 +1307,30 @@ mod tests {
         );
 
         assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
+    }
+
+    // ---- build_perturbation_anchors unit tests ----
+
+    #[test]
+    fn build_perturbation_anchors_valid_f64() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values = HashMap::new();
+        solved_values.insert(id, scalar(0.25));
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert_eq!(perturbed.len(), 1);
+        // solution 0.25 < mid 0.5 → lo + 0.9*(hi-lo) = 0.0 + 0.9*1.0 = 0.9
+        assert!(
+            (perturbed[0] - 0.9).abs() < 1e-10,
+            "expected perturbed[0] == 0.9, got {}",
+            perturbed[0]
+        );
     }
 
     #[test]
