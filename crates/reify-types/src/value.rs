@@ -1975,7 +1975,7 @@ mod tests {
     fn nan_payload_hash_equality_invariant_exception() {
         // Build a non-canonical NaN: same NaN class, distinct low-mantissa bit.
         let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
-        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+        assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
 
         // (1) Value::Real
         {
@@ -5906,7 +5906,7 @@ mod tests {
     #[test]
     fn nan_payload_canonicalized_in_content_hash() {
         let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
-        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+        assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
 
         // (1) Value::Real
         assert_eq!(
