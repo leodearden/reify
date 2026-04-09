@@ -24641,6 +24641,9 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs"
           ]
         }
       },
@@ -24657,8 +24660,15 @@
         "updatedAt": "2026-04-08T23:26:20.775Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-test-support"
+            "crates/reify-test-support",
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-test-support/src/mocks.rs",
+            "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/tessellation.rs",
+            "crates/reify-eval/tests/stress_error_messages.rs",
+            "crates/reify-eval/tests/stress_sweep_degenerate.rs"
           ]
         }
       },
