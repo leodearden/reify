@@ -801,6 +801,28 @@ mod completion_items_tests {
     }
 
     #[test]
+    fn completion_items_returns_empty_slice_for_empty_array_response() {
+        let val = json!([]);
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!([]), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn completion_items_returns_empty_slice_for_empty_list_response() {
+        let val = json!({"isIncomplete": false, "items": []});
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!({{\"isIncomplete\": false, \"items\": []}}), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "CompletionResponse::Array")]
     fn completion_items_panics_on_unexpected_shape() {
         completion_items(&json!(42));
