@@ -3782,16 +3782,8 @@ mod tests {
     fn value_ord_complex_negative_re() {
         // Negative re components must order correctly.
         // to_bits() would give wrong ordering here — see module-level doc.
-        let a = Value::Complex {
-            re: -1.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: -0.5,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(-1.0, 0.0);
+        let b = complex_with(-0.5, 0.0);
         assert!(a < b);
     }
 
