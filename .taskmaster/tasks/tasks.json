@@ -25116,11 +25116,11 @@
         "description": "After Task 1221, the dimension-extraction-and-divide block is copy-pasted three times across compute_gradient (lib.rs:650-690), compute_divergence (lib.rs:803-841), and compute_laplacian (lib.rs:999-1035). Each copy reimplements the same Type→Option<DimensionVector> projection and the same DIMENSIONLESS guard, with subtle drift between them (see the \"unify fallback semantics\" follow-up task).\n\nFix:\n1. Hoist a helper, e.g.\n   ```\n   fn scalar_field_codomain(\n       domain_type: &Type,\n       codomain_dim: Option<DimensionVector>,\n       fallback: &Type,\n       exponent: u32, // 1 for grad/div, 2 for laplacian\n   ) -> Type\n   ```\n   or a pair of `extract_domain_dim` / `extract_codomain_dim` helpers.\n2. Use it from all three operators. Collapses ~90 lines.\n3. Bonus (S7): replace the absolute line references in the new comments at lib.rs:804 (\"see line 650-690\") and lib.rs:1000 with relative references like \"see compute_gradient\" — or eliminate the comments entirely once the helper exists. Stale absolute line references already caused issues elsewhere (Task 1174 stale-comment finding).\n\nCoordinate with the \"unify fallback semantics\" task — landing this first would force consistency and obviate that task partially.\n\nMemory hints:\n- search \"Task 1174 stale comment line reference\"\n- get_entity \"DimensionVector\" for available algebra (mul, div, pow)",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:46.270Z",
+        "updatedAt": "2026-04-09T08:29:59.347Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -26354,7 +26354,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:29:56.264Z",
+      "lastModified": "2026-04-09T08:29:59.351Z",
       "taskCount": 1307,
       "completedCount": 969,
       "tags": [
