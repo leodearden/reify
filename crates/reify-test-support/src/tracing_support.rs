@@ -1240,14 +1240,10 @@ mod tests {
         assert_warn_count_delta(&counter, 0, 2, "expected warn delta");
     }
 
-    /// `assert_warn_count_delta` panics when the counter appears to have gone
-    /// backwards (i.e., `before` > `after`), indicating a stale or wrong
-    /// `before` snapshot.
-    ///
-    /// Under the current `saturating_sub` implementation this test will **not**
-    /// panic (it silently computes 0 and the assertion passes), which means the
-    /// `#[should_panic]` expectation is NOT met and the test fails — confirming
-    /// the gap that step-2 closes.
+    /// Verifies `assert_warn_count_delta` panics with the `warn counter went
+    /// backwards` message when `before` exceeds the current counter, which
+    /// catches stale-snapshot bugs that the old `saturating_sub` implementation
+    /// silently swallowed.
     #[test]
     #[should_panic(expected = "warn counter went backwards")]
     fn assert_warn_count_delta_panics_when_counter_went_backwards() {
