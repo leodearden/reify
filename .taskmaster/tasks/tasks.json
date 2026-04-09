@@ -26183,8 +26183,10 @@
         "updatedAt": "2026-04-09T03:20:03.754Z",
         "metadata": {
           "modules": [
-            "tests/infra",
-            "tests/sync_comments_test.sh"
+            "tests/infra"
+          ],
+          "files": [
+            "tests/infra/test_test_helpers.sh"
           ]
         }
       },
@@ -26202,6 +26204,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/calculus.rs"
           ]
         }
       },
@@ -26219,6 +26225,11 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/calculus.rs",
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
