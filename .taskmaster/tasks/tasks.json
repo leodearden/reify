@@ -23120,7 +23120,7 @@
         "description": "The `self.member` branch (lib.rs:2669) and `self.sub.member` branch (lib.rs:2710) check `sub_component_types` without excluding collection subs. For a collection sub like `sub items : List<Bolt>`, `self.items` returns `Type::StructureRef(\"Bolt\")` (single-entity ref) instead of being rejected or producing a collection type, causing silently wrong evaluation results at runtime.\n\nFix: Add `&& !scope.collection_sub_names.contains(member.as_str())` guard at line 2669 and `&& !scope.collection_sub_names.contains(sub_name.as_str())` guard at line 2710. Optionally emit a diagnostic directing users to indexed access for collection subs.\n\nAlso add test coverage for `self.collection_sub` and `self.collection_sub.member` in self_keyword_tests.rs to assert correct behavior.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; get_entity \"self keyword compiler\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -23133,7 +23133,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T03:31:48.994Z"
       },
       {
         "id": "1126",
@@ -25611,7 +25612,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T03:31:48.674Z",
+      "lastModified": "2026-04-09T03:31:48.994Z",
       "taskCount": 1269,
       "completedCount": 940,
       "tags": [
