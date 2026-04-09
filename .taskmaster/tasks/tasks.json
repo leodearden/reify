@@ -28018,11 +28018,11 @@
         "description": "In bridge.rs (Task 983's refactor), `parse_params` call sites now use hardcoded string labels (\"initialize\", \"didOpen\", etc.) while `error_prefix::*` constants duplicate the full prefixes as parallel string literals. The original invariant — \"editing a constant changes the runtime error\" — has been inverted into \"a test keeps two parallel strings in sync\". The doc comment on `parse_params` (lines 16-22) also still claims the label format is \"the canonical prefix asserted by integration tests via error_prefix constants\", which is misleading after the refactor.\n\nFix: thread `error_prefix::*` constants through as labels by (a) making each constant the exact runtime prefix (e.g. `INITIALIZE_PARAMS = \"initialize params error\"`) and changing `parse_params` to format as `format!(\"{label}: {e}\")`, or (b) adopting an equivalent approach that restores the constants as the literal source of truth. Update call sites to `parse_params::<InitializeParams>(params, error_prefix::INITIALIZE_PARAMS)`. Update the doc comment on `parse_params` to accurately describe the relationship.\n\nVerify by running the existing `error_prefix_constants_match_actual_errors` integration test in `crates/reify-lsp/tests/in_process_bridge.rs`, which should continue to pass once constants and runtime strings are unified.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:11:11.347Z",
+        "updatedAt": "2026-04-09T22:18:24.059Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/src",
@@ -28687,7 +28687,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:18:22.582Z",
+      "lastModified": "2026-04-09T22:18:24.059Z",
       "taskCount": 1387,
       "completedCount": 1069,
       "tags": [
