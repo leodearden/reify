@@ -1469,6 +1469,70 @@ fn test_find_bare_build_rs_violations() {
 }
 
 #[test]
+fn test_find_bare_self_path_violations() {
+    // Helpers that verify detection and non-detection.
+    fn detected(line: &str) -> bool {
+        !find_bare_self_path_violations(line).is_empty()
+    }
+
+    // ── Should be detected ────────────────────────────────────────────────
+    // Use escaped quotes in these string literals so that the raw source text
+    // contains \"tests/build_logic_tests.rs\" (backslash + quote) rather than
+    // unescaped "tests/build_logic_tests.rs", preventing the file-level meta-test
+    // from flagging this test body.
+    // The runtime *value* of each string still has unescaped quotes, so the helper
+    // correctly detects them.
+    //
+    // exact read_to_string call
+    assert!(
+        detected("read_to_string(\"tests/build_logic_tests.rs\")"),
+        "exact call should be detected"
+    );
+    // whitespace inside parentheses
+    assert!(
+        detected("read_to_string( \"tests/build_logic_tests.rs\" )"),
+        "whitespace variant should be detected"
+    );
+    // different function, same path
+    assert!(
+        detected("File::open(\"tests/build_logic_tests.rs\")"),
+        "File::open variant should be detected"
+    );
+
+    // ── Should NOT be detected ─────────────────────────────────────────────
+    // uses a named constant (no string literal)
+    assert!(!detected("read_to_string(THIS_FILE)"), "constant usage must not be detected");
+    // full-line // comment
+    assert!(
+        !detected("// read_to_string(\"tests/build_logic_tests.rs\")"),
+        "full-line // comment must not be detected"
+    );
+    // trailing // comment after code
+    assert!(
+        !detected("let x = 0; // read_to_string(\"tests/build_logic_tests.rs\")"),
+        "inline // comment must not be detected"
+    );
+    // block comment containing the pattern
+    assert!(
+        !detected("/* read_to_string(\"tests/build_logic_tests.rs\") */"),
+        "/* */ block comment must not be detected"
+    );
+    // self-avoidance: escaped quotes in string literal definition.
+    // The runtime value of this string contains backslash+quote around the path,
+    // not unescaped quotes. find_bare_self_path_violations checks for an
+    // unescaped " immediately before tests/build_logic_tests.rs, which is absent.
+    let self_reference = r#"let p = "\"tests/build_logic_tests.rs\"";"#;
+    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+
+    // Multi-line input: verify 1-based line numbering
+    let hits = find_bare_self_path_violations(
+        "ok\nread_to_string(\"tests/build_logic_tests.rs\")\nok",
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0, 2);
+}
+
+#[test]
 fn test_no_bare_relative_build_rs_reads() {
     // Source-level regression guard: this file must not contain any bare
     // "build.rs" or "./build.rs" string literals in non-comment code. Every
