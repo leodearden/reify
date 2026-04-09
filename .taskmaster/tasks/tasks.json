@@ -28436,11 +28436,11 @@
         "description": "In crates/reify-lsp/tests/in_process_bridge.rs (lines 933-940, 962), .expect() messages encode implementation details (e.g. \"bridge has no init-state guard\"). Replace with neutral behavioral descriptions (e.g. \"didOpen should succeed before initialized notification\") so panic messages remain accurate if the implementation changes.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:08:14.279Z",
+        "updatedAt": "2026-04-09T21:40:48.020Z",
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
@@ -28558,7 +28558,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:40:46.740Z",
+      "lastModified": "2026-04-09T21:40:48.020Z",
       "taskCount": 1380,
       "completedCount": 1058,
       "tags": [
