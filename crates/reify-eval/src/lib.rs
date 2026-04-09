@@ -3326,6 +3326,52 @@ impl Engine {
     }
 }
 
+/// Look up a named argument in `args`, evaluate it, and return the resulting
+/// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
+/// `None`.  Non-finite numeric values do **not** trigger a diagnostic here;
+/// callers that need the `f64` representation should use [`eval_named_arg_f64`]
+/// which silently returns `None` for non-finite values.
+fn eval_named_arg(
+    name: &str,
+    kind_label: impl std::fmt::Debug,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match args.iter().find(|(n, _)| n == name) {
+        Some((_, expr)) => Some(reify_expr::eval_expr(
+            expr,
+            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+        )),
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "missing required geometry argument '{}' for {:?}",
+                name, kind_label
+            )));
+            None
+        }
+    }
+}
+
+/// Look up a named argument, evaluate it, and convert to a finite `f64`.
+/// Returns `None` (without a diagnostic) when the argument is present but
+/// non-finite; returns `None` with a diagnostic when the argument is absent.
+fn eval_named_arg_f64(
+    name: &str,
+    kind_label: impl std::fmt::Debug,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?
+        .as_f64()
+        .filter(|v| v.is_finite())
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -3487,35 +3533,29 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg_f64 = |name: &str| -> Option<f64> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                )
-                .as_f64()
-                .filter(|v| v.is_finite())
+            let mut f64_arg = |name: &str| {
+                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
                     Some(reify_types::GeometryOp::Translate {
                         target: target_id,
-                        dx: eval_arg_f64("dx")?,
-                        dy: eval_arg_f64("dy")?,
-                        dz: eval_arg_f64("dz")?,
+                        dx: f64_arg("dx")?,
+                        dy: f64_arg("dy")?,
+                        dz: f64_arg("dz")?,
                     })
                 }
                 reify_compiler::TransformKind::Rotate => Some(reify_types::GeometryOp::Rotate {
                     target: target_id,
                     axis: [
-                        eval_arg_f64("axis_x")?,
-                        eval_arg_f64("axis_y")?,
-                        eval_arg_f64("axis_z")?,
+                        f64_arg("axis_x")?,
+                        f64_arg("axis_y")?,
+                        f64_arg("axis_z")?,
                     ],
-                    angle_rad: eval_arg_f64("angle")?,
+                    angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
-                    let factor = eval_arg_f64("factor")?;
+                    let factor = f64_arg("factor")?;
                     // Reject negative scale: OCCT SetScale with negative factor
                     // produces inside-out geometry (point-symmetry), not mirroring.
                     if factor < 0.0 {
@@ -3530,16 +3570,16 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::RotateAround {
                         target: target_id,
                         point: [
-                            eval_arg_f64("px")?,
-                            eval_arg_f64("py")?,
-                            eval_arg_f64("pz")?,
+                            f64_arg("px")?,
+                            f64_arg("py")?,
+                            f64_arg("pz")?,
                         ],
                         axis: [
-                            eval_arg_f64("axis_x")?,
-                            eval_arg_f64("axis_y")?,
-                            eval_arg_f64("axis_z")?,
+                            f64_arg("axis_x")?,
+                            f64_arg("axis_y")?,
+                            f64_arg("axis_z")?,
                         ],
-                        angle_rad: eval_arg_f64("angle")?,
+                        angle_rad: f64_arg("angle")?,
                     })
                 }
             }
