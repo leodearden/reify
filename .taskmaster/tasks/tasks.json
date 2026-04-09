@@ -24746,11 +24746,11 @@
         "description": "In tree-sitter-reify/tests/build_logic_tests.rs, the `assert_eq!(fns.len(), 4, ...)` message (around line 1268) says `(cases a, a2, e, f)` without mapping these labels to the actual function names. When the assertion fails, a reader must cross-reference the synthetic source and individual assertions above to identify which case each label refers to.\n\nChange the message to include function names:\n`\"expected exactly 4 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, e=test_with_attr_gap, f=test_with_bare_path); got: {:?}\"`\n\nmemory_hints: search \"find_self_reading_test_fns\" for scanner context",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:58:13.829Z",
+        "updatedAt": "2026-04-09T01:10:28.641Z",
         "metadata": {
           "modules": [
             "tree-sitter-reify/tests"
@@ -24772,7 +24772,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:10:27.957Z",
+      "lastModified": "2026-04-09T01:10:28.641Z",
       "taskCount": 1218,
       "completedCount": 903,
       "tags": [
