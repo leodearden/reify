@@ -465,14 +465,14 @@ async fn initialize_error_does_not_corrupt_server_state() {
         err_result
     );
 
-    // Second call on the same instance: should succeed.
+    // Second call on the same instance: should succeed and return a well-formed response.
     let ok_result = lsp
         .handle_request("initialize", json!({"capabilities": {}}))
         .await;
+    let val = ok_result.expect("initialize after a failed attempt should succeed");
     assert!(
-        ok_result.is_ok(),
-        "initialize after a failed attempt should succeed, got: {:?}",
-        ok_result
+        val.get("capabilities").is_some(),
+        "recovery response should contain capabilities"
     );
 }
 
