@@ -1266,7 +1266,7 @@ fn test_find_self_reading_test_fns_discovers_dynamically() {
     assert_eq!(
         fns.len(),
         4,
-        "expected exactly 4 discovered functions (cases a, a2, e, f); got: {:?}",
+        "expected exactly 4 discovered functions (a=test_reads_this_file, a2=test_opens_this_file, e=test_with_attr_gap, f=test_with_bare_path); got: {:?}",
         fns
     );
 }
