@@ -489,6 +489,43 @@ structure S {
     );
 }
 
+// ─── Task 408 step 8: undef in a guard-referenced arg is still rejected ──────
+
+/// `S(n: undef) where n > 0` — `n` IS referenced by the guard, so undef in that
+/// arg must still be caught by the scoped undef check. This verifies that step 4's
+/// narrowing didn't accidentally remove the check for guard-relevant args.
+///
+/// Note: `undef` is an unresolved name, so there will also be a generic
+/// "unresolved name" compile error — the test just checks for the termination-
+/// specific "undef not allowed" diagnostic to confirm the scoped check fires.
+#[test]
+fn undef_in_guard_referenced_arg_still_rejected() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: undef) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let termination_undef_error = diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message
+                .to_lowercase()
+                .contains("undef is not allowed as a non-termination")
+    });
+    assert!(
+        termination_undef_error,
+        "termination check SHOULD flag undef in guard-referenced arg `n`; got errors: {:?}",
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── Task 408 step 7: subtraction still satisfies termination (regression) ───
 
 /// Confirm that `S(n: n - 1) where n > 0` (the canonical decrement pattern)
