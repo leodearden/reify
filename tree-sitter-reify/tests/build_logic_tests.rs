@@ -1402,6 +1402,9 @@ fn test_strip_line_comments() {
 
     // Known limitation: // inside string literals is treated as comment start
     assert_eq!(strip_line_comments(r#"let s = "//"; let x = 1;"#), r#"let s = ""#);
+
+    // Multiple /* */ blocks on one line — loop handles successive pairs
+    assert_eq!(strip_line_comments("a /* x */ b /* y */ c"), "a  b  c");
 }
 
 #[test]
