@@ -26137,11 +26137,11 @@
         "description": "Add a distinct-NaN-payload `assert_ord_consistent` call in the bare `Value::Real` meta-tests to match the Scalar test parity at line ~2672.\n\nCurrently `test_assert_ord_consistent_real_nan` (line ~2628) only covers canonical NaN self-equality (same bit pattern). The Scalar test `value_scalar_bit_identity_neg_zero_and_nan_consistent` also covers distinct NaN payloads (canonical vs payload NaN), but there is no equivalent for bare `Value::Real`.\n\nAdd after the existing `test_assert_ord_consistent_real_nan` test:\n```rust\nassert_ord_consistent(\n    &Value::Real(f64::from_bits(0x7ff8_0000_0000_0000)),\n    &Value::Real(f64::from_bits(0x7ff8_0000_0000_0001)),\n    false,\n);\n```\n\nThis exercises the `to_bits()`-based PartialEq path for bare Real with distinct NaN payloads (different bits → not equal).\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\", get_entity \"value_scalar_bit_identity_neg_zero_and_nan_consistent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:13:46.446Z",
+        "updatedAt": "2026-04-09T09:06:52.877Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -26398,7 +26398,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:06:51.829Z",
+      "lastModified": "2026-04-09T09:06:52.881Z",
       "taskCount": 1308,
       "completedCount": 972,
       "tags": [
