@@ -3330,9 +3330,8 @@ impl Engine {
 
 /// Look up a named argument in `args`, evaluate it, and return the resulting
 /// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
-/// `None`.  Non-finite numeric values do **not** trigger a diagnostic here;
-/// callers that need the `f64` representation should use [`eval_named_arg_f64`]
-/// which silently returns `None` for non-finite values.
+/// `None`.  Callers that need a finite `f64` should use [`eval_named_arg_f64`],
+/// which also emits a `Warning` when the value is non-numeric or non-finite.
 fn eval_named_arg(
     name: &str,
     kind_label: impl std::fmt::Debug,
