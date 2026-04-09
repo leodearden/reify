@@ -19199,6 +19199,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs"
           ]
         }
       },
@@ -19546,6 +19550,9 @@
         "metadata": {
           "modules": [
             "crates/reify-constraints"
+          ],
+          "files": [
+            "crates/reify-constraints/src/solvespace.rs"
           ]
         }
       },
