@@ -25168,6 +25168,11 @@
           "modules": [
             "crates/reify-expr",
             "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-stdlib/src/lib.rs"
           ]
         }
       },
@@ -25186,6 +25191,11 @@
           "modules": [
             "crates/reify-expr",
             "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-stdlib/src/lib.rs"
           ]
         }
       },
