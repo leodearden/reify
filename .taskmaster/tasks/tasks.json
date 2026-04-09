@@ -26410,6 +26410,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1310,
+        "title": "Fix misleading assert description and stale comment in sync_comments_test.sh",
+        "description": "Two minor fixes in tests/sync_comments_test.sh:\n\n1. **Line 33 — misleading assert description:** The second SYNC-marker assert still reads `\"reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value\"` with a hard-coded path. The first assert (line 28) was already updated to the generic form `\"reify-expr has SYNC marker...\"`. Update line 33 to `\"reify-stdlib has SYNC marker referencing reify-expr::sanitize_value\"` to match.\n\n2. **Lines 55-57 — stale comment:** The comment block above `extract_fn` says \"Content above the fn keyword is naturally excluded by the `/^fn/` anchor\" but the awk pattern was changed to `/^[^/]*fn/`. Update the comment to reference the actual pattern, e.g.: \"Content above the fn keyword is excluded by the `/^[^/]*fn/` anchor, which also skips commented-out function signatures.\"\n\nOrigin: review suggestions S1+S2 from task 1294 triage (esc-1294-45).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -26422,7 +26433,7 @@
       ],
       "created": "2026-04-09T09:21:52.805Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T09:21:52.884Z"
+      "updated": "2026-04-09T09:24:00.602Z"
     }
   }
 }
