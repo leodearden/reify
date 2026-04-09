@@ -554,6 +554,65 @@ structure def S {
     assert!(foo.default_expr.is_none(), "auto(free) port param should have no default_expr");
 }
 
+/// Guarded param with `auto(free)` default → guarded member ValueCellDecl has kind Auto { free: true }.
+///
+/// Exercises the guards.rs compile_guarded_members path.
+#[test]
+fn compile_auto_free_in_guarded_param() {
+    let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param x : Scalar = auto(free)
+    }
+}
+"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_types::Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+    let template = &compiled.templates[0];
+
+    // x is guarded — should NOT appear in top-level value_cells
+    assert!(
+        !template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        "guarded param x should not be in top-level value_cells"
+    );
+
+    // Should have exactly 1 guarded group
+    assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
+    let group = &template.guarded_groups[0];
+
+    // Group should have x as its sole member
+    assert_eq!(group.members.len(), 1, "expected 1 member in guarded group");
+    let x = &group.members[0];
+    assert!(
+        x.id.member.contains("x"),
+        "expected member 'x', got '{}'",
+        x.id.member
+    );
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) guarded param should compile to Auto {{ free: true }}"
+    );
+    assert!(
+        x.default_expr.is_none(),
+        "auto(free) guarded param should have no default_expr"
+    );
+}
+
 /// Auto param ValueCellDecl span should be non-zero and match parsed ParamDecl span.
 #[test]
 fn compiled_auto_param_span_not_zero() {
