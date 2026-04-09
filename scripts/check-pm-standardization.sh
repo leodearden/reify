@@ -13,15 +13,18 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 [ -f "$SCRIPT_DIR/../tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
+PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+
 echo "=== check-pm-standardization ==="
 
 # ── Preflight: required tools ────────────────────────────────────────
 assert "git is available" command -v git
+assert "running inside a git repository" git -C "$ROOT" rev-parse --is-inside-work-tree
 
 # ── Check 1: packageManager field set to npm in all package.json files ───────
 echo ""
 echo "Check 1: packageManager field set to npm in package.json files"
-for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+for pkg in $PKG_FILES; do
     assert "$pkg has packageManager set to npm" grep -qE '"packageManager"\s*:\s*"npm@' "$ROOT/$pkg"
 done
 
@@ -29,18 +32,24 @@ done
 echo ""
 echo "Check 2: packageManager version consistent across package.json files"
 assert "all package.json files agree on packageManager version" bash -c "
-    count=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
-        '$ROOT/gui/package.json' \
-        '$ROOT/gui/sidecar/package.json' \
-        '$ROOT/tree-sitter-reify/package.json' | sort -u | wc -l | tr -d ' ')
+    count=\$(for p in $PKG_FILES; do
+        grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
+    done | sort -u | wc -l | tr -d ' ')
     [ \"\$count\" = '1' ]
 "
 
 # ── Check 3: npm lockfiles NOT in .gitignore ────────────────────────
 echo ""
 echo "Check 3: npm lockfiles not gitignored"
+LOCK_FILES='gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json'
 assert "no npm lockfiles are gitignored" \
-    bash -c "! (cd '$ROOT' && git check-ignore gui/package-lock.json gui/sidecar/package-lock.json tree-sitter-reify/package-lock.json)"
+    bash -c "! (cd '$ROOT' && git check-ignore $LOCK_FILES)"
+if (cd "$ROOT" && git check-ignore $LOCK_FILES >/dev/null 2>&1); then
+    echo "  DIAGNOSTIC: re-running 'git check-ignore -v' per file to identify offender(s):"
+    for f in $LOCK_FILES; do
+        (cd "$ROOT" && git check-ignore -v "$f") || true
+    done
+fi
 
 # ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
 echo ""

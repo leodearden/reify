@@ -301,13 +301,16 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
         }
     }
 
-    // Codomain must be Vector{3, scalar}
-    match codomain_type {
+    // Codomain must be Vector{3, scalar}; capture the unwrapped quantity for dim propagation.
+    let codomain_quantity = match codomain_type {
         Type::Vector { n: 3, quantity }
             if matches!(
                 quantity.as_ref(),
                 Type::Real | Type::Int | Type::Scalar { .. }
-            ) => {}
+            ) =>
+        {
+            quantity.as_ref()
+        }
         _ => {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -316,12 +319,25 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
             );
             return Value::Undef;
         }
-    }
+    };
 
-    // Result: vector field (same type as input — curl of R^3→R^3 is R^3→R^3)
+    // Compute result component type: codomain_component_dim / domain_dim.
+    // Same pattern as compute_divergence, but wrapped back in Vector{3, ...}.
+    let curl_fallback = match codomain_quantity {
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        _ => codomain_quantity.clone(),
+    };
+    let result_component = dim_quotient_type(
+        scalar_dimension(codomain_quantity),
+        domain_dimension(domain_type),
+        1,
+        curl_fallback,
+    );
+
+    // Result: vector field with dimensionally-correct codomain
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
+        codomain_type: Type::vec3(result_component),
         source: FieldSourceKind::Curl,
         lambda: Box::new(field_val.clone()),
     }
@@ -574,10 +590,24 @@ pub(crate) fn compute_numerical_gradient_at_point(
     let result_dim = match codomain_type {
         Type::Vector { quantity, .. } => match quantity.as_ref() {
             Type::Scalar { dimension } => *dimension,
-            _ => DimensionVector::DIMENSIONLESS,
+            _ => {
+                debug_assert!(
+                    matches!(quantity.as_ref(), Type::Real),
+                    "[reify-expr] gradient: unexpected Vector quantity variant in result_dim catch-all: {:?}",
+                    quantity
+                );
+                DimensionVector::DIMENSIONLESS
+            }
         },
         Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
+        _ => {
+            debug_assert!(
+                matches!(codomain_type, Type::Real),
+                "[reify-expr] gradient: unexpected codomain_type variant in result_dim catch-all: {:?}",
+                codomain_type
+            );
+            DimensionVector::DIMENSIONLESS
+        }
     };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
@@ -933,13 +963,18 @@ pub(crate) fn compute_numerical_divergence_at_point(
 /// For each axis j, perturb to get F(p±h*ej), then for each component i compute:
 ///   J[i][j] = (F(p+h*ej)[i] − F(p−h*ej)[i]) / (2h)
 ///
+/// `codomain_type` is the curl field's already-divided codomain (stamped by
+/// compute_curl). Mirrors the divergence handler's trust-the-declaration pattern:
+/// no further division is performed here — `result_dim` is extracted directly from it.
+///
 /// Returns:
-/// - Vector3 of Real components
+/// - Vector3 of Real or Scalar components (Scalar when result_dim is non-dimensionless)
 /// - Undef if any evaluation fails
 pub(crate) fn compute_numerical_curl_at_point(
     lambda: &Value,
     point: &Value,
     domain_type: &Type,
+    codomain_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
     // Only defined for 3D Point domains
@@ -965,6 +1000,17 @@ pub(crate) fn compute_numerical_curl_at_point(
             _ => None,
         },
         _ => None,
+    };
+
+    // Extract result dimension from the already-divided codomain_type (stamped by
+    // compute_curl). Curl produces Vector{3, component}, so unwrap the quantity.
+    let result_dim = match codomain_type {
+        Type::Vector { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => *dimension,
+            _ => DimensionVector::DIMENSIONLESS,
+        },
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
     };
 
     let single_point_param = match lambda {
@@ -1080,11 +1126,18 @@ pub(crate) fn compute_numerical_curl_at_point(
         return Value::Undef;
     }
 
-    Value::Vector(vec![
-        Value::Real(curl_x),
-        Value::Real(curl_y),
-        Value::Real(curl_z),
-    ])
+    let wrap = |v: f64| -> Value {
+        if result_dim != DimensionVector::DIMENSIONLESS {
+            Value::Scalar {
+                si_value: v,
+                dimension: result_dim,
+            }
+        } else {
+            Value::Real(v)
+        }
+    };
+
+    Value::Vector(vec![wrap(curl_x), wrap(curl_y), wrap(curl_z)])
 }
 
 /// Compute the numerical Laplacian of a scalar field at a given point via central differences.
@@ -1466,5 +1519,81 @@ mod tests {
         let fallback = Type::length();
         let result = dim_quotient_type(None, None, 1, fallback.clone());
         assert_eq!(result, fallback);
+    }
+
+    // --- gradient result_dim catch-all guard tests ---
+
+    /// Verify that the outer catch-all in `compute_numerical_gradient_at_point`'s
+    /// `result_dim` match panics (in debug mode) when handed an unexpected codomain_type.
+    ///
+    /// `Type::Bool` is not a valid gradient codomain — it is not `Scalar`, `Real`, or `Vector`.
+    /// The current code silently maps it to DIMENSIONLESS; after the debug guard is added the
+    /// test must panic with a message containing "unexpected codomain_type".
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected codomain_type")]
+    fn gradient_result_dim_unexpected_codomain_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        let x_id = ValueCellId::new("$lambda0.S", "x");
+        let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("x".to_string(), x_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_gradient_at_point(
+            &lambda,
+            &Value::Real(1.0),
+            &Type::Real,
+            &Type::Bool,
+            &ctx,
+        );
+    }
+
+    /// Verify that the inner catch-all (inside the `Type::Vector` arm) of
+    /// `compute_numerical_gradient_at_point`'s `result_dim` match panics (in debug mode)
+    /// when the Vector's quantity is an unexpected type.
+    ///
+    /// `Type::vec3(Type::Bool)` hits the outer arm (`Type::Vector { quantity, .. }`) and then
+    /// `quantity = Type::Bool` hits the inner catch-all (`_ => DIMENSIONLESS`).  After the
+    /// debug guard is added the test must panic with a message containing
+    /// "unexpected Vector quantity".
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unexpected Vector quantity")]
+    fn gradient_result_dim_unexpected_vector_quantity_panics_in_debug() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        // Single-parameter lambda: |pt| pt (body irrelevant — panic fires before evaluation)
+        let pt_id = ValueCellId::new("$lambda0.S", "pt");
+        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("pt".to_string(), pt_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        // 3D point input — lambda has 1 param and n=3 so single_point_param=true
+        let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
+
+        // domain: Point3<Real>, codomain: Vector3<Bool> — Bool is unexpected in the inner arm
+        let domain_type = Type::point3(Type::Real);
+        let codomain_type = Type::vec3(Type::Bool);
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let _result = compute_numerical_gradient_at_point(
+            &lambda,
+            &point,
+            &domain_type,
+            &codomain_type,
+            &ctx,
+        );
     }
 }

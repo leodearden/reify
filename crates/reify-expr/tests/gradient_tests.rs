@@ -125,11 +125,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
 /// rely on it as a drop-in replacement.
 #[test]
 fn test_assert_gradient_vector_accepts_matching_vector() {
-    let result = Value::Vector(vec![
-        Value::Real(1.0),
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let result = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "matching vector");
 }
 
@@ -492,28 +488,12 @@ fn gradient_3d_scalar_field() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Expected: Vector3(2.0, 2.0, 3.0)
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            let expected = [2.0, 2.0, 3.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-4,
-                    "gradient component {} should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[2.0, 2.0, 3.0],
+        1e-4,
+        "gradient of x*x + 2y + 3z at (1,2,3)",
+    );
 }
 
 /// Gradient of a Field with Undef lambda returns Undef.
@@ -1107,26 +1087,12 @@ fn gradient_at_origin() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Expected: Vector3(0.0, 0.0, 0.0) — gradient of x^2+y^2+z^2 at origin is zero
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            for (i, comp) in components.iter().enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    val.abs() < 1e-4,
-                    "gradient component {} at origin should be ~0.0, got {}",
-                    i,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-4,
+        "gradient of x²+y²+z² at origin",
+    );
 }
 
 /// Gradient perturbation with dimensioned Scalar lambda args.
@@ -1469,26 +1435,12 @@ fn gradient_1param_constant_field() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Gradient of a constant function should be approximately Vector3(0,0,0), NOT Undef.
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            for (i, comp) in components.iter().enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    val.abs() < 1e-4,
-                    "gradient component {} of constant field should be ~0.0, got {}",
-                    i,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, not Undef; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 0.0],
+        1e-4,
+        "gradient of constant 5.0 at (1,2,3)",
+    );
 }
 
 /// Gradient of a 3D field with a 1-param lambda: |p| magnitude(p).
@@ -1569,28 +1521,12 @@ fn gradient_1param_magnitude_field() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Expected: Vector3(0.6, 0.8, 0.0) = (x/|p|, y/|p|, z/|p|) where |p|=5
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(components.len(), 3, "gradient should have 3 components");
-            let expected = [0.6, 0.8, 0.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-4,
-                    "gradient component {} should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector, not Undef; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[0.6, 0.8, 0.0],
+        1e-4,
+        "gradient of magnitude(p) at (3,4,0)",
+    );
 }
 
 /// Gradient of a gradient field returns Undef.
@@ -2878,10 +2814,12 @@ fn gradient_3d_field_single_point_param() {
 
 /// Gradient of a 3D field with a 1-param lambda: |p| dot(p, p) at integer coordinates.
 ///
-/// dot(p, p) = x² + y² + z², so its gradient is 2p = (2x, 2y, 2z). Unlike the
-/// linear dot(p, [1,2,3]) test above (whose gradient is the constant (1,2,3)),
-/// this function's gradient depends on coordinates, so any restore error in one
-/// axis would corrupt its gradient component.
+/// dot(p, p) = x² + y² + z², so its gradient is 2p = (2x, 2y, 2z). The
+/// coordinates (2, 3, 5) are exactly representable in IEEE 754, so there is no
+/// FP-restore error; this test exercises the *analytical correctness* of the
+/// gradient computation on a coordinate-dependent quadratic function. This is a
+/// correctness test, not an FP-restore test; see
+/// `gradient_single_point_param_irrational_coords` for the FP-restore coverage.
 ///
 /// Central difference is mathematically exact for quadratic polynomials — the
 /// O(h²) truncation error vanishes — leaving only FP roundoff. Tolerance 1e-9
@@ -3508,96 +3446,6 @@ fn gradient_decomposed_n3_irrational_coords() {
     );
 }
 
-// ── Step-8: Declaration-vs-runtime type contract ──────────────────────
-
-/// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
-/// Sampling a gradient field panics in debug mode when codomain_type does not match
-/// the runtime dimension returned by the lambda.
-///
-/// **DESIGN DECISION: trust-the-declaration**
-/// The gradient computation trusts `codomain_type` for dimensioning the result.
-/// In debug builds, a hard assertion catches dimensionless-domain mismatches
-/// (`domain_dim.is_none()`) because the lambda's return type is unambiguous there.
-/// This is a deliberate design choice to avoid false positives from dimensioned-domain
-/// arithmetic interactions (e.g., `Real * Scalar<LENGTH> → Scalar<LENGTH>` regardless
-/// of the declared codomain). For dimensioned domains a soft warning (eprintln) is
-/// emitted instead of a hard assertion.
-///
-/// This test validates the #[cfg(debug_assertions)] assertion in
-/// compute_numerical_gradient_at_point. The assertion fires after the first f_plus
-/// evaluation when the declared codomain dimension does not match the actual runtime
-/// return dimension.
-///
-/// Setup:
-/// - domain_type = Type::Real (1D, dimensionless)
-/// - codomain_type = Type::Scalar { dimension: MASS } (declared as kg)
-/// - lambda body: |x| 2*x — returns Value::Real at runtime (dimensionless, NOT MASS)
-///
-/// The mismatch: declared says dimension=MASS, but f_plus.dimension() = DIMENSIONLESS.
-/// The assertion should fire with message containing "codomain_type does not match".
-#[cfg(debug_assertions)]
-#[test]
-#[should_panic(expected = "codomain_type does not match")]
-fn gradient_runtime_codomain_dim_mismatch_panics() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let dim_kg = DimensionVector::MASS;
-
-    // Lambda: |x| 2*x — body returns Value::Real at runtime (dimensionless)
-    let body = CompiledExpr::binop(
-        BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
-    );
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
-
-    // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
-    let domain_type = Type::Real;
-    let codomain_type = Type::Scalar { dimension: dim_kg };
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let grad_expr = make_function_call(
-        "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(codomain_type.clone()),
-        },
-    );
-
-    let values = ValueMap::new();
-    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
-
-    // Sampling triggers the assertion: f_plus returns Real (dimensionless) but
-    // codomain declares MASS — the debug assertion should fire here.
-    let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(codomain_type),
-    };
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        ],
-        Type::Scalar { dimension: dim_kg },
-    );
-    let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-    // Expected to panic before reaching here
-}
-
 /// Gradient of a 1D field with heterogeneous dimensions: domain=Scalar[LENGTH],
 /// codomain=Scalar[MASS], lambda |x| 2*x (coefficient carries MASS/LENGTH).
 ///
@@ -3962,7 +3810,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
 
 /// Sampling a gradient field with dimensioned-domain codomain mismatch does NOT panic.
 ///
-/// This is the dimensioned-domain counterpart to `gradient_runtime_codomain_dim_mismatch_panics`.
+/// This is the dimensioned-domain counterpart to `gradient_codomain_type_vs_runtime_mismatch`.
 /// For a dimensionless domain, sampling panics in debug mode because the hard assertion
 /// fires (`domain_dim.is_none()`). For a dimensioned domain, the assertion is intentionally
 /// skipped — dimensioned lambda arithmetic produces apparent type mismatches that are not
@@ -4052,7 +3900,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
         grad_codomain,
     );
 
-    // This must not panic (contrast: gradient_runtime_codomain_dim_mismatch_panics does panic)
+    // This must not panic (contrast: gradient_codomain_type_vs_runtime_mismatch does panic)
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0

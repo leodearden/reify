@@ -87,8 +87,8 @@ assert "script references 'packageManager' in consistency logic" \
 echo ""
 echo "--- Test 7: git check-ignore is batched (not in a for loop) ---"
 
-assert "no 'git check-ignore' calls inside for/done loops" \
-    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep -q 'git check-ignore'"
+assert "bare git check-ignore (without -v) is not inside for/done loops" \
+    bash -c "! awk '{sub(/^[[:space:]]+/,\"\")} /^for /,/^done/' '$SCRIPT' | grep 'git check-ignore' | grep -vq -- '-v'"
 
 # -- Test 8: wc -l output is stripped for cross-platform portability ----------
 echo ""
@@ -149,5 +149,40 @@ echo "--- Test 12: build artifact tracking hygiene ---"
 # `git rm --cached` to remove the stale index entry so the existing rule applies.
 assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
     bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
+
+# -- Test 13: script has rev-parse --is-inside-work-tree preflight -----------
+echo ""
+echo "--- Test 13: script has rev-parse --is-inside-work-tree preflight ---"
+
+assert "script contains 'rev-parse --is-inside-work-tree' preflight" \
+    grep -q 'rev-parse --is-inside-work-tree' "$SCRIPT"
+
+# -- Test 14: script defines PKG_FILES with all three package.json paths ------
+echo ""
+echo "--- Test 14: script defines PKG_FILES with all three package.json paths ---"
+
+assert "script defines PKG_FILES with all three package.json paths" \
+    bash -c "grep -qE '^PKG_FILES=.*gui/package.json.*gui/sidecar/package.json.*tree-sitter-reify/package.json' '$SCRIPT'"
+
+# -- Test 15: Check 1 for-loop iterates $PKG_FILES ----------------------------
+echo ""
+echo "--- Test 15: Check 1 for-loop iterates \$PKG_FILES ---"
+
+assert "Check 1 for-loop iterates \$PKG_FILES" \
+    bash -c "grep -qE 'for pkg in \\\$PKG_FILES' '$SCRIPT'"
+
+# -- Test 16: Check 2 grep arguments expand $PKG_FILES ------------------------
+echo ""
+echo "--- Test 16: Check 2 grep arguments expand \$PKG_FILES ---"
+
+assert "Check 2 grep arguments expand \$PKG_FILES" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q PKG_FILES"
+
+# -- Test 17: Check 3 has git check-ignore -v diagnostic fallback -------------
+echo ""
+echo "--- Test 17: Check 3 has 'git check-ignore -v' diagnostic fallback ---"
+
+assert "Check 3 has 'git check-ignore -v' diagnostic fallback" \
+    grep -q 'git check-ignore -v' "$SCRIPT"
 
 test_summary

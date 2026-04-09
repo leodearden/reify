@@ -338,11 +338,12 @@ impl tracing::Subscriber for WarnCountingSubscriber {
 
 // ── WarnCapture (public) ──────────────────────────────────────────────────────
 
-/// Captured output from [`warn_capturing_subscriber`]: event count and message
-/// text for all WARN events.
+/// Captured output from [`warn_capturing_subscriber`]: event count, message
+/// text, and structured fields for all WARN events.
 pub struct WarnCapture {
     count: Arc<AtomicUsize>,
     messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
 }
 
 impl WarnCapture {
@@ -385,6 +386,42 @@ impl WarnCapture {
             "no WARN message contained {substring:?}; captured messages: {msgs:?}"
         );
     }
+
+    /// Return a snapshot of all captured WARN event field maps, one per event.
+    ///
+    /// Each element is a [`HashMap`] of field name → field value (as a string)
+    /// for the corresponding event.  The `message` field is **not** included in
+    /// these maps — use [`messages()`](Self::messages) for the message text.
+    pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
+        self.fields.lock().unwrap().clone()
+    }
+
+    /// Assert that at least one captured WARN event contains **all** of the
+    /// key=value pairs in `pairs`.
+    ///
+    /// Useful for verifying that a structured `tracing::warn!(key = "value", …)`
+    /// emitted the expected field schema.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no single event's field map satisfies every pair.  The panic
+    /// message dumps both `fields_by_event()` and `messages()` for diagnostics.
+    pub fn assert_any_event_has_fields(&self, pairs: &[(&str, &str)]) {
+        let all_fields = self.fields_by_event();
+        let found = all_fields.iter().any(|event_fields| {
+            pairs
+                .iter()
+                .all(|(k, v)| event_fields.get(*k).map(|s| s.as_str()) == Some(*v))
+        });
+        if !found {
+            let msgs = self.messages();
+            panic!(
+                "no WARN event had all expected fields {pairs:?};\n  \
+                 fields_by_event: {all_fields:?}\n  \
+                 messages: {msgs:?}"
+            );
+        }
+    }
 }
 
 /// Build a minimal [`tracing::Subscriber`] that captures WARN-level events:
@@ -396,13 +433,16 @@ impl WarnCapture {
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
     let count = Arc::new(AtomicUsize::new(0));
     let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
     let capture = WarnCapture {
         count: Arc::clone(&count),
         messages: Arc::clone(&messages),
+        fields: Arc::clone(&fields),
     };
     let subscriber = WarnCapturingSubscriber {
         count,
         messages,
+        fields,
         span_counter: AtomicU64::new(1),
     };
     (subscriber, capture)
@@ -413,26 +453,39 @@ pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, W
 struct WarnCapturingSubscriber {
     count: Arc<AtomicUsize>,
     messages: Arc<std::sync::Mutex<Vec<String>>>,
+    fields: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
     span_counter: AtomicU64,
 }
 
 /// A [`tracing::field::Visit`] implementation that extracts the formatted
-/// `message` field from a tracing event.
-struct MessageVisitor(String);
+/// `message` field from a tracing event, and collects all other structured
+/// field name/value pairs into a [`HashMap`].
+struct MessageVisitor {
+    message: String,
+    fields: HashMap<String, String>,
+}
 
 impl tracing::field::Visit for MessageVisitor {
-    /// Intercept `&str` message values and store them directly, bypassing
-    /// `record_debug`'s `{value:?}` formatting which would add surrounding
-    /// double-quotes around string literals.
+    /// Intercept `&str` field values.  For the `message` field, store directly
+    /// (bypassing `record_debug`'s `{value:?}` formatting which adds quotes).
+    /// For all other fields, store the raw string value in the fields map.
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
-            self.0 = value.to_owned();
+            self.message = value.to_owned();
+        } else {
+            self.fields.insert(field.name().to_owned(), value.to_owned());
         }
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            self.0 = format!("{value:?}");
+            self.message = format!("{value:?}");
+        } else {
+            // Non-message fields emitted with `%e` (Display) or `?e` (Debug)
+            // are captured in debug-formatted form.  Tests only assert on the
+            // string-literal fields (lock, access, path), so this is acceptable.
+            self.fields
+                .insert(field.name().to_owned(), format!("{value:?}"));
         }
     }
 }
@@ -464,9 +517,13 @@ impl tracing::Subscriber for WarnCapturingSubscriber {
         // Release ordering pairs with Acquire loads in assertion helpers and
         // WarnCapture::count(), ensuring all prior memory writes are visible.
         self.count.fetch_add(1, Ordering::Release);
-        let mut visitor = MessageVisitor(String::new());
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+            fields: HashMap::new(),
+        };
         event.record(&mut visitor);
-        self.messages.lock().unwrap().push(visitor.0);
+        self.messages.lock().unwrap().push(visitor.message);
+        self.fields.lock().unwrap().push(visitor.fields);
     }
 
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -1325,6 +1382,57 @@ mod tests {
             &counter,
             1,
             "post-drop warn must not be counted (subscriber should be detached)",
+        );
+    }
+
+    // ── warn_capturing_subscriber field-capture tests ─────────────────────────
+
+    /// `WarnCapture::fields_by_event()` and `assert_any_event_has_fields()` work
+    /// correctly on a structured WARN event.
+    ///
+    /// Verifies four properties:
+    /// (i)   count == 1 — exactly one event was emitted.
+    /// (ii)  messages() contains "lock poisoned, recovering" — backward-compat
+    ///       with existing callers that assert on message text.
+    /// (iii) `assert_any_event_has_fields(&[("lock","values"),("access","read")])`
+    ///       succeeds — the structured fields were captured.
+    /// (iv)  `assert_any_event_has_fields(&[("lock","snapshot_values")])` panics —
+    ///       a field value that was NOT emitted must not match.
+    #[test]
+    fn warn_capturing_structured_fields_are_captured() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                lock = "values",
+                access = "read",
+                error = %"boom",
+                "lock poisoned, recovering"
+            );
+        });
+
+        // (i) Exactly one event was captured.
+        capture.assert_count(1);
+
+        // (ii) Backward-compat: messages() still returns the message text.
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("lock poisoned, recovering")),
+            "messages() must contain 'lock poisoned, recovering'; got: {msgs:?}"
+        );
+
+        // (iii) Structured fields lock=values and access=read are present.
+        capture.assert_any_event_has_fields(&[("lock", "values"), ("access", "read")]);
+
+        // (iv) A field value that was NOT emitted must cause a panic.
+        let result = std::panic::catch_unwind(|| {
+            capture.assert_any_event_has_fields(&[("lock", "snapshot_values")])
+        });
+        assert!(
+            result.is_err(),
+            "assert_any_event_has_fields must panic when no event has lock=snapshot_values"
         );
     }
 }
