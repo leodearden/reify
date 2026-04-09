@@ -12910,10 +12910,10 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-eval/src/lib.rs"
+            "crates/reify-runtime/src/concurrent_eval.rs"
           ],
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-runtime"
           ]
         }
       },
@@ -12975,12 +12975,11 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
             "crates/reify-lsp/src/analysis.rs",
-            "crates/reify-lsp/src/goto_def.rs"
+            "crates/reify-lsp/src/goto_def.rs",
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ],
           "modules": [
-            "crates/reify-eval/src",
-            "crates/reify-lsp/src",
-            "crates/reify-syntax/tests"
+            "crates/reify-lsp"
           ],
           "memory_hints": {
             "entities": [],
@@ -13214,7 +13213,12 @@
               "geometry name to step index map resolution"
             ]
           },
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-eval/src/lib.rs"
+          ]
         }
       },
       {
