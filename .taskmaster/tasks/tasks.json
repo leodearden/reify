@@ -27865,11 +27865,11 @@
         "description": "Tighten weak assertions in tests/infra/test_npm_ci_hardening.sh and fix stale comment in scripts/check-pm-standardization.sh",
         "details": "1. Test 6 (line 83-84): Replace tautological 'packageManager' grep with Check-2-scoped assertion: `grep -A4 'Check 2:' \"$SCRIPT\" | grep -q 'sort -u'` and `grep -A4 'Check 2:' \"$SCRIPT\" | grep -q 'packageManager'`\n2. Test 8 (line 100-101): Replace loose 'tr -d' grep with pipeline assertion: `grep -qE 'wc -l[[:space:]]*\\\\|[[:space:]]*tr -d' \"$SCRIPT\"`\n3. Test 7 (line 91): Tighten awk range pattern to require '; do': `awk '{sub(/^[[:space:]]+/,\"\")} /^for [^;]*; *do/,/^done/' \"$SCRIPT\"`\n4. scripts/check-pm-standardization.sh lines 4-5: Update header to reflect Check 4 reinstated: 'Redundant config-file-content checks (5-9) were removed by task 816; Check 4 (pnpm-lock.yaml gitignored) was reinstated as a static-state check.'\n\nSource: review suggestions from task 1327 (esc-1327-25)",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T19:12:05.949Z",
+        "updatedAt": "2026-04-09T22:09:05.682Z",
         "metadata": {
           "modules": [
             "scripts/check-pm-standardization.sh",
@@ -28623,7 +28623,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:08:55.475Z",
+      "lastModified": "2026-04-09T22:09:05.682Z",
       "taskCount": 1383,
       "completedCount": 1065,
       "tags": [
