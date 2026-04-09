@@ -42,7 +42,8 @@ fn make_engine() -> reify_eval::Engine {
 
 /// Parse `source`, compile, assert ≥1 Error-severity diagnostic is produced.
 /// If `needle` is non-empty, also assert at least one error message contains it.
-fn parse_compile_expect_err(source: &str, needle: &str) {
+/// Returns the CompiledModule for optional further assertions.
+fn parse_compile_expect_err(source: &str, needle: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
     assert!(
         parsed.errors.is_empty(),
@@ -65,6 +66,7 @@ fn parse_compile_expect_err(source: &str, needle: &str) {
             errors
         );
     }
+    compiled
 }
 
 // ---------------------------------------------------------------------------
