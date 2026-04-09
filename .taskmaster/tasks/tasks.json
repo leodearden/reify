@@ -20862,11 +20862,11 @@
         "description": "In crates/reify-expr/src/lib.rs conjugate method (~line 1235-1247), add `if !re.is_finite() || !im.is_finite() { return Value::Undef; }` to the Complex arm before constructing the result. Currently `Complex{re: NaN, im: 1.0}.conjugate()` returns `Complex{re: NaN, im: -1.0}` instead of `Value::Undef`, propagating poison values. This is the same class of bug fixed in task 951 for neg_scalar — follow the same pattern as the phase method guard at lib.rs:1214. Add a unit test for `Complex{NaN, finite}.conjugate() == Undef` and `Complex{Inf, finite}.conjugate() == Undef`.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:10:56.986Z",
+        "updatedAt": "2026-04-09T00:13:29.139Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -24569,9 +24569,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:12:38.417Z",
+      "lastModified": "2026-04-09T00:13:29.139Z",
       "taskCount": 1208,
-      "completedCount": 888,
+      "completedCount": 889,
       "tags": [
         "master"
       ]
