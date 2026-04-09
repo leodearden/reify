@@ -801,7 +801,7 @@ fn update_source_produces_meshes() {
 
 // --- Task 827: get_diagnostics tests ---
 
-/// Step-1 (TDD failing test): get_diagnostics() returns empty vec when no module is loaded.
+/// get_diagnostics() returns empty vec when no module is loaded.
 /// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
@@ -815,7 +815,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     );
 }
 
-/// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
+/// get_diagnostics() returns a non-empty vec
 /// when the compiled module contains a warning.
 ///
 /// Source with `port mount : NonExistentTrait` produces an "unknown port type" warning
@@ -900,7 +900,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 }
 
-/// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
+/// get_diagnostics() returns empty vec for bracket_source() (warning-free source).
 /// Validates the method works end-to-end on a real compiled module.
 #[test]
 fn engine_get_diagnostics_clean_source_returns_empty() {
@@ -963,6 +963,12 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         "expected at least one diagnostic for unknown port type"
     );
     assert_eq!(
+        diags[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags[0].file_path, "testmod.ri",
         "get_diagnostics file_path"
     );
@@ -977,6 +983,10 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 ///
 /// After load_from_source("initial") then update_source("updated.ri", ...),
 /// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+///
+/// **Assumption**: `port mount : NonExistentTrait` produces a warning (not error).
+/// If the compiler changes this, the `.expect()` on load_from_source/update_source
+/// will panic — update the fixture accordingly.
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
@@ -998,6 +1008,12 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
+        diags_before[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_before[0].file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
@@ -1012,12 +1028,18 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
+        diags_after[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, update_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_after[0].file_path, "updated.ri",
         "after update_source, file_path should be 'updated.ri'"
     );
 }
 
-/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+/// A diagnostic with no labels gets (1,1,1,1) coordinates.
 ///
 /// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
 /// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
@@ -1085,6 +1107,42 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the source_map invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_source_map_for_test() clears source_map while leaving compiled and
+/// module_name intact. This exercises the fallback paths added in Task 900:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no resolve_source call)
+/// - get_source_location uses a fallible source_map lookup and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_source_map_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the source_map invariant
+    session.break_source_map_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] when source is clean and source_map is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when source_map is missing"
+    );
+}
+
 // --- Task 837: build_line_offsets unit tests ---
 
 /// build_line_offsets returns empty vec for empty string.
@@ -1137,7 +1195,7 @@ fn build_line_offsets_only_newlines() {
     assert_eq!(offsets, vec![0, 1, 2]);
 }
 
-/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+/// After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
 /// module (and its diagnostics) are replaced on each update, so stale diagnostics
@@ -1753,9 +1811,15 @@ fn resolve_source_returns_key_and_source_after_load() {
 ///
 /// break_module_name_for_test deliberately violates the invariant so that
 /// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
 #[test]
 #[should_panic(expected = "module_name is None")]
 fn get_diagnostics_panics_on_broken_module_name() {
+    use reify_types::Diagnostic;
+
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     session
@@ -1763,7 +1827,9 @@ fn get_diagnostics_panics_on_broken_module_name() {
         .expect("load_from_source should succeed");
     // Deliberately break the invariant: compiled is Some, module_name is None.
     session.break_module_name_for_test();
-    // This must panic — resolve_source hits expect("module_name is None …").
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "module_name is None".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
     let _ = session.get_diagnostics();
 }
 
@@ -1775,9 +1841,15 @@ fn get_diagnostics_panics_on_broken_module_name() {
 ///
 /// break_source_map_for_test deliberately violates the invariant so that
 /// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
 #[test]
 #[should_panic(expected = "source_map missing key")]
 fn get_diagnostics_panics_on_broken_source_map() {
+    use reify_types::Diagnostic;
+
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     session
@@ -1785,7 +1857,9 @@ fn get_diagnostics_panics_on_broken_source_map() {
         .expect("load_from_source should succeed");
     // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
     session.break_source_map_for_test();
-    // This must panic — resolve_source hits expect("source_map missing key …").
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "source_map missing key".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
     let _ = session.get_diagnostics();
 }
 
