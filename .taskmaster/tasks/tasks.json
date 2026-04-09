@@ -27976,15 +27976,16 @@
         "description": "`serde` is currently declared as a direct dependency in three crates (reify-lsp, reify-mcp, gui/src-tauri), each re-declaring its version independently. Task 983 added `serde = \"1\"` to `crates/reify-lsp/Cargo.toml:16` without features, matching the existing pattern but missing an opportunity to centralize.\n\nFix: add `serde = { version = \"1\", default-features = true }` to `[workspace.dependencies]` in the root `Cargo.toml`, then update all three crates to use `serde.workspace = true` (with `features = [\"derive\"]` where the derive macro is needed). This centralizes version management across the workspace.\n\nVerify with `cargo check --workspace` and the standard verify pipeline (fmt/clippy/test).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:30:40.651Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:30:40.380Z",
+      "lastModified": "2026-04-09T19:30:40.651Z",
       "taskCount": 1349,
       "completedCount": 1020,
       "tags": [
