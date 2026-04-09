@@ -331,6 +331,20 @@ else
     check "extract_fn non-empty guard present for expr_body" "false"
 fi
 
+# (j) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
+if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then
+    check "sync_comments_test.sh sources sync_ref_helpers.sh" "true"
+else
+    check "sync_comments_test.sh sources sync_ref_helpers.sh" "false"
+fi
+
+# (k) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
+if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then
+    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "true"
+else
+    check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "false"
+fi
+
 # behavioral: extract_fn returns empty output for a non-existent function name,
 # confirming the non-empty guard would fire when a fn is renamed or missing.
 echo ""
