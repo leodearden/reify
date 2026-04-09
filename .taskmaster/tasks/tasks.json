@@ -24566,16 +24566,21 @@
         "description": "Two small improvements to the module_key test section in gui/src-tauri/src/tests/engine_tests.rs from Task 1192's review:\n\n1. **Add debug_assert guard in module_key** (engine.rs:36-38) — `module_key(\"\")` produces `.ri` which is never a valid production key (load_file falls back to `\"unnamed\"`). Add `debug_assert!(!name.is_empty())` inside `module_key` to make the precondition explicit. This replaces the removed `module_key_empty_name` test with a stronger contract.\n\n2. **Assert stored source in integration test** (engine_tests.rs:1692) — `module_key_matches_load_from_source_insertion` currently discards the source text with `let (stored_key, _)`. Change to `let (stored_key, stored_src)` and add `assert_eq!(stored_src, bracket_source());` to also verify `load_from_source` stores the correct content, not just the correct key.\n\nmemory_hints: search(\"module_key engine.rs debug_assert empty name\", project_id=\"reify\"); get_entity(\"module_key\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:11:23.302Z"
+        "updatedAt": "2026-04-09T00:13:40.330Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:13:37.641Z",
+      "lastModified": "2026-04-09T00:13:40.330Z",
       "taskCount": 1208,
       "completedCount": 889,
       "tags": [
