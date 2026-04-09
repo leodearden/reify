@@ -1331,18 +1331,7 @@ mod tests {
                 z: 0.0,
             },
         };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_b = fixed_line(0.0, 1.0, 0.0, 1.0, 1.0, 0.0);
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
@@ -1600,18 +1589,7 @@ mod tests {
                 z: None,
             },
         };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_b = fixed_line(0.0, 1.0, 0.0, 1.0, 1.0, 0.0);
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
@@ -1626,18 +1604,7 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBStart", "x");
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
+        let line_a = fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
         let line_b = LineRef {
             start: PointRef::Auto {
                 x: Some(cell_id.clone()),
@@ -1664,18 +1631,7 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBEnd", "x");
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
+        let line_a = fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
         let line_b = LineRef {
             start: PointRef::Fixed {
                 x: 0.0,
