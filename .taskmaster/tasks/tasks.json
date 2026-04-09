@@ -25344,11 +25344,11 @@
         "description": "Three small robustness improvements to the portable_timeout POSIX fallback in scripts/lib_portable.sh, from review of Task 1185:\n\n**S2 (most impactful): Post-wait orphan cleanup should use SIGKILL, not SIGTERM.**\nLine 149: `kill -- -$cmd_pid` sends SIGTERM to clean up orphaned children after the timer has already proven SIGTERM was ineffective (the whole reason SIGKILL escalation fired). Change to `kill -9 -- -$cmd_pid 2>/dev/null || true` for consistency with the timer's escalation logic. The PID-reuse safety argument still holds: cmd_pid was just reaped, but the PGID remains valid as long as any member process exists.\n\n**S1: Quote `$cmd_pid` in process-group kill for consistency.**\nLines 123 and 133: `kill -9 -- -$cmd_pid` leaves `$cmd_pid` unquoted, while the SIGTERM line above uses `kill \"$cmd_pid\"`. Change to `kill -9 -- \"-$cmd_pid\"` on both lines for defensive consistency (the value is always numeric from `$!`, so this is cosmetic).\n\n**S4: Extract the 2-second SIGKILL grace period to a local variable.**\nLines 122 and 132 both hardcode `sleep 2`. Add `local _pt_kill_grace=2` near line 82 and reference `sleep \"$_pt_kill_grace\"` in both timer subshells to keep the value DRY.\n\nMemory hints: search \"portable_timeout SIGKILL escalation process-group\" for context on the timer design; get_entity \"lib_portable.sh\" for file relationships.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:17:33.915Z",
+        "updatedAt": "2026-04-09T16:50:41.869Z",
         "metadata": {
           "modules": [
             "scripts/lib_portable.sh",
@@ -27514,7 +27514,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:50:40.881Z",
+      "lastModified": "2026-04-09T16:50:41.869Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
