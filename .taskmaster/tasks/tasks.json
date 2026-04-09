@@ -25337,10 +25337,11 @@
         "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:53:45.992Z"
       },
       {
         "id": "1254",
@@ -25367,7 +25368,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:53:45.679Z",
+      "lastModified": "2026-04-09T02:53:45.992Z",
       "taskCount": 1255,
       "completedCount": 928,
       "tags": [
