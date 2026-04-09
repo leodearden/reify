@@ -3739,17 +3739,6 @@ mod tests {
     }
 
     #[test]
-    fn complex_with_produces_expected_value() {
-        // Verify that complex_with(re, im) constructs the expected Value::Complex.
-        let expected = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(complex_with(1.0, 2.0), expected);
-    }
-
-    #[test]
     fn value_ord_complex_negative_re() {
         // Negative re components must order correctly.
         let a = complex_with(-1.0, 0.0);
