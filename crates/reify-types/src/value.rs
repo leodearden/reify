@@ -39,6 +39,15 @@ pub enum FieldSourceKind {
     /// A field produced by `gradient()` — its lambda slot stores the original
     /// field and the sample handler dispatches to central-difference evaluation.
     Gradient,
+    /// A field produced by `divergence()` — its lambda slot stores the original
+    /// vector field and the sample handler dispatches to numerical-divergence evaluation.
+    Divergence,
+    /// A field produced by `curl()` — its lambda slot stores the original
+    /// vector field and the sample handler dispatches to numerical-curl evaluation.
+    Curl,
+    /// A field produced by `laplacian()` — its lambda slot stores the original
+    /// scalar field and the sample handler dispatches to numerical-laplacian evaluation.
+    Laplacian,
 }
 
 /// Runtime values in Reify (M1 subset).
@@ -317,6 +326,15 @@ impl Value {
     /// `PartialEq` if exact bit-pattern identity of the NaN payload matters.
     /// See `nan_payload_hash_equality_invariant_exception` for the invariant
     /// exception test.
+    ///
+    /// **Known intentional exception — incremental cache**: the incremental
+    /// evaluation cache (`CacheStore::record_evaluation` in
+    /// `crates/reify-eval/src/cache.rs`) performs hash-only comparison for its
+    /// early-cutoff check and does *not* follow the "re-check `PartialEq`"
+    /// guidance above.  This is deliberate: two results that differ only in NaN
+    /// payload are considered equivalent for the purposes of invalidating
+    /// downstream nodes, so collapsing them via the canonical hash is the
+    /// correct behaviour there, not a bug.
     pub fn content_hash(&self) -> ContentHash {
         // Content-hash tag registry (first byte of every ContentHash payload):
         // 0=Bool, 1=Int, 2=Real, 3=String, 4=Scalar, 5=Undef, 6=Enum, 7=List,
@@ -1966,7 +1984,7 @@ mod tests {
     fn nan_payload_hash_equality_invariant_exception() {
         // Build a non-canonical NaN: same NaN class, distinct low-mantissa bit.
         let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
-        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+        assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
 
         // (1) Value::Real
         {
@@ -2033,6 +2051,93 @@ mod tests {
         assert_eq!(
             nan1, nan2,
             "two separately constructed NaN values with identical bit patterns must compare equal"
+        );
+    }
+
+    #[test]
+    fn nan_partialeq_bit_identity_scalar() {
+        let s1 = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let s2 = Value::Scalar {
+            si_value: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            s1, s2,
+            "two separately constructed Scalar NaN values with identical bit patterns must compare equal"
+        );
+        assert_eq!(
+            s1,
+            s1.clone(),
+            "a Scalar NaN value must compare equal to its own clone"
+        );
+    }
+
+    #[test]
+    fn nan_partialeq_bit_identity_complex() {
+        // (a) both re and im are NaN
+        let c1 = Value::Complex {
+            re: f64::NAN,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c2 = Value::Complex {
+            re: f64::NAN,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c1, c2,
+            "two separately constructed Complex values with NaN re and NaN im must compare equal"
+        );
+        assert_eq!(
+            c1,
+            c1.clone(),
+            "a Complex value with NaN re and NaN im must compare equal to its own clone"
+        );
+
+        // (b) only re is NaN, im is finite
+        let c3 = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c4 = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c3, c4,
+            "two separately constructed Complex values with NaN re and finite im must compare equal"
+        );
+        assert_eq!(
+            c3,
+            c3.clone(),
+            "a Complex value with NaN re and finite im must compare equal to its own clone"
+        );
+
+        // (c) only im is NaN, re is finite
+        let c5 = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        let c6 = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            c5, c6,
+            "two separately constructed Complex values with finite re and NaN im must compare equal"
+        );
+        assert_eq!(
+            c5,
+            c5.clone(),
+            "a Complex value with finite re and NaN im must compare equal to its own clone"
         );
     }
 
@@ -2461,6 +2566,11 @@ mod tests {
                 std::cmp::Ordering::Equal,
                 "PartialEq↔Ord contract: expected a.cmp(b) == Equal when a == b"
             );
+            assert_eq!(
+                b.cmp(a),
+                std::cmp::Ordering::Equal,
+                "PartialEq↔Ord contract: expected b.cmp(a) == Equal when a == b"
+            );
         } else {
             assert_ne!(a, b, "PartialEq↔Ord contract: expected a != b");
             assert_ne!(
@@ -2488,6 +2598,37 @@ mod tests {
         // Meta-test: verify assert_ord_consistent works for a non-equal pair.
         // Value::Int(1) < Value::Int(2), so pass the smaller value first.
         assert_ord_consistent(&Value::Int(1), &Value::Int(2), false);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_equal_symmetric() {
+        // Meta-test: verify the symmetric PartialEq↔Ord contract — both
+        // a.cmp(b) and b.cmp(a) must equal Equal when a == b.
+        // This documents the gap that the helper only checked a.cmp(b);
+        // after step-2 the helper also asserts b.cmp(a) == Equal.
+        let a = Value::Int(5);
+        let b = Value::Int(5);
+        // Direct assertions on the symmetric contract.
+        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
+        assert_eq!(b.cmp(&a), std::cmp::Ordering::Equal);
+        // Helper call — will exercise the strengthened check once step-2 lands.
+        assert_ord_consistent(&a, &b, true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_equal_real() {
+        // Meta-test: exercises the to_bits()-based PartialEq and total_cmp()-based
+        // Ord paths through the strengthened helper (including the b.cmp(a) check)
+        // for an equal float pair.
+        assert_ord_consistent(&Value::Real(3.14), &Value::Real(3.14), true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_not_equal_real() {
+        // Meta-test: exercises the total_cmp() ordering and antisymmetry check
+        // for a non-equal float pair. Value::Real(1.0) < Value::Real(2.0) under
+        // total_cmp(), so pass the smaller value first.
+        assert_ord_consistent(&Value::Real(1.0), &Value::Real(2.0), false);
     }
 
     #[test]
@@ -3913,46 +4054,16 @@ mod tests {
             im: 0.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(complex < orient);
+        assert!(complex < orient(1.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
     fn value_orientation_ord_within_type() {
         // Lexicographic on w, x, y, z via total_cmp() — component priority: w→x→y→z
-        let a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(a < b);
+        assert!(orient(0.0, 0.0, 0.0, 0.0) < orient(1.0, 0.0, 0.0, 0.0));
 
         // Same w, different x
-        let c = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let d = Value::Orientation {
-            w: 1.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(c < d);
+        assert!(orient(1.0, 0.0, 0.0, 0.0) < orient(1.0, 1.0, 0.0, 0.0));
     }
 
     #[test]
@@ -3960,19 +4071,7 @@ mod tests {
         // Equal w, different x with non-zero y — catches field-order swap regressions.
         // Correct Ord (w→x→y→z): e > f because x=1.0 > x=0.5 when w is tied.
         // A wrong impl comparing y before x would say e < f (y=0.5 < y=1.0).
-        let e = Value::Orientation {
-            w: 0.5,
-            x: 1.0,
-            y: 0.5,
-            z: 0.0,
-        };
-        let f = Value::Orientation {
-            w: 0.5,
-            x: 0.5,
-            y: 1.0,
-            z: 0.0,
-        };
-        assert!(e > f);
+        assert!(orient(0.5, 1.0, 0.5, 0.0) > orient(0.5, 0.5, 1.0, 0.0));
     }
 
     #[test]
@@ -5852,7 +5951,7 @@ mod tests {
     #[test]
     fn nan_payload_canonicalized_in_content_hash() {
         let non_canon_nan = f64::from_bits(f64::NAN.to_bits() ^ 1);
-        debug_assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
+        assert!(non_canon_nan.is_nan(), "non_canon_nan must still be NaN");
 
         // (1) Value::Real
         assert_eq!(

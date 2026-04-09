@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Assert that `counter` has advanced by exactly `expected_delta` since the
 /// `before` snapshot.
 ///
-/// Computes the actual delta as `counter.load(Ordering::Acquire).saturating_sub(before)`
-/// and asserts it equals `expected_delta`.  Uses `Acquire` ordering so that all
+/// Computes the actual delta as `counter.load(Ordering::Acquire) - before`,
+/// panicking first if the counter appears to have gone backwards (indicating a
+/// stale or wrong `before` snapshot).  Uses `Acquire` ordering so that all
 /// WARN event stores (which use `Release`) are visible to this load.
 ///
 /// # Parameters
@@ -16,11 +17,18 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// - `counter` — the warn counter returned by [`warn_counting_subscriber`] or
 ///   [`warn_counting_guard`].
 /// - `before` — a snapshot of the counter taken before the code under test
-///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.
+///   ran.  Use `counter.load(Ordering::Acquire)` to take a snapshot.  Must
+///   be a snapshot taken from the same counter before the code under test
+///   ran; passing a value greater than the counter's current load (for
+///   example, a stale snapshot from an unrelated counter or a reordered
+///   read) will panic.
 /// - `expected_delta` — how many WARN events you expect since the snapshot.
 /// - `context` — included in the panic message for diagnostics.
 ///
 /// # Panics
+///
+/// Panics if `before` is greater than the current counter value (backwards
+/// counter — indicates a stale or wrong `before` snapshot).
 ///
 /// Panics if the actual delta differs from `expected_delta`.
 pub fn assert_warn_count_delta(
@@ -30,7 +38,11 @@ pub fn assert_warn_count_delta(
     context: &str,
 ) {
     let after = counter.load(Ordering::Acquire);
-    let actual_delta = after.saturating_sub(before);
+    assert!(
+        after >= before,
+        "warn counter went backwards (before={before}, after={after}): {context}"
+    );
+    let actual_delta = after - before;
     assert_eq!(
         actual_delta,
         expected_delta,
@@ -1232,6 +1244,26 @@ mod tests {
         assert_warn_count_delta(&counter, 0, 2, "expected warn delta");
     }
 
+    /// Verifies `assert_warn_count_delta` panics with the `warn counter went
+    /// backwards` message when `before` exceeds the current counter, which
+    /// catches stale-snapshot bugs that the old `saturating_sub` implementation
+    /// silently swallowed.
+    #[test]
+    #[should_panic(expected = "warn counter went backwards")]
+    fn assert_warn_count_delta_panics_when_counter_went_backwards() {
+        use crate::assert_warn_count_delta;
+        use crate::warn_counting_subscriber;
+
+        // Obtain a fresh counter at 0 — do NOT install the subscriber or emit
+        // any warns.  The counter stays at 0.
+        let (_subscriber, counter) = warn_counting_subscriber();
+
+        // Passing before=5 against a counter at 0 is a backwards snapshot.
+        // This must panic with "warn counter went backwards"; if it silently
+        // returns 0 the should_panic expectation fails and this test is red.
+        assert_warn_count_delta(&counter, 5, 0, "stale snapshot");
+    }
+
     /// `assert_warn_count` (convenience wrapper with before=0) passes when
     /// counter equals `expected`.
     #[test]
@@ -1271,6 +1303,11 @@ mod tests {
     ///
     /// Once the guard is dropped the subscriber is removed, so events emitted
     /// outside the guard's lifetime are not reflected in the counter.
+    ///
+    /// The post-drop `tracing::warn!` below falls through to the global no-op
+    /// fallback and leaves the counter at 1.  If the guard ever leaked its
+    /// subscriber, that warn would be captured and bump the counter to 2,
+    /// causing this assertion to fail.
     #[test]
     fn warn_counting_guard_stops_counting_after_drop() {
         use crate::assert_warn_count;
@@ -1279,8 +1316,15 @@ mod tests {
         let (guard, counter) = warn_counting_guard();
         tracing::warn!("inside guard");
         drop(guard);
-        // Any warn emitted here is not captured by the guard's subscriber.
-        // We just verify the count was exactly 1 (not more from external state).
-        assert_warn_count(&counter, 1, "only the warn inside the guard is counted");
+        // Emit a warn AFTER the guard drops.  The subscriber is now detached
+        // so this event must NOT increment the counter.  If the subscriber had
+        // leaked, the counter would reach 2 and the assertion below would catch
+        // the regression.
+        tracing::warn!("after drop");
+        assert_warn_count(
+            &counter,
+            1,
+            "post-drop warn must not be counted (subscriber should be detached)",
+        );
     }
 }

@@ -1,12 +1,15 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
+use reify_test_support::{
+    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
+};
 use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
-use crate::engine::{EngineSession, parse_value_string};
+use crate::engine::{EngineSession, module_key, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -801,7 +804,7 @@ fn update_source_produces_meshes() {
 
 // --- Task 827: get_diagnostics tests ---
 
-/// Step-1 (TDD failing test): get_diagnostics() returns empty vec when no module is loaded.
+/// get_diagnostics() returns empty vec when no module is loaded.
 /// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
@@ -815,7 +818,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     );
 }
 
-/// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
+/// get_diagnostics() returns a non-empty vec
 /// when the compiled module contains a warning.
 ///
 /// Source with `port mount : NonExistentTrait` produces an "unknown port type" warning
@@ -832,11 +835,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warn_source_with_unknown_port_type();
 
     // load_from_source should succeed — warnings are not errors
     session
@@ -900,7 +899,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 }
 
-/// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
+/// get_diagnostics() returns empty vec for bracket_source() (warning-free source).
 /// Validates the method works end-to-end on a real compiled module.
 #[test]
 fn engine_get_diagnostics_clean_source_returns_empty() {
@@ -946,12 +945,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure S {
-    param width : Length = 80mm
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warn_source_with_unknown_port_type_with_width();
 
     session
         .load_from_source(source, "testmod")
@@ -961,6 +955,12 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     assert!(
         !diags.is_empty(),
         "expected at least one diagnostic for unknown port type"
+    );
+    assert_eq!(
+        diags[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
     );
     assert_eq!(
         diags[0].file_path, "testmod.ri",
@@ -977,19 +977,17 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 ///
 /// After load_from_source("initial") then update_source("updated.ri", ...),
 /// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+///
+/// **Assumption**: `port mount : NonExistentTrait` produces a warning (not error).
+/// If the compiler changes this, the `.expect()` on load_from_source/update_source
+/// will panic — update the fixture accordingly.
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let warning_source = r#"structure S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
-
     session
-        .load_from_source(warning_source, "initial")
+        .load_from_source(warn_source_with_unknown_port_type(), "initial")
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
@@ -998,12 +996,18 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should have diagnostics after initial load"
     );
     assert_eq!(
+        diags_before[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_before[0].file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
 
     session
-        .update_source("updated.ri", warning_source)
+        .update_source("updated.ri", warn_source_with_unknown_port_type())
         .expect("update_source should succeed");
 
     let diags_after = session.get_diagnostics();
@@ -1012,12 +1016,18 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
+        diags_after[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, update_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_after[0].file_path, "updated.ri",
         "after update_source, file_path should be 'updated.ri'"
     );
 }
 
-/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+/// A diagnostic with no labels gets (1,1,1,1) coordinates.
 ///
 /// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
 /// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
@@ -1085,6 +1095,78 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the source_map invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_source_map_for_test() clears source_map while leaving compiled and
+/// module_name intact. This exercises the fallback paths added in Task 900:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no resolve_source call)
+/// - get_source_location uses a fallible source_map lookup and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_source_map_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the source_map invariant
+    session.break_source_map_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when source_map is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when source_map is missing"
+    );
+}
+
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the module_name invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_module_name_for_test() clears module_name while leaving compiled and
+/// source_map intact. This exercises the fallible path at engine.rs line 302:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no module_name needed)
+/// - get_source_location uses self.module_name.as_deref()? and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_module_name_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the module_name invariant
+    session.break_module_name_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when module_name is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when module_name is missing"
+    );
+}
+
 // --- Task 837: build_line_offsets unit tests ---
 
 /// build_line_offsets returns empty vec for empty string.
@@ -1137,7 +1219,7 @@ fn build_line_offsets_only_newlines() {
     assert_eq!(offsets, vec![0, 1, 2]);
 }
 
-/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+/// After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
 /// module (and its diagnostics) are replaced on each update, so stale diagnostics
@@ -1149,13 +1231,8 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     // Load warning source — establishes a non-empty diagnostics state
-    let warn_source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
     session
-        .load_from_source(warn_source, "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("warning source should compile");
 
     let diags_before = session.get_diagnostics();
@@ -1228,8 +1305,8 @@ fn byte_offset_to_line_col_offset_beyond_len_release() {
 
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     // Verify that a zero-length span (start == end) produces identical
     // start and end coordinates through the full get_diagnostics pipeline,
@@ -1245,11 +1322,10 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
 
     let offset = source.find("width").expect("'width' not in bracket_source") as u32;
 
-    let diag = Diagnostic::warning("empty-span-test")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset, offset), // zero-length span
-            "zero-length label",
-        ));
+    let diag = Diagnostic::warning("empty-span-test").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset, offset), // zero-length span
+        "zero-length label",
+    ));
     session.inject_diagnostic_for_test(diag);
 
     let diags = session.get_diagnostics();
@@ -1281,7 +1357,10 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
     //   + 10 bytes "    param " → col 11 when 'w' is reached.
     assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
-    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
+    assert_eq!(
+        d.column, 11,
+        "expected column for 'width' in bracket_source"
+    );
 }
 
 #[test]
@@ -1410,7 +1489,11 @@ fn offset_to_line_col_fast_at_eof_offset() {
     let eof = source.len();
     let expected = byte_offset_to_line_col(source, eof);
     let actual = offset_to_line_col_fast(source, &line_offsets, eof);
-    assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
+    assert_eq!(
+        actual, expected,
+        "EOF offset: fast={:?} original={:?}",
+        actual, expected
+    );
 }
 
 // --- Task 837: step-7 stress / multi-diagnostic tests ---
@@ -1423,8 +1506,8 @@ fn offset_to_line_col_fast_at_eof_offset() {
 /// then verify get_diagnostics returns the same line/col as the O(M) reference.
 #[test]
 fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -1438,24 +1521,25 @@ fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
     // Pick three byte offsets that land at recognisable tokens across
     // different lines, using `find` so the test stays robust to whitespace.
     let offset_a = source.find("width").expect("'width' not in bracket_source") as u32;
-    let offset_b = source.find("height").expect("'height' not in bracket_source") as u32;
-    let offset_c = source.find("thickness").expect("'thickness' not in bracket_source") as u32;
+    let offset_b = source
+        .find("height")
+        .expect("'height' not in bracket_source") as u32;
+    let offset_c = source
+        .find("thickness")
+        .expect("'thickness' not in bracket_source") as u32;
 
-    let diag_a = Diagnostic::warning("stress-a")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_a, offset_a + 5),
-            "label a",
-        ));
-    let diag_b = Diagnostic::warning("stress-b")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_b, offset_b + 6),
-            "label b",
-        ));
-    let diag_c = Diagnostic::warning("stress-c")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_c, offset_c + 9),
-            "label c",
-        ));
+    let diag_a = Diagnostic::warning("stress-a").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_a, offset_a + 5),
+        "label a",
+    ));
+    let diag_b = Diagnostic::warning("stress-b").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_b, offset_b + 6),
+        "label b",
+    ));
+    let diag_c = Diagnostic::warning("stress-c").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_c, offset_c + 9),
+        "label c",
+    ));
 
     session.inject_diagnostic_for_test(diag_a);
     session.inject_diagnostic_for_test(diag_b);
@@ -1643,4 +1727,257 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
     let (l, c) = offset_to_line_col_fast(source2, &offsets2, 2);
     assert_eq!(l, 1);
     assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
+}
+
+// --- Task 899: resolve_source precondition test ---
+
+/// resolve_source panics (via debug_assert) when called without a loaded module.
+///
+/// The debug_assert!(self.compiled.is_some()) in resolve_source is the contract
+/// guard — this test verifies it fires when the precondition is violated.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "compiled")]
+fn resolve_source_panics_without_loaded_module() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    // No load — compiled is None. debug_assert should fire.
+    let _ = session.resolve_source_for_test();
+}
+
+// --- Task 899: module_key unit tests ---
+
+/// module_key("bracket") == "bracket.ri" — normal identifier.
+#[test]
+fn module_key_normal_name() {
+    assert_eq!(module_key("bracket"), "bracket.ri");
+}
+
+/// module_key("some_module") == "some_module.ri" — underscored name.
+#[test]
+fn module_key_underscored_name() {
+    assert_eq!(module_key("some_module"), "some_module.ri");
+}
+
+/// module_key(name) matches the key that load_from_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that load_from_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into load_from_source without updating module_key.
+#[test]
+fn module_key_matches_load_from_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key(name) matches the key that update_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that update_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into update_source without updating module_key (engine.rs:212).
+#[test]
+fn module_key_matches_update_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("update_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key panics (via debug_assert) when called with an empty name.
+///
+/// An empty name would produce ".ri", which is never a valid module key —
+/// `load_file` falls back to "unnamed" so an empty name is a programming error.
+/// The debug_assert in module_key is the contract guard.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty")]
+fn module_key_empty_name_panics() {
+    let _ = module_key("");
+}
+
+// --- Task 1194: positive resolve_source pinning test ---
+
+/// resolve_source returns the key (module_key(name)) and the original source text
+/// after a successful load_from_source call.
+///
+/// Pins: (a) key derivation appends ".ri" to the module name, (b) the source text
+/// is stored verbatim and returned as a zero-copy &str borrow.
+#[test]
+fn resolve_source_returns_key_and_source_after_load() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+}
+
+// --- Task 1194: invariant regression test ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic, because resolve_source hits the unconditional
+/// expect() on module_name (line ~252 in engine.rs).
+///
+/// break_module_name_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    session.break_module_name_for_test();
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "module_name is None".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: source_map panic guard test ---
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic, because resolve_source hits the
+/// unconditional expect() on source_map.get_key_value().
+///
+/// break_source_map_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "source_map missing key".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1225: resolve_source panic contract via real warning source ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic via the unconditional expect() in resolve_source.
+///
+/// Unlike get_diagnostics_panics_on_broken_module_name (Task 1194), this test
+/// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
+/// This pins the panic contract on the user-visible failure mode: real source
+/// that the compiler emits warnings for, with a deliberately broken invariant.
+/// If a future refactor removes the inject_diagnostic_for_test helper or changes
+/// injection semantics, this test continues to pin the contract independently.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // This source reliably produces a compiler warning (unknown port type), not
+    // an error — the same fixture used by engine_get_diagnostics_returns_populated_warning.
+
+    // load_from_source succeeds: warnings are not errors.
+    session
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    // compiled.diagnostics is non-empty (real warning), so the early-exit in
+    // get_diagnostics is skipped and resolve_source is reached — which must
+    // panic with "module_name is None".
+    session.break_module_name_for_test();
+    let _ = session.get_diagnostics();
+}
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic via the unconditional expect() in
+/// resolve_source on source_map.get_key_value().
+///
+/// Unlike get_diagnostics_panics_on_broken_source_map (Task 1212), this test
+/// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
+/// This pins the panic contract on the user-visible failure mode and removes
+/// coupling to the test injection helper — complementary, not duplicative.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Same real warning-producing fixture as above.
+
+    // load_from_source succeeds: warnings are not errors.
+    session
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    // Deliberately break the invariant: compiled and module_name are Some,
+    // source_map is empty. compiled.diagnostics is non-empty (real warning), so
+    // the early-exit in get_diagnostics is skipped, module_name.as_deref()
+    // succeeds, and source_map.get_key_value(&key).expect(…) fires.
+    session.break_source_map_for_test();
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: update_source path test ---
+
+/// resolve_source returns updated content (and the same key) after a successful
+/// update_source call.
+///
+/// Pins: (a) the key derived from the path argument stays "bracket.ri",
+/// (b) the source text is replaced with the new content and returned verbatim.
+#[test]
+fn resolve_source_returns_updated_content_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    // Baseline: resolve_source reflects the initial load.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+    // Update the source with modified content (different width parameter).
+    let updated = bracket_source_with_width("120mm");
+    session
+        .update_source("bracket.ri", &updated)
+        .expect("update_source should succeed with modified bracket source");
+    // After update: key stays the same, content is the new text.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", updated.as_str()),
+    );
 }

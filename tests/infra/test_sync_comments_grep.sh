@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Meta-test: verify the fn-existence grep pattern in sync_comments_test.sh is
 # POSIX-portable (no \b word-boundary, no grep -P) and correctly anchors the
-# function name with [[:space:](] instead.
+# function name with [[:space:](<] instead.
 #
 # Section 1 — fixture assertions — exercise the expected regex literal against
 #   synthetic strings and pass on any version of sync_comments_test.sh.
@@ -25,7 +25,7 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 
 # Extract the fn-existence regex from sync_comments_test.sh at runtime so
 # the meta-test stays coupled to the real test.  Pipeline:
-#   1. find the grep -qE invocation line that contains [[:space:](]
+#   1. find the grep -qE invocation line that contains [[:space:](<]
 #   2. strip the leading 'grep -qE '' prefix
 #   3. strip the trailing '' "$filename"' suffix
 #   4. replace the shell variable reference (e.g. '"${ref_fn}"') with 'sanitize_value'
@@ -86,6 +86,12 @@ assert "accepts: const fn sanitize_value(" \
 assert "accepts: fn sanitize_value<T>(" \
     bash -c "printf '%s\n' 'fn sanitize_value<T>(v: T) -> T {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(crate) const fn sanitize_value( (pub+const combination)" \
+    bash -c "printf '%s\n' 'pub(crate) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(crate) unsafe fn sanitize_value( (pub+unsafe combination)" \
+    bash -c "printf '%s\n' 'pub(crate) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
@@ -106,6 +112,9 @@ assert "rejects: fnsanitize_value( (no space between fn keyword and name)" \
 assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
     bash -c "! printf '%s\n' 'my_fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "rejects: fn sanitize_value_raw<T>( (suffixed name that is also generic)" \
+    bash -c "! printf '%s\n' 'fn sanitize_value_raw<T>(v: T) -> T {' | grep -qE '$PATTERN'"
+
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
 
@@ -125,5 +134,55 @@ assert "no \\b in grep invocations (non-comment lines, scoped)" \
 
 assert "no grep -P in grep invocations (non-comment lines, scoped)" \
     bash -c "! grep -E '^[^#]*grep[[:space:]]+-P' '$SYNC_TEST'"
+
+echo ""
+echo "--- Section 3: extract_fn fixture accept/reject (regex anchoring) ---"
+
+# extract_fn is defined in sync_comments_test.sh. We source it in a subshell
+# with test_summary stubbed to no-op, following the established behavioral-test
+# pattern from test_test_helpers.sh lines 301-312.
+_SECT3_HELPER="$SCRIPT_DIR/test_helpers.sh"
+
+# accept: regular fn — fn foo( must be extracted when fn_name=foo
+assert "extract_fn: fn foo( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foo(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo('
+    "
+
+# accept: generic fn — fn foo<T>( must be extracted when fn_name=foo
+assert "extract_fn: fn foo<T>( extracted correctly for fn_name=foo" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foo<T>(\n    x: T,\n) -> T {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -n \"\$out\" ] && echo \"\$out\" | grep -q '^fn foo<T>('
+    "
+
+# reject: fn foobar( must NOT be extracted when fn_name=foo (prefix-collision guard)
+assert "extract_fn: fn foobar( NOT extracted when fn_name=foo (prefix collision)" \
+    bash -c "
+        tmp=\$(mktemp)
+        printf 'fn foobar(\n    x: i32,\n) -> i32 {\n    x\n}\n' > \"\$tmp\"
+        source '$_SECT3_HELPER'
+        test_summary() { :; }
+        source '$SYNC_TEST'
+        PASS=0; FAIL=0
+        out=\$(extract_fn foo \"\$tmp\")
+        rm -f \"\$tmp\"
+        [ -z \"\$out\" ]
+    "
 
 test_summary

@@ -25,6 +25,26 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
     );
 }
 
+/// Assert that calling `handle_request("shutdown", params)` returns exactly `Ok(Value::Null)`.
+///
+/// The `shutdown` bridge arm ignores params entirely, so every `params` value must
+/// produce the same result. The failure messages embed `params` so that a regression
+/// in the helper is immediately attributable to the specific params value that broke.
+///
+/// The caller is responsible for constructing `lsp` (either `InProcessLsp::new()` for
+/// pre-handshake tests or `initialized_lsp().await` for post-handshake tests).
+async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::Value) {
+    let result = lsp.handle_request("shutdown", params.clone()).await;
+    let val = result.unwrap_or_else(|e| {
+        panic!("shutdown(params={params}) should return Ok, got Err: {e}")
+    });
+    assert_eq!(
+        val,
+        serde_json::Value::Null,
+        "shutdown(params={params}) should return exactly Ok(Value::Null)"
+    );
+}
+
 /// Perform the standard two-step LSP handshake on an existing [`InProcessLsp`] instance.
 ///
 /// 1. `initialize` — the client advertises its capabilities and receives the
@@ -584,15 +604,23 @@ async fn did_close_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_returns_ok_null() {
     let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!({})).await;
+}
 
-    let result = lsp.handle_request("shutdown", json!({})).await;
-
-    let val = result.expect("shutdown should return Ok");
-    assert_eq!(
-        val,
-        serde_json::Value::Null,
-        "shutdown should return exactly Ok(Value::Null)"
-    );
+/// The `shutdown` request with `null` params should return exactly `Ok(Value::Null)`.
+///
+/// Per the LSP spec, `shutdown` is a parameterless request — `null` (or omitted params)
+/// is the canonical JSON-RPC representation. This test exercises that spec-correct path
+/// and guards against the `json!({})` variant above failing "for the wrong reason" if a
+/// future change adds strict param validation to the shutdown arm (e.g. rejecting `{}`
+/// while accepting `null`).
+///
+/// The naming follows the `initialized_with_null_params_returns_ok` pattern already
+/// established for the analogous null-params case in the `initialized` arm.
+#[tokio::test]
+async fn shutdown_with_null_params_returns_ok_null() {
+    let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!(null)).await;
 }
 
 /// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
@@ -605,19 +633,61 @@ async fn shutdown_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_before_initialize() {
     let lsp = InProcessLsp::new();
+    assert_shutdown_returns_null(&lsp, &json!({})).await;
+}
 
-    let result = lsp.handle_request("shutdown", json!({})).await;
+/// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
+/// initialize/initialized handshake should not panic and should return `Ok(Value::Null)`.
+///
+/// This covers the canonical parameterless shutdown call (`params: null` per the LSP spec)
+/// on a pre-handshake server, paralleling the `json!({})` variant in
+/// `shutdown_before_initialize` above. Both variants must be safe on the pre-handshake
+/// path because the shutdown arm in the bridge ignores params entirely.
+#[tokio::test]
+async fn shutdown_before_initialize_with_null_params() {
+    let lsp = InProcessLsp::new();
+    assert_shutdown_returns_null(&lsp, &json!(null)).await;
+}
 
-    assert!(
-        result.is_ok(),
-        "shutdown before initialize should return Ok, got: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        serde_json::Value::Null,
-        "shutdown before initialize should return exactly Ok(Value::Null)"
-    );
+/// The `shutdown` bridge arm ignores params entirely — it never deserializes or
+/// validates them. This test locks in that permissive contract by sending two
+/// unexpected values: an object with extra fields (`{"foo": 42}`) and a wrong JSON
+/// type entirely (`"oops"`). Both must return `Ok(Value::Null)`.
+///
+/// The `"shutdown"` arm in `InProcessLsp::handle_request` calls `server.shutdown().await`
+/// and returns `Ok(Value::Null)` without touching `params`. If a future change adds
+/// strict param validation, this test will fail — making the behavior change
+/// inescapable rather than accidental.
+///
+/// Uses `InProcessLsp::new()` (pre-handshake) to avoid handshake overhead; the
+/// shutdown arm does not consult initialization state.
+#[tokio::test]
+async fn shutdown_ignores_unexpected_params() {
+    // Object with unexpected extra fields — bridge must not reject this.
+    let lsp = InProcessLsp::new();
+    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+    // Wrong JSON type entirely — bridge must not reject this either.
+    let lsp = InProcessLsp::new();
+    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
+}
+
+/// Mirror of `shutdown_ignores_unexpected_params` for the post-handshake path.
+///
+/// Guards the invariant that the `"shutdown"` arm in `InProcessLsp::handle_request`
+/// ignores params regardless of initialization state. Both unexpected values
+/// (`{"foo": 42}` and `"oops"`) must return `Ok(Value::Null)` after the
+/// initialize/initialized handshake, just as they do before it.
+///
+/// Each payload gets a fresh `initialized_lsp().await` instance so that the two
+/// assertions are isolated from any state the prior shutdown call may have left.
+#[tokio::test]
+async fn shutdown_ignores_unexpected_params_after_initialize() {
+    // Object with unexpected extra fields — bridge must not reject this post-handshake.
+    let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
+    // Wrong JSON type entirely — bridge must not reject this post-handshake either.
+    let lsp = initialized_lsp().await;
+    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
 }
 
 /// Each `error_prefix` constant must actually appear in the error message

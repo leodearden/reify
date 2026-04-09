@@ -204,6 +204,40 @@ POSIX_FALLBACK_SETUP='
     source "$LIB_PORTABLE"
 '
 
+# SETUP_POSIX_FALLBACK_ENV — eval-string helper for tests that require POSIX fallback
+# WITHOUT an EXIT trap. Timer subshells inherit EXIT traps, which would prematurely
+# clean up rescue_dir and produce false-positive passes in orphan-detection tests
+# (16b, 18b). Uses the superset of commands (ps + bash) so all 4 tests (16a/b, 18a/b)
+# share a single helper. Callers must clean up rescue_dir explicitly.
+SETUP_POSIX_FALLBACK_ENV='
+    rescue_dir=$(mktemp -d)
+    for cmd in sleep kill grep rm mktemp ln touch ps bash; do
+        p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
+    done
+    new_path="$rescue_dir"
+    IFS=: read -ra dirs <<< "$PATH"
+    for d in "${dirs[@]}"; do
+        if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
+            continue
+        fi
+        new_path="${new_path:+$new_path:}$d"
+    done
+    export PATH="$new_path"
+    hash -r
+    source "$LIB_PORTABLE"
+'
+
+# -- Helper self-test: SETUP_POSIX_FALLBACK_ENV ----------------------------------
+# Verifies the helper correctly strips timeout/gtimeout from PATH and creates
+# rescue_dir. Placed before Test 12 so a broken helper surfaces early.
+assert "SETUP_POSIX_FALLBACK_ENV helper strips timeout from PATH and creates rescue_dir" \
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+        eval "$SETUP_POSIX_FALLBACK_ENV"
+        ! command -v timeout >/dev/null 2>&1 &&
+        ! command -v gtimeout >/dev/null 2>&1 &&
+        [ -d "$rescue_dir" ]
+    '
+
 assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
@@ -283,8 +317,8 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 #
 # Test 16a (positive spawn check): proves the test setup is valid — the timer
 # must actually start its inner 'sleep 31337' before Test 16b's cleanup check
-# is meaningful.  Runs portable_timeout in the background, waits 0.5s, and
-# asserts the sentinel sleep is visible in ps.
+# is meaningful.  Runs portable_timeout in the background, polls up to 5×200ms
+# (1s total) for the sentinel sleep to appear, then asserts it was found.
 #
 # Test 16b (orphan cleanup check): verifies the timer's 'sleep 31337' is gone
 # after portable_timeout returns.  Uses 'sleep 0.3' (not 'true') as the
@@ -296,70 +330,49 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 # Save absolute paths BEFORE PATH manipulation; use them for post-exit checks.
 
 assert "POSIX fallback: timer actually spawns sentinel sleep 31337 (positive check)" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Background portable_timeout with a 2s command so the timer has time
         # to spawn its inner "sleep 31337" before we check.
         portable_timeout 31337 sleep 2 &
         pt_pid=$!
 
-        # Give the timer subshell time to spawn its inner "sleep 31337".
-        "$_abs_sleep" 0.5
-
-        # Capture whether the sentinel is present before cleanup.
+        # Poll up to 5×200ms for the sentinel to appear (robust under CI load).
+        # On fast systems this returns on the first iteration (~0ms wait).
         found=1
-        "$_abs_ps" -A -o pid,args 2>/dev/null \
-            | "$_abs_grep" -qE "[[:space:]]sleep 31337$" && found=0 || true
+        for _attempt in 1 2 3 4 5; do
+            if "$_abs_ps" -A -o pid,args 2>/dev/null \
+                    | "$_abs_grep" -qE "[[:space:]]sleep 31337$"; then
+                found=0
+                break
+            fi
+            "$_abs_sleep" 0.2
+        done
 
         # Cleanup: kill the background portable_timeout.
         kill "$pt_pid" 2>/dev/null || true
         wait "$pt_pid" 2>/dev/null || true
 
+        # Safety-net: kill any lingering sentinel sleep 31337 processes.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31337$" \
+            | while read -r _spid _rest; do kill "$_spid" 2>/dev/null || true; done
+
         exit $found
     '
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
-        # would clean up the rescue dir on exit, causing false-positive passes.
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Run a 0.3s command under a long timeout (31337s sentinel).
         # Using sleep 0.3 instead of "true" gives the timer time to spawn
@@ -372,26 +385,31 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31337$"
     '
 
-# -- Test 17: structural: timer subshell does NOT have SIGKILL escalation ------
+# -- Test 17: structural: SIGKILL escalation uses PID-reuse-safe process-group kill ----
 echo ""
-echo "--- Test 17: lib_portable.sh timer subshell does NOT escalate to SIGKILL ---"
+echo "--- Test 17: lib_portable.sh SIGKILL escalation uses process-group kill ---"
 
-# The SIGKILL escalation (kill -9 / kill -KILL) has been removed from the timer
-# subshell to eliminate the PID-reuse race: by the time the SIGKILL would run,
-# the main shell has already wait(2)ed on cmd_pid and the kernel may have recycled
-# that PID to an unrelated process.  The main shell's process-group kill
-# (kill -- -$timer_pid) handles cleanup atomically instead.
-assert "lib_portable.sh timer subshell does NOT escalate to SIGKILL (PID-reuse safety)" \
-    bash -c '! grep -qE "kill -9[[:space:]]|kill -KILL[[:space:]]" "$1"' _ "$LIB_PORTABLE"
+# SIGKILL escalation was re-added to the timer subshell using process-group kill
+# ('kill -9 -- -$cmd_pid') rather than individual PID kill ('kill -9 $cmd_pid').
+# Process-group kill is PID-reuse safe: the SIGKILL fires BEFORE the main shell's
+# wait(2) returns (the main shell is blocked precisely because SIGTERM was ignored),
+# so cmd_pid cannot have been recycled.  The process-group syntax adds a second
+# safety layer: a stale PGID returns ESRCH harmlessly rather than hitting an
+# unrelated process.
+assert "lib_portable.sh SIGKILL escalation uses process-group kill (PID-reuse safe)" \
+    grep -qF 'kill -9 -- -$cmd_pid' "$LIB_PORTABLE"
+
+assert "lib_portable.sh SIGKILL does NOT use individual PID kill (PID-reuse unsafe)" \
+    bash -c '! grep -qE "kill -(9|KILL) [^-]" "$1"' _ "$LIB_PORTABLE"
 
 # -- Test 18: monitor mode (set -m) preserved after POSIX fallback call --------
 echo ""
 echo "--- Test 18: POSIX fallback: monitor mode (set -m) preserved ---"
 
 # If the caller has job control enabled (set -m), portable_timeout must restore
-# it after using set -m internally.  Current code unconditionally runs set +m
-# after launching the timer subshell (lines 98/108), which silently disables
-# the caller's monitor mode.  This test FAILS on unpatched code.
+# it after using set -m internally.  Before the fix, the code unconditionally
+# ran set +m after launching the timer subshell, which silently disabled the
+# caller's monitor mode.  This test guards against that regression.
 assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout call" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
@@ -401,6 +419,42 @@ assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout c
         case $- in
             *m*) ;;
             *) echo "monitor mode was clobbered by portable_timeout"; exit 1 ;;
+        esac
+    '
+
+# -- Test 18b: degraded-path monitor mode (set -m) preserved ------------------
+echo ""
+echo "--- Test 18b: degraded path (mktemp fails): monitor mode (set -m) preserved ---"
+
+# Symmetric to Test 18 but exercises the degraded path (mktemp failure) so
+# that lines 116-120 of lib_portable.sh have explicit coverage.  Completes
+# the 2x2 matrix: {normal, degraded} x {monitor-on, monitor-off}.
+assert "degraded path: monitor mode (set -m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        set -m 2>/dev/null || true
+        portable_timeout 5 true 2>/dev/null || true
+        # $- must still contain "m" (monitor mode active).
+        case $- in
+            *m*) ;;
+            *) echo "monitor mode was clobbered by portable_timeout (degraded path)"; exit 1 ;;
+        esac
+    '
+
+# -- Test 18c: degraded-path no-monitor mode (set +m) preserved ---------------
+echo ""
+echo "--- Test 18c: degraded path (mktemp fails): no-monitor mode (set +m) preserved ---"
+
+# Symmetric to Test 19 on the degraded path: when the caller has no job
+# control, portable_timeout must leave it disabled after the call.
+assert "degraded path: no-monitor mode (set +m) preserved after portable_timeout call" \
+    env LIB_PORTABLE="$LIB_PORTABLE" MKTEMP_FAIL_SETUP="$MKTEMP_FAIL_SETUP" bash -c '
+        eval "$MKTEMP_FAIL_SETUP"
+        set +m 2>/dev/null || true
+        portable_timeout 5 true 2>/dev/null || true
+        # $- must NOT contain "m" (monitor mode inactive).
+        case $- in
+            *m*) echo "portable_timeout unexpectedly enabled monitor mode (degraded path)"; exit 1 ;;
         esac
     '
 
@@ -423,19 +477,19 @@ assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeou
         esac
     '
 
-# -- Test 20: structural: header documents SIGTERM-only termination ------------
+# -- Test 20: structural: header documents SIGKILL escalation via process-group kill ----
 echo ""
-echo "--- Test 20: portable_timeout header documents SIGTERM-only termination ---"
+echo "--- Test 20: portable_timeout header documents SIGKILL escalation ---"
 
-# S4 requires that the portable_timeout header comment documents that the POSIX
-# fallback uses SIGTERM only and does not escalate to SIGKILL (PID-reuse safety).
-# This structural test fails until the header is updated in the next step.
-assert "portable_timeout header documents SIGTERM-only termination" \
-    grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
+# The portable_timeout doc comment must describe the SIGTERM-first,
+# SIGKILL-escalation strategy using process-group kill.  The old SIGTERM-only
+# language must be replaced.  This test FAILS until step-6 updates the doc comment.
+assert "portable_timeout header documents SIGKILL escalation via process-group kill" \
+    grep -qiE 'escalat.*SIGKILL.*via.*process.group|SIGKILL.*via.*process.group' "$LIB_PORTABLE"
 
-# -- Test 18: behavioral: SIGKILL escalation — exit 124 and no orphan --------
+# -- Test 21: behavioral: SIGKILL escalation — exit 124 and no orphan --------
 echo ""
-echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
+echo "--- Test 21: POSIX fallback: SIGKILL escalation — exit 124 and no orphan ---"
 
 # This test exercises the full SIGKILL escalation path in the POSIX fallback:
 #   1. Timer fires after 1s, sends SIGTERM to the command (bash wrapper).
@@ -456,32 +510,18 @@ echo "--- Test 18: POSIX fallback: SIGKILL escalation — exit 124 and no orphan
 # Total test time: ~1s (timer fires) + 2s (grace period) = ~3s.
 #
 # Regression guard (verified manually, step-5): temporarily commenting out the
-# 'kill -9' line in lib_portable.sh causes Test 18a to FAIL (exit 143 never
+# 'kill -9' line in lib_portable.sh causes Test 21a to FAIL (exit 143 never
 # arrives, process stays alive, flag check never triggers, returns 143 not 124).
 # This confirms the test has discriminating power and is not vacuous.
 
 assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
         rc=0
@@ -490,36 +530,24 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
     '
 
 assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
-    env LIB_PORTABLE="$LIB_PORTABLE" bash -c '
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
 
-        rescue_dir=$(mktemp -d)
-        for cmd in sleep kill grep rm mktemp ln touch ps bash; do
-            p=$(command -v "$cmd" 2>/dev/null) && ln -sf "$p" "$rescue_dir/$cmd"
-        done
-        # NOTE: no EXIT trap on rescue_dir — timer subshells inherit traps and
-        # would clean up the rescue dir on exit, causing false-positive passes.
-        new_path="$rescue_dir"
-        IFS=: read -ra dirs <<< "$PATH"
-        for d in "${dirs[@]}"; do
-            if [ -x "$d/timeout" ] || [ -x "$d/gtimeout" ]; then
-                continue
-            fi
-            new_path="${new_path:+$new_path:}$d"
-        done
-        export PATH="$new_path"
-        hash -r
-        source "$LIB_PORTABLE"
+        eval "$SETUP_POSIX_FALLBACK_ENV"
 
         # Command ignores SIGTERM; timer escalates to SIGKILL.
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
 
         # Brief wait then verify no orphan sleep 31339.
         "$_abs_sleep" 0.5
-        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$"
+        _check_rc=0
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
+        exit "$_check_rc"
     '
 
 # -- Summary ------------------------------------------------------------------
