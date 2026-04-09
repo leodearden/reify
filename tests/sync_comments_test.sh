@@ -53,9 +53,9 @@ assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the /^fn/
-# anchor, so doc comments and SYNC markers (which may legitimately differ between
-# the two copies) do not affect the body comparison.
+# at column 0.  Content above the fn keyword is naturally excluded by the awk
+# range anchor, so doc comments and SYNC markers (which may legitimately differ
+# between the two copies) do not affect the body comparison.
 # The awk pattern tolerates an optional visibility qualifier (e.g. pub(crate))
 # and the sed strips it so the diff compares bodies, not visibility.
 extract_fn() {
