@@ -204,6 +204,17 @@ POSIX_FALLBACK_SETUP='
     source "$LIB_PORTABLE"
 '
 
+# -- Helper self-test: SETUP_POSIX_FALLBACK_ENV ----------------------------------
+# Verifies the helper correctly strips timeout/gtimeout from PATH and creates
+# rescue_dir. Placed before Test 12 so a broken helper surfaces early.
+assert "SETUP_POSIX_FALLBACK_ENV helper strips timeout from PATH and creates rescue_dir" \
+    env LIB_PORTABLE="$LIB_PORTABLE" SETUP_POSIX_FALLBACK_ENV="$SETUP_POSIX_FALLBACK_ENV" bash -c '
+        eval "$SETUP_POSIX_FALLBACK_ENV"
+        ! command -v timeout >/dev/null 2>&1 &&
+        ! command -v gtimeout >/dev/null 2>&1 &&
+        [ -d "$rescue_dir" ]
+    '
+
 assert "POSIX fallback: sleep 10 with 1s timeout exits 124" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
