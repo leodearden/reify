@@ -282,4 +282,42 @@ printf '{\n  "packageManager": "npm@10.1.0"\n}\n' > "$FIX_DIR/case_d/p3.json"
 assert "Check 2 logic rejects differing packageManager versions" \
     bash -c "! '$CHECK2_HELPER' '$FIX_DIR/case_d/p1.json' '$FIX_DIR/case_d/p2.json' '$FIX_DIR/case_d/p3.json'"
 
+# -- Test 22: behavioral integration tests (task 1328) ------------------------
+echo ""
+echo "--- Test 22: behavioral integration tests ---"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR" "${FIX_DIR:?}"' EXIT
+
+# Create directory layout mirroring the repo structure expected by the script
+mkdir -p "$FIXTURE_DIR/scripts"
+mkdir -p "$FIXTURE_DIR/tests/infra"
+mkdir -p "$FIXTURE_DIR/gui/sidecar"
+mkdir -p "$FIXTURE_DIR/tree-sitter-reify"
+
+# Copy the real script and test helpers into the fixture
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_DIR/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_DIR/tests/infra/"
+
+# .gitignore: pnpm-lock.yaml gitignored (Check 4); package-lock.json files NOT listed (Check 3)
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
+
+# Initialize a git repo so 'git check-ignore' works inside Check 3
+git -C "$FIXTURE_DIR" init -q
+
+# Write consistent packageManager versions for Test 22a
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_DIR/$pkg"
+done
+
+# Test 22a: all files agree on the same version -> script exits 0
+assert "22a: consistent packageManager versions -> exit 0" \
+    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+
+# Test 22b: introduce a version mismatch -> script exits non-zero
+printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
+
+assert "22b: mismatched packageManager versions -> exit non-zero" \
+    bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
+
 test_summary
