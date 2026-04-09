@@ -269,77 +269,49 @@ _has_if_n_guard() { grep -qE 'if \[ -n' "$1" 2>/dev/null; }
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
-# (a) file defines assert_sync_ref_exists() helper function
-if _has_assert_sync_ref_exists "$SYNC_FILE"; then
-    check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
-else
-    check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
-fi
-
-# (b) file has NO defensive if [ -n ] guard (defensive guards removed)
+# (a) file has NO defensive if [ -n ] guard (defensive guards removed)
 if ! _has_if_n_guard "$SYNC_FILE"; then
     check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
 else
     check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
 fi
 
-# (c) head -1 pipeline has adjacent comment documenting single-reference limitation
-if grep -B3 'head -1' "$SYNC_FILE" 2>/dev/null | grep -qiE 'first|single|multi.?reference'; then
-    check "head -1 pipeline has single-reference documentation comment" "true"
-else
-    check "head -1 pipeline has single-reference documentation comment" "false"
-fi
-
-# (d) assert_sync_ref_exists has an early-fail guard when ref_fn is empty
-if grep -Fq '[ -z "$ref_fn" ]' "$SYNC_FILE" 2>/dev/null; then
-    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "true"
-else
-    check "assert_sync_ref_exists has early-fail guard for empty ref_fn" "false"
-fi
-
-# (e) assert_sync_ref_exists uses a display_fn fallback variable
-if grep -Fq 'display_fn' "$SYNC_FILE" 2>/dev/null; then
-    check "assert_sync_ref_exists uses display_fn fallback variable" "true"
-else
-    check "assert_sync_ref_exists uses display_fn fallback variable" "false"
-fi
-
-# (f) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
+# (b) extract_fn docstring uses 'naturally excluded' wording (not the misleading 'Excludes')
 if grep -q 'naturally excluded' "$SYNC_FILE" 2>/dev/null; then
     check "extract_fn docstring uses 'naturally excluded' wording" "true"
 else
     check "extract_fn docstring uses 'naturally excluded' wording" "false"
 fi
 
-# (g) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
+# (c) extract_fn awk pattern is anchored with [(<] after fn_name to prevent prefix collisions
 if grep -q 'fn_name.*\[(<\]' "$SYNC_FILE" 2>/dev/null; then
     check "extract_fn awk pattern is anchored with [(<] after fn_name" "true"
 else
     check "extract_fn awk pattern is anchored with [(<] after fn_name" "false"
 fi
 
-# (h) extract_fn output is captured to a named variable before diffing (non-empty guard)
+# (d) extract_fn output is captured to a named variable before diffing (non-empty guard)
 if grep -Fq 'expr_body' "$SYNC_FILE" 2>/dev/null; then
     check "extract_fn output captured to expr_body variable" "true"
 else
     check "extract_fn output captured to expr_body variable" "false"
 fi
 
-# (i) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
+# (e) sync_comments_test.sh has a non-empty guard for the captured expr_body variable
 if grep -Fq '[ -z "$expr_body"' "$SYNC_FILE" 2>/dev/null; then
     check "extract_fn non-empty guard present for expr_body" "true"
 else
     check "extract_fn non-empty guard present for expr_body" "false"
 fi
 
-# (j) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
+# (f) sync_comments_test.sh sources sync_ref_helpers.sh (function moved out)
 if grep -qE '(source|\.)\s+.*sync_ref_helpers\.sh' "$SYNC_FILE" 2>/dev/null; then
     check "sync_comments_test.sh sources sync_ref_helpers.sh" "true"
 else
     check "sync_comments_test.sh sources sync_ref_helpers.sh" "false"
 fi
 
-# (k) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
+# (g) sync_comments_test.sh does NOT define assert_sync_ref_exists() locally
 if ! _has_assert_sync_ref_exists "$SYNC_FILE"; then
     check "sync_comments_test.sh does NOT define assert_sync_ref_exists() locally" "true"
 else
