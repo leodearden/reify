@@ -11749,9 +11749,13 @@
         "updatedAt": "2026-04-02T12:52:11.010Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler"
+            "crates/reify-compiler/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/structural_physical_tests.rs",
+            "crates/reify-compiler/tests/stdlib_loader_tests.rs"
+          ]
         }
       },
       {
@@ -11767,10 +11771,14 @@
         "updatedAt": "2026-03-27T09:16:59.191Z",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/recursive_detection_tests.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         }
       },
       {
