@@ -26381,11 +26381,11 @@
         "description": "The `_check_has_no_if_n_guard` helper in tests/infra/test_test_helpers.sh:265 uses the regex `if \\[ -n`, which has two related gaps flagged by reviewer_comprehensive on Task 1241:\n\n1. **Alternate guard forms slip through.** The regex only matches the single-bracket single-line `if [ -n` form. Equivalent defensive guards that a future author might (re)introduce without realizing they're prohibited are not caught:\n   - `if [[ -n \"$x\" ]]`\n   - `if test -n \"$x\"`\n   - `if [ ! -z \"$x\" ]`\n   - split-line variants with a newline after `[`\n   The stated intent of the new comment (\"any `if [ -n` conditional regardless of the variable name\") is narrower than the broader goal of banning defensive guards.\n\n2. **False-positive risk from comments and string literals.** Because `grep` inspects every line of the file (including comments and heredocs), a future comment or string literal in `tests/sync_comments_test.sh` containing the literal text `if [ -n` (e.g. a comment explaining *why* the guard was removed) would cause structural check (b) to fail even though no actual guard exists.\n\nResolution: pick one of these approaches and apply it consistently.\n- (a) Extend the regex to e.g. `(if|&&|\\|\\|)[[:space:]]*(\\[\\[?|test)[[:space:]]+-n` to cover `[[` / `test` forms; and anchor to start-of-line (`^[[:space:]]*`) OR strip comment lines before matching (`grep -v '^[[:space:]]*#' | grep -qE ...`) to kill the comment false-positive.\n- (b) Document the limitation explicitly adjacent to `_check_has_no_if_n_guard` so a future contributor debugging a surprising failure finds the explanation, AND add an explicit comment noting that `[[` / `test` forms are intentionally out of scope and must be banned by reviewers rather than the automated check.\n\nIf you choose (a), add fixtures exercising each newly-supported form (`[[`, `test`, `!-z`) in the robustness suite, plus a negative fixture proving a comment line containing `if [ -n` does NOT trip the helper.\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes with the new fixtures.\n\nmemory_hints: search(\"_check_has_no_if_n_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T03:38:34.835Z",
+        "updatedAt": "2026-04-09T21:06:15.845Z",
         "metadata": {
           "modules": [
             "tests/infra",
@@ -28390,7 +28390,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:06:15.346Z",
+      "lastModified": "2026-04-09T21:06:15.845Z",
       "taskCount": 1374,
       "completedCount": 1049,
       "tags": [
