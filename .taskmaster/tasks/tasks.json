@@ -10678,9 +10678,7 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler/tests",
-            "crates/reify-eval/tests",
-            "crates/reify-test-support/src"
+            "crates/reify-test-support"
           ],
           "memory_hints": {
             "entities": [],
@@ -10704,10 +10702,11 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/stdlib_loader.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
