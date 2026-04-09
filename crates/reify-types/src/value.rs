@@ -3674,11 +3674,7 @@ mod tests {
     #[test]
     fn value_complex_sorts_after_tensor() {
         // Complex type_tag=14 > Tensor type_tag=13
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let tensor = Value::Tensor(vec![Value::Int(99)]);
         assert!(
             complex > tensor,
@@ -3692,11 +3688,7 @@ mod tests {
         // (lower tag sorts first, so Undef=0 < Complex=14)
         // But also test vs something with tag > 14 doesn't exist yet,
         // so just verify cross-type ordering is consistent
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let undef = Value::Undef;
         assert!(
             complex > undef,
@@ -3725,60 +3717,25 @@ mod tests {
     #[test]
     fn value_complex_ord_re_second() {
         // Same dimension, different re — re bits compared second
-        let a = Value::Complex {
-            re: 1.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 2.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 0.0);
+        let b = complex_with(2.0, 0.0);
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_ord_im_third() {
         // Same dimension+re, different im — im bits compared third
-        let a = Value::Complex {
-            re: 1.0,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 1.0);
+        let b = complex_with(1.0, 2.0);
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_partial_ord_consistent() {
-        let a = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 3.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 2.0);
+        let b = complex_with(1.0, 3.0);
         assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
         assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
-    }
-
-    #[test]
-    fn complex_with_produces_expected_value() {
-        // Verify that complex_with(re, im) constructs the expected Value::Complex.
-        let expected = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(complex_with(1.0, 2.0), expected);
     }
 
     #[test]
@@ -3801,16 +3758,8 @@ mod tests {
 
     #[test]
     fn value_complex_hash_determinism() {
-        let a = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(3.0, 4.0);
+        let b = complex_with(3.0, 4.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
