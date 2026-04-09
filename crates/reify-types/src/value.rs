@@ -2142,6 +2142,74 @@ mod tests {
     }
 
     #[test]
+    fn nan_partialeq_bit_identity_orientation() {
+        // (a) all four components are NaN
+        let o1 = orient(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        let o2 = orient(f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        assert_eq!(
+            o1, o2,
+            "two separately constructed Orientation values with all-NaN components must compare equal"
+        );
+        assert_eq!(
+            o1,
+            o1.clone(),
+            "an Orientation value with all-NaN components must compare equal to its own clone"
+        );
+
+        // (b) only w is NaN
+        let o3 = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let o4 = orient(f64::NAN, 0.0, 0.0, 0.0);
+        assert_eq!(
+            o3, o4,
+            "two separately constructed Orientation values with NaN w must compare equal"
+        );
+        assert_eq!(
+            o3,
+            o3.clone(),
+            "an Orientation value with NaN w must compare equal to its own clone"
+        );
+
+        // (c) only x is NaN
+        let o5 = orient(0.0, f64::NAN, 0.0, 0.0);
+        let o6 = orient(0.0, f64::NAN, 0.0, 0.0);
+        assert_eq!(
+            o5, o6,
+            "two separately constructed Orientation values with NaN x must compare equal"
+        );
+        assert_eq!(
+            o5,
+            o5.clone(),
+            "an Orientation value with NaN x must compare equal to its own clone"
+        );
+
+        // (d) only y is NaN
+        let o7 = orient(0.0, 0.0, f64::NAN, 0.0);
+        let o8 = orient(0.0, 0.0, f64::NAN, 0.0);
+        assert_eq!(
+            o7, o8,
+            "two separately constructed Orientation values with NaN y must compare equal"
+        );
+        assert_eq!(
+            o7,
+            o7.clone(),
+            "an Orientation value with NaN y must compare equal to its own clone"
+        );
+
+        // (e) only z is NaN
+        let o9 = orient(0.0, 0.0, 0.0, f64::NAN);
+        let o10 = orient(0.0, 0.0, 0.0, f64::NAN);
+        assert_eq!(
+            o9, o10,
+            "two separately constructed Orientation values with NaN z must compare equal"
+        );
+        assert_eq!(
+            o9,
+            o9.clone(),
+            "an Orientation value with NaN z must compare equal to its own clone"
+        );
+    }
+
+    #[test]
     fn different_values_different_hashes() {
         let a = Value::length(0.08);
         let b = Value::length(0.10);
