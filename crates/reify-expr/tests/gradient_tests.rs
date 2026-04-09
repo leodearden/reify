@@ -3384,32 +3384,12 @@ fn gradient_decomposed_n3_dimensionless() {
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
-    match &sample_result {
-        Value::Vector(components) => {
-            assert_eq!(
-                components.len(),
-                3,
-                "gradient vector should have 3 components"
-            );
-            let expected = [1.0_f64, 2.0, 3.0];
-            for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
-                let val = comp
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("component {} should be numeric, got {:?}", i, comp));
-                assert!(
-                    (val - exp).abs() < 1e-4,
-                    "gradient component {} of x+2y+3z should be ~{}, got {}",
-                    i,
-                    exp,
-                    val
-                );
-            }
-        }
-        _ => panic!(
-            "gradient sample should return a Vector; got {:?}",
-            sample_result
-        ),
-    }
+    assert_gradient_vector(
+        &sample_result,
+        &[1.0, 2.0, 3.0],
+        1e-4,
+        "gradient of x+2y+3z at (5,7,11), decomposed path",
+    );
 }
 
 /// Regression test for the decomposed (multi-param) path at irrational coordinates.
