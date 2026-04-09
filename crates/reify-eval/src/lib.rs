@@ -3408,11 +3408,19 @@ fn compile_geometry_op(
             };
 
             match kind {
-                PrimitiveKind::Box => Some(reify_types::GeometryOp::Box {
-                    width: eval_arg("width")?,
-                    height: eval_arg("height")?,
-                    depth: eval_arg("depth")?,
-                }),
+                PrimitiveKind::Box => {
+                    // Eagerly evaluate all three args before short-circuiting so
+                    // that every missing arg emits its own diagnostic rather than
+                    // stopping after the first `?` abort.
+                    let width = eval_arg("width");
+                    let height = eval_arg("height");
+                    let depth = eval_arg("depth");
+                    Some(reify_types::GeometryOp::Box {
+                        width: width?,
+                        height: height?,
+                        depth: depth?,
+                    })
+                }
                 PrimitiveKind::Cylinder => Some(reify_types::GeometryOp::Cylinder {
                     radius: eval_arg("radius")?,
                     height: eval_arg("height")?,
