@@ -49,3 +49,32 @@ fn template_marked_is_test_when_test_annotation_present() {
         "expected is_test == true for @test-annotated structure"
     );
 }
+
+// ── Step 3: is_test false without annotation; occurrence also marked ──────────
+
+#[test]
+fn template_not_marked_is_test_when_no_annotation() {
+    let module = compile_module("structure S { param x : Real }");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.templates.len(), 1, "expected 1 template");
+    assert!(
+        !module.templates[0].is_test,
+        "expected is_test == false for unannotated structure"
+    );
+}
+
+#[test]
+fn occurrence_marked_is_test_when_test_annotation_present() {
+    let module = compile_module("@test occurrence Heat { param temp : Real }");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    assert_eq!(module.templates.len(), 1, "expected 1 template");
+    assert_eq!(
+        module.templates[0].entity_kind,
+        reify_compiler::EntityKind::Occurrence,
+        "expected Occurrence entity_kind"
+    );
+    assert!(
+        module.templates[0].is_test,
+        "expected is_test == true for @test-annotated occurrence"
+    );
+}
