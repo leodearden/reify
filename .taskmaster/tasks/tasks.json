@@ -19942,7 +19942,10 @@
         "updatedAt": "2026-04-04T09:03:46.557Z",
         "metadata": {
           "modules": [
-            "crates/reify-lsp"
+            "crates/reify-lsp/tests"
+          ],
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         }
       },
@@ -19976,8 +19979,12 @@
         "updatedAt": "2026-04-04T09:05:34.639Z",
         "metadata": {
           "modules": [
-            "crates/reify-constraints",
-            "crates/reify-test-support"
+            "crates/reify-test-support",
+            "crates/reify-constraints"
+          ],
+          "files": [
+            "crates/reify-test-support/src/mocks.rs",
+            "crates/reify-constraints/src/decompose.rs"
           ]
         }
       },
