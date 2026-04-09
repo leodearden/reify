@@ -25317,6 +25317,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1252,
+        "title": "Extract has_test_annotation helper to eliminate three-site duplication",
+        "description": "The expression `annotations.iter().any(|a| a.name == \"test\")` is inlined verbatim in three places: `crates/reify-compiler/src/lib.rs:6384`, `crates/reify-syntax/src/lib.rs:465`, and `crates/reify-test-support/src/builders/topology.rs:356`. Extract a single helper (e.g. `fn has_test_annotation(anns: &[impl HasName]) -> bool` or one helper per annotation type) and replace all three call sites. Document that `\"test\"` is the canonical lowercase spelling.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25329,7 +25340,7 @@
       ],
       "created": "2026-04-09T02:52:56.642Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T02:52:56.652Z"
+      "updated": "2026-04-09T02:53:01.498Z"
     }
   }
 }
