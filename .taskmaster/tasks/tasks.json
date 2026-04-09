@@ -28787,10 +28787,11 @@
         "description": "The existing tests cross_module_pub_unit_visible_via_module_dag and cross_module_private_unit_not_visible_via_module_dag (crates/reify-compiler/tests/user_defined_unit_tests.rs:208-240) exercise ModuleDag::compile_module, which was already calling compile_with_prelude before task 209 (module_dag.rs:168-181). Only compile_project_entry_sees_imported_pub_unit covers the new compile_project prelude-seeding branch; there is no negative test that compile_project enforces privacy. Add compile_project_entry_does_not_see_imported_private_unit: mirror the positive test but declare 'unit privmil' (no pub) in the library module, invoke compile_project on the entry file, and assert the entry module reports a semantic error mentioning 'unknown' or 'privmil'. Keeps positive/negative coverage symmetric at the compile_project layer so regressions in either branch are caught. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:21:27.207Z"
       },
       {
         "id": "1396",
@@ -28806,7 +28807,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:21:26.774Z",
+      "lastModified": "2026-04-09T22:21:27.207Z",
       "taskCount": 1396,
       "completedCount": 1071,
       "tags": [
