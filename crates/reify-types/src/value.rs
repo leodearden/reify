@@ -3732,16 +3732,8 @@ mod tests {
 
     #[test]
     fn value_complex_partial_ord_consistent() {
-        let a = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 3.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 2.0);
+        let b = complex_with(1.0, 3.0);
         assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
         assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
     }
