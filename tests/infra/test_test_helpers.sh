@@ -256,11 +256,15 @@ done
 
 SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
 
+# File-local helpers so the structural checks and robustness tests share the
+# same pattern source-of-truth and cannot drift independently.
+_check_defines_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
+
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
 # (a) file defines assert_sync_ref_exists() helper function
-if grep -qE '^assert_sync_ref_exists\(\)' "$SYNC_FILE" 2>/dev/null; then
+if _check_defines_assert_sync_ref_exists "$SYNC_FILE"; then
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
 else
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
