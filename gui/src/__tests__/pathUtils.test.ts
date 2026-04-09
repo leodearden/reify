@@ -73,6 +73,9 @@ describe('isSameFile', () => {
     expect(isSameFile('/project/src/bracket.ri', '')).toBe(false);
   });
 
+  // This forward-direction test exercises the Editor scroll-to-location flow,
+  // where the backend reports location.file_path as a file:// URI (percent-encoded)
+  // and isSameFile compares it against activeFile (a decoded bare OS path).
   it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
     expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
   });
