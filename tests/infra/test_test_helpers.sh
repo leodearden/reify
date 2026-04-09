@@ -539,6 +539,13 @@ printf 'if [ ! -z "$var" ]; then echo guard; fi\n' > "$fixture_not_z"
 if _has_if_n_guard "$fixture_not_z" 2>/dev/null; then ok=true; else ok=false; fi
 check "_has_if_n_guard detects negated zero-length form: if [ ! -z" "$ok"
 
+# Double-bracket + negated zero-length: `if [[ ! -z "$var" ]]`
+# Verifies that `[[` and `! -z` work together (combination of steps 2+5).
+fixture_double_not_z=$(mk_fixture)
+printf 'if [[ ! -z "$var" ]]; then echo guard; fi\n' > "$fixture_double_not_z"
+if _has_if_n_guard "$fixture_double_not_z" 2>/dev/null; then ok=true; else ok=false; fi
+check "_has_if_n_guard detects double-bracket + ! -z: if [[ ! -z" "$ok"
+
 # Self-check: file-local helpers use symmetric positive _has_ naming.
 if grep -qE '^_has_assert_sync_ref_exists\(\)' "${BASH_SOURCE[0]}" \
     && grep -qE '^_has_if_n_guard\(\)' "${BASH_SOURCE[0]}" \
