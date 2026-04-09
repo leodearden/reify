@@ -1364,6 +1364,48 @@ fn test_strip_line_comments() {
 }
 
 #[test]
+fn test_find_bare_build_rs_violations() {
+    // Helpers that verify detection and non-detection.
+    fn detected(line: &str) -> bool {
+        !find_bare_build_rs_violations(line).is_empty()
+    }
+
+    // ── Should be detected ────────────────────────────────────────────────
+    // exact read_to_string call
+    assert!(detected(r#"read_to_string("build.rs")"#), "exact call should be detected");
+    // whitespace inside parentheses
+    assert!(detected(r#"read_to_string( "build.rs" )"#), "whitespace variant should be detected");
+    // relative path prefix
+    assert!(detected(r#"read_to_string("./build.rs")"#), "relative path variant should be detected");
+    // different function, same path
+    assert!(detected(r#"File::open("build.rs")"#), "File::open variant should be detected");
+
+    // ── Should NOT be detected ─────────────────────────────────────────────
+    // uses a named constant (no string literal)
+    assert!(!detected("read_to_string(BUILD_RS)"), "constant usage must not be detected");
+    // full-line // comment
+    assert!(
+        !detected(r#"// read_to_string("build.rs")"#),
+        "full-line // comment must not be detected"
+    );
+    // trailing // comment after code
+    assert!(
+        !detected(r#"let x = 0; // read_to_string("build.rs")"#),
+        "inline // comment must not be detected"
+    );
+    // block comment containing the pattern
+    assert!(
+        !detected(r#"/* read_to_string("build.rs") */"#),
+        "/* */ block comment must not be detected"
+    );
+    // self-avoidance: escaped quotes in string literal definition
+    // The literal characters in source are \"build.rs\" (backslash + quote),
+    // which does NOT match the unescaped "build.rs" search pattern.
+    let self_reference = r#"let p = "\"build.rs\"";"#;
+    assert!(!detected(self_reference), "escaped-quote self-reference must not be detected");
+}
+
+#[test]
 fn test_build_rs_reads_use_manifest_dir() {
     // Meta-test / regression guard: each source-inspection test that reads build.rs
     // must use the `BUILD_RS` constant rather than the bare relative path
