@@ -2332,6 +2332,12 @@ mod tests {
 
     // --- Ord tests (step-1) ---
 
+    // NOTE: Several negative-float ordering tests below validate that our
+    // `total_cmp()`-based Ord impl handles negative values correctly. The old
+    // `to_bits().cmp()` approach gave wrong ordering for negatives because the
+    // sign bit is the MSB of the u64 representation — see the module-level
+    // "Float ordering strategy" doc at the top of this file for details.
+
     #[test]
     fn value_ord_cross_type_ordering() {
         // Undef < Bool < Int < Real < Scalar < String
@@ -2431,8 +2437,6 @@ mod tests {
     fn value_btreeset_negative_real_iteration_order() {
         // End-to-end validation: inserting negative reals into a BTreeSet and
         // iterating must yield mathematical order [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0].
-        // Before the total_cmp() fix, to_bits() would give wrong ordering because
-        // negatives appear larger than positives in u64 space.
         use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for v in &[-2.0_f64, 1.0, -0.5, 0.5, -1.0, 2.0] {
@@ -2517,7 +2521,6 @@ mod tests {
     #[test]
     fn value_ord_scalar_negative_ordering() {
         // Negative scalar values must order correctly.
-        // to_bits() would give wrong ordering here — see module-level doc.
         let neg1 = Value::Scalar {
             si_value: -1.0,
             dimension: DimensionVector::LENGTH,
@@ -3781,7 +3784,6 @@ mod tests {
     #[test]
     fn value_ord_complex_negative_re() {
         // Negative re components must order correctly.
-        // to_bits() would give wrong ordering here — see module-level doc.
         let a = complex_with(-1.0, 0.0);
         let b = complex_with(-0.5, 0.0);
         assert!(a < b);
@@ -4035,7 +4037,6 @@ mod tests {
     #[test]
     fn value_ord_orientation_negative_components() {
         // Negative component values must order correctly via total_cmp().
-        // to_bits() would give wrong ordering here — see module-level doc.
 
         // Negative w: −1.0 < −0.5
         assert!(orient(-1.0, 0.0, 0.0, 0.0) < orient(-0.5, 0.0, 0.0, 0.0));
