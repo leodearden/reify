@@ -25676,6 +25676,19 @@
         ],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": 1273,
+        "title": "Optimize run_tests to avoid per-test full CompiledModule clone",
+        "description": "Performance suggestion from Task 268 review (crates/reify-eval/src/tests_runner.rs:78-93).\n\n`run_tests` currently calls `module.clone()` once per test via `build_isolated_module`, then mutates template lists/constraints and constructs a fresh `Engine`. Cost is O(tests × module_size) just for the clones, plus fresh engine re-eval of everything each iteration. Fine for small test suites but will scale poorly as suite/module sizes grow.\n\nProposed approach: build a single shared \"base\" `CompiledModule` with all non-test templates pre-stripped once, then per-test replace just the one retained test template slot (or wrap in a lightweight borrowing newtype). Reduces per-test overhead from a full deep clone to one template swap.\n\nLow priority — defer until there is evidence of a slow test suite. Confirm no behavioral change via the existing integration tests in crates/reify-eval/tests/test_runner.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          268
+        ],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -25688,7 +25701,7 @@
       ],
       "created": "2026-04-09T03:42:40.956Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T03:42:40.973Z"
+      "updated": "2026-04-09T03:42:48.430Z"
     }
   }
 }
