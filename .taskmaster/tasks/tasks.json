@@ -23537,7 +23537,10 @@
         "updatedAt": "2026-04-08T20:56:24.193Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval"
+            "crates/reify-eval/tests"
+          ],
+          "files": [
+            "crates/reify-eval/tests/e2e_meta.rs"
           ]
         }
       },
@@ -23692,10 +23695,11 @@
         "subtasks": [],
         "metadata": {
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/scope.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
