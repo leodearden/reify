@@ -25271,16 +25271,22 @@
         "description": "Review suggestion from Task 1222. Each test in crates/reify-expr/tests/field_calculus_tests.rs (lines ~1118-2097) re-derives the same boilerplate to build a Value::Field + Type::Field pair from a (domain, codomain, lambda) triple: clone domain, clone codomain, build Value::Field { domain_type, codomain_type, source: Analytical, lambda: Box::new(lambda) }, build Type::Field { domain: Box::new(...), codomain: Box::new(...) }. The pattern is repeated 6 times in the new Step 9/10/11 tests added by Task 1222 and ~10+ times across the rest of the file. A small helper would remove ~40 lines of repetition per test and make intent more obvious.\n\nFix: Add a helper near make_value_lambda (currently at field_calculus_tests.rs:35):\n    fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value, Type)\nthat returns the (Value::Field, Type::Field) pair. Update both new and existing tests to use it. Optionally include sibling helper(s) for the result-field type construction, e.g.\n    fn divergence_result_type(domain: Type) -> Type   // Field { domain, codomain: Real }\n    fn curl_result_type(domain: Type) -> Type         // Field { domain, codomain: Vec3<Real> }\n    fn laplacian_result_type(domain: Type) -> Type    // Field { domain, codomain: Real }\n    fn gradient_result_type(domain: Type, n: usize) -> Type\nto wrap the result-field type construction too.\n\nNote on placement: Per a Task 413 reconciliation memory, make_analytical_field was supposedly moved from gradient_tests.rs to crates/reify-test-support for cross-crate reuse. I (steward) verified that as of this triage, no such helper exists in crates/reify-test-support — only the builders/, fixtures, mocks, values, and tracing_support modules are present. Decide whether to (a) add the helper locally in field_calculus_tests.rs (mirroring the file's existing pattern) or (b) finally extract it to reify-test-support so gradient_tests.rs and other test files can also use it. If (b), audit gradient_tests.rs for similar duplication and migrate it too.\n\nThis is a maintainability/consistency refactor — not blocking, no behavior change. The reviewer flagged it as \"purely a maintainability suggestion.\"\n\nmemory_hints: search \"make_analytical_field reify-test-support Task 413\" for the prior reconciliation note; reference field_calculus_tests.rs:35 (current make_value_lambda location) for placement.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:50.878Z"
+        "updatedAt": "2026-04-09T02:50:51.231Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-test-support"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:48:55.067Z",
+      "lastModified": "2026-04-09T02:50:51.232Z",
       "taskCount": 1248,
       "completedCount": 927,
       "tags": [
