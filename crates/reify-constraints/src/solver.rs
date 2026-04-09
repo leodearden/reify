@@ -1128,6 +1128,23 @@ mod tests {
     }
 
     // ---- verify_uniqueness tracing tests ----
+    //
+    // Coverage note (S3 rationale — Task 1228 review, resolved by Task 1243):
+    //
+    // These tests exercise ONLY the early-return path in `verify_uniqueness` that was
+    // introduced by Task 1242 (commit 3414dcc11). When `verify_uniqueness` detects a
+    // missing or non-numeric param, it emits the aggregated WARN and immediately returns
+    // `false` — `solve_core` and `solutions_agree` are never called on this path.
+    //
+    // Consequence: Task 1228 review suggestion S3 proposed adding a `solutions_agree`
+    // WARN count assertion here to restore cross-coverage of that function's warn
+    // emission on the single-missing-param path. That assertion is moot: the early-return
+    // short-circuits before `solutions_agree` is reached, so its WARN count would always
+    // be 0 on these tests, making any such assertion vacuous or wrong.
+    //
+    // Any future regression in `solutions_agree`'s own WARN emission is caught by the
+    // `solutions_agree_*` tests in this same module, not by these `verify_uniqueness_*`
+    // tests. The two families are intentionally decoupled.
 
     #[test]
     fn verify_uniqueness_warns_when_param_missing_from_solved_values() {
