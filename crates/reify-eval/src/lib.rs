@@ -3402,19 +3402,8 @@ fn compile_geometry_op(
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
             let mut eval_arg = |name: &str| -> reify_types::Value {
-                match args.iter().find(|(n, _)| n == name) {
-                    Some((_, expr)) => reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                    ),
-                    None => {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "missing required geometry argument '{}' for {:?}",
-                            name, kind
-                        )));
-                        reify_types::Value::Undef
-                    }
-                }
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+                    .unwrap_or(reify_types::Value::Undef)
             };
 
             match kind {
@@ -3462,19 +3451,8 @@ fn compile_geometry_op(
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
             let mut eval_arg = |name: &str| -> reify_types::Value {
-                match args.iter().find(|(n, _)| n == name) {
-                    Some((_, expr)) => reify_expr::eval_expr(
-                        expr,
-                        &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                    ),
-                    None => {
-                        diagnostics.push(Diagnostic::warning(format!(
-                            "missing required geometry argument '{}' for {:?}",
-                            name, kind
-                        )));
-                        reify_types::Value::Undef
-                    }
-                }
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
+                    .unwrap_or(reify_types::Value::Undef)
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
