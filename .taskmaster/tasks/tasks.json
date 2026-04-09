@@ -25210,10 +25210,11 @@
         "description": "Review suggestion from Task 1222. The test divergence_gradient_field_returns_undef in crates/reify-expr/tests/field_calculus_tests.rs (lines ~1802-1865) currently builds a 1D Field<Real, Real>, takes its gradient (producing Field<Real, Real, source=Gradient>), then passes that to divergence. The doc comment claims the test exercises compute_divergence's source-kind whitelist (lib.rs:742-747), but because the gradient field's domain is Type::Real (not Type::Point), the divergence call would still return Undef via the \"Domain must be Point{n}\" guard at lib.rs:764-771 even if the source-kind check were removed or reordered. The test therefore cannot uniquely catch a regression in the source-kind whitelist — another guard would shadow it.\n\nFix: Replace the 1D scalar input with a 3D scalar field (Point3<Real>->Real, lambda |x,y,z| x*x+y*y+z*z), so the inner gradient produces a Field<Point3, Vec3, source=Gradient> which passes domain/codomain/dim-match guards in compute_divergence. With those guards out of the way, the source-kind whitelist becomes the only thing that can return Undef, and the test isolates the behaviour the doc comment promises. Mirrors gradient_of_gradient_field_returns_undef in gradient_tests.rs, which uses the same 3D pattern.\n\nOptional fold-ins (same test cluster, trivial cost):\n- Align assertion style across the four Step 9 Undef-guard tests at field_calculus_tests.rs lines ~1718, 1739, 1802, 1873. divergence_non_field_returns_undef uses assert_eq!(result, Value::Undef, ...); the other three use matches!(&result, Value::Undef, ...). Pick one — either switch divergence_non_field_returns_undef to matches! to match the surrounding three (existing file pattern), or switch all four to assert_eq! for the better failure message.\n- Optionally drop the intermediate `assert!(matches!(&grad_result, Value::Field { .. }), ...)` sanity check at line ~1839 in divergence_gradient_field_returns_undef. It re-tests behaviour already covered by gradient_1d_quadratic_accuracy and gradient_of_gradient_field_returns_undef, and adds noise to a test whose stated purpose is the divergence-of-gradient guard. (Keep if you prefer the failure breadcrumb.)\n\nmemory_hints: search \"field_calculus_tests divergence gradient field source-kind whitelist\" for context; check lib.rs lines 742-747 (source-kind check) and 764-771 (domain check) in crates/reify-expr/src/lib.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:42:50.029Z"
       },
       {
         "id": "1246",
@@ -25251,7 +25252,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:42:49.090Z",
+      "lastModified": "2026-04-09T02:42:50.029Z",
       "taskCount": 1248,
       "completedCount": 925,
       "tags": [
