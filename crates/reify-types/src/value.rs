@@ -2026,8 +2026,8 @@ mod tests {
 
         // (4) Value::Orientation (w field)
         {
-            let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
-            let b = Value::Orientation { w: non_canon_nan, x: 0.0, y: 0.0, z: 0.0 };
+            let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+            let b = orient(non_canon_nan, 0.0, 0.0, 0.0);
             assert_ne!(a, b, "Orientation: NaN values with different payloads must be unequal via PartialEq");
             assert_eq!(
                 a.content_hash(),
@@ -3896,83 +3896,38 @@ mod tests {
 
     #[test]
     fn value_orientation_construction() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         // Should not be undef
         assert!(!o.is_undef());
     }
 
     #[test]
     fn value_orientation_eq_same() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_different() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 1.0, 0.0, 0.0);
         assert_ne!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_nan_bitwise() {
         // NaN == NaN via to_bits (bitwise equality)
-        let a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let b = orient(f64::NAN, 0.0, 0.0, 0.0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn value_orientation_eq_neg_zero() {
         // -0.0 != 0.0 via to_bits
-        let a = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(-0.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 0.0, 0.0, 0.0);
         assert_ne!(a, b);
     }
 
@@ -3982,66 +3937,26 @@ mod tests {
         // for the Orientation variant's bit-identity edge cases.
 
         // --- NaN in `w` ---
-        let nan_w_a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let nan_w_b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let nan_w_a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let nan_w_b = orient(f64::NAN, 0.0, 0.0, 0.0);
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
         assert_ord_consistent(&nan_w_a, &nan_w_b, true);
 
         // --- neg-zero in `w`: Ord consistency (PartialEq covered by value_orientation_eq_neg_zero) ---
-        let pos_w = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let neg_w = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let pos_w = orient(0.0, 0.0, 0.0, 0.0);
+        let neg_w = orient(-0.0, 0.0, 0.0, 0.0);
         // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_w as the smaller value.
         assert_ord_consistent(&neg_w, &pos_w, false);
 
         // --- Spot-check NaN in a non-w component (`z`) to exercise all component call sites ---
-        let nan_z_a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: f64::NAN,
-        };
-        let nan_z_b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: f64::NAN,
-        };
+        let nan_z_a = orient(0.0, 0.0, 0.0, f64::NAN);
+        let nan_z_b = orient(0.0, 0.0, 0.0, f64::NAN);
         assert_ord_consistent(&nan_z_a, &nan_z_b, true);
 
         // --- neg-zero in `z`: lexicographic fallthrough through w → x → y → z ---
         // w, x, y are all 0.0 (Equal), so comparison chains to z (-0.0 vs +0.0).
-        let pos_z = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let neg_z = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: -0.0,
-        };
+        let pos_z = orient(0.0, 0.0, 0.0, 0.0);
+        let neg_z = orient(0.0, 0.0, 0.0, -0.0);
         // IEEE 754 totalOrder: -0.0 < +0.0, so pass neg_z as the smaller value.
         assert_ord_consistent(&neg_z, &pos_z, false);
     }
@@ -4069,8 +3984,8 @@ mod tests {
     #[test]
     fn value_orientation_ord_equal_w_different_x() {
         // Equal w, different x with non-zero y — catches field-order swap regressions.
-        // Correct Ord (w→x→y→z): e > f because x=1.0 > x=0.5 when w is tied.
-        // A wrong impl comparing y before x would say e < f (y=0.5 < y=1.0).
+        // Correct Ord (w→x→y→z): w=0.5,x=1.0,y=0.5 > w=0.5,x=0.5,y=1.0 because x=1.0 > x=0.5 when w is tied.
+        // A wrong impl comparing y before x would say the opposite (y=0.5 < y=1.0).
         assert!(orient(0.5, 1.0, 0.5, 0.0) > orient(0.5, 0.5, 1.0, 0.0));
     }
 
@@ -4094,24 +4009,14 @@ mod tests {
 
     #[test]
     fn value_orientation_display() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(format!("{}", o), "[1, 0, 0, 0]q");
     }
 
     #[test]
     fn value_orientation_display_fractional() {
         let s = std::f64::consts::FRAC_1_SQRT_2;
-        let o = Value::Orientation {
-            w: s,
-            x: 0.0,
-            y: 0.0,
-            z: s,
-        };
+        let o = orient(s, 0.0, 0.0, s);
         let display = format!("{}", o);
         assert!(display.starts_with('['));
         assert!(display.ends_with("]q"));
@@ -4119,47 +4024,22 @@ mod tests {
 
     #[test]
     fn value_orientation_content_hash_deterministic() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_nan_canonical() {
-        let a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let b = orient(f64::NAN, 0.0, 0.0, 0.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_distinct_from_complex() {
         // Tag 16 for Orientation vs tag 15 for Complex
-        let o = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(0.0, 0.0, 0.0, 0.0);
         let c = Value::Complex {
             re: 0.0,
             im: 0.0,
@@ -4170,40 +4050,20 @@ mod tests {
 
     #[test]
     fn value_orientation_content_hash_neg_zero() {
-        let a = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(-0.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 0.0, 0.0, 0.0);
         assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_as_f64_none() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(o.as_f64(), None);
     }
 
     #[test]
     fn value_orientation_dimension_dimensionless() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
@@ -4294,13 +4154,8 @@ mod tests {
     fn value_range_content_hash_no_collision_with_orientation() {
         // Range tag=17 should not collide with Orientation tag=16
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert_ne!(range.content_hash(), orient.content_hash());
+        let orient_v = orient(1.0, 0.0, 0.0, 0.0);
+        assert_ne!(range.content_hash(), orient_v.content_hash());
     }
 
     #[test]
@@ -4316,14 +4171,9 @@ mod tests {
     fn value_range_ord_cross_type_after_orientation() {
         // Range has type_tag=16, Orientation=15 → Range > Orientation
         let range = make_range(None, None, false, false);
-        let orient = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(range > orient);
-        assert!(orient < range);
+        let orient_v = orient(1.0, 0.0, 0.0, 0.0);
+        assert!(range > orient_v);
+        assert!(orient_v < range);
     }
 
     #[test]
@@ -4943,12 +4793,7 @@ mod tests {
     }
 
     fn make_orientation_identity() -> Value {
-        Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }
+        orient(1.0, 0.0, 0.0, 0.0)
     }
 
     fn make_frame(origin: Value, basis: Value) -> Value {
@@ -5003,18 +4848,8 @@ mod tests {
     #[test]
     fn value_frame_partial_eq_different_basis() {
         let origin = make_point3_length();
-        let basis_a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let basis_b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis_a = orient(1.0, 0.0, 0.0, 0.0);
+        let basis_b = orient(0.0, 1.0, 0.0, 0.0);
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert_ne!(f1, f2);
@@ -5027,12 +4862,7 @@ mod tests {
             Value::length(0.0),
             Value::length(0.0),
         ]);
-        let basis = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis = orient(1.0, 0.0, 0.0, 0.0);
         let frame = make_frame(origin, basis);
         let s = format!("{}", frame);
         assert_eq!(s, "frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)");
@@ -5098,18 +4928,8 @@ mod tests {
         let origin = make_point3_length();
         // Valid 180° rotation around X-axis (unit quaternion: |q|=1).
         // w=0.0 < w=1.0 by to_bits ordering, so basis_a < basis_b.
-        let basis_a = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let basis_b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis_a = orient(0.0, 1.0, 0.0, 0.0);
+        let basis_b = orient(1.0, 0.0, 0.0, 0.0);
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert!(f1 < f2);
@@ -5218,18 +5038,8 @@ mod tests {
 
     #[test]
     fn value_transform_partial_eq_different_rotation() {
-        let rot_a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let rot_b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rot_a = orient(1.0, 0.0, 0.0, 0.0);
+        let rot_b = orient(0.0, 1.0, 0.0, 0.0);
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
@@ -5256,12 +5066,7 @@ mod tests {
 
     #[test]
     fn value_transform_display() {
-        let rotation = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rotation = orient(1.0, 0.0, 0.0, 0.0);
         let translation = Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -5327,18 +5132,8 @@ mod tests {
     #[test]
     fn value_transform_ord_same_type_compare_rotation_first() {
         // Two transforms with same translation but different rotation: order by rotation
-        let rot_a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let rot_b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rot_a = orient(0.0, 0.0, 0.0, 0.0);
+        let rot_b = orient(1.0, 0.0, 0.0, 0.0);
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
@@ -5830,12 +5625,7 @@ mod tests {
             f_eq, f_diff_origin,
             "Frame: different origin must be unequal"
         );
-        let alt_basis = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let alt_basis = orient(0.0, 1.0, 0.0, 0.0);
         let f_diff_basis = make_frame(make_point3_length(), alt_basis);
         assert_ne!(f_eq, f_diff_basis, "Frame: different basis must be unequal");
 
@@ -5846,12 +5636,7 @@ mod tests {
             tr_eq, tr_eq2,
             "Transform: structurally equal transforms must be equal"
         );
-        let alt_rot = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        };
+        let alt_rot = orient(0.0, 0.0, 1.0, 0.0);
         let tr_diff_rot = make_transform(alt_rot, make_vector3_length());
         assert_ne!(
             tr_eq, tr_diff_rot,
@@ -6011,77 +5796,29 @@ mod tests {
 
         // (5) Value::Orientation — w field
         assert_eq!(
-            Value::Orientation {
-                w: f64::NAN,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: non_canon_nan,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(f64::NAN, 0.0, 0.0, 0.0).content_hash(),
+            orient(non_canon_nan, 0.0, 0.0, 0.0).content_hash(),
             "Orientation w: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (6) Value::Orientation — x field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: f64::NAN,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: non_canon_nan,
-                y: 0.0,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(1.0, f64::NAN, 0.0, 0.0).content_hash(),
+            orient(1.0, non_canon_nan, 0.0, 0.0).content_hash(),
             "Orientation x: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (7) Value::Orientation — y field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: f64::NAN,
-                z: 0.0,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: non_canon_nan,
-                z: 0.0,
-            }
-            .content_hash(),
+            orient(1.0, 0.0, f64::NAN, 0.0).content_hash(),
+            orient(1.0, 0.0, non_canon_nan, 0.0).content_hash(),
             "Orientation y: non-canonical NaN must hash equal to canonical NaN"
         );
 
         // (8) Value::Orientation — z field
         assert_eq!(
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: f64::NAN,
-            }
-            .content_hash(),
-            Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: non_canon_nan,
-            }
-            .content_hash(),
+            orient(1.0, 0.0, 0.0, f64::NAN).content_hash(),
+            orient(1.0, 0.0, 0.0, non_canon_nan).content_hash(),
             "Orientation z: non-canonical NaN must hash equal to canonical NaN"
         );
     }
@@ -6154,36 +5891,18 @@ mod tests {
                     dimension: dim.clone(),
                 },
             ),
-            (
-                "Orientation",
-                Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-            ),
+            ("Orientation", orient(1.0, 0.0, 0.0, 0.0)),
             (
                 "Frame",
                 Value::Frame {
                     origin: Box::new(Value::Point(vec![])),
-                    basis: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
+                    basis: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
                 },
             ),
             (
                 "Transform",
                 Value::Transform {
-                    rotation: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
+                    rotation: Box::new(orient(1.0, 0.0, 0.0, 0.0)),
                     translation: Box::new(Value::Vector(vec![])),
                 },
             ),
