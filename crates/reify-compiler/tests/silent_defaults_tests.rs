@@ -321,6 +321,34 @@ fn port_member_resolves_without_ice() {
     assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
 }
 
+// ── task-823 step-7: guards.rs ICE path — green path (no ICE on valid code) ──
+
+#[test]
+fn guarded_param_resolves_without_ice() {
+    // Verifies that guards.rs:272 (scope.resolve in compile_guarded_members for
+    // guarded structure param) does NOT emit an ICE diagnostic for valid code.
+    // Pass 1 registers all guarded member names via register_guarded_names, so
+    // pass 2 resolve should always succeed for well-formed guarded structures.
+    let source = r#"
+        structure S {
+            param mode : Bool = true
+            where mode {
+                param x : Real = 1.0
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid guarded param, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
 // ── task-823 step-1: port param unknown type name emits diagnostic ──────
 
 #[test]
