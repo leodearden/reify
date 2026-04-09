@@ -428,15 +428,15 @@ assert "POSIX fallback: no-monitor mode (set +m) preserved after portable_timeou
         esac
     '
 
-# -- Test 20: structural: header documents SIGTERM-only termination ------------
+# -- Test 20: structural: header documents SIGKILL escalation via process-group kill ----
 echo ""
-echo "--- Test 20: portable_timeout header documents SIGTERM-only termination ---"
+echo "--- Test 20: portable_timeout header documents SIGKILL escalation ---"
 
-# S4 requires that the portable_timeout header comment documents that the POSIX
-# fallback uses SIGTERM only and does not escalate to SIGKILL (PID-reuse safety).
-# This structural test fails until the header is updated in the next step.
-assert "portable_timeout header documents SIGTERM-only termination" \
-    grep -qiE 'SIGTERM.*only|SIGTERM.*no.*SIGKILL|does not escalate to SIGKILL' "$LIB_PORTABLE"
+# The portable_timeout doc comment must describe the SIGTERM-first,
+# SIGKILL-escalation strategy using process-group kill.  The old SIGTERM-only
+# language must be replaced.  This test FAILS until step-6 updates the doc comment.
+assert "portable_timeout header documents SIGKILL escalation via process-group kill" \
+    grep -qiE 'escalat.*SIGKILL.*via.*process.group|SIGKILL.*via.*process.group' "$LIB_PORTABLE"
 
 # -- Test 21: behavioral: SIGKILL escalation — exit 124 and no orphan --------
 echo ""
