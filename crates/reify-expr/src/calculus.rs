@@ -1380,6 +1380,49 @@ mod tests {
         assert_eq!(scalar_dimension(&Type::Bool), None);
     }
 
+    // --- domain_dimension unit tests ---
+
+    #[test]
+    fn domain_dimension_scalar_length_returns_length() {
+        assert_eq!(domain_dimension(&Type::length()), Some(DimensionVector::LENGTH));
+    }
+
+    #[test]
+    fn domain_dimension_real_returns_dimensionless() {
+        assert_eq!(domain_dimension(&Type::Real), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn domain_dimension_int_returns_dimensionless() {
+        assert_eq!(domain_dimension(&Type::Int), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn domain_dimension_point3_scalar_mass_returns_mass() {
+        let ty = Type::point3(Type::Scalar { dimension: DimensionVector::MASS });
+        assert_eq!(domain_dimension(&ty), Some(DimensionVector::MASS));
+    }
+
+    #[test]
+    fn domain_dimension_point3_real_returns_dimensionless() {
+        assert_eq!(domain_dimension(&Type::point3(Type::Real)), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn domain_dimension_point3_int_returns_dimensionless() {
+        assert_eq!(domain_dimension(&Type::point3(Type::Int)), Some(DimensionVector::DIMENSIONLESS));
+    }
+
+    #[test]
+    fn domain_dimension_vec3_real_returns_none() {
+        assert_eq!(domain_dimension(&Type::vec3(Type::Real)), None);
+    }
+
+    #[test]
+    fn domain_dimension_bool_returns_none() {
+        assert_eq!(domain_dimension(&Type::Bool), None);
+    }
+
     // --- dim_quotient_type unit tests ---
 
     #[test]
