@@ -28823,15 +28823,16 @@
         "description": "Follow-up review polish for task 1201 (Polish conjugate sanitization tests and comment in reify-expr). Three suggestions from reviewer_comprehensive in `crates/reify-expr/src/complex.rs`, all localized to the conjugate method and its NaN/Inf test block. Apply all three:\n\n1. **Misleading sign-of-zero comment and weak assertion (complex.rs:~743-766, `conjugate_pure_imaginary_correct`)** — The test comment claims it \"exercises IEEE-754 sign-of-zero preservation\" on `re`, but (a) conjugate copies `re` unchanged, so sign-of-zero on re isn't \"preserved\" in any interesting sense, and (b) the assertion `(re - 0.0).abs() < 1e-12` treats +0.0 and -0.0 as equal and would never catch a regression. Pick ONE of:\n   - (a) Drop the \"sign-of-zero preservation\" phrase from the doc comment and describe only what the test actually exercises (pure-imaginary re=0.0 input under DIMENSIONLESS).\n   - (b) Actually test sign-of-zero — most meaningfully on `im`, the field conjugate transforms. Use bit-pattern equality: `assert_eq!(im.to_bits(), (-5.0f64).to_bits())`, and add a second case with `im=+0.0` asserting the output `im.to_bits() == (-0.0f64).to_bits()` to pin negation-of-zero semantics. If you go this route, rename the test to reflect what it actually proves.\n   \n   Prefer (a) for minimal change; prefer (b) if you want the coverage. Don't do both half-measures.\n\n2. **Transient task/commit references in source comment (complex.rs:63-66)** — The pre-guard comment embeds \"task 860 history, restored by task 903 / commit 173921547\". Task IDs are opaque to future readers and will rot if the task store is pruned; even the commit hash loses context without the task trail. The forward-compatibility rationale itself is valuable — keep that. Trim to something like: \"The pre-guard is preferred for stylistic parity with `phase` and for forward-compatibility: if the Complex arm of `sanitize_value` is ever removed, conjugate stays safe.\" The task/commit provenance belongs in the commit message and in memory, not in source.\n\n3. **Coverage-grid intent comment (complex.rs:606 block header)** — Optional, low-priority. Add a one-line annotation to the `// ── method: conjugate (NaN/Inf sanitization) ──` block header stating what the matrix covers (e.g., \"NaN/±Inf × {re, im}, DIMENSIONLESS\") so future contributors can see at a glance what's exercised and what's deliberately omitted (signed-zero, both-non-finite). Note: do NOT add tests for the omitted cases in this task — that's strictly out of scope.\n\nVerification:\n- `cargo test -p reify-expr --lib conjugate`\n- `cargo test -p reify-expr --test complex_eval_tests method_conjugate` (if still present — confirm layout)\n\nMemory hints:\n- search \"task 1201 conjugate polish\"\n- search \"task 903 conjugate sanitization\"\n- convention: \"don't embed transient task/commit refs in source comments\"\n- entities: conjugate, sanitize_value",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:22:55.966Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:22:55.394Z",
+      "lastModified": "2026-04-09T22:22:55.973Z",
       "taskCount": 1397,
       "completedCount": 1071,
       "tags": [
