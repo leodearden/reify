@@ -8,20 +8,29 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
-STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
+# sanitize_value lived in lib.rs before task-1304; moved to sanitize.rs / helpers.rs after the submodule split.
+if [ -f "$REPO_ROOT/crates/reify-expr/src/sanitize.rs" ]; then
+    EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
+else
+    EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
+fi
+if [ -f "$REPO_ROOT/crates/reify-stdlib/src/helpers.rs" ]; then
+    STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/helpers.rs"
+else
+    STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
+fi
 
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$REPO_ROOT/tests/infra/test_helpers.sh"
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
-    "reify-expr/src/sanitize.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
+    "reify-expr has SYNC marker referencing reify-stdlib::sanitize_value" \
     grep -q "SYNC:.*reify-stdlib::sanitize_value" "$EXPR_FILE"
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
 assert \
-    "reify-stdlib/src/lib.rs has SYNC marker referencing reify-expr::sanitize_value" \
+    "$STDLIB_FILE has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
 
 # Helper: verify that source_file's SYNC comment references a function that
@@ -35,7 +44,7 @@ assert_sync_ref_exists() {
     if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
     local display_fn="${ref_fn:-<none>}"
     assert \
-        "fn ${display_fn} exists in ${tgt_crate}/src/lib.rs (as referenced by SYNC in ${src_crate})" \
+        "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
         grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
 }
 
@@ -44,22 +53,17 @@ assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the
-# /fn fn_name[(<]/ pattern.  Visibility modifiers (pub, pub(crate), etc.) on the
-# signature line are stripped before printing so that the two copies compare
-# equal even when their visibility differs (e.g. pub(crate) fn vs fn).
+# at column 0.  Content above the fn keyword is naturally excluded by the awk
+# range anchor, so doc comments and SYNC markers (which may legitimately differ
+# between the two copies) do not affect the body comparison.
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '
-        found && /^}$/ { print; exit }
-        found { print }
-        /fn '"$fn_name"'[(<]/ && /^(fn |pub)/ {
-            sub(/^pub[^f]*fn /, "fn ")
-            print
-            found=1
-            next
-        }
-    ' "$file"
+    # Match fn with optional visibility prefix (pub, pub(crate), etc.); strip the
+    # prefix from the signature line so bodies compare equal across crates that
+    # differ only in visibility (e.g. pub(crate) vs private after a module split).
+    awk '/^[^/]*fn '"$fn_name"'[(<]/,/^}/' "$file" |
+        sed 's/^pub([^)]*) *//' |
+        sed 's/^pub //'
 }
 
 # Both copies of sanitize_value must have identical function bodies.

@@ -1628,3 +1628,43 @@ fn prelude_unit_collision_diagnostic_mentions_stdlib() {
         );
     }
 }
+
+// ── step-7 (task-416): affine unit referencing another affine unit is rejected ─
+
+#[test]
+fn affine_unit_in_conversion_referencing_other_affine_rejected() {
+    // When unit B's conversion expression references unit A, and unit A has an
+    // offset (is affine), evaluate_const_expr() must reject it — because the
+    // offset only makes sense for runtime value expressions, not for defining
+    // a conversion factor.  This edge case complements step-40 which only tests
+    // a single-level affine rejection; here we verify the guard works even when
+    // the referenced unit itself has an offset (i.e., another affine unit).
+    //
+    // Scenario: degC is affine (offset 273.15).  Declaring
+    //   unit myK : Temperature = 1.0degC
+    // means "1 myK = 1 degC", which would involve adding an offset to define a
+    // conversion factor — that is invalid.
+    let module = parse_and_compile(
+        "unit degC : Temperature = 1 offset 273.15\nunit myK : Temperature = 1.0degC",
+    );
+
+    // myK should NOT be registered
+    assert!(
+        !module.units.iter().any(|u| u.name == "myK"),
+        "myK should not be registered when its conversion references an affine unit"
+    );
+
+    // An error diagnostic should mention affine or offset
+    let errors = errors_only(&module);
+    assert!(
+        !errors.is_empty(),
+        "expected an error when conversion expression references affine unit"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("affine") || d.message.contains("offset")),
+        "expected diagnostic about affine/offset unit in conversion; got: {:?}",
+        errors
+    );
+}

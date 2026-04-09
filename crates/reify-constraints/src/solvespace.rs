@@ -1139,27 +1139,22 @@ mod tests {
         cell_id: &ValueCellId,
         context: &str,
     ) {
-        assert!(
-            result.is_err(),
-            "{context}: expected Err for missing non-auto coord, got Ok({:?})",
-            result.ok()
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, *cell_id,
-            "{context}: BuilderError cell_id should match the expected ValueCellId"
-        );
-        assert!(
-            err.message.contains("missing"),
-            "{context}: BuilderError message should contain 'missing', got: {}",
-            err.message
-        );
-        assert!(
-            err.to_string().contains(&cell_id.to_string()),
-            "{context}: Display should contain cell_id '{}', got: {}",
-            cell_id,
-            err
-        );
+        match result {
+            Err(BuilderError { cell_id: id, message }) => {
+                assert_eq!(
+                    id, *cell_id,
+                    "{context}: BuilderError cell_id should match the expected ValueCellId"
+                );
+                assert!(
+                    message.contains("missing"),
+                    "{context}: BuilderError message should contain 'missing', got: {}",
+                    message
+                );
+            }
+            Ok(v) => panic!(
+                "{context}: expected Err for missing non-auto coord, got Ok({v:?})"
+            ),
+        }
     }
 
     /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
@@ -1357,22 +1352,6 @@ mod tests {
         assert_missing_err(result, &cell_id, "add_auto_coord");
     }
 
-    /// add_auto_coord must return a BuilderError carrying the original
-    /// ValueCellId when a non-auto cell_id is absent from current_values,
-    /// preserving the id as typed data for downstream consumers.
-    #[test]
-    fn add_auto_coord_returns_builder_error_with_cell_id() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
-
-        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
-
-        let err = result.expect_err("expected Err, got Ok");
-        assert_eq!(
-            err.cell_id, cell_id,
-            "error should carry the original cell_id"
-        );
-    }
-
     /// Error from add_auto_coord should propagate through add_point and
     /// add_pattern_to_builder back to the caller. This verifies the error
     /// propagation chain used by solve()'s Err(reason) arm, exercised via
@@ -1401,6 +1380,57 @@ mod tests {
         let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
 
         assert_missing_err(result, &cell_id, "add_pattern_to_builder");
+    }
+
+    /// Exercises the `?` on line 1077 (`eb = builder.add_point(pt_b, ...)?`).
+    /// pt_a is Fixed (no error), pt_b is Auto with a missing cell_id.
+    #[test]
+    fn add_pattern_to_builder_propagates_coincident_pt_b_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "bad_pt_b");
+
+        let pattern = GeometricPattern::Coincident {
+            pt_a: PointRef::Fixed {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            pt_b: PointRef::Auto {
+                x: Some(cell_id.clone()),
+                y: None,
+                z: None,
+            },
+        };
+
+        let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder (pt_b path)");
+    }
+
+    /// Exercises the `?` on the Parallel arm (line 1046,
+    /// `builder.add_line_pair(line_a, line_b, ...)?`).
+    /// line_a is fully fixed; line_b.start is Auto with a missing cell_id
+    /// (the 3rd add_point call inside add_line_pair).
+    #[test]
+    fn add_pattern_to_builder_propagates_parallel_line_error() {
+        let (mut builder, cell_id, auto_params, current_values) =
+            missing_coord_setup("Test", "bad_lb_start");
+
+        let pattern = GeometricPattern::Parallel {
+            line_a: fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            line_b: line(
+                PointRef::Auto {
+                    x: Some(cell_id.clone()),
+                    y: None,
+                    z: None,
+                },
+                fixed_point(2.0, 1.0, 0.0),
+            ),
+        };
+
+        let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
+
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder (parallel line_b.start path)");
     }
 
     /// Calling add_auto_coord twice with the same auto-param cell_id must

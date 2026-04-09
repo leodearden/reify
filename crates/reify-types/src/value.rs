@@ -2332,6 +2332,12 @@ mod tests {
 
     // --- Ord tests (step-1) ---
 
+    // NOTE: Several negative-float ordering tests below validate that our
+    // `total_cmp()`-based Ord impl handles negative values correctly. The old
+    // `to_bits().cmp()` approach gave wrong ordering for negatives because the
+    // sign bit is the MSB of the u64 representation — see the module-level
+    // "Float ordering strategy" doc at the top of this file for details.
+
     #[test]
     fn value_ord_cross_type_ordering() {
         // Undef < Bool < Int < Real < Scalar < String
@@ -2431,8 +2437,6 @@ mod tests {
     fn value_btreeset_negative_real_iteration_order() {
         // End-to-end validation: inserting negative reals into a BTreeSet and
         // iterating must yield mathematical order [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0].
-        // Before the total_cmp() fix, to_bits() would give wrong ordering because
-        // negatives appear larger than positives in u64 space.
         use std::collections::BTreeSet;
         let mut set = BTreeSet::new();
         for v in &[-2.0_f64, 1.0, -0.5, 0.5, -1.0, 2.0] {
@@ -2517,7 +2521,6 @@ mod tests {
     #[test]
     fn value_ord_scalar_negative_ordering() {
         // Negative scalar values must order correctly.
-        // to_bits() would give wrong ordering here — see module-level doc.
         let neg1 = Value::Scalar {
             si_value: -1.0,
             dimension: DimensionVector::LENGTH,
@@ -2631,6 +2634,19 @@ mod tests {
         // Value::Real with the NaN self-equality edge case.
         // PartialEq uses to_bits(): identical NaN bit patterns → equal.
         assert_ord_consistent(&Value::Real(f64::NAN), &Value::Real(f64::NAN), true);
+    }
+
+    #[test]
+    fn test_assert_ord_consistent_real_nan_distinct_payloads() {
+        // Meta-test: exercises the to_bits()-based PartialEq path for bare
+        // Value::Real with two distinct NaN bit patterns.
+        // Canonical NaN (0x7ff8_0000_0000_0000) vs payload NaN (0x7ff8_0000_0000_0001).
+        // PartialEq uses to_bits(): distinct bit patterns → not equal.
+        // Under f64::total_cmp(), canonical NaN < payload NaN (compared by bit representation),
+        // so pass the canonical NaN as the smaller value first.
+        let canonical_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0000));
+        let payload_nan = Value::Real(f64::from_bits(0x7ff8_0000_0000_0001));
+        assert_ord_consistent(&canonical_nan, &payload_nan, false);
     }
 
     #[test]
@@ -3646,14 +3662,19 @@ mod tests {
 
     // ── Value::Complex Ord tests (step-5) ─────────────────────────────────────
 
+    /// Construct a dimensionless `Value::Complex` for use in Ord tests.
+    fn complex_with(re: f64, im: f64) -> Value {
+        Value::Complex {
+            re,
+            im,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
     #[test]
     fn value_complex_sorts_after_tensor() {
         // Complex type_tag=14 > Tensor type_tag=13
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let tensor = Value::Tensor(vec![Value::Int(99)]);
         assert!(
             complex > tensor,
@@ -3667,11 +3688,7 @@ mod tests {
         // (lower tag sorts first, so Undef=0 < Complex=14)
         // But also test vs something with tag > 14 doesn't exist yet,
         // so just verify cross-type ordering is consistent
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let undef = Value::Undef;
         assert!(
             complex > undef,
@@ -3700,47 +3717,23 @@ mod tests {
     #[test]
     fn value_complex_ord_re_second() {
         // Same dimension, different re — re bits compared second
-        let a = Value::Complex {
-            re: 1.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 2.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 0.0);
+        let b = complex_with(2.0, 0.0);
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_ord_im_third() {
         // Same dimension+re, different im — im bits compared third
-        let a = Value::Complex {
-            re: 1.0,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 1.0);
+        let b = complex_with(1.0, 2.0);
         assert!(a < b);
     }
 
     #[test]
     fn value_complex_partial_ord_consistent() {
-        let a = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 3.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 2.0);
+        let b = complex_with(1.0, 3.0);
         assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less));
         assert_eq!(b.partial_cmp(&a), Some(std::cmp::Ordering::Greater));
     }
@@ -3748,33 +3741,16 @@ mod tests {
     #[test]
     fn value_ord_complex_negative_re() {
         // Negative re components must order correctly.
-        // to_bits() would give wrong ordering here — see module-level doc.
-        let a = Value::Complex {
-            re: -1.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: -0.5,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(-1.0, 0.0);
+        let b = complex_with(-0.5, 0.0);
         assert!(a < b);
     }
 
     #[test]
     fn value_ord_complex_negative_im() {
         // Negative im components must order correctly (re is tied).
-        let a = Value::Complex {
-            re: 1.0,
-            im: -1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: -0.5,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, -1.0);
+        let b = complex_with(1.0, -0.5);
         assert!(a < b);
     }
 
@@ -3782,16 +3758,8 @@ mod tests {
 
     #[test]
     fn value_complex_hash_determinism() {
-        let a = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(3.0, 4.0);
+        let b = complex_with(3.0, 4.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
@@ -4018,7 +3986,6 @@ mod tests {
     #[test]
     fn value_ord_orientation_negative_components() {
         // Negative component values must order correctly via total_cmp().
-        // to_bits() would give wrong ordering here — see module-level doc.
 
         // Negative w: −1.0 < −0.5
         assert!(orient(-1.0, 0.0, 0.0, 0.0) < orient(-0.5, 0.0, 0.0, 0.0));

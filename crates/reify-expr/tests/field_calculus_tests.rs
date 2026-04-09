@@ -60,10 +60,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
             );
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp.as_f64().unwrap_or_else(|| {
-                    panic!(
-                        "{label}: component {i} should be numeric, got {:?}",
-                        comp
-                    )
+                    panic!("{label}: component {i} should be numeric, got {:?}", comp)
                 });
                 assert!(
                     (val - exp).abs() < tol,
@@ -961,11 +958,9 @@ fn gradient_dimensional_correctness() {
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "gradient codomain dimension should be Temperature/Length ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1058,7 +1053,10 @@ fn divergence_constant_field_near_zero() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("divergence sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "divergence sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         val.abs() < 1e-6,
@@ -1264,7 +1262,10 @@ fn laplacian_linear_field_near_zero() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "laplacian sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         val.abs() < 1e-4,
@@ -1351,11 +1352,9 @@ fn divergence_dimensional_correctness() {
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "divergence codomain should be Velocity/Length=1/Time ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1436,16 +1435,13 @@ fn laplacian_dimensional_correctness() {
 
     // Verify codomain dimension: should be Temperature / Length²
     if let Value::Field { codomain_type, .. } = &lap_result {
-        let expected_dim =
-            DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
+        let expected_dim = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
         match codomain_type {
             Type::Scalar { dimension } => {
                 assert_eq!(
-                    *dimension,
-                    expected_dim,
+                    *dimension, expected_dim,
                     "laplacian codomain should be Temperature/Length² ({:?}), got {:?}",
-                    expected_dim,
-                    dimension
+                    expected_dim, dimension
                 );
             }
             other => panic!(
@@ -1736,11 +1732,9 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
             dimension,
         } => {
             assert_eq!(
-                dimension,
-                one_over_time,
+                dimension, one_over_time,
                 "divergence sample dimension should be 1/Time ({:?}), got {:?}",
-                one_over_time,
-                dimension,
+                one_over_time, dimension,
             );
             assert!(
                 (si_value - 3.0).abs() < 1e-4,
@@ -2064,11 +2058,9 @@ fn laplacian_sample_dimensional_correctness_returns_scalar() {
             dimension,
         } => {
             assert_eq!(
-                dimension,
-                temp_per_len_sq,
+                dimension, temp_per_len_sq,
                 "laplacian sample dimension should be Temperature/Length² ({:?}), got {:?}",
-                temp_per_len_sq,
-                dimension,
+                temp_per_len_sq, dimension,
             );
             assert!(
                 (si_value - 6.0).abs() < 1e-3,
@@ -2103,10 +2095,10 @@ fn divergence_non_field_returns_undef() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(
-        result,
-        Value::Undef,
-        "divergence of non-Field must return Undef"
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence of non-Field must return Undef, got {:?}",
+        result
     );
 }
 
@@ -2128,17 +2120,10 @@ fn curl_2d_vector_field_returns_undef() {
     );
     let body = make_function_call(
         "vec2",
-        vec![
-            neg_y,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        ],
+        vec![neg_y, CompiledExpr::value_ref(x_id.clone(), Type::Real)],
         Type::vec2(Type::Real),
     );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id)],
-        body,
-        ValueMap::new(),
-    );
+    let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let domain_type = Type::point2(Type::Real);
     let codomain_type = Type::vec2(Type::Real);
@@ -2174,24 +2159,56 @@ fn curl_2d_vector_field_returns_undef() {
 /// divergence(gradient(f)) returns Undef — gradient-sourced fields are not
 /// accepted by compute_divergence's source-kind whitelist.
 ///
-/// Build a 1D analytical field, produce a Gradient-sourced field via gradient(),
-/// then pass that to divergence. The source check fires before domain/codomain
-/// validation, so Undef is returned immediately. Mirrors
-/// gradient_of_gradient_field_returns_undef in gradient_tests.rs.
+/// Build a 3D analytical field Point3<Real>->Real with λ(x,y,z) = x²+y²+z², then
+/// take its gradient to produce Field<Point3, Vec3, source=Gradient>.  That
+/// gradient field passes compute_divergence's domain guard (Point{3}), codomain
+/// guard (Vector{3}), and dim-match guard (3==3).  The only remaining guard is
+/// the source-kind whitelist (calculus.rs:151–156), which rejects Gradient and
+/// returns Undef.  This isolates the whitelist as the sole Undef trigger and
+/// mirrors gradient_of_gradient_field_returns_undef in gradient_tests.rs.
 #[test]
 fn divergence_gradient_field_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    // Lambda: |x| x*x
+    // Lambda: |x, y, z| x*x + y*y + z*z
     let body = CompiledExpr::binop(
-        BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            // x*x
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            // y*y
+            CompiledExpr::binop(
+                BinOp::Mul,
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                Type::Real,
+            ),
+            Type::Real,
+        ),
+        // z*z
+        CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            Type::Real,
+        ),
         Type::Real,
     );
-    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
 
-    let domain_type = Type::Real;
+    let domain_type = Type::point3(Type::Real);
     let codomain_type = Type::Real;
 
     let field = Value::Field {
@@ -2207,10 +2224,14 @@ fn divergence_gradient_field_returns_undef() {
     };
 
     // gradient(field) — should succeed and produce a Gradient-sourced field
+    // with domain=Point3 and codomain=Vec3(Real).
     let grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real, // result type doesn't matter here
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
     );
 
     let values = ValueMap::new();
@@ -2223,10 +2244,12 @@ fn divergence_gradient_field_returns_undef() {
     );
 
     // divergence(gradient_field) — source=Gradient not in {Analytical, Composed},
-    // so compute_divergence returns Undef immediately (lib.rs:742–747).
+    // so compute_divergence returns Undef (calculus.rs:151–156).
+    // The domain (Point{3}), codomain (Vector{3}), and dim-match (3==3) guards
+    // all pass; only the source-kind whitelist triggers Undef here.
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::Real),
+        codomain: Box::new(Type::vec3(Type::Real)),
     };
 
     let div_expr = make_function_call(
@@ -2270,8 +2293,8 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);   // n=3
-    let codomain_type = Type::vec2(Type::Real);   // n=2 — mismatch!
+    let domain_type = Type::point3(Type::Real); // n=3
+    let codomain_type = Type::vec2(Type::Real); // n=2 — mismatch!
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2467,7 +2490,10 @@ fn laplacian_1d_quadratic_accuracy() {
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
 
     let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+        panic!(
+            "laplacian sample should be numeric, got {:?}",
+            sample_result
+        )
     });
     assert!(
         (val - 2.0).abs() < 1e-2,
@@ -2540,8 +2566,7 @@ fn divergence_real_domain_preserves_dim_codomain() {
 
     if let Value::Field { codomain_type, .. } = &div_result {
         assert_eq!(
-            *codomain_type,
-            component_type,
+            *codomain_type, component_type,
             "divergence of Point{{3,Real}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2679,8 +2704,7 @@ fn divergence_int_domain_preserves_dim_codomain() {
 
     if let Value::Field { codomain_type, .. } = &div_result {
         assert_eq!(
-            *codomain_type,
-            component_type,
+            *codomain_type, component_type,
             "divergence of Point{{3,Int}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2748,7 +2772,9 @@ fn laplacian_real_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
             "laplacian of Point{{3,Real}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2934,7 +2960,9 @@ fn laplacian_int_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            },
             "laplacian of Point{{3,Int}}→Scalar<Length> should preserve Scalar<Length>, got {:?}",
             codomain_type
         );
@@ -2997,11 +3025,12 @@ fn gradient_real_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &grad_result {
         let expected = Type::Vector {
             n: 3,
-            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         };
         assert_eq!(
-            *codomain_type,
-            expected,
+            *codomain_type, expected,
             "gradient of Point{{3,Real}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
             codomain_type
         );
@@ -3062,11 +3091,12 @@ fn gradient_int_domain_preserves_dim_codomain() {
     if let Value::Field { codomain_type, .. } = &grad_result {
         let expected = Type::Vector {
             n: 3,
-            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         };
         assert_eq!(
-            *codomain_type,
-            expected,
+            *codomain_type, expected,
             "gradient of Point{{3,Int}}→Scalar<Length> should have codomain Vector{{3,Scalar<Length>}}, got {:?}",
             codomain_type
         );

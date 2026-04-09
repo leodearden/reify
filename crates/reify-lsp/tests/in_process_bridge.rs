@@ -136,12 +136,15 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
     if let Some(arr) = response.as_array() {
         return arr;
     }
-    if let Some(items) = response
-        .as_object()
-        .and_then(|obj| obj.get("items"))
-        .and_then(|v| v.as_array())
+    if let Some(obj) = response.as_object()
+        && let Some(items_val) = obj.get("items")
     {
-        return items;
+        if let Some(arr) = items_val.as_array() {
+            return arr;
+        }
+        panic!(
+            "CompletionResponse::List has non-array 'items' field: {response}"
+        );
     }
     panic!(
         "completion response should be CompletionResponse::Array (JSON array) or \
@@ -465,40 +468,39 @@ async fn initialize_error_does_not_corrupt_server_state() {
         err_result
     );
 
-    // Second call on the same instance: should succeed.
+    // Second call on the same instance: should succeed and return a well-formed response.
     let ok_result = lsp
         .handle_request("initialize", json!({"capabilities": {}}))
         .await;
+    let val = ok_result.expect("initialize after a failed attempt should succeed");
     assert!(
-        ok_result.is_ok(),
-        "initialize after a failed attempt should succeed, got: {:?}",
-        ok_result
+        val.get("capabilities").is_some(),
+        "recovery response should contain capabilities"
     );
 }
 
-/// A valid notification should return exactly `Ok(Value::Null)`, not an error and not
-/// any JSON payload.
+/// The `initialized` notification should return exactly `Ok(Value::Null)`.
 ///
-/// This documents the `Ok(Value::Null)` contract for successfully processed
-/// one-way LSP messages (initialized, didOpen, didChange, didClose).
-///
-/// Uses initialize-only setup (no prior `initialized`) so the `initialized`
-/// notification in the body is the first and only one, directly testing the
-/// first-time Ok(Value::Null) contract.
+/// Documents the `Ok(Value::Null)` contract for the `initialized` arm of
+/// `handle_request`. Uses initialize-only setup (no prior `initialized`) so
+/// the `initialized` notification in the body is the first and only one,
+/// directly testing the first-time Ok(Value::Null) contract. The paired
+/// `did_open_returns_ok_null` test below covers the `textDocument/didOpen`
+/// arm separately.
 #[tokio::test]
-async fn valid_notification_returns_ok_null() {
+async fn initialized_returns_ok_null() {
     let lsp = InProcessLsp::new();
     lsp.handle_request("initialize", json!({"capabilities": {}}))
         .await
-        .expect("initialize should succeed before testing notification");
+        .expect("initialize should succeed before testing initialized");
 
     let result = lsp.handle_request("initialized", json!({})).await;
 
-    let val = result.expect("valid notification should return Ok");
+    let val = result.expect("initialized should return Ok");
     assert_eq!(
         val,
         serde_json::Value::Null,
-        "valid notification should return exactly Ok(Value::Null)"
+        "initialized should return exactly Ok(Value::Null)"
     );
 }
 
@@ -802,9 +804,43 @@ mod completion_items_tests {
     }
 
     #[test]
+    fn completion_items_returns_empty_slice_for_empty_array_response() {
+        let val = json!([]);
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!([]), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
+    fn completion_items_returns_empty_slice_for_empty_list_response() {
+        let val = json!({"isIncomplete": false, "items": []});
+        let items = completion_items(&val);
+        assert!(
+            items.is_empty(),
+            "expected empty slice for json!({{\"isIncomplete\": false, \"items\": []}}), got {} items",
+            items.len()
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "CompletionResponse::Array")]
     fn completion_items_panics_on_unexpected_shape() {
         completion_items(&json!(42));
+    }
+
+    #[test]
+    #[should_panic(expected = "\"items\":42")]
+    fn completion_items_panics_on_non_array_items_field() {
+        completion_items(&json!({"items": 42}));
+    }
+
+    #[test]
+    #[should_panic(expected = "CompletionResponse::Array")]
+    fn completion_items_panics_on_list_missing_items_field() {
+        completion_items(&json!({"isIncomplete": false}));
     }
 }
 

@@ -100,10 +100,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
             );
             for (i, (comp, &exp)) in components.iter().zip(expected.iter()).enumerate() {
                 let val = comp.as_f64().unwrap_or_else(|| {
-                    panic!(
-                        "{label}: component {} should be numeric, got {:?}",
-                        i, comp
-                    )
+                    panic!("{label}: component {} should be numeric, got {:?}", i, comp)
                 });
                 assert!(
                     (val - exp).abs() < tol,
@@ -3001,11 +2998,7 @@ fn gradient_single_point_param_recovery_across_axes() {
     // --- Second sample: Point3(5.0, 7.0, 11.0) → gradient = (10.0, 14.0, 22.0) ---
     // A distinct point confirms the gradient field is reusable and no state from
     // the first sample leaks into the second invocation.
-    let point2 = Value::Point(vec![
-        Value::Real(5.0),
-        Value::Real(7.0),
-        Value::Real(11.0),
-    ]);
+    let point2 = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
 
     let sample_expr2 = make_function_call(
         "sample",
@@ -3248,15 +3241,19 @@ fn gradient_tensor_single_point_param_returns_undef() {
 
 // ── Step-7: Decomposed calling convention ─────────────────────────────
 
-/// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
+/// Helper to build a gradient field for a 3D decomposed-param lambda |x,y,z| x + 2*y + 3*z.
 ///
-/// Uses the decomposed calling convention (single_point_param=false, params.len()==3==n)
-/// with work_coords reuse. Samples at Point3(5,7,11); since the function is linear
-/// the gradient is constant: [1.0, 2.0, 3.0].
+/// Returns:
+/// - `grad_result`: the `Value::Field` returned by `eval_expr(gradient(...))`.
+/// - `domain_type`: `Type::point3(Type::Real)`
+/// - `grad_codomain_type`: `Type::vec3(Type::Real)`
 ///
-/// Complements gradient_3d_field_single_point_param (which uses single_point_param=true).
-#[test]
-fn gradient_decomposed_n3_dimensionless() {
+/// Used by tests that share this decomposed-lambda setup:
+/// `gradient_decomposed_n3_dimensionless`,
+/// `gradient_decomposed_nan_returns_undef`,
+/// `gradient_decomposed_inf_returns_undef`,
+/// `gradient_decomposed_neg_inf_returns_undef`.
+fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
@@ -3322,16 +3319,31 @@ fn gradient_decomposed_n3_dimensionless() {
 
     assert!(
         matches!(&grad_result, Value::Field { .. }),
-        "gradient of 3D decomposed field should return a Field, got {:?}",
+        "make_decomposed_n3_gradient_field: gradient should return a Field, got {:?}",
         grad_result
     );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
+/// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
+///
+/// Uses the decomposed calling convention (single_point_param=false, params.len()==3==n)
+/// with work_coords reuse. Samples at Point3(5,7,11); since the function is linear
+/// the gradient is constant: [1.0, 2.0, 3.0].
+///
+/// Complements gradient_3d_field_single_point_param (which uses single_point_param=true).
+#[test]
+fn gradient_decomposed_n3_dimensionless() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
 
     // Sample at Point3(5.0, 7.0, 11.0) — linear function so gradient is constant
     let point = Value::Point(vec![Value::Real(5.0), Value::Real(7.0), Value::Real(11.0)]);
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(grad_codomain_type),
     };
 
     let sample_expr = make_function_call(
@@ -3599,6 +3611,136 @@ fn gradient_runtime_codomain_dim_mismatch_panics() {
     // Expected to panic before reaching here
 }
 
+/// Gradient of a 1D field with heterogeneous dimensions: domain=Scalar[LENGTH],
+/// codomain=Scalar[MASS], lambda |x| 2*x (coefficient carries MASS/LENGTH).
+///
+/// When the domain is dimensioned, make_arg passes Scalar{LENGTH} to the lambda.
+/// Eval_mul(Scalar{MASS/LENGTH}, Scalar{LENGTH}) = Scalar{MASS}, matching the
+/// declared codomain. The gradient dimension is codomain/domain = MASS/LENGTH.
+///
+/// At x=1.0m, the derivative of 2*x is 2.0, and the gradient dimension is MASS/LENGTH.
+/// Uses heterogeneous dimensions (LENGTH domain, MASS codomain) to verify the
+/// codomain_dim/domain_dim quotient handles non-self-referential dimension pairs.
+/// Complements gradient_1d_dimensioned_field (LENGTH→LENGTH²) and gradient_dimensioned_field
+/// (3D, LENGTH→MASS).
+#[test]
+fn gradient_codomain_type_with_dimensioned_domain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    let dim_length = DimensionVector::LENGTH;
+    let dim_mass = DimensionVector::MASS;
+    let dim_mass_per_length = dim_mass.div(&dim_length);
+
+    let scalar_length = Type::Scalar {
+        dimension: dim_length,
+    };
+    let scalar_mass = Type::Scalar {
+        dimension: dim_mass,
+    };
+    let scalar_mass_per_length = Type::Scalar {
+        dimension: dim_mass_per_length,
+    };
+
+    // Lambda: |x| Scalar{2.0, MASS/LENGTH} * x
+    // make_arg passes Scalar{LENGTH} to the lambda (domain is dimensioned).
+    // Scalar{MASS/LENGTH} * Scalar{LENGTH} = Scalar{MASS} via eval_mul.
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 2.0,
+                dimension: dim_mass_per_length,
+            },
+            scalar_mass_per_length.clone(),
+        ),
+        CompiledExpr::value_ref(x_id.clone(), scalar_length.clone()),
+        scalar_mass.clone(),
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = scalar_length.clone();
+    let codomain_type = scalar_mass;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    // Gradient codomain: MASS/LENGTH (codomain_dim / domain_dim)
+    let grad_codomain_type = scalar_mass_per_length.clone();
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(grad_codomain_type.clone()),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "gradient of 1D field (LENGTH→MASS) should return a Field, got {:?}",
+        grad_result
+    );
+
+    // Sample the gradient field at x = 1.0m
+    let grad_field_type = Type::Field {
+        domain: Box::new(scalar_length.clone()),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: dim_length,
+                },
+                scalar_length,
+            ),
+        ],
+        scalar_mass_per_length.clone(),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Derivative of 2*x is 2.0. Gradient dimension: MASS/LENGTH.
+    match &sample_result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert!(
+                (si_value - 2.0).abs() < 1e-4,
+                "gradient of 2*x at x=1.0m should be ~2.0, got {}",
+                si_value
+            );
+            assert_eq!(
+                *dimension, dim_mass_per_length,
+                "gradient dimension should be MASS/LENGTH, got {:?}",
+                dimension
+            );
+        }
+        _ => panic!(
+            "gradient sample should return Scalar with MASS/LENGTH dimension, got {:?}",
+            sample_result
+        ),
+    }
+}
+
 /// Gradient field structure trusts the declared codomain_type.
 ///
 /// When taking a gradient of a field whose lambda returns the wrong runtime type,
@@ -3822,8 +3964,7 @@ fn gradient_codomain_mismatch_dimensioned_domain_trusts_declaration() {
             codomain_type: ct, ..
         } => {
             assert_eq!(
-                ct,
-                &expected_codomain,
+                ct, &expected_codomain,
                 "gradient codomain_type should be Scalar[MASS/LENGTH] (trusts declaration), got {:?}",
                 ct
             );
@@ -3929,7 +4070,10 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
 
     // Verify the result has dimension MASS/LENGTH and derivative ≈ 2.0
     match &sample_result {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::MASS.div(&DimensionVector::LENGTH),
@@ -3947,4 +4091,139 @@ fn gradient_codomain_mismatch_dimensioned_domain_no_panic() {
             sample_result
         ),
     }
+}
+
+/// NaN in a Point coordinate causes gradient sampling to return Undef
+/// via the decomposed (multi-param) path.
+///
+/// Build a 3D field with decomposed lambda |x,y,z| x + 2*y + 3*z via
+/// make_decomposed_n3_gradient_field(). Sample the gradient at
+/// Point3(5.0, NaN, 11.0). The is_finite guard in compute_numerical_gradient
+/// must catch NaN before perturbing, returning Undef.
+///
+/// Complements gradient_sample_with_nan_point_returns_undef (single-point-param path).
+#[test]
+fn gradient_decomposed_nan_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at Point3(5.0, NaN, 11.0)
+    let nan_point = Value::Point(vec![
+        Value::Real(5.0),
+        Value::Real(f64::NAN),
+        Value::Real(11.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with NaN coordinate must return Undef (decomposed path)"
+    );
+}
+
+/// Inf in a Point coordinate causes gradient sampling to return Undef
+/// via the decomposed (multi-param) path.
+///
+/// Build a 3D field with decomposed lambda |x,y,z| x + 2*y + 3*z via
+/// make_decomposed_n3_gradient_field(). Sample the gradient at
+/// Point3(5.0, Inf, 11.0). The is_finite guard in compute_numerical_gradient
+/// must catch Inf before perturbing, returning Undef.
+///
+/// Complements gradient_sample_with_inf_point_returns_undef (single-point-param path).
+#[test]
+fn gradient_decomposed_inf_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at Point3(5.0, Inf, 11.0)
+    let inf_point = Value::Point(vec![
+        Value::Real(5.0),
+        Value::Real(f64::INFINITY),
+        Value::Real(11.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(inf_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with Inf coordinate must return Undef (decomposed path)"
+    );
+}
+
+/// Negative infinity in a Point coordinate causes gradient sampling to return Undef
+/// via the decomposed (multi-param) path.
+///
+/// Complements gradient_decomposed_inf_returns_undef (+Inf) and
+/// gradient_decomposed_nan_returns_undef (NaN).
+///
+/// Build a 3D field with decomposed lambda |x,y,z| x + 2*y + 3*z via
+/// make_decomposed_n3_gradient_field(). Sample the gradient at
+/// Point3(5.0, NEG_INFINITY, 11.0). The is_finite guard in compute_numerical_gradient
+/// must catch NEG_INFINITY before perturbing, returning Undef.
+///
+/// Complements gradient_sample_with_inf_point_returns_undef (single-point-param path).
+#[test]
+fn gradient_decomposed_neg_inf_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at Point3(5.0, NEG_INFINITY, 11.0)
+    let neg_inf_point = Value::Point(vec![
+        Value::Real(5.0),
+        Value::Real(f64::NEG_INFINITY),
+        Value::Real(11.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(neg_inf_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with NEG_INFINITY coordinate must return Undef (decomposed path)"
+    );
 }

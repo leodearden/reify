@@ -45,6 +45,9 @@ fi
 assert "pattern extraction from sync_comments_test.sh succeeded" \
     test -n "$PATTERN"
 
+assert "extracted pattern contains expected fn name" \
+    bash -c "[[ \"$PATTERN\" == *sanitize_value* ]]"
+
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
 assert "accepts: fn sanitize_value(" \
@@ -92,10 +95,31 @@ assert "accepts: pub(crate) const fn sanitize_value( (pub+const combination)" \
 assert "accepts: pub(crate) unsafe fn sanitize_value( (pub+unsafe combination)" \
     bash -c "printf '%s\n' 'pub(crate) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(crate) async fn sanitize_value( (pub+async combination)" \
+    bash -c "printf '%s\n' 'pub(crate) async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(super) const fn sanitize_value( (pub(super)+const combination)" \
+    bash -c "printf '%s\n' 'pub(super) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(in crate::foo) fn sanitize_value( (pub(in path)+fn combination)" \
+    bash -c "printf '%s\n' 'pub(in crate::foo) fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(super) unsafe fn sanitize_value( (pub(super)+unsafe combination)" \
+    bash -c "printf '%s\n' 'pub(super) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: unsafe async fn sanitize_value( (unsafe+async combination)" \
+    bash -c "printf '%s\n' 'unsafe async fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
     bash -c "! printf '%s\n' 'fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "rejects: pub(crate) async fn sanitize_value_raw( (pub+async suffix false-positive)" \
+    bash -c "! printf '%s\n' 'pub(crate) async fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "rejects: pub(super) const fn sanitize_value_raw( (pub(super)+const suffix false-positive)" \
+    bash -c "! printf '%s\n' 'pub(super) const fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
 assert "rejects: // fn sanitize_value (comment line)" \
     bash -c "! printf '%s\n' '// fn sanitize_value(v: Value)' | grep -qE '$PATTERN'"
