@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::{ReifyToolContext, SelectionInfo};
-use reify_test_support::{MockGeometryKernel, bracket_source, warning_source};
+use reify_test_support::{MockGeometryKernel, bracket_source, warn_source_with_unknown_port_type};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
@@ -564,7 +564,7 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
-    let source = warning_source();
+    let source = warn_source_with_unknown_port_type();
 
     let ctx = make_tauri_context_with_source(source, "test_warn");
     let diags = ctx

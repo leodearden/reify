@@ -39,7 +39,7 @@ pub fn bracket_source_with_width(width_str: &str) -> String {
 /// Used by tests that need a non-empty `compiled.diagnostics` to exercise
 /// post-early-exit code paths in `get_diagnostics`.
 /// Validated by `crates/reify-compiler/tests/port_compile_tests.rs:101-124`.
-pub fn warning_source() -> &'static str {
+pub fn warn_source_with_unknown_port_type() -> &'static str {
     r#"structure def S {
     port mount : NonExistentTrait {
         param d : Length = 5mm
@@ -47,11 +47,11 @@ pub fn warning_source() -> &'static str {
 }"#
 }
 
-/// Same as [`warning_source`] but with an additional `param width : Length = 80mm`.
+/// Same as [`warn_source_with_unknown_port_type`] but with an additional `param width : Length = 80mm`.
 ///
 /// Used by tests that need both an unknown-port-type warning AND a `width` field
 /// for `get_source_location` lookup.
-pub fn warning_source_with_width() -> &'static str {
+pub fn warn_source_with_unknown_port_type_with_width() -> &'static str {
     r#"structure def S {
     param width : Length = 80mm
     port mount : NonExistentTrait {
@@ -1287,13 +1287,27 @@ mod tests {
     }
 
     #[test]
-    fn warning_source_produces_unknown_port_warning_no_errors() {
-        assert_warning_source_compiles_with_unknown_port_warning(warning_source());
+    fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
+        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
     }
 
     #[test]
-    fn warning_source_with_width_param_cell_has_length_type_span_kind_and_default() {
-        let source = warning_source_with_width();
+    fn warn_source_with_unknown_port_type_is_well_formed() {
+        let src = warn_source_with_unknown_port_type();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
+        );
+        assert!(
+            src.contains("param d : Length = 5mm"),
+            "missing 'param d : Length = 5mm'"
+        );
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+        let source = warn_source_with_unknown_port_type_with_width();
         let compiled =
             assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
@@ -1347,6 +1361,20 @@ mod tests {
             width_cell.default_expr.is_some(),
             "expected width cell to have a default expression (from `= 80mm`), \
              got default_expr=None",
+        );
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_with_width_is_well_formed() {
+        let src = warn_source_with_unknown_port_type_with_width();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("param width : Length = 80mm"),
+            "missing 'param width : Length = 80mm'"
+        );
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
         );
     }
 }
