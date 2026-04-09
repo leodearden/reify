@@ -538,6 +538,49 @@ fn stdlib_fn_no_args_emits_type_inference_warning() {
     );
 }
 
+// ── task-823 step-13: expr.rs:1511 sub-member type ICE — green path ─────────
+
+/// Sub-component qualified member access compiles without ICE.
+///
+/// expr.rs:1511 has `.unwrap_or(Type::Real)` when looking up the type of a
+/// sub-component's member via `scope.collection_sub_member_types`.  In valid
+/// code the scope is populated by entity.rs pass 1 so the lookup succeeds and
+/// the fallback is never reached.
+///
+/// The syntax `parts.(MechTrait::diameter)` is `InstanceQualifiedAccess` —
+/// accessing collection sub-component `parts` (type `List<Inner>`) `diameter`
+/// member through trait `MechTrait`.  Using the collection form
+/// `sub parts : List<Inner>` ensures `collection_sub_member_types` is populated.
+#[test]
+fn sub_member_type_resolves_without_ice() {
+    let source = r#"
+        trait MechTrait {
+            param diameter : Length
+        }
+        structure Inner : MechTrait {
+            param diameter : Length = 5mm
+        }
+        structure Outer {
+            sub parts : List<Inner>
+            let d = parts.(MechTrait::diameter)
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid sub-member access, got: {:?}",
+        errors
+    );
+    assert!(
+        errors.is_empty(),
+        "expected no errors on valid sub-member access, got: {:?}",
+        errors
+    );
+}
+
 /// Match with no arms (ICE-path documentation / parse-guard).
 ///
 /// expr.rs:1046 has `.unwrap_or(Type::Real)` on `compiled_arms.first()`.
