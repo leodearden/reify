@@ -443,24 +443,27 @@ async fn unsupported_method_returns_error() {
 /// "initialize params error".
 #[tokio::test]
 async fn initialize_with_invalid_field_type_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_invalid_field_type_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    // processId is an Option<u32> in InitializeParams — passing a string makes
-    // deserialization fail, exercising the error-propagation path.
-    let result = lsp
-        .handle_request("initialize", json!({ "processId": "not_a_number" }))
-        .await;
+        // processId is an Option<u32> in InitializeParams — passing a string makes
+        // deserialization fail, exercising the error-propagation path.
+        let result = lsp
+            .handle_request("initialize", json!({ "processId": "not_a_number" }))
+            .await;
 
-    assert!(
-        result.is_err(),
-        "server should return Err on invalid field type"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::INITIALIZE_PARAMS),
-        "error message should contain '{}', got: {err}",
-        error_prefix::INITIALIZE_PARAMS
-    );
+        assert!(
+            result.is_err(),
+            "server should return Err on invalid field type"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error message should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    })
+    .await;
 }
 
 /// Missing required `capabilities` field should return Err containing
@@ -471,20 +474,23 @@ async fn initialize_with_invalid_field_type_returns_error() {
 /// rather than silently substituting a default.
 #[tokio::test]
 async fn initialize_with_missing_capabilities_returns_error() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_with_missing_capabilities_returns_error", async {
+        let lsp = InProcessLsp::new();
 
-    let result = lsp.handle_request("initialize", json!({})).await;
+        let result = lsp.handle_request("initialize", json!({})).await;
 
-    assert!(
-        result.is_err(),
-        "server should return Err when capabilities field is missing"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(error_prefix::INITIALIZE_PARAMS),
-        "error message should contain '{}', got: {err}",
-        error_prefix::INITIALIZE_PARAMS
-    );
+        assert!(
+            result.is_err(),
+            "server should return Err when capabilities field is missing"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(error_prefix::INITIALIZE_PARAMS),
+            "error message should contain '{}', got: {err}",
+            error_prefix::INITIALIZE_PARAMS
+        );
+    })
+    .await;
 }
 
 /// A failed initialize call should not corrupt server state — a subsequent valid
@@ -495,25 +501,28 @@ async fn initialize_with_missing_capabilities_returns_error() {
 /// pre-initialized state.
 #[tokio::test]
 async fn initialize_error_does_not_corrupt_server_state() {
-    let lsp = InProcessLsp::new();
+    with_hang_guard(HANG_GUARD_SECS, "initialize_error_does_not_corrupt_server_state", async {
+        let lsp = InProcessLsp::new();
 
-    // First call: should fail.
-    let err_result = lsp.handle_request("initialize", json!(42)).await;
-    assert!(
-        err_result.is_err(),
-        "initialize with json!(42) should return Err, got: {:?}",
-        err_result
-    );
+        // First call: should fail.
+        let err_result = lsp.handle_request("initialize", json!(42)).await;
+        assert!(
+            err_result.is_err(),
+            "initialize with json!(42) should return Err, got: {:?}",
+            err_result
+        );
 
-    // Second call on the same instance: should succeed and return a well-formed response.
-    let ok_result = lsp
-        .handle_request("initialize", json!({"capabilities": {}}))
-        .await;
-    let val = ok_result.expect("initialize after a failed attempt should succeed");
-    assert!(
-        val.get("capabilities").is_some(),
-        "recovery response should contain capabilities"
-    );
+        // Second call on the same instance: should succeed and return a well-formed response.
+        let ok_result = lsp
+            .handle_request("initialize", json!({"capabilities": {}}))
+            .await;
+        let val = ok_result.expect("initialize after a failed attempt should succeed");
+        assert!(
+            val.get("capabilities").is_some(),
+            "recovery response should contain capabilities"
+        );
+    })
+    .await;
 }
 
 /// The `initialized` notification should return exactly `Ok(Value::Null)`.
