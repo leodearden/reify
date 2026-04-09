@@ -5654,11 +5654,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
             "examples"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/m11_combined.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -5679,11 +5681,13 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-eval",
             "examples"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/integration_full_v01.ri"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
