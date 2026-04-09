@@ -948,9 +948,10 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
 
     // Step 4: send textDocument/completion at the same position used by the happy-path
     // reference test did_open_and_completion_returns_items (line 1, character 0).
-    // The completion handler operates on the DocumentStore entry that didOpen inserted;
-    // it does not consult initialization state, so it should produce a valid response
-    // regardless of whether didOpen itself succeeded.
+    // The bridge dispatches textDocument/completion regardless of initialization state:
+    // the match arm in bridge.rs has no init-state guard.  If didOpen failed earlier
+    // and the DocumentStore entry was never created, the completion response will be
+    // Ok(Value::Null) (no completions) rather than an item list.
     let completion_result = lsp
         .handle_request(
             "textDocument/completion",
