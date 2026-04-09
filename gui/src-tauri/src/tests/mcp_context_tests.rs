@@ -548,8 +548,12 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// This test therefore focuses on two things the engine test cannot cover: (a) that
 /// the wrapping path returns `Result::Ok`, and (b) that every field passes through
 /// without a field-swap bug. The pinned exact-coordinate span assertions
-/// (line/column/end_line/end_column) are the ONLY span-arithmetic regression guard in
-/// the test suite — they catch any accidental transposition that a bare `>= 1` range
+/// (line/column/end_line/end_column) are the only ones in the suite that pin literal
+/// exact-coordinate values for a real compiler-emitted span.
+/// `get_diagnostics_multi_diagnostic_stress_matches_reference` in `engine_tests.rs`
+/// pins coordinates against a `byte_offset_to_line_col` reference oracle for synthetic
+/// injected spans; this test provides complementary coverage on a real `port_decl` span
+/// shape. Together they catch any accidental transposition that a bare `>= 1` range
 /// check would miss. If a future change improves diagnostic locality (e.g. narrowing
 /// the span to point at just `NonExistentTrait` instead of the whole `port_decl`),
 /// update the pinned values to match the new coordinates — do NOT revert to range
