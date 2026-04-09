@@ -192,12 +192,16 @@ fn e2e_meta_access_on_occurrence() {
 
     let compiled = parse_and_compile(source);
 
-    // Sanity: the compiled template should be tagged as an Occurrence.
-    assert_eq!(compiled.templates.len(), 1);
+    // Sanity: the Welding template should be present and tagged as an Occurrence.
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Welding")
+        .expect("Welding template should be present in compiled output");
     assert_eq!(
-        compiled.templates[0].entity_kind,
+        template.entity_kind,
         reify_compiler::EntityKind::Occurrence,
-        "expected occurrence entity kind"
+        "expected Welding to have entity_kind == Occurrence"
     );
 
     // Eval
