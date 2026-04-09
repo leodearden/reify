@@ -24443,11 +24443,11 @@
         "description": "Three small documentation/robustness follow-ups from the Task 1183 review of `createSerializationErrorCoalescer`. All reinforce why the synchronous-flush branch exists and why `Date.now()` must be captured once — i.e. the throttled-timer-in-backgrounded-tab production case.\n\n1. **JSDoc — add throttled-tab scenario** (`gui/src/hooks/useSerializationErrorCoalescer.ts:20-22`). The current block mentions \"continuous arrivals keep resetting the debounce indefinitely\" but not the actual production reason for the sync-flush branch: throttled `setTimeout` delivery in backgrounded browser tabs. Append a sentence such as: \"When timers are throttled (e.g. a backgrounded tab) and the elapsed wall-clock time on a new arrival has already exceeded `maxWaitMs`, `add()` flushes synchronously rather than waiting for the throttled timer.\"\n\n2. **Inline comment — explain the single `Date.now()` read** (`gui/src/hooks/useSerializationErrorCoalescer.ts:52-55`). Add a one-line comment above the `const now = Date.now(); firstArrival ??= now;` block such as: \"// Read Date.now() once: keeps firstArrival and elapsed consistent under throttled timers (backgrounded tabs).\" This prevents a future \"simplification\" back to two `Date.now()` calls (which would yield `elapsed = 0` on first arrival even after a clock jump and silently break the throttled-tab case).\n\n3. **Test invariant guard** (`gui/src/__tests__/useSerializationErrorCoalescer.test.ts:311-350`). The sync-flush test relies on `vi.setSystemTime()` advancing `Date.now()` without firing pending fake timers — documented vitest behavior, but a subtle invariant a future vitest upgrade could change. Before the second `coalescer.add()` (the one that triggers the sync flush), assert `expect(vi.getTimerCount()).toBe(1)` so that if vitest ever changes `setSystemTime` to fire pending timers, the test fails loudly rather than silently going green via the timer path.\n\nSource task: 1183. Source review: reviewer_comprehensive (3 suggestions). All three changes touch the same hook + its test; expect a single small commit.\n\nMemory hints:\n- search \"serialization error coalescer throttled tab\"\n- search \"createSerializationErrorCoalescer maxWaitMs sync flush\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:52:16.849Z"
+        "updatedAt": "2026-04-09T00:04:22.836Z"
       },
       {
         "id": "1201",
@@ -24498,9 +24498,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:02:25.044Z",
+      "lastModified": "2026-04-09T00:04:22.836Z",
       "taskCount": 1203,
-      "completedCount": 880,
+      "completedCount": 881,
       "tags": [
         "master"
       ]
