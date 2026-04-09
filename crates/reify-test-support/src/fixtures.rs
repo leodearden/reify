@@ -1,4 +1,4 @@
-use reify_compiler::{CompiledModule, RequirementKind};
+use reify_compiler::{CompiledModule, RequirementKind, ValueCellKind};
 use reify_syntax::ParsedModule;
 use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, Type, Value};
 
@@ -1330,6 +1330,17 @@ mod tests {
              got span {:?} covering {:?}",
             width_cell.span,
             span_text,
+        );
+        assert!(
+            matches!(width_cell.kind, ValueCellKind::Param),
+            "expected width cell to be ValueCellKind::Param \
+             (from `param width : Length = 80mm`), got: {:?}",
+            width_cell.kind,
+        );
+        assert!(
+            width_cell.default_expr.is_some(),
+            "expected width cell to have a default expression (from `= 80mm`), \
+             got default_expr=None",
         );
     }
 }
