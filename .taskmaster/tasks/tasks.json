@@ -6194,9 +6194,15 @@
         "metadata": {
           "milestone": "stdlib-M8.1",
           "modules": [
+            "examples",
             "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/geometry_modeling.ri",
+            "examples/sweep_and_transform.ri",
+            "crates/reify-eval/tests/m8_stdlib_integration.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
@@ -6261,12 +6267,14 @@
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
-            "crates/reify-kernel-occt",
-            "crates/reify-kernel-occt/cpp",
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-07T16:03:56.730Z"
