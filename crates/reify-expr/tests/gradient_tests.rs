@@ -125,11 +125,7 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
 /// rely on it as a drop-in replacement.
 #[test]
 fn test_assert_gradient_vector_accepts_matching_vector() {
-    let result = Value::Vector(vec![
-        Value::Real(1.0),
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let result = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
     assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "matching vector");
 }
 

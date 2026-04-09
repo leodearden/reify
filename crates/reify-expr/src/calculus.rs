@@ -1540,11 +1540,7 @@ mod tests {
         };
 
         // 3D point input — lambda has 1 param and n=3 so single_point_param=true
-        let point = Value::Point(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
+        let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
 
         // domain: Point3<Real>, codomain: Vector3<Bool> — Bool is unexpected in the inner arm
         let domain_type = Type::point3(Type::Real);
