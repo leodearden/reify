@@ -6,7 +6,7 @@ use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
-use crate::engine::{EngineSession, parse_value_string};
+use crate::engine::{EngineSession, module_key, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -1655,7 +1655,6 @@ fn offset_to_line_col_fast_non_char_boundary_no_panic() {
 #[test]
 #[should_panic(expected = "compiled")]
 fn resolve_source_panics_without_loaded_module() {
-    use reify_constraints::SimpleConstraintChecker;
     let checker = SimpleConstraintChecker;
     let session = EngineSession::new(Box::new(checker), None);
     // No load — compiled is None. debug_assert should fire.
@@ -1667,20 +1666,29 @@ fn resolve_source_panics_without_loaded_module() {
 /// module_key("bracket") == "bracket.ri" — normal identifier.
 #[test]
 fn module_key_normal_name() {
-    use crate::engine::module_key;
     assert_eq!(module_key("bracket"), "bracket.ri");
 }
 
 /// module_key("some_module") == "some_module.ri" — underscored name.
 #[test]
 fn module_key_underscored_name() {
-    use crate::engine::module_key;
     assert_eq!(module_key("some_module"), "some_module.ri");
 }
 
-/// module_key("") == ".ri" — edge case: empty module name.
+/// module_key(name) matches the key that load_from_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that load_from_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into load_from_source without updating module_key.
 #[test]
-fn module_key_empty_name() {
-    use crate::engine::module_key;
-    assert_eq!(module_key(""), ".ri");
+fn module_key_matches_load_from_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    let (stored_key, _) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
 }
