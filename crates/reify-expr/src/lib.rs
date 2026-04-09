@@ -1629,7 +1629,7 @@ fn compute_numerical_laplacian_at_point(
         Value::Int(i) => vec![*i as f64],
         Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
         Value::Scalar { .. } => return Value::Undef,
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
