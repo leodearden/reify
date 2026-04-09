@@ -587,4 +587,13 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         "expected message to mention 'NonExistentTrait', got: '{}'",
         first.message
     );
+
+    // span fields must represent a valid range (catches field-swap bugs in the mapping closure)
+    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
+    assert!(
+        first.end_line >= first.line,
+        "expected end_line ({}) >= line ({})",
+        first.end_line,
+        first.line
+    );
 }
