@@ -4009,24 +4009,14 @@ mod tests {
 
     #[test]
     fn value_orientation_display() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(format!("{}", o), "[1, 0, 0, 0]q");
     }
 
     #[test]
     fn value_orientation_display_fractional() {
         let s = std::f64::consts::FRAC_1_SQRT_2;
-        let o = Value::Orientation {
-            w: s,
-            x: 0.0,
-            y: 0.0,
-            z: s,
-        };
+        let o = orient(s, 0.0, 0.0, s);
         let display = format!("{}", o);
         assert!(display.starts_with('['));
         assert!(display.ends_with("]q"));
@@ -4034,47 +4024,22 @@ mod tests {
 
     #[test]
     fn value_orientation_content_hash_deterministic() {
-        let a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(1.0, 0.0, 0.0, 0.0);
+        let b = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_nan_canonical() {
-        let a = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+        let b = orient(f64::NAN, 0.0, 0.0, 0.0);
         assert_eq!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_content_hash_distinct_from_complex() {
         // Tag 16 for Orientation vs tag 15 for Complex
-        let o = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(0.0, 0.0, 0.0, 0.0);
         let c = Value::Complex {
             re: 0.0,
             im: 0.0,
@@ -4085,40 +4050,20 @@ mod tests {
 
     #[test]
     fn value_orientation_content_hash_neg_zero() {
-        let a = Value::Orientation {
-            w: -0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let b = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let a = orient(-0.0, 0.0, 0.0, 0.0);
+        let b = orient(0.0, 0.0, 0.0, 0.0);
         assert_ne!(a.content_hash(), b.content_hash());
     }
 
     #[test]
     fn value_orientation_as_f64_none() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(o.as_f64(), None);
     }
 
     #[test]
     fn value_orientation_dimension_dimensionless() {
-        let o = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let o = orient(1.0, 0.0, 0.0, 0.0);
         assert_eq!(o.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
