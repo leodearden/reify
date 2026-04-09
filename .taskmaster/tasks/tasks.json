@@ -19085,6 +19085,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs"
           ]
         }
       },
@@ -19172,8 +19176,12 @@
         "metadata": {
           "modules": [
             "crates/reify-expr",
-            "crates/reify-stdlib",
-            "tests/sync_comments_test.sh"
+            "crates/reify-stdlib"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/sanitize.rs",
+            "crates/reify-stdlib/src/lib.rs"
           ]
         }
       },
