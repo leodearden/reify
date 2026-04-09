@@ -1742,10 +1742,7 @@ mod tests {
             let mut builder = SystemBuilder::new();
             let result =
                 builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
-            assert!(
-                result.is_err(),
-                "expected Err when erroring Auto point is at position '{position_name}'"
-            );
+            assert_missing_err(result, &cell_id, position_name);
         }
     }
 
