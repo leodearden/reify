@@ -10,8 +10,6 @@ use reify_types::{
     Value, ValueCellId, ValueMap,
 };
 
-use sanitize::sanitize_value;
-
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
 
