@@ -20818,6 +20818,10 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler"
+          ],
+          "files": [
+            "crates/reify-compiler/tests/recursive_detection_tests.rs",
+            "crates/reify-compiler/src/scc.rs"
           ]
         }
       },
@@ -20857,6 +20861,9 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp"
+          ],
+          "files": [
+            "crates/reify-lsp/src/bridge.rs"
           ]
         }
       },
