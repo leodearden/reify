@@ -3659,6 +3659,15 @@ mod tests {
 
     // ── Value::Complex Ord tests (step-5) ─────────────────────────────────────
 
+    /// Construct a dimensionless `Value::Complex` for use in Ord tests.
+    fn complex_with(re: f64, im: f64) -> Value {
+        Value::Complex {
+            re,
+            im,
+            dimension: DimensionVector::DIMENSIONLESS,
+        }
+    }
+
     #[test]
     fn value_complex_sorts_after_tensor() {
         // Complex type_tag=14 > Tensor type_tag=13
