@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
+EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
 STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
 
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
@@ -16,7 +16,7 @@ source "$REPO_ROOT/tests/infra/test_helpers.sh"
 
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
-    "reify-expr/src/lib.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
+    "reify-expr/src/sanitize.rs has SYNC marker referencing reify-stdlib::sanitize_value" \
     grep -q "SYNC:.*reify-stdlib::sanitize_value" "$EXPR_FILE"
 
 # reify-stdlib's copy must reference reify-expr::sanitize_value
@@ -44,12 +44,22 @@ assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
 assert_sync_ref_exists reify-stdlib reify-expr "$STDLIB_FILE" "$EXPR_FILE"
 
 # Helper: extract from the fn signature line to the next line that begins with }
-# at column 0.  Content above the fn keyword is naturally excluded by the /^fn/
-# anchor, so doc comments and SYNC markers (which may legitimately differ between
-# the two copies) do not affect the body comparison.
+# at column 0.  Content above the fn keyword is naturally excluded by the
+# /fn fn_name[(<]/ pattern.  Visibility modifiers (pub, pub(crate), etc.) on the
+# signature line are stripped before printing so that the two copies compare
+# equal even when their visibility differs (e.g. pub(crate) fn vs fn).
 extract_fn() {
     local fn_name="$1" file="$2"
-    awk '/^fn '"$fn_name"'[(<]/,/^}/' "$file"
+    awk '
+        found && /^}$/ { print; exit }
+        found { print }
+        /fn '"$fn_name"'[(<]/ && /^(fn |pub)/ {
+            sub(/^pub[^f]*fn /, "fn ")
+            print
+            found=1
+            next
+        }
+    ' "$file"
 }
 
 # Both copies of sanitize_value must have identical function bodies.
