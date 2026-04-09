@@ -2026,8 +2026,8 @@ mod tests {
 
         // (4) Value::Orientation (w field)
         {
-            let a = Value::Orientation { w: f64::NAN, x: 0.0, y: 0.0, z: 0.0 };
-            let b = Value::Orientation { w: non_canon_nan, x: 0.0, y: 0.0, z: 0.0 };
+            let a = orient(f64::NAN, 0.0, 0.0, 0.0);
+            let b = orient(non_canon_nan, 0.0, 0.0, 0.0);
             assert_ne!(a, b, "Orientation: NaN values with different payloads must be unequal via PartialEq");
             assert_eq!(
                 a.content_hash(),
@@ -4793,12 +4793,7 @@ mod tests {
     }
 
     fn make_orientation_identity() -> Value {
-        Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }
+        orient(1.0, 0.0, 0.0, 0.0)
     }
 
     fn make_frame(origin: Value, basis: Value) -> Value {
@@ -4853,18 +4848,8 @@ mod tests {
     #[test]
     fn value_frame_partial_eq_different_basis() {
         let origin = make_point3_length();
-        let basis_a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let basis_b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis_a = orient(1.0, 0.0, 0.0, 0.0);
+        let basis_b = orient(0.0, 1.0, 0.0, 0.0);
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert_ne!(f1, f2);
@@ -4877,12 +4862,7 @@ mod tests {
             Value::length(0.0),
             Value::length(0.0),
         ]);
-        let basis = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis = orient(1.0, 0.0, 0.0, 0.0);
         let frame = make_frame(origin, basis);
         let s = format!("{}", frame);
         assert_eq!(s, "frame(point(0 m, 0 m, 0 m), [1, 0, 0, 0]q)");
@@ -4948,18 +4928,8 @@ mod tests {
         let origin = make_point3_length();
         // Valid 180° rotation around X-axis (unit quaternion: |q|=1).
         // w=0.0 < w=1.0 by to_bits ordering, so basis_a < basis_b.
-        let basis_a = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let basis_b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let basis_a = orient(0.0, 1.0, 0.0, 0.0);
+        let basis_b = orient(1.0, 0.0, 0.0, 0.0);
         let f1 = make_frame(origin.clone(), basis_a);
         let f2 = make_frame(origin, basis_b);
         assert!(f1 < f2);
@@ -5068,18 +5038,8 @@ mod tests {
 
     #[test]
     fn value_transform_partial_eq_different_rotation() {
-        let rot_a = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let rot_b = Value::Orientation {
-            w: 0.0,
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rot_a = orient(1.0, 0.0, 0.0, 0.0);
+        let rot_b = orient(0.0, 1.0, 0.0, 0.0);
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
@@ -5106,12 +5066,7 @@ mod tests {
 
     #[test]
     fn value_transform_display() {
-        let rotation = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rotation = orient(1.0, 0.0, 0.0, 0.0);
         let translation = Value::Vector(vec![
             Value::length(0.0),
             Value::length(0.0),
@@ -5177,18 +5132,8 @@ mod tests {
     #[test]
     fn value_transform_ord_same_type_compare_rotation_first() {
         // Two transforms with same translation but different rotation: order by rotation
-        let rot_a = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let rot_b = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
+        let rot_a = orient(0.0, 0.0, 0.0, 0.0);
+        let rot_b = orient(1.0, 0.0, 0.0, 0.0);
         let translation = make_vector3_length();
         let t1 = make_transform(rot_a, translation.clone());
         let t2 = make_transform(rot_b, translation);
