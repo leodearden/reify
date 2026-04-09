@@ -3680,35 +3680,22 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let eval_arg_f64 = |name: &str| -> Option<f64> {
-                        let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                        .as_f64()
-                        .filter(|v| v.is_finite())
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
-                    let axis_dir = [
-                        eval_arg_f64("ax")?,
-                        eval_arg_f64("ay")?,
-                        eval_arg_f64("az")?,
-                    ];
+                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
                     if !mag.is_finite() || mag < 1e-12 {
                         return None;
                     }
-                    let angle_rad = eval_arg_f64("angle")?;
+                    let angle_rad = f64_arg("angle")?;
                     if angle_rad == 0.0 {
                         return None;
                     }
+                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
-                        axis_origin: [
-                            eval_arg_f64("ox")?,
-                            eval_arg_f64("oy")?,
-                            eval_arg_f64("oz")?,
-                        ],
+                        axis_origin,
                         axis_dir,
                         angle_rad,
                     })
