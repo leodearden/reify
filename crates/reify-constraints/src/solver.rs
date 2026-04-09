@@ -1203,8 +1203,14 @@ mod tests {
         );
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        // NB: the return value is captured but NOT asserted on. With no constraints,
+        // `solve_core` early-returns the perturbed initial (0.9) unchanged; `solutions_agree`
+        // finds a 0.65 disagreement vs. the original 0.25, so `verify_uniqueness` returns
+        // `false`. This test's contract is the *absence* of the fallback warn (the happy-path
+        // branch where `as_f64()` returns `Some`), not a uniqueness verdict. `_unique` keeps
+        // captured-value symmetry with the sibling tests without asserting the verdict.
+        let _unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
         capture.assert_count(0);
