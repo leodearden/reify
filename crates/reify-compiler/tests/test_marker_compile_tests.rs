@@ -141,3 +141,20 @@ fn unknown_annotation_on_constraint_def_emits_warning() {
         warns
     );
 }
+
+// ── Step 9: @test on constraint_def must NOT trigger 'invalid context' warning ─
+
+#[test]
+fn test_annotation_on_constraint_def_emits_no_invalid_context_warning() {
+    let module = compile_module("@test constraint def C { param x : Length\n x > 0 }");
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let bad_warns: Vec<_> = warnings_only(&module)
+        .into_iter()
+        .filter(|d| d.message.contains("@test is not valid"))
+        .collect();
+    assert!(
+        bad_warns.is_empty(),
+        "expected no '@test is not valid' warning on constraint def, got: {:?}",
+        bad_warns
+    );
+}
