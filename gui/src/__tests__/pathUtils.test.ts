@@ -73,8 +73,6 @@ describe('isSameFile', () => {
     expect(isSameFile('/project/src/bracket.ri', '')).toBe(false);
   });
 
-  // Documents the Editor.tsx:257 contract where isSameFile compares location.file_path
-  // (a file:// URI from the backend) against activeFile (a decoded bare OS path).
   it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
     expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
   });
