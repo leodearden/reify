@@ -2429,14 +2429,14 @@ mod tests {
     }
 
     #[test]
-    fn value_ord_within_int() {
+    fn value_ord_int_ordering() {
         assert!(Value::Int(1) < Value::Int(2));
         assert!(Value::Int(-10) < Value::Int(0));
         assert_eq!(Value::Int(5).cmp(&Value::Int(5)), std::cmp::Ordering::Equal);
     }
 
     #[test]
-    fn value_ord_within_string() {
+    fn value_ord_string_ordering() {
         assert!(Value::String("a".into()) < Value::String("b".into()));
         assert!(Value::String("abc".into()) < Value::String("abd".into()));
     }
