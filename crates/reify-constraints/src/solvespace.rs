@@ -636,7 +636,7 @@ impl SystemBuilder {
     /// - **Auto** points dedup when all three `ValueCellId` components are equal.
     ///
     /// If two or more of the four corner points are identical, the actual number
-    /// of new entities is between 3 (one shared endpoint: 3 points + 2 lines)
+    /// of new entities is between 5 (one shared endpoint: 3 points + 2 lines)
     /// and 6 (all distinct: 4 points + 2 lines).
     ///
     /// # Partial mutation
