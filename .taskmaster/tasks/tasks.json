@@ -18096,6 +18096,9 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
@@ -18113,6 +18116,11 @@
         "metadata": {
           "modules": [
             "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs",
+            "crates/reify-eval/tests/common/mod.rs"
           ]
         }
       },
