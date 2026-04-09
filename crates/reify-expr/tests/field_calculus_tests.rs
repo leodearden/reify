@@ -1945,3 +1945,262 @@ fn laplacian_dimensionless_still_real() {
         );
     }
 }
+
+/// Regression guard: sampling from the Laplacian of a dimensionless
+/// Point{3,Real}→Real field returns `Value::Real`, not `Value::Scalar`.
+///
+/// Locks in the dimensionless fallback path in compute_numerical_laplacian_at_point
+/// so the step-6 implementation change cannot regress it.
+#[test]
+fn laplacian_sample_dimensionless_returns_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x + 2*y + 3*z (same as laplacian_linear_field_near_zero)
+    let two_y = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let three_z = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            two_y,
+            Type::Real,
+        ),
+        three_z,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of dimensionless linear field should return a Field, got {:?}",
+        lap_result
+    );
+
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    match &sample_result {
+        Value::Real(_) => {} // ← correct: dimensionless fallback returns Real
+        Value::Scalar { .. } => panic!(
+            "laplacian_sample_dimensionless_returns_real: expected Value::Real but got \
+             Value::Scalar — the dimensionless fallback path is broken: {:?}",
+            sample_result
+        ),
+        other => panic!(
+            "laplacian_sample_dimensionless_returns_real: expected Value::Real, got {:?}",
+            other
+        ),
+    }
+}
+
+/// Runtime drift test: sampling from the Laplacian of a dimensioned
+/// Point{3,Length}→Scalar<Temperature> field should return
+/// `Value::Scalar { dimension: Temperature/Length² }`, not `Value::Real`.
+///
+/// Lambda: |x, y, z| x*x + y*y + z*z — Laplacian = 6.0 (constant).
+/// Expected result dimension: Temperature / Length².
+///
+/// FAILS before step-6 implementation because compute_numerical_laplacian_at_point
+/// returns Value::Real unconditionally.
+#[test]
+fn laplacian_sample_dimensional_correctness_returns_scalar() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+
+    // Lambda: |x, y, z| x*x + y*y + z*z.
+    // Value refs use Type::Real annotations; at runtime they receive Scalar[LENGTH]
+    // args (trust-the-declaration pattern). The Laplacian of x²+y²+z² is 6.
+    let x_sq = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let y_sq = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let z_sq = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Add, x_sq, y_sq, Type::Real),
+        z_sq,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Length}}→Scalar<Temperature> should return a Field, got {:?}",
+        lap_result
+    );
+
+    // Sample at (1m, 1m, 1m)
+    let point = Value::Point(vec![
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+    ]);
+
+    // The laplacian field's codomain is Scalar[Temperature/Length²]
+    let temp_per_len_sq = DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
+    let lap_codomain = Type::Scalar {
+        dimension: temp_per_len_sq,
+    };
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(lap_codomain),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Scalar {
+            dimension: temp_per_len_sq,
+        },
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Laplacian of x²+y²+z² = ∂²/∂x²(x²) + ∂²/∂y²(y²) + ∂²/∂z²(z²) = 2+2+2 = 6.0
+    match sample_result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                temp_per_len_sq,
+                "laplacian sample dimension should be Temperature/Length² ({:?}), got {:?}",
+                temp_per_len_sq,
+                dimension,
+            );
+            assert!(
+                (si_value - 6.0).abs() < 1e-3,
+                "laplacian of x²+y²+z² should be ≈6.0, got {}",
+                si_value
+            );
+        }
+        Value::Real(_) => panic!(
+            "laplacian_sample_dimensional_correctness_returns_scalar: \
+             expected Value::Scalar but got Value::Real — runtime drift not fixed"
+        ),
+        other => panic!(
+            "laplacian_sample_dimensional_correctness_returns_scalar: \
+             expected Value::Scalar, got {:?}",
+            other
+        ),
+    }
+}
