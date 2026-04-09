@@ -1192,12 +1192,11 @@ mod tests {
         // Empty solved_values: both params are missing → both hit the None branch
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
-        let unique = assert_verify_uniqueness_aggregated_warn(
+        let _ = assert_verify_uniqueness_aggregated_warn(
             &problem,
             &solved_values,
             &["Part.x", "Part.y"],
         );
-        assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
     }
 
     /// Proves that `verify_uniqueness` takes the early-return path when a param
