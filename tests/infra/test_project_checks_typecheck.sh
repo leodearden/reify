@@ -52,6 +52,6 @@ assert "gui/package.json exists" \
     test -f "$PKG"
 
 assert "gui/package.json defines a 'typecheck' script" \
-    bash -c "grep -q '\"typecheck\"' '$PKG'"
+    bash -c "grep -qE '\"typecheck\"\\s*:' '$PKG'"
 
 test_summary
