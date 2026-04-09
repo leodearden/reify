@@ -176,6 +176,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             (

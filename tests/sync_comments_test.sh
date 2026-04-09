@@ -23,6 +23,9 @@ fi
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$REPO_ROOT/tests/infra/test_helpers.sh"
 
+[ -f "$REPO_ROOT/tests/infra/sync_ref_helpers.sh" ] || { echo "ERROR: sync_ref_helpers.sh not found"; exit 1; }
+source "$REPO_ROOT/tests/infra/sync_ref_helpers.sh"
+
 # reify-expr's copy must reference reify-stdlib::sanitize_value
 assert \
     "reify-expr has SYNC marker referencing reify-stdlib::sanitize_value" \
@@ -32,21 +35,6 @@ assert \
 assert \
     "$STDLIB_FILE has SYNC marker referencing reify-expr::sanitize_value" \
     grep -q "SYNC:.*reify-expr::sanitize_value" "$STDLIB_FILE"
-
-# Helper: verify that source_file's SYNC comment references a function that
-# exists in target_file.  Args: source_crate target_crate source_file target_file
-assert_sync_ref_exists() {
-    local src_crate="$1" tgt_crate="$2" src_file="$3" tgt_file="$4"
-    # Only the first SYNC cross-reference is validated here; files with multiple
-    # cross-references to the same target crate would require a loop.
-    local ref_fn
-    ref_fn=$(grep 'SYNC:' "$src_file" | grep -oE "${tgt_crate}::[a-z_]+" | head -1 | sed 's/.*:://' || true)
-    if [ -z "$ref_fn" ]; then assert "SYNC in ${src_crate} references a ${tgt_crate} function" false; return; fi
-    local display_fn="${ref_fn:-<none>}"
-    assert \
-        "fn ${display_fn} exists in ${tgt_crate} (as referenced by SYNC in ${src_crate})" \
-        grep -qE '^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+'"${ref_fn}"'[[:space:](<]' "$tgt_file"
-}
 
 # Verify each SYNC cross-reference points to a real function in the peer crate
 assert_sync_ref_exists reify-expr reify-stdlib "$EXPR_FILE" "$STDLIB_FILE"
@@ -72,8 +60,8 @@ extract_fn() {
 # and `diff <() <()` would silently succeed (false negative).
 expr_body=$(extract_fn sanitize_value "$EXPR_FILE")
 stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
-[ -z "$expr_body" ] && assert "extract_fn sanitize_value found in reify-expr" false
-[ -z "$stdlib_body" ] && assert "extract_fn sanitize_value found in reify-stdlib" false
+[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }
+[ -z "$stdlib_body" ] && { assert "extract_fn sanitize_value found in reify-stdlib" false; test_summary; }
 assert \
     "sanitize_value body is identical in reify-expr and reify-stdlib" \
     diff \

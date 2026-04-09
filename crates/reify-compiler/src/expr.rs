@@ -360,13 +360,24 @@ pub(crate) fn compile_expr_guarded(
                     _ => {}
                 }
             }
-            // Infer the element type from whichever bound is present
+            // Infer the element type from whichever bound is present.
+            // NOTE: the parser (lower_range_expr) always provides both lower
+            // and upper via `?`, so both being None is an ICE path that is
+            // unreachable from user code.
             let element_type = compiled_lower
                 .as_ref()
                 .map(|e| &e.result_type)
                 .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: range has no bounds; cannot infer element type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: no lower or upper bound")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::range(element_type);
             CompiledExpr::range_constructor(
                 compiled_lower,
@@ -572,7 +583,19 @@ pub(crate) fn compile_expr_guarded(
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
-                            .unwrap_or(Type::Real)
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::warning(format!(
+                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                        name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "zero-arg function: return type inferred as Real",
+                                    )),
+                                );
+                                Type::Real
+                            })
                     };
 
                     let content_hash = {
@@ -888,11 +911,19 @@ pub(crate) fn compile_expr_guarded(
                     )
                 })
                 .collect();
-            // Infer element type from first element, default to Real for empty lists
+            // Infer element type from first element, warn and default to Real for empty lists
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty list literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty list")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
         }
@@ -914,7 +945,15 @@ pub(crate) fn compile_expr_guarded(
             let elem_type = compiled_elems
                 .first()
                 .map(|e| e.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer element type of empty set literal, defaulting to Real",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty set")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
         }
@@ -946,11 +985,23 @@ pub(crate) fn compile_expr_guarded(
             let key_type = compiled_entries
                 .first()
                 .map(|(k, _)| k.result_type.clone())
-                .unwrap_or(Type::String);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "cannot infer key type of empty map literal, defaulting to String",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "empty map")),
+                    );
+                    Type::String
+                });
             let val_type = compiled_entries
                 .first()
                 .map(|(_, v)| v.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    // Warning already emitted for empty map at key_type step above;
+                    // no second warning needed for the value type.
+                    Type::Real
+                });
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
         }
@@ -1039,11 +1090,21 @@ pub(crate) fn compile_expr_guarded(
                 })
                 .collect();
 
-            // Result type from the first arm's body
+            // Result type from the first arm's body.
+            // NOTE: the grammar requires at least one arm so an empty arms
+            // list is an ICE path unreachable from user code.
             let result_type = compiled_arms
                 .first()
                 .map(|a| a.body.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: match expression has no arms; cannot infer result type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: match with no arms")),
+                    );
+                    Type::Real
+                });
 
             // Exhaustiveness check: if discriminant is a known enum type,
             // verify all variants are covered by arm patterns or a wildcard.
@@ -1447,7 +1508,19 @@ pub(crate) fn compile_expr_guarded(
                 .get(&sub_name)
                 .and_then(|m| m.get(&member))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "internal compiler error: unresolved sub-member type for '{}.{}'",
+                            sub_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "ICE: sub-member type not registered",
+                        )),
+                    );
+                    Type::Real
+                });
             CompiledExpr::value_ref(id, ty)
         }
     }
