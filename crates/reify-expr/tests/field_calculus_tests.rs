@@ -1424,3 +1424,85 @@ fn curl_irrotational_field_near_zero() {
         "curl of conservative field [x,y,z] at (1,2,3)",
     );
 }
+
+/// Laplacian of the 1D quadratic f(x) = x*x at x=3.0 ≈ 2.0.
+///
+/// d²/dx²(x²) = 2 at every x. Domain is Type::Real (bare scalar, not Point),
+/// which exercises the `Type::Real` arm in compute_laplacian (lib.rs:933) and
+/// the `Value::Real(r) if r.is_finite() => vec![*r]` coords-extraction arm in
+/// compute_numerical_laplacian_at_point (lib.rs:1627). With n=1 and a single
+/// lambda param, single_point_param = (1==1 && 1>1) = false, so the decomposed
+/// per-axis path runs with n=1.
+#[test]
+fn laplacian_1d_quadratic_accuracy() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+
+    // Lambda: |x| x*x
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
+
+    let domain_type = Type::Real;
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of 1D quadratic should return a Field, got {:?}",
+        lap_result
+    );
+
+    // sample(lap_field, Value::Real(3.0)) — d²/dx²(x²) = 2 at every x
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!("laplacian sample should be numeric, got {:?}", sample_result)
+    });
+    assert!(
+        (val - 2.0).abs() < 1e-2,
+        "laplacian of x*x at x=3.0 should be ≈2.0, got {}",
+        val
+    );
+}
