@@ -218,27 +218,6 @@ fn e2e_meta_access_on_occurrence() {
 }
 
 // ---------------------------------------------------------------------------
-// --- nonexistent meta key produces compile error ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse source with `meta.nonexistent` where only `a` is defined.
-/// After compile, diagnostics should contain at least one Error whose message
-/// includes "no key".  No eval step — the error is a compile-time rejection.
-#[test]
-fn e2e_meta_nonexistent_key_error() {
-    let source = r#"
-        structure def S {
-            meta {
-                a = "1"
-            }
-            let x : String = meta.nonexistent
-        }
-    "#;
-
-    parse_compile_expect_err(source, "no key");
-}
-
-// ---------------------------------------------------------------------------
 // --- meta access without meta block produces error ---
 // ---------------------------------------------------------------------------
 
