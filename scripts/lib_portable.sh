@@ -39,14 +39,13 @@ portable_sha256() {
 #   true  — the command was killed by the timeout mechanism
 #   false — the command exited on its own (any exit code, including 124)
 #
-# POSIX fallback termination guarantee:
-#   The POSIX fallback terminates via SIGTERM only; it does not escalate to
-#   SIGKILL.  Removing SIGKILL escalation avoids a PID-reuse race: by the time
-#   the escalation would fire, the main shell has already wait(2)ed on cmd_pid
-#   and the kernel may have recycled that PID to an unrelated process.  The
-#   main shell's process-group kill (kill -- -$timer_pid) handles cleanup of
-#   the timer and its children atomically without this risk.  If the wrapped
-#   command ignores SIGTERM, the caller is responsible for handling escalation.
+# POSIX fallback termination strategy:
+#   The POSIX fallback sends SIGTERM first, then waits a 2-second grace period.
+#   If the command has not exited, it escalates to SIGKILL via process-group
+#   kill (kill -9 -- -$cmd_pid).  Process-group kill is PID-reuse safe: the
+#   command has not been wait(2)ed on yet (the main shell is blocked), so the
+#   PID cannot have been recycled.  The process-group kill also terminates any
+#   orphaned child processes (e.g. a nested sleep inside a bash -c wrapper).
 #
 # Ambiguity note (GNU timeout / gtimeout paths):
 #   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
