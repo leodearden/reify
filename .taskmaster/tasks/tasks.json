@@ -11826,7 +11826,7 @@
         "description": "Address review suggestions from task 467 in crates/reify-runtime/src/concurrent_eval.rs:\n\n1. Add `tracing::warn!` at each poison recovery site so lock poisoning is observable in logs (robustness S9)\n2. Extract private helper methods (`read_values()`, `write_values()`, `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) to deduplicate the `.unwrap_or_else(|e| e.into_inner())` pattern, matching `CliToolContext::lock_state()` precedent (reuse S12)\n3. Consider adding an `AtomicBool tainted` flag that gets set on first poison recovery, surfaced in `ConcurrentEditResult` so callers can decide whether to trust results or retry (robustness S7, S8). This addresses silent corruption propagation and values/snapshot_values invariant divergence.\n\nmemory_hints:\n  search: \"lock poisoning concurrent eval tainted\"\n  entities: [\"ConcurrentEvalAdapter\", \"SharedPriorityPromoter\", \"CliToolContext\"]",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
@@ -11837,8 +11837,10 @@
             "crates/reify-runtime/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-eval",
-            "crates/reify-runtime"
+            "crates/reify-eval/src",
+            "crates/reify-eval/tests",
+            "crates/reify-runtime/src",
+            "crates/reify-runtime/tests"
           ],
           "memory_hints": {
             "entities": [],
@@ -11847,7 +11849,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T08:13:51.690Z"
+        "updatedAt": "2026-04-09T08:25:10.066Z"
       },
       {
         "id": "568",
@@ -25927,7 +25929,13 @@
         "metadata": {
           "modules": [
             "crates/reify-constraints"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Reconcile verify_uniqueness warn test block: stale comment, verdict-policy consistency, non-numeric coverage"
+            ]
+          }
         }
       },
       {
@@ -26323,7 +26331,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:24:14.877Z",
+      "lastModified": "2026-04-09T08:25:10.066Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
