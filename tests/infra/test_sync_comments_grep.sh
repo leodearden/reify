@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYNC_TEST="$REPO_ROOT/tests/sync_comments_test.sh"
+THIS_SCRIPT="${BASH_SOURCE[0]}"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
@@ -47,6 +48,13 @@ assert "pattern extraction from sync_comments_test.sh succeeded" \
 
 assert "extracted pattern contains expected fn name" \
     bash -c "[[ \"$PATTERN\" == *sanitize_value* ]]"
+
+_no_unhardened_pattern_interp() { ! grep -nE 'bash -c ".*\$PATTERN' "$THIS_SCRIPT"; }
+
+assert "this script exports PATTERN for bash -c subshells" \
+    grep -qE '^[[:space:]]*export[[:space:]]+PATTERN' "$THIS_SCRIPT"
+assert 'no Section 1 bash -c $PATTERN interpolation in this script' \
+    _no_unhardened_pattern_interp
 
 # -- Accept cases: pattern must match these valid Rust fn declarations ----------
 
