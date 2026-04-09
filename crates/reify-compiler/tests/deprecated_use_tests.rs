@@ -424,3 +424,58 @@ fn task_272_no_warning_on_definition_alone() {
         deprecation_warnings(&module, "OnlyTrait")
     );
 }
+
+// Scenario (3): the warning message embeds the annotation argument verbatim and
+// the full message format is exactly `use of deprecated <kind> '<name>': <msg>`.
+#[test]
+fn task_272_message_includes_annotation_argument() {
+    let source = r#"
+        @deprecated("Use NewBolt version 2")
+        structure OldBolt { param d : Real = 1.0 }
+
+        structure Assembly {
+            sub b = OldBolt()
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "OldBolt");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning, got: {:?}",
+        warns
+    );
+
+    let msg = &warns[0].message;
+
+    // Individual substring checks for clarity on failure.
+    assert!(
+        msg.contains("use of deprecated"),
+        "message must contain 'use of deprecated', got: {msg}"
+    );
+    assert!(
+        msg.contains("structure"),
+        "message must contain entity kind 'structure', got: {msg}"
+    );
+    assert!(
+        msg.contains("'OldBolt'"),
+        "message must contain quoted name \"'OldBolt'\", got: {msg}"
+    );
+    assert!(
+        msg.contains("Use NewBolt version 2"),
+        "message must contain the verbatim annotation argument 'Use NewBolt version 2', got: {msg}"
+    );
+
+    // Full format assertion — locks the diagnostic format as a stable contract.
+    let expected = "use of deprecated structure 'OldBolt': Use NewBolt version 2";
+    assert_eq!(
+        msg, expected,
+        "message format mismatch: expected {expected:?}, got {msg:?}"
+    );
+}
