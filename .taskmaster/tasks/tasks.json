@@ -6441,13 +6441,14 @@
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
-            "crates/reify-kernel-occt",
-            "crates/reify-kernel-occt/cpp",
-            "crates/reify-types",
-            "crates/reify-compiler",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
@@ -6467,12 +6468,15 @@
         "metadata": {
           "milestone": "stdlib-M8.2",
           "modules": [
-            "crates/reify-compiler",
             "crates/reify-eval",
-            "crates/reify-kernel-occt",
-            "crates/reify-types"
+            "crates/reify-compiler"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-compiler/src/geometry.rs",
+            "crates/reify-compiler/src/lib.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T00:00:00.000Z"
