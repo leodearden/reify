@@ -25233,10 +25233,11 @@
         "description": "In `crates/reify-test-support/src/fixtures.rs:1247-1262`, the new tests `warning_source_is_well_formed` and `warning_source_with_width_has_width_param` only assert substrings of the literal they were just defined from. They don't verify the contract documented in the docstrings — namely that the source `reliably produces an \"unknown port type\" warning (not error)`.\n\nIf a future edit accidentally broke that contract (typo in `NonExistentTrait`, change in spacing the parser cares about, or a compiler severity reclassification), these tests would still pass while every dependent test in `engine_tests.rs` and `mcp_context_tests.rs` would explode. The crate already depends on `reify-compiler`, so the contract is testable here at fixture-definition time rather than waiting for the dependent suites to fail.\n\n**Suggested fix:** Replace (or augment) the substring checks with a real compile assertion:\n- Parse the source via `reify_syntax::parse`\n- Run `reify_compiler::compile`\n- Assert exactly one warning whose message contains both `\"unknown port type\"` and `\"NonExistentTrait\"`\n- Assert no errors\n\nFor the `warning_source_with_width_has_width_param` variant, additionally assert that a `width` member is present in the compiled module.\n\nReference for the compile-and-assert pattern: `crates/reify-compiler/tests/port_compile_tests.rs:101-124` (already cited in the fixture's doc comment at fixtures.rs:41 as the validating test).\n\nSource: review_comprehensive suggestion S2 on task 1232 (esc-1232-1020).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:42:50.268Z"
       },
       {
         "id": "1248",
@@ -25252,7 +25253,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:42:50.029Z",
+      "lastModified": "2026-04-09T02:42:50.268Z",
       "taskCount": 1248,
       "completedCount": 925,
       "tags": [
