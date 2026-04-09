@@ -24925,15 +24925,16 @@
         "description": "Two polish improvements to the `verify_uniqueness` fallback warn added in Task 1143 (`crates/reify-constraints/src/solver.rs:787-798`): (1) **Log message clarity**: The current message \"falling back to mid for perturbation start\" is misleading — `mid` is not used as the perturbation start, it is the comparison threshold that decides whether to start at the upper or lower half. Since `solution_val == mid` in the fallback path, the code takes the else branch and starts at `lo + 0.1*(hi-lo)`. Reword to e.g. \"verify_uniqueness: solved value missing or non-numeric, using midpoint as comparison anchor; perturbation start defaults to lower-half side\", or log the actual chosen perturbation start as a field after the if/else branch. (2) **Aggregation**: If multiple `auto_params` are simultaneously missing/non-numeric, the current per-param `tracing::warn!` inside the `.map()` iterator emits one WARN per param — a noisy burst at warn level for what is fundamentally a single internal-state bug. Preferred fix: collect the names of missing params during the iterator pass, then emit a single aggregated warn after the `perturbed` Vec is built. Alternative: keep first at warn level and demote subsequent occurrences to debug.",
         "details": "Locations:\n- crates/reify-constraints/src/solver.rs:787-798 (warn site inside the per-param map)\n\nImplementation sketch for aggregation:\n```rust\nlet mut missing: Vec<String> = Vec::new();\nlet perturbed: Vec<f64> = problem\n    .auto_params\n    .iter()\n    .map(|param| {\n        let (lo, hi) = effective_bounds(param);\n        let mid = (lo + hi) / 2.0;\n        let solution_val = solved_values\n            .get(&param.id)\n            .and_then(|v| v.as_f64())\n            .unwrap_or_else(|| {\n                missing.push(param.id.to_string());\n                mid\n            });\n        // ... existing if/else ...\n    })\n    .collect();\nif !missing.is_empty() {\n    tracing::warn!(\n        missing_params = ?missing,\n        \"verify_uniqueness: {} solved value(s) missing or non-numeric; using midpoint \\\n         as comparison anchor for affected params\",\n        missing.len()\n    );\n}\n```\n\nCoordinate with the sibling task that refines the warn-emitting tests — aggregation changes the expected message count and shape, so both tasks should land together or the test task should follow this one.\n\nmemory_hints: search \"verify_uniqueness warn message perturbation mid\", get_entity \"DimensionalSolver\"\nParent task: 1143. Reviewer: reviewer_comprehensive (suggestions S3 + S4).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T01:43:42.941Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:43:42.753Z",
+      "lastModified": "2026-04-09T01:43:42.941Z",
       "taskCount": 1228,
       "completedCount": 914,
       "tags": [
