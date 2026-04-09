@@ -26026,11 +26026,16 @@
         "description": "The nine mixed-dimensional tests added in Task 1236 (field_calculus_tests.rs:1711-2307) share ~80% boilerplate (ValueCellId creation, lambda construction, Field wrapping, eval, assert-is-Field). Extract a helper like:\n\n```rust\nfn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value\n```\n\nthat builds the field + expression, evaluates it, and returns the result Value. Each test then becomes ~10 lines.\n\nAlso add missing coverage for `Scalar{DIMENSIONLESS}` code paths that exercise different branches than `Real`:\n- `divergence(Point{3, Scalar<Length>} → Vector{3, Scalar{DIMENSIONLESS}})` → expects Real (downgrade path at lib.rs:854-857)\n- `gradient(Point{3, Real} → Scalar{DIMENSIONLESS})` → expects Vector{3, Real} (downgrade path at lib.rs:691-692)\n\nThese exercise the explicit dimensionless-Scalar downgrade arms which are currently untested despite being distinct code paths from the Real/Int arms.\n\nFrom Task 1236 review suggestions S3, S4.\n\nMemory hints:\n- search \"field_calculus_tests eval_field_op test helper\" for this task's origin\n- search \"Task 1160 test setup duplication\" for related test dedup work in other test files",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T04:32:34.599Z"
+        "updatedAt": "2026-04-09T04:38:53.878Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
       },
       {
         "id": "1292",
@@ -26052,7 +26057,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T04:38:49.675Z",
+      "lastModified": "2026-04-09T04:38:53.878Z",
       "taskCount": 1292,
       "completedCount": 958,
       "tags": [
