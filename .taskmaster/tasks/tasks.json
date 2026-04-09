@@ -25237,11 +25237,16 @@
         "description": "Two cleanup items left over from task 1232's warning_source() dedup that should land together since they touch the same crate and are both about the new fixture import.\n\n**1. Migrate the remaining inline NonExistentTrait literal** at `gui/src-tauri/src/tests/mcp_context_tests.rs:547-551` to call `warning_source()`. The test `get_diagnostics_maps_warning_fields_to_diagnostic_info` currently has the exact same `structure def S { port mount : NonExistentTrait { param d : Length = 5mm } }` literal that 1232 just deduplicated everywhere else. Leaving this site behind partially defeats the dedup goal — the two strings can drift apart. Add `warning_source` to the `reify_test_support` import in `mcp_context_tests.rs` and replace the raw string with `let source = warning_source();`.\n\n**2. Wrap the over-length import line** at `gui/src-tauri/src/tests/engine_tests.rs:4`. The current `use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source, warning_source_with_width};` is 131 columns wide, well past rustfmt's default 100-column limit. Wrap across multiple lines (or run `cargo fmt -p reify-tauri`).\n\nVerify: `cargo test -p reify-tauri tests::mcp_context_tests::get_diagnostics_maps_warning_fields_to_diagnostic_info` and `cargo fmt --check -p reify-tauri`.\n\nSource: review_comprehensive suggestions S1 + S4 on task 1232 (esc-1232-1020).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:50.608Z"
+        "updatedAt": "2026-04-09T02:45:57.596Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
       },
       {
         "id": "1247",
@@ -25270,7 +25275,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:45:56.925Z",
+      "lastModified": "2026-04-09T02:45:57.596Z",
       "taskCount": 1248,
       "completedCount": 926,
       "tags": [
