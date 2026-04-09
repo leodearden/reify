@@ -2103,10 +2103,10 @@ fn divergence_non_field_returns_undef() {
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
-    assert_eq!(
-        result,
-        Value::Undef,
-        "divergence of non-Field must return Undef"
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence of non-Field must return Undef, got {:?}",
+        result
     );
 }
 
