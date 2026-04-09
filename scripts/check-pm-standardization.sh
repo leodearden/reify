@@ -13,6 +13,8 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 [ -f "$SCRIPT_DIR/../tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$SCRIPT_DIR/../tests/infra/test_helpers.sh"
 
+PKG_FILES='gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json'
+
 echo "=== check-pm-standardization ==="
 
 # ── Preflight: required tools ────────────────────────────────────────
