@@ -2601,21 +2601,6 @@ mod tests {
     }
 
     #[test]
-    fn test_assert_ord_consistent_equal_symmetric() {
-        // Meta-test: verify the symmetric PartialEq↔Ord contract — both
-        // a.cmp(b) and b.cmp(a) must equal Equal when a == b.
-        // This documents the gap that the helper only checked a.cmp(b);
-        // after step-2 the helper also asserts b.cmp(a) == Equal.
-        let a = Value::Int(5);
-        let b = Value::Int(5);
-        // Direct assertions on the symmetric contract.
-        assert_eq!(a.cmp(&b), std::cmp::Ordering::Equal);
-        assert_eq!(b.cmp(&a), std::cmp::Ordering::Equal);
-        // Helper call — will exercise the strengthened check once step-2 lands.
-        assert_ord_consistent(&a, &b, true);
-    }
-
-    #[test]
     fn test_assert_ord_consistent_equal_real() {
         // Meta-test: exercises the to_bits()-based PartialEq and total_cmp()-based
         // Ord paths through the strengthened helper (including the b.cmp(a) check)
