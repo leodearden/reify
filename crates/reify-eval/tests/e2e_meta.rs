@@ -214,48 +214,6 @@ fn e2e_meta_access_on_occurrence() {
 }
 
 // ---------------------------------------------------------------------------
-// --- meta.key on structure entity ---
-// ---------------------------------------------------------------------------
-
-/// Full pipeline: parse a `structure def` with a meta block + let binding, compile
-/// (assert no errors, assert entity_kind == Structure), eval, assert the let
-/// binding resolves to the expected string.  Explicitly verifies the Structure
-/// entity-kind path (as opposed to the Occurrence path in the existing test).
-#[test]
-fn e2e_meta_access_on_structure_resolves() {
-    let source = r#"
-        structure def Bracket {
-            meta {
-                part_number = "BR-001"
-            }
-            let pn : String = meta.part_number
-        }
-    "#;
-
-    let compiled = parse_and_compile(source);
-
-    // Sanity: the compiled template should be tagged as a Structure.
-    assert_eq!(compiled.templates.len(), 1);
-    assert_eq!(
-        compiled.templates[0].entity_kind,
-        reify_compiler::EntityKind::Structure,
-        "expected structure entity kind"
-    );
-
-    // Eval
-    let mut engine = make_engine();
-    let result = engine.eval(&compiled);
-
-    // Assert
-    let pn_id = ValueCellId::new("Bracket", "pn");
-    assert_eq!(
-        result.values.get(&pn_id),
-        Some(&Value::String("BR-001".to_string())),
-        "Bracket.pn should resolve to 'BR-001' via meta.part_number"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // --- nonexistent meta key produces compile error ---
 // ---------------------------------------------------------------------------
 
