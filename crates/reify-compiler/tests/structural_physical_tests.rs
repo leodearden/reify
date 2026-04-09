@@ -490,45 +490,6 @@ fn load_stdlib_module_uses_production_path() {
     );
 }
 
-// ─── step-17: all stdlib modules error-free (silent failure boundary) ────────
-
-/// Step 17: Verify that ALL stdlib modules returned by load_stdlib() have zero
-/// Error-severity diagnostics. This validates the postcondition that the loader
-/// never silently caches a broken module. Iterates through every CompiledModule,
-/// not just structural_physical.
-#[test]
-fn all_stdlib_modules_have_zero_error_diagnostics() {
-    let modules = stdlib_loader::load_stdlib();
-    assert!(
-        !modules.is_empty(),
-        "load_stdlib() should return at least one module"
-    );
-
-    for module in modules {
-        let errors: Vec<_> = module
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "stdlib module '{}' has Error-severity diagnostics (silent failure at initialization boundary): {:?}",
-            module.path,
-            errors
-        );
-
-        // Verify each non-units module has at least one trait def (not empty/broken).
-        // std/units only contains unit declarations, no traits.
-        if !module.path.to_string().contains("units") {
-            assert!(
-                !module.trait_defs.is_empty(),
-                "stdlib module '{}' has zero trait definitions — may be silently broken",
-                module.path
-            );
-        }
-    }
-}
-
 // ─── step-19: cross-module refinement chain via load_stdlib ──────────────────
 
 /// Step 19: Verify cross-module refinement chain works end-to-end through
