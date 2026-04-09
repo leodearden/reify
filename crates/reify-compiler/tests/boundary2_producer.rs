@@ -393,10 +393,14 @@ fn compile_auto_param() {
     let template = &compiled.templates[0];
     assert_eq!(template.value_cells.len(), 2);
 
-    // x should be Auto with no default_expr
+    // x should be Auto { free: false } with no default_expr
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
-    assert!(x.kind.is_auto());
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should compile to Auto {{ free: false }}"
+    );
     assert!(
         x.default_expr.is_none(),
         "auto param should have no default_expr"
@@ -410,6 +414,88 @@ fn compile_auto_param() {
         y.default_expr.is_some(),
         "normal param should have default_expr"
     );
+}
+
+/// Compile `auto(free)` param → ValueCellKind::Auto { free: true }, default_expr: None.
+#[test]
+fn compile_auto_free_param() {
+    let source = r#"structure S {
+    param x: Scalar = auto(free)
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 1);
+
+    let x = &template.value_cells[0];
+    assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) should compile to Auto {{ free: true }}"
+    );
+    assert!(
+        x.default_expr.is_none(),
+        "auto(free) param should have no default_expr"
+    );
+}
+
+/// Compile structure with both bare `auto` and `auto(free)` params.
+#[test]
+fn compile_mixed_auto_and_auto_free() {
+    let source = r#"structure S {
+    param a: Scalar = auto
+    param b: Scalar = auto(free)
+    param c: Scalar = 3mm
+}"#;
+    let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 3);
+
+    let a = &template.value_cells[0];
+    assert_eq!(a.id, reify_types::ValueCellId::new("S", "a"));
+    assert_eq!(
+        a.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should compile to Auto {{ free: false }}"
+    );
+
+    let b = &template.value_cells[1];
+    assert_eq!(b.id, reify_types::ValueCellId::new("S", "b"));
+    assert_eq!(
+        b.kind,
+        ValueCellKind::Auto { free: true },
+        "auto(free) should compile to Auto {{ free: true }}"
+    );
+
+    let c = &template.value_cells[2];
+    assert_eq!(c.id, reify_types::ValueCellId::new("S", "c"));
+    assert_eq!(c.kind, ValueCellKind::Param);
 }
 
 /// Auto param ValueCellDecl span should be non-zero and match parsed ParamDecl span.
