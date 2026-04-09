@@ -514,3 +514,41 @@ fn task_272_deprecated_trait_emits_warning_when_implemented() {
         "message must contain annotation argument 'Use NewTrait', got: {msg}"
     );
 }
+
+// Scenario (5): calling a deprecated function emits a warning.
+#[test]
+fn task_272_deprecated_fn_emits_warning_when_called() {
+    let source = r#"
+        @deprecated("Use new_calc")
+        fn old_calc(x: Real) -> Real { x }
+
+        structure S {
+            param x : Real = 1.0
+            let y = old_calc(x)
+        }
+    "#;
+    let module = compile_module(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+
+    let warns = deprecation_warnings(&module, "old_calc");
+    assert_eq!(
+        warns.len(),
+        1,
+        "expected exactly one deprecation warning for old_calc, got: {:?}",
+        warns
+    );
+
+    let msg = &warns[0].message;
+    assert!(
+        msg.contains("function"),
+        "message must contain entity kind 'function', got: {msg}"
+    );
+    assert!(
+        msg.contains("Use new_calc"),
+        "message must contain annotation argument 'Use new_calc', got: {msg}"
+    );
+}
