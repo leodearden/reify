@@ -360,13 +360,24 @@ pub(crate) fn compile_expr_guarded(
                     _ => {}
                 }
             }
-            // Infer the element type from whichever bound is present
+            // Infer the element type from whichever bound is present.
+            // NOTE: the parser (lower_range_expr) always provides both lower
+            // and upper via `?`, so both being None is an ICE path that is
+            // unreachable from user code.
             let element_type = compiled_lower
                 .as_ref()
                 .map(|e| &e.result_type)
                 .or_else(|| compiled_upper.as_ref().map(|e| &e.result_type))
                 .cloned()
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: range has no bounds; cannot infer element type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: no lower or upper bound")),
+                    );
+                    Type::Real
+                });
             let result_type = Type::range(element_type);
             CompiledExpr::range_constructor(
                 compiled_lower,
@@ -572,7 +583,19 @@ pub(crate) fn compile_expr_guarded(
                         compiled_args
                             .first()
                             .map(|a| a.result_type.clone())
-                            .unwrap_or(Type::Real)
+                            .unwrap_or_else(|| {
+                                diagnostics.push(
+                                    Diagnostic::warning(format!(
+                                        "cannot infer return type of zero-arg function '{}', defaulting to Real",
+                                        name
+                                    ))
+                                    .with_label(DiagnosticLabel::new(
+                                        expr.span,
+                                        "zero-arg function: return type inferred as Real",
+                                    )),
+                                );
+                                Type::Real
+                            })
                     };
 
                     let content_hash = {
@@ -1067,11 +1090,21 @@ pub(crate) fn compile_expr_guarded(
                 })
                 .collect();
 
-            // Result type from the first arm's body
+            // Result type from the first arm's body.
+            // NOTE: the grammar requires at least one arm so an empty arms
+            // list is an ICE path unreachable from user code.
             let result_type = compiled_arms
                 .first()
                 .map(|a| a.body.result_type.clone())
-                .unwrap_or(Type::Real);
+                .unwrap_or_else(|| {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "internal compiler error: match expression has no arms; cannot infer result type",
+                        )
+                        .with_label(DiagnosticLabel::new(expr.span, "ICE: match with no arms")),
+                    );
+                    Type::Real
+                });
 
             // Exhaustiveness check: if discriminant is a known enum type,
             // verify all variants are covered by arm patterns or a wildcard.
