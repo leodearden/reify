@@ -76,6 +76,95 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
     }
 }
 
+/// Build the identity vector field F(x,y,z)=[x,y,z], compute its divergence,
+/// sample at `point` (literal type `point_literal_type`), and assert result ≈3.0.
+///
+/// Used by both `divergence_identity_vector_field` (Point sample) and
+/// `divergence_accepts_vector_sample_point` (Vector sample).
+fn run_divergence_identity_test(point: Value, point_literal_type: Type, label: &str) {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(x, y, z)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // divergence(field) → scalar field
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "{label}: divergence should return a Field, got {:?}",
+        div_result
+    );
+
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, point_literal_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "{label}: divergence sample should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 3.0).abs() < 1e-3,
+        "{label}: expected ≈3.0, got {}",
+        val
+    );
+}
+
 // ── Step 1: Gradient accuracy tests ──────────────────────────────────────────
 
 /// Gradient of f(x) = x*x at x=3.0 should be ≈6.0.
@@ -260,89 +349,10 @@ fn gradient_3d_sum_of_squares_accuracy() {
 /// accounts for multi-component summation.
 #[test]
 fn divergence_identity_vector_field() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda: |x, y, z| vec3(x, y, z)
-    let body = make_function_call(
-        "vec3",
-        vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        ],
-        Type::vec3(Type::Real),
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    // divergence(field) → scalar field
-    let div_expr = make_function_call(
-        "divergence",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
-    );
-
-    let values = ValueMap::new();
-    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
-
-    assert!(
-        matches!(&div_result, Value::Field { .. }),
-        "divergence of identity vector field should return a Field, got {:?}",
-        div_result
-    );
-
-    // sample(div_field, Point3(1.0, 2.0, 3.0))
-    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-
-    let div_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
-    };
-
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(div_result, div_field_type),
-            CompiledExpr::literal(point, domain_type),
-        ],
-        Type::Real,
-    );
-
-    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!(
-            "divergence sample should be numeric, got {:?}",
-            sample_result
-        )
-    });
-    assert!(
-        (val - 3.0).abs() < 1e-3,
-        "divergence of [x,y,z] at (1,2,3) should be ≈3.0, got {}",
-        val
+    run_divergence_identity_test(
+        Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
+        Type::point3(Type::Real),
+        "divergence of [x,y,z] at (1,2,3)",
     );
 }
 
@@ -352,83 +362,10 @@ fn divergence_identity_vector_field() {
 /// `compute_numerical_divergence_at_point` only matched `Value::Point`.
 #[test]
 fn divergence_accepts_vector_sample_point() {
-    let x_id = ValueCellId::new("$lambda0.S", "x");
-    let y_id = ValueCellId::new("$lambda0.S", "y");
-    let z_id = ValueCellId::new("$lambda0.S", "z");
-
-    // Lambda: |x, y, z| vec3(x, y, z)
-    let body = make_function_call(
-        "vec3",
-        vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        ],
+    run_divergence_identity_test(
+        Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
         Type::vec3(Type::Real),
-    );
-    let lambda = make_value_lambda(
-        vec![("x", x_id), ("y", y_id), ("z", z_id)],
-        body,
-        ValueMap::new(),
-    );
-
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
-
-    let field = Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
-        source: FieldSourceKind::Analytical,
-        lambda: Box::new(lambda),
-    };
-
-    let field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
-    };
-
-    // divergence(field) → scalar field
-    let div_expr = make_function_call(
-        "divergence",
-        vec![CompiledExpr::literal(field, field_type)],
-        Type::Field {
-            domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::Real),
-        },
-    );
-
-    let values = ValueMap::new();
-    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
-
-    // sample(div_field, Vector3(1.0, 2.0, 3.0))  ← Vector, not Point
-    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
-
-    let div_field_type = Type::Field {
-        domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
-    };
-
-    let sample_expr = make_function_call(
-        "sample",
-        vec![
-            CompiledExpr::literal(div_result, div_field_type),
-            CompiledExpr::literal(point, domain_type),
-        ],
-        Type::Real,
-    );
-
-    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
-
-    let val = sample_result.as_f64().unwrap_or_else(|| {
-        panic!(
-            "divergence sample should be numeric, got {:?}",
-            sample_result
-        )
-    });
-    assert!(
-        (val - 3.0).abs() < 1e-3,
-        "divergence of [x,y,z] at Vector(1,2,3) should be ≈3.0, got {}",
-        val
+        "divergence of [x,y,z] at Vector(1,2,3)",
     );
 }
 
