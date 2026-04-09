@@ -346,6 +346,92 @@ fn divergence_identity_vector_field() {
     );
 }
 
+/// Same as `divergence_identity_vector_field` but the sample point is
+/// supplied as `Value::Vector` instead of `Value::Point`.
+/// Prior to the fix this returns `Value::Undef` because
+/// `compute_numerical_divergence_at_point` only matched `Value::Point`.
+#[test]
+fn divergence_accepts_vector_sample_point() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(x, y, z)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // divergence(field) → scalar field
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    // sample(div_field, Vector3(1.0, 2.0, 3.0))  ← Vector, not Point
+    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "divergence sample should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 3.0).abs() < 1e-3,
+        "divergence of [x,y,z] at Vector(1,2,3) should be ≈3.0, got {}",
+        val
+    );
+}
+
 // ── Step 3: Curl test ─────────────────────────────────────────────────────────
 
 /// Curl of the rotation field F(x,y,z)=[-y,x,0] at (1,2,3) ≈ [0,0,2].
@@ -439,6 +525,93 @@ fn curl_rotation_field() {
         &[0.0, 0.0, 2.0],
         1e-3,
         "curl of [-y,x,0] at (1,2,3)",
+    );
+}
+
+/// Same as `curl_rotation_field` but the sample point is
+/// supplied as `Value::Vector` instead of `Value::Point`.
+/// Prior to the fix this returns `Value::Undef` because
+/// `compute_numerical_curl_at_point` only matched `Value::Point`.
+#[test]
+fn curl_accepts_vector_sample_point() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec3(-y, x, 0)
+    let neg_y = CompiledExpr::unop(
+        UnOp::Neg,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = make_function_call(
+        "vec3",
+        vec![
+            neg_y,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        ],
+        Type::vec3(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // curl(field) → vector field
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    // sample(curl_field, Vector3(1.0, 2.0, 3.0))  ← Vector, not Point
+    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::vec3(Type::Real)),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector3(0.0, 0.0, 2.0)
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 2.0],
+        1e-3,
+        "curl of [-y,x,0] at Vector(1,2,3)",
     );
 }
 
@@ -545,6 +718,104 @@ fn laplacian_quadratic_accuracy() {
     assert!(
         (val - 6.0).abs() < 1e-2,
         "laplacian of x²+y²+z² at (1,2,3) should be ≈6.0, got {}",
+        val
+    );
+}
+
+/// Same as `laplacian_quadratic_accuracy` but the sample point is
+/// supplied as `Value::Vector` instead of `Value::Point`.
+/// Prior to the fix this returns `Value::Undef` because
+/// `compute_numerical_laplacian_at_point` only matched `Value::Point`.
+#[test]
+fn laplacian_accepts_vector_sample_point() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| x*x + y*y + z*z
+    let xx = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let yy = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let zz = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        zz,
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::Real),
+        },
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    // sample(laplacian_field, Vector3(1.0, 2.0, 3.0))  ← Vector, not Point
+    let point = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::Real),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        Type::Real,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result
+        .as_f64()
+        .unwrap_or_else(|| panic!("laplacian sample should be numeric, got {:?}", sample_result));
+    assert!(
+        (val - 6.0).abs() < 1e-2,
+        "laplacian of x²+y²+z² at Vector(1,2,3) should be ≈6.0, got {}",
         val
     );
 }
@@ -1117,4 +1388,323 @@ fn laplacian_linear_field_near_zero() {
         "laplacian of linear field should be ≈0, got {}",
         val
     );
+}
+
+// ── Step 9: Dimensional correctness tests ─────────────────────────────────────
+
+/// Divergence of a Point{3,Length} → Vector{3,Velocity} field has codomain
+/// dimension Velocity/Length = (Length/Time)/Length = 1/Time.
+///
+/// This verifies that compute_divergence correctly derives the result codomain
+/// dimension from the input field's domain and codomain component dimensions,
+/// rather than unconditionally returning Type::Real.
+#[test]
+fn divergence_dimensional_correctness() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // VELOCITY = LENGTH / TIME  (derived dimension)
+    let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_quantity = Type::Scalar {
+        dimension: velocity_dim,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+    let codomain_type = Type::vec3(codomain_quantity.clone());
+
+    // Lambda: |x, y, z| vec3(x, y, z) — simple identity used only for
+    // metadata test; we do not sample from this field.
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // divergence(field) → scalar field with codomain = Velocity/Length = 1/Time
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Length}}→Vector{{3,Velocity}} should return a Field, got {:?}",
+        div_result
+    );
+
+    // Verify codomain dimension: should be Velocity / Length = 1/Time
+    if let Value::Field { codomain_type, .. } = &div_result {
+        let expected_dim = velocity_dim.div(&DimensionVector::LENGTH);
+        match codomain_type {
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    *dimension,
+                    expected_dim,
+                    "divergence codomain should be Velocity/Length=1/Time ({:?}), got {:?}",
+                    expected_dim,
+                    dimension
+                );
+            }
+            other => panic!(
+                "divergence_dimensional_correctness: expected Type::Scalar codomain, got {:?}",
+                other
+            ),
+        }
+    }
+}
+
+/// Laplacian of a Point{3,Length} → Scalar<Temperature> field has codomain
+/// dimension Temperature/Length² = Temperature.div(&LENGTH.pow(2)).
+///
+/// This verifies that compute_laplacian correctly derives the result codomain
+/// dimension by dividing the input codomain dimension by domain_dim², rather
+/// than preserving the input codomain_type unchanged.
+#[test]
+fn laplacian_dimensional_correctness() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::Scalar {
+        dimension: DimensionVector::TEMPERATURE,
+    };
+
+    let domain_type = Type::point3(domain_quantity.clone());
+
+    // Lambda: |x, y, z| x + y + z — simple body used only for metadata test;
+    // we do not sample from this field.
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    // laplacian(field) → scalar field with codomain = Temperature / Length²
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of Point{{3,Length}}→Scalar<Temperature> should return a Field, got {:?}",
+        lap_result
+    );
+
+    // Verify codomain dimension: should be Temperature / Length²
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        let expected_dim =
+            DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2));
+        match codomain_type {
+            Type::Scalar { dimension } => {
+                assert_eq!(
+                    *dimension,
+                    expected_dim,
+                    "laplacian codomain should be Temperature/Length² ({:?}), got {:?}",
+                    expected_dim,
+                    dimension
+                );
+            }
+            other => panic!(
+                "laplacian_dimensional_correctness: expected Type::Scalar codomain, got {:?}",
+                other
+            ),
+        }
+    }
+}
+
+/// Divergence of a dimensionless Point{3,Real} → Vector{3,Real} field still
+/// returns Type::Real as the result codomain (regression guard).
+///
+/// Ensures the fallback path in compute_divergence does not break the existing
+/// behaviour for dimensionless fields now that the dimensioned path is wired up.
+#[test]
+fn divergence_dimensionless_still_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda: |x, y, z| vec3(x, y, z)
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of dimensionless field should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "divergence of dimensionless Point{{3,Real}}→Vector{{3,Real}} should have codomain Type::Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Laplacian of a dimensionless Point{3,Real} → Real field still returns
+/// Type::Real as the result codomain (regression guard).
+///
+/// Ensures the fallback path in compute_laplacian does not break the existing
+/// behaviour for dimensionless fields now that the dimensioned path is wired up.
+#[test]
+fn laplacian_dimensionless_still_real() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    // Lambda: |x, y, z| x + y + z
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(
+            BinOp::Add,
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            Type::Real,
+        ),
+        CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        Type::Real,
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { .. }),
+        "laplacian of dimensionless field should return a Field, got {:?}",
+        lap_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &lap_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "laplacian of dimensionless Point{{3,Real}}→Real should have codomain Type::Real, got {:?}",
+            codomain_type
+        );
+    }
 }

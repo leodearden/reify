@@ -800,10 +800,50 @@ fn compute_divergence(field_val: &Value) -> Value {
         return Value::Undef;
     }
 
-    // Result: scalar field with same domain
+    // Compute result codomain type: component_dim / domain_dim.
+    // Mirrors the gradient_quantity block in compute_gradient (line 650-690).
+    let result_codomain = {
+        // Extract domain dimension from the Point's quantity.
+        let domain_dim = match domain_type {
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain component dimension from the Vector's quantity.
+        let codomain_component_dim = match codomain_type {
+            Type::Vector { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Divide codomain component by domain dimension when both are non-trivial.
+        match (codomain_component_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let result_dim = cd.div(&dd);
+                if result_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: result_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => Type::Real,
+        }
+    };
+
+    // Result: scalar field with dimensionally-correct codomain
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::Real,
+        codomain_type: result_codomain,
         source: FieldSourceKind::Divergence,
         lambda: Box::new(field_val.clone()),
     }
@@ -956,10 +996,48 @@ fn compute_laplacian(field_val: &Value) -> Value {
         return Value::Undef;
     }
 
-    // Result: same scalar field type (domain preserved, codomain is scalar)
+    // Compute result codomain type: codomain_dim / domain_dim².
+    // Mirrors the gradient_quantity block in compute_gradient (line 650-690).
+    let result_codomain = {
+        // Extract domain dimension from the domain type.
+        let domain_dim = match domain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain dimension (Real/Int are dimensionless).
+        let codomain_dim = match codomain_type {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        };
+
+        // Divide codomain by domain² when both are non-trivial.
+        match (codomain_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let result_dim = cd.div(&dd.pow(2));
+                if result_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: result_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => codomain_type.clone(),
+        }
+    };
+
+    // Result: scalar field with dimensionally-correct codomain
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: codomain_type.clone(),
+        codomain_type: result_codomain,
         source: FieldSourceKind::Laplacian,
         lambda: Box::new(field_val.clone()),
     }
@@ -1329,7 +1407,7 @@ fn compute_numerical_divergence_at_point(
     ctx: &EvalContext,
 ) -> Value {
     let coords: Vec<f64> = match point {
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
@@ -1360,6 +1438,18 @@ fn compute_numerical_divergence_at_point(
         Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] divergence: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
 
     let make_arg = |val: f64| -> Value {
         match domain_dim {
@@ -1466,7 +1556,7 @@ fn compute_numerical_curl_at_point(
 ) -> Value {
     // Only defined for 3D Point domains
     let coords: Vec<f64> = match point {
-        Value::Point(items) if items.len() == 3 => {
+        Value::Point(items) | Value::Vector(items) if items.len() == 3 => {
             let mut v = Vec::with_capacity(3);
             for item in items {
                 match item.as_f64() {
@@ -1490,7 +1580,7 @@ fn compute_numerical_curl_at_point(
     };
 
     let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1,
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
 
@@ -1629,7 +1719,7 @@ fn compute_numerical_laplacian_at_point(
         Value::Int(i) => vec![*i as f64],
         Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
         Value::Scalar { .. } => return Value::Undef,
-        Value::Point(items) => {
+        Value::Point(items) | Value::Vector(items) => {
             let mut v = Vec::with_capacity(items.len());
             for item in items {
                 match item.as_f64() {
@@ -1660,6 +1750,18 @@ fn compute_numerical_laplacian_at_point(
         Value::Lambda { params, .. } => params.len() == 1 && n > 1,
         _ => false,
     };
+
+    #[cfg(debug_assertions)]
+    if let Value::Lambda { params, .. } = lambda
+        && !single_point_param
+        && params.len() != n
+    {
+        eprintln!(
+            "[reify-expr] laplacian: lambda has {} params but point has {} coords",
+            params.len(),
+            n
+        );
+    }
 
     let make_arg = |val: f64| -> Value {
         match domain_dim {

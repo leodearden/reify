@@ -525,7 +525,7 @@ fn get_diagnostics_clean_source_returns_empty() {
     let ctx = make_tauri_context();
     let diags = ctx
         .get_diagnostics()
-        .expect("get_diagnostics should not fail for a healthy lock");
+        .expect("get_diagnostics should succeed for a clean source");
 
     // bracket_source() compiles cleanly → no diagnostics expected
     assert!(
@@ -535,13 +535,23 @@ fn get_diagnostics_clean_source_returns_empty() {
     );
 }
 
-/// Spot-check that the TauriToolContext mapping closure passes DiagnosticData
-/// fields through to DiagnosticInfo correctly.
+/// Thin wrapping-path smoke test for [`TauriToolContext::get_diagnostics`].
 ///
-/// Loads source with `port mount : NonExistentTrait` which produces an
-/// "unknown port type" warning. Checks file_path, severity, and message
-/// to verify field passthrough — span arithmetic is already covered by
-/// engine_get_diagnostics_returns_populated_warning.
+/// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
+/// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
+/// mapping closure (including the `offset_to_line_col_fast` span conversion and the
+/// hardcoded `code: None`) lives entirely in `engine.rs` and is already covered by
+/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.
+///
+/// This test therefore focuses on two things the engine test cannot cover: (a) that
+/// the wrapping path returns `Result::Ok`, and (b) that every field passes through
+/// without a field-swap bug. For span fields the pinned exact-coordinate assertions
+/// (line/column/end_line/end_column) are unique to this test — they catch any
+/// accidental transposition in the wrapping path that a bare `>= 1` range check would
+/// miss. The `code: None` assertion confirms the `Option<String>` field passes through
+/// unchanged (the mapping closure hardcodes `None`; a future code-extraction change
+/// that starts populating it will break this assertion and prompt the implementing
+/// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     let source = r#"structure def S {
@@ -588,15 +598,15 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
         first.message
     );
 
-    // span fields must represent a valid range (catches field-swap bugs in the mapping closure)
-    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
-    assert!(
-        first.end_line >= first.line,
-        "expected end_line ({}) >= line ({})",
-        first.end_line,
-        first.line
-    );
+    // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
+    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) through
+    // the closing `}` of the port body (L4:C6) — a multi-line span, so the
+    // former `if end_line == line` same-line guard was always false for this fixture.
+    assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
+    assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
+    assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
+    assert_eq!(first.end_column, 6, "closing `}}` of port body ends at column 6 (1-indexed)");
 
-    // the mapping closure hardcodes code: None (engine.rs) — assert it stays that way
+    // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");
 }
