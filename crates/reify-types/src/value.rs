@@ -5557,6 +5557,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn value_point_partial_eq() {
+        // (a) two identically-constructed Points are equal
+        let p1 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        let p2 = Value::Point(vec![Value::length(1.0), Value::length(2.0)]);
+        assert_eq!(p1, p2);
+
+        // (b) Points with a differing element are unequal
+        let p3 = Value::Point(vec![Value::length(9.0), Value::length(2.0)]);
+        assert_ne!(p1, p3);
+    }
+
     // ── Consolidated wrapper-delegation & NaN-canonicalization tests ──────────
     // Covers the PartialEq impl (~lines 987-1162) and content_hash()
     // NaN canonicalization (~lines 266-494).
