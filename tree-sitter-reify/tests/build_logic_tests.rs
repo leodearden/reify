@@ -853,6 +853,35 @@ fn strip_line_comments(line: &str) -> String {
     s
 }
 
+/// Generic scanner: returns all lines in `source` whose non-comment code portion
+/// contains any of the given `needles`, as `(1-based line number, original line)` pairs.
+///
+/// Each line is first passed through [`strip_line_comments`] so that patterns inside
+/// `//` or `/* */` comments are ignored.  Only the code portion is checked.
+///
+/// `needles` should include any surrounding delimiter characters that must be present
+/// (e.g., a needle of `"\"build.rs\""` matches the literal text `"build.rs"` with
+/// surrounding double-quote characters).
+///
+/// **Self-avoidance**: callers that define needle strings in this file use escaped
+/// quotes (`\"…\"`) in Rust string literals, which in the raw source text appear as
+/// the two-character sequence `\"` — that does NOT match the unescaped `"` delimiter
+/// encoded in the needle value, so helper definitions do not trigger false positives.
+fn find_bare_literal_violations<'src>(
+    source: &'src str,
+    needles: &[&str],
+) -> Vec<(usize, &'src str)> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_i, line)| {
+            let code = strip_line_comments(line);
+            needles.iter().any(|&needle| code.contains(needle))
+        })
+        .map(|(i, line)| (i + 1, line))
+        .collect()
+}
+
 /// Scans `source` for lines that contain a bare `"build.rs"` or `"./build.rs"` string
 /// literal (with literal double-quote characters) in non-comment code, and returns the
 /// matching lines as `(1-based line number, original line)` pairs.
