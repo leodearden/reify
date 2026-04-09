@@ -8,13 +8,17 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# sanitize_value lived in lib.rs before task-1304; moved to sanitize.rs after the submodule split.
+# sanitize_value lived in lib.rs before task-1304; moved to sanitize.rs / helpers.rs after the submodule split.
 if [ -f "$REPO_ROOT/crates/reify-expr/src/sanitize.rs" ]; then
     EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/sanitize.rs"
 else
     EXPR_FILE="$REPO_ROOT/crates/reify-expr/src/lib.rs"
 fi
-STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
+if [ -f "$REPO_ROOT/crates/reify-stdlib/src/helpers.rs" ]; then
+    STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/helpers.rs"
+else
+    STDLIB_FILE="$REPO_ROOT/crates/reify-stdlib/src/lib.rs"
+fi
 
 [ -f "$REPO_ROOT/tests/infra/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found"; exit 1; }
 source "$REPO_ROOT/tests/infra/test_helpers.sh"
