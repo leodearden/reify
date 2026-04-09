@@ -28524,11 +28524,11 @@
         "description": "Two code-quality improvements in gui/src-tauri/src/engine.rs from task 962 review:\n\n1. **debug_assert in get_diagnostics None branch (S2)**: When resolve_source() returns None due to a broken invariant AND compiled.diagnostics is non-empty, get_diagnostics silently returns an empty vec — discarding diagnostic info with no indication. Add `debug_assert!(false, \"resolve_source returned None with non-empty diagnostics — invariant broken\")` or `tracing::warn!` in the None branch (around line 327) to catch this during development while preserving graceful degradation in release.\n\n2. **Extract commit_state helper (S5)**: load_from_source (lines 110-116) and update_source (lines 212-218) both follow the identical 5-field commit pattern: clear source_map → insert → set module_name → set compiled → set last_check. Extract a private `commit_state(&mut self, compiled, check_result, module_name, source)` method to deduplicate.\n\nmemory_hints:\n- search \"resolve_source Option refactor task 962\" for context on the invariant change\n- get_entity \"EngineSession\" for the struct's field layout",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T21:22:53.307Z",
+        "updatedAt": "2026-04-09T22:15:03.408Z",
         "metadata": {
           "modules": [
             "gui/src-tauri/src"
@@ -28671,7 +28671,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:14:44.168Z",
+      "lastModified": "2026-04-09T22:15:03.408Z",
       "taskCount": 1386,
       "completedCount": 1068,
       "tags": [
