@@ -20952,7 +20952,7 @@
         "description": "Two items from the file->file_path rename review (task 881): (1) Add negative assertion to GUI-side SourceLocation test verifying serialized output does NOT contain \"file\" key, mirroring the assertion in crates/reify-mcp/tests/registry_tests.rs. (2) Standardize GUI-to-MCP type boundary: gui/src-tauri/src/commands.rs imports reify_mcp::SourceLocationInfo directly while other IPC types use local adapters in gui/src-tauri/src/types.rs. Either add adapter type or document the deliberate choice.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20967,7 +20967,7 @@
             "gui/src-tauri"
           ]
         },
-        "updatedAt": "2026-04-09T21:19:29.796Z"
+        "updatedAt": "2026-04-09T22:03:32.143Z"
       },
       {
         "id": "986",
@@ -25137,7 +25137,13 @@
           ],
           "files": [
             "crates/reify-eval/src/lib.rs"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Document and diagnose silent degenerate geometry rejection in compile_geometry_op"
+            ]
+          }
         }
       },
       {
@@ -28559,9 +28565,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:02:13.415Z",
+      "lastModified": "2026-04-09T22:03:32.143Z",
       "taskCount": 1380,
-      "completedCount": 1059,
+      "completedCount": 1060,
       "tags": [
         "master"
       ]
