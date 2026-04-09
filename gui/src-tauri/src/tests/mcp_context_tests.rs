@@ -610,12 +610,12 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 
     // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
     // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) to the
-    // exclusive end byte one past the closing `}` of the port body. The `}` glyph
-    // sits at L4:C5 (four leading spaces → prefix chars().count() = 4, 1-indexed = 5).
-    // Tree-sitter's end_byte is exclusive (one past `}`), so offset_to_line_col_fast
-    // returns column 6 (chars().count() of the prefix through `}` = 5, plus 1 = 6).
-    // This is a multi-line span, so the former `if end_line == line` same-line guard
-    // was always false for this fixture.
+    // exclusive end byte one past the closing `}` of the port body (line 4: 4 spaces
+    // + `}`). `offset_to_line_col_fast` computes chars().count() of
+    // `source[line_start..end_byte]` and adds 1: that prefix is "    }" = 5 chars,
+    // so end_column = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column
+    // 6 is the exclusive one-past position.) This is a multi-line span, so the former
+    // `if end_line == line` same-line guard was always false for this fixture.
     assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
     assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
     assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
