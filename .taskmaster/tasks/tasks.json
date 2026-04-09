@@ -27024,7 +27024,10 @@
         "updatedAt": "2026-04-09T08:17:15.481Z",
         "metadata": {
           "modules": [
-            "crates/reify-eval/src"
+            "crates/reify-eval"
+          ],
+          "files": [
+            "crates/reify-eval/src/lib.rs"
           ]
         }
       },
@@ -27042,6 +27045,9 @@
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/field_calculus_tests.rs"
           ]
         }
       },
@@ -27058,12 +27064,12 @@
         "updatedAt": "2026-04-09T08:20:57.672Z",
         "metadata": {
           "modules": [
-            "orchestrator.yaml",
-            "scripts/check-silent-defaults.sh",
-            "scripts/silent-defaults-allowlist.txt",
-            "tests/infra/README.md",
-            "tests/infra/test_check_silent_defaults.sh",
-            "tests/infra/test_test_helpers.sh"
+            "scripts",
+            "tests"
+          ],
+          "files": [
+            "scripts/check-pm-standardization.sh",
+            "tests/sync_comments_test.sh"
           ]
         }
       },
