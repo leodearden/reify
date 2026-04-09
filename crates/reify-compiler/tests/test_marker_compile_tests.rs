@@ -120,3 +120,24 @@ fn constraint_def_is_test_returns_false_without_annotation() {
         .expect("expected a ConstraintDef");
     assert!(!def.is_test(), "expected is_test() == false for unannotated constraint def");
 }
+
+// ── Step 7: validate_annotations called for constraint defs ──────────────────
+
+#[test]
+fn unknown_annotation_on_constraint_def_emits_warning() {
+    let module = compile_module(
+        "@unknownfoo constraint def C { param x : Length\n x > 0 }",
+    );
+    assert!(errors_only(&module).is_empty(), "errors: {:?}", errors_only(&module));
+    let warns = annotation_warnings(&module, "unknown");
+    assert!(
+        !warns.is_empty(),
+        "expected a warning about unknown annotation on constraint def, got none; all diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert!(
+        warns.iter().any(|d| d.message.contains("unknownfoo")),
+        "expected warning to mention 'unknownfoo', got: {:?}",
+        warns
+    );
+}
