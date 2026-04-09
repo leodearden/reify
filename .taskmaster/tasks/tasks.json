@@ -28009,6 +28009,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1352,
+        "title": "build_logic_tests: extend raw-string coverage and document limitations",
+        "description": "Harden build_logic_tests.rs raw-string detection and document known limitations in find_bare_path_violations",
+        "details": "1. Extend raw-string hash coverage from 0..=2 to 0..=4 (or document the 2-hash ceiling as a known limitation with rationale) in find_bare_path_violations (tree-sitter-reify/tests/build_logic_tests.rs:872-893)\n2. Add test assertions for the r##\"...\"## form in both test_find_bare_build_rs_violations and test_find_bare_self_path_violations (lines 1500-1511, 1587-1598)\n3. Add docstring note to find_bare_path_violations about strip_line_comments being string-unaware — a preceding \"//\" in a non-raw string will truncate the line before a trailing raw-string needle is seen (pre-existing limitation, now more relevant)\n\nSource: review suggestions from task 1319 (esc-1319-45)",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28021,7 +28032,7 @@
       ],
       "created": "2026-04-09T19:31:53.275Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T19:31:53.288Z"
+      "updated": "2026-04-09T19:32:02.730Z"
     }
   }
 }
