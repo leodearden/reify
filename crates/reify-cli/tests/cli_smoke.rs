@@ -20,6 +20,10 @@ fn no_args_shows_help_with_all_commands() {
         "help text should mention 'check' command, got: {stderr}"
     );
     assert!(
+        stderr.contains("test"),
+        "help text should mention 'test' command, got: {stderr}"
+    );
+    assert!(
         stderr.contains("build"),
         "help text should mention 'build' command, got: {stderr}"
     );
