@@ -10669,7 +10669,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10690,7 +10690,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T16:52:47.990Z"
+        "updatedAt": "2026-04-09T17:00:07.787Z"
       },
       {
         "id": "508",
@@ -18890,11 +18890,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs:\n1. Remove add_auto_coord_returns_missing_non_auto_variant (lines ~1162-1179) entirely — it is a strict subset of add_auto_coord_errors_on_missing_non_auto_value.\n2. Strip the Display sub-assertions from add_auto_coord_errors_on_missing_non_auto_value (lines ~1144-1152) — builder_error_display_contains_cell_id already covers the Display contract.\n3. Refactor the surviving match arm in add_auto_coord_errors_on_missing_non_auto_value to avoid the ref id + unwrap_err() NLL dependency: destructure to take ownership of the inner id, then assert equality directly, removing the need to call unwrap_err() on an already-matched result.\n\nmemory_hints: search(\"BuilderError test consolidation solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T16:59:57.036Z",
+        "updatedAt": "2026-04-09T17:00:09.050Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -27518,7 +27518,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:00:07.299Z",
+      "lastModified": "2026-04-09T17:00:09.051Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
