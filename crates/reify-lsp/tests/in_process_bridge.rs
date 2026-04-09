@@ -918,17 +918,7 @@ async fn downstream_ops_after_malformed_initialize_without_initialized() {
     // Uses json!(42) — the canonical malformed payload in this file — to guarantee
     // serde rejects it before server.initialize() is ever called, so workspace_root
     // and stdlib_path remain at their defaults.
-    let init_result = lsp.handle_request("initialize", json!(42)).await;
-    assert!(
-        init_result.is_err(),
-        "initialize with json!(42) should return Err, got: {init_result:?}"
-    );
-    let init_err = init_result.unwrap_err();
-    assert!(
-        init_err.contains(error_prefix::INITIALIZE_PARAMS),
-        "initialize error should contain '{}', got: {init_err}",
-        error_prefix::INITIALIZE_PARAMS
-    );
+    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
 
     // Step 2: intentionally skip the `initialized` notification.
     // The `initialized()` handler is a no-op, so skipping it produces no server-side
