@@ -1118,6 +1118,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
@@ -1166,6 +1171,11 @@ mod tests {
             vu_warn_count, 1,
             "expected exactly 1 verify_uniqueness WARN; got {vu_warn_count}; messages: {msgs:?}"
         );
+        // NB: this assertion implicitly depends on solve_core converging on the perturbed
+        // starting point so that solutions_agree runs and returns false. If solve_core ever
+        // returned Infeasible/NoProgress for this trivial no-constraint problem,
+        // verify_uniqueness would conservatively return true via the early-return branch
+        // (~line 826) and this assertion would flip to a misleading failure.
         assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
