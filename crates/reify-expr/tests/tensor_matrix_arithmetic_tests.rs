@@ -2,7 +2,7 @@
 //! dimension-mismatch propagation through rank-2 matrices, and mixed-dimension
 //! dot product rejection.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 use reify_stdlib::eval_builtin;
 use reify_types::{BinOp, CompiledExpr, Type, Value, ValueMap};
 
@@ -15,11 +15,7 @@ use reify_types::{BinOp, CompiledExpr, Type, Value, ValueMap};
 /// (`Value::Scalar{dimension}`, `Value::Int`, `Value::Real`), not the
 /// `Type` field on `CompiledExpr`.
 fn mat(rows: Vec<Vec<Value>>) -> Value {
-    Value::Tensor(
-        rows.into_iter()
-            .map(Value::Tensor)
-            .collect(),
-    )
+    Value::Tensor(rows.into_iter().map(Value::Tensor).collect())
 }
 
 /// Build a rank-1 Tensor (vector) from `Vec<Value>`.
@@ -62,7 +58,12 @@ fn vector_times_matrix_returns_undef() {
         vec![Value::Int(0), Value::Int(0), Value::Int(1)],
     ]);
 
-    let expr = CompiledExpr::binop(BinOp::Mul, lit(v, Type::Real), lit(m, Type::Real), Type::Real);
+    let expr = CompiledExpr::binop(
+        BinOp::Mul,
+        lit(v, Type::Real),
+        lit(m, Type::Real),
+        Type::Real,
+    );
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -87,7 +88,12 @@ fn multi_row_undef_propagation() {
         vec![Value::angle(1.0), Value::angle(2.0)],
     ]);
 
-    let expr = CompiledExpr::binop(BinOp::Add, lit(a, Type::Real), lit(b, Type::Real), Type::Real);
+    let expr = CompiledExpr::binop(
+        BinOp::Add,
+        lit(a, Type::Real),
+        lit(b, Type::Real),
+        Type::Real,
+    );
     assert_eq!(eval(&expr), Value::Undef);
 }
 

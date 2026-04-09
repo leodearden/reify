@@ -1,0 +1,12 @@
+// CLI test fixture: all @test structures have satisfied constraints.
+// Used by test_command_on_passing_file_exits_success.
+
+@test structure TestWidth {
+    param w: Length = 50mm
+    constraint w > 0mm
+}
+
+@test structure TestHeight {
+    param h: Length = 100mm
+    constraint h > 0mm
+}

@@ -334,8 +334,7 @@ impl ConcurrentScheduler {
                             reported_progress: None,
                             previous_runtime: None,
                         };
-                        let mut guard =
-                            tracker.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut guard = tracker.lock().unwrap_or_else(|e| e.into_inner());
                         guard.update_status(&n, &progress, has_intermediate);
                         if !guard.should_continue(&n, true) {
                             // Uncommitted in dirty cone — drop result
@@ -373,7 +372,7 @@ impl ConcurrentScheduler {
                         changed.insert(node);
                     }
                     Ok((_, Some(EvalOutcome::Unchanged))) => {} // Unchanged — skip
-                    Ok((_, None)) => {} // Commitment-cancelled — drop
+                    Ok((_, None)) => {}                         // Commitment-cancelled — drop
                     Err(e) if e.is_panic() => {
                         join_set.abort_all();
                         cleanup_level(&dirty_nodes);
@@ -926,7 +925,14 @@ mod tests {
         let changed_cells = HashSet::new();
 
         let result = scheduler
-            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &changed_cells,
+                config,
+            )
             .await
             .unwrap();
 
@@ -997,7 +1003,14 @@ mod tests {
         let evaluator = Arc::new(AllChangedEval);
 
         let result = scheduler
-            .execute_with_config(eval_set, evaluator, &traces, &cancel, &changed_cells, config)
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &changed_cells,
+                config,
+            )
             .await
             .unwrap();
 
@@ -1343,8 +1356,8 @@ mod tests {
         use reify_eval::deps::DependencyTrace;
         use reify_types::ValueCellId;
         use std::collections::{HashMap, HashSet};
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let e = "Abort";
         // 3 nodes at the same level (all with empty reads → level 0)

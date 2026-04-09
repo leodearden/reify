@@ -46,7 +46,6 @@ fn compile_with_diagnostics(source: &str) -> reify_compiler::CompiledModule {
 // ─── step-1: self.param resolves to correct ValueRef ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_param_resolves_to_value_ref() {
     // `self.x` inside a structure should resolve to the same value cell as `x`.
     let source = r#"structure S {
@@ -68,7 +67,10 @@ fn self_dot_param_resolves_to_value_ref() {
         .iter()
         .find(|vc| vc.id.member == "y")
         .expect("y value cell");
-    let default_expr = y_cell.default_expr.as_ref().expect("y should have default_expr");
+    let default_expr = y_cell
+        .default_expr
+        .as_ref()
+        .expect("y should have default_expr");
 
     // The default expression should be a ValueRef pointing to ("S", "x")
     let expected_id = ValueCellId::new("S", "x");
@@ -83,7 +85,6 @@ fn self_dot_param_resolves_to_value_ref() {
 // ─── step-2: self.sub.param resolves ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_dot_sub_dot_param_resolves() {
     // `self.bolt.d` should resolve to the sub component's member.
     let source = r#"structure Bolt {
@@ -132,7 +133,6 @@ structure S {
 // ─── step-3: self in let binding ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_let_binding_compiles() {
     // `self.a + 1mm` in a let binding should compile without errors.
     let source = r#"structure S {
@@ -156,7 +156,6 @@ fn self_in_let_binding_compiles() {
 // ─── step-4: self in constraint ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_constraint_compiles() {
     // `constraint self.x > 2mm` should compile without errors.
     let source = r#"structure S {
@@ -189,7 +188,6 @@ fn self_in_constraint_compiles() {
 // ─── step-5: bare self as entity reference ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn bare_self_as_entity_reference() {
     // Bare `self` (without `.member`) should resolve to the enclosing entity
     // as a StructureRef type. `let me = self` captures the entity itself.
@@ -226,7 +224,6 @@ fn bare_self_as_entity_reference() {
 // ─── step-6: self in guarded block (TreeBracket pattern) ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_in_guarded_block() {
     // The TreeBracket pattern from spec section 8.9: `self.depth` in a guarded
     // `where` block should resolve to the enclosing entity's params.
@@ -355,10 +352,114 @@ fn self_error_at_module_scope() {
     }
 }
 
+// ─── task-1125 step-1: self.collection_sub emits error ───
+
+#[test]
+fn self_dot_collection_sub_emits_error() {
+    // `self.items` where `items` is a collection sub should emit an error,
+    // not silently return StructureRef("Bolt") as if it were a single-instance sub.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let x = self.items
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items` on collection sub, got no errors"
+    );
+    let has_helpful_msg = errors.iter().any(|d| {
+        let msg = &d.message;
+        msg.contains("items")
+            && (msg.contains("collection")
+                || msg.contains("indexed")
+                || msg.contains("index"))
+    });
+    assert!(
+        has_helpful_msg,
+        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1125 step-3: self.collection_sub.member emits error ───
+
+#[test]
+fn self_dot_collection_sub_dot_member_emits_error() {
+    // `self.items.diameter` where `items` is a collection sub should emit an error,
+    // not silently return ValueRef(S.items, diameter) pointing at a nonexistent cell.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub items : List<Bolt>
+    let d = self.items.diameter
+}"#;
+    let compiled = compile_with_diagnostics(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected at least one error for `self.items.diameter` on collection sub, got no errors"
+    );
+    let has_helpful_msg = errors.iter().any(|d| {
+        let msg = &d.message;
+        msg.contains("items")
+            && (msg.contains("collection")
+                || msg.contains("indexed")
+                || msg.contains("index"))
+    });
+    assert!(
+        has_helpful_msg,
+        "expected error message mentioning 'items' and 'collection'/'indexed'/'index', got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── task-1125 step-5: non-collection sub still returns StructureRef ───
+
+#[test]
+fn self_dot_non_collection_sub_still_returns_structure_ref() {
+    // `self.bolt` where `bolt` is a single-instance sub should still compile cleanly
+    // and produce a StructureRef("Bolt") cell — regression guard for steps 2 & 4.
+    let source = r#"structure Bolt {
+    param diameter : Scalar = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let b = self.bolt
+}"#;
+    let compiled = compile_no_errors(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let b_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .expect("b value cell");
+    assert_eq!(
+        b_cell.cell_type,
+        reify_types::Type::StructureRef("Bolt".to_string()),
+        "self.bolt on a non-collection sub should resolve to StructureRef(\"Bolt\")"
+    );
+}
+
 // ─── step-11: self.param equivalence with bare param ───
 
 #[test]
-#[ignore = "requires task 153: self keyword compiler support"]
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
     let source = r#"structure S {

@@ -1,0 +1,50 @@
+// Dimensional consistency integration fixture.
+//
+// Verifies that stdlib builtins preserve physical dimensions correctly:
+// lerp (Length→Length), dot (Length×Force→Energy), cross (Length×Force→Torque),
+// gravity force (Acceleration×Mass→Force), mod (Int→Int),
+// normalize (→dimensionless), magnitude (Length→Length), clamp (Length→Length).
+
+structure def DimensionalConsistency {
+    // --- Newton unit helper ---
+    let n_unit = 1kg * 1m / (1s * 1s)
+
+    // --- lerp preserves Length dimension ---
+    // lerp(5mm, 15mm, 0.5) = 10mm = 0.010 m
+    let lerp_mm = lerp(5mm, 15mm, 0.5)
+
+    // --- dot(LENGTH_vec, FORCE_vec) → FORCE*LENGTH (energy) ---
+    // m_vec = (2m, 1m, 0m),  n_vec = (3N, 0N, 0N)
+    // dot = 2*3 + 1*0 + 0*0 = 6.0  dimension = LENGTH*FORCE
+    let m_vec      = vec3(2.0 * 1m, 1.0 * 1m, 0.0 * 1m)
+    let n_vec      = vec3(3.0 * n_unit, 0.0 * n_unit, 0.0 * n_unit)
+    let dot_result = dot(m_vec, n_vec)
+
+    // --- cross(LENGTH_vec, FORCE_vec) → torque (LENGTH*FORCE) ---
+    // cross([2,1,0], [3,0,0]):
+    //   cx = my*nz - mz*ny = 1*0 - 0*0 = 0
+    //   cy = mz*nx - mx*nz = 0*3 - 2*0 = 0
+    //   cz = mx*ny - my*nx = 2*0 - 1*3 = -3
+    let cross_result = cross(m_vec, n_vec)
+
+    // --- gravitational force: 9.81 m/s² × 1 kg = 9.81 N ---
+    // g_accel has dimension FORCE/MASS = LENGTH/TIME², weight has dimension FORCE
+    let g_accel = 9.81 * 1m / (1s * 1s)
+    let weight  = g_accel * 1kg
+
+    // --- mod: integer remainder ---
+    // mod(7, 3) = 1
+    let mod_result = mod(7, 3)
+
+    // --- normalize: produces dimensionless (Real) components ---
+    // vec3(3m, 4m, 0m) → [0.6, 0.8, 0.0] (Real, not Scalar)
+    let norm_result = normalize(vec3(3.0 * 1m, 4.0 * 1m, 0.0 * 1m))
+
+    // --- magnitude: preserves input dimension ---
+    // |vec3(3m, 4m, 0m)| = 5.0 m  (dimension = LENGTH)
+    let mag_result = magnitude(vec3(3.0 * 1m, 4.0 * 1m, 0.0 * 1m))
+
+    // --- clamp: preserves dimension ---
+    // clamp(3mm, 1mm, 10mm) = 3mm = 0.003 m  (dimension = LENGTH)
+    let clamped_dim = clamp(3mm, 1mm, 10mm)
+}

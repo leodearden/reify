@@ -1039,8 +1039,14 @@ async fn edit_param_concurrent_re_resolves_auto_params() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1122,8 +1128,14 @@ async fn concurrent_edit_result_includes_resolved_params() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1203,7 +1215,10 @@ async fn concurrent_edit_result_includes_diagnostics_on_infeasible() {
     solved1.insert(x_id.clone(), mm(5.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
         SolveResult::Infeasible {
             diagnostics: vec![Diagnostic {
                 severity: Severity::Error,
@@ -1409,8 +1424,14 @@ async fn edit_check_concurrent_with_resolution_and_constraints() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1575,97 +1596,125 @@ async fn edit_check_concurrent_preserves_constraint_labels() {
 // the faulting node.
 
 #[cfg(feature = "test-utils")]
-use reify_test_support::warn_counting_subscriber;
+use reify_test_support::warn_capturing_subscriber;
+
+/// Runs `action` under a `warn_capturing_subscriber`, asserts that it does not
+/// panic, that exactly `expected_warns` WARN events were emitted, and that at
+/// least one of those messages contains `message_substring`.  Returns the
+/// value produced by `action` for downstream assertions.
+///
+/// # Panics
+///
+/// Panics if `action` panics (i.e., `catch_unwind` returns `Err`), or if the
+/// WARN count or message checks fail.
+#[cfg(feature = "test-utils")]
+fn assert_poison_recovers<T: Send + 'static>(
+    action: impl FnOnce() -> T + std::panic::UnwindSafe,
+    expected_warns: usize,
+    message_substring: &str,
+) -> T {
+    use std::panic::catch_unwind;
+    let (subscriber, capture) = warn_capturing_subscriber();
+    let result = tracing::subscriber::with_default(subscriber, || {
+        catch_unwind(action)
+    });
+    assert!(
+        result.is_ok(),
+        "action panicked when poison recovery was expected — catch_unwind returned Err"
+    );
+    capture.assert_count_and_any_message_contains(expected_warns, message_substring);
+    result.unwrap()
+}
+
 
 #[cfg(feature = "test-utils")]
 mod poison_recovery {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// Verify that tracing::warn! is emitted when values() recovers from a poisoned lock.
+    /// values() recovers gracefully from a poisoned values RwLock: no panic,
+    /// returned slice contains both T.a and T.b with correct values, and exactly
+    /// one tracing::warn! is emitted with the "values RwLock poisoned" message.
     #[test]
-    fn tracing_warn_emitted_on_poison_values_read() {
+    fn values_recovers_from_poisoned_values_lock_with_warn() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
         adapter.poison_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| adapter.values()))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // values() acquires 1 lock: values RwLock (via read_values()). Only that lock is
-        // poisoned, so exactly 1 WARN fires.
-        assert_eq!(
-            count,
+        // values() acquires 1 lock: values RwLock. Only that lock is poisoned,
+        // so exactly 1 WARN fires, and the message must name the lock.
+        let values = assert_poison_recovers(
+            || adapter.values(),
             1,
-            "values() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+            "values RwLock poisoned",
+        );
+        // Verify exact values from simple_setup: T.a=Real(10.0), T.b=Real(10.0)
+        assert_eq!(
+            values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after values() poison recovery"
+        );
+        assert_eq!(
+            values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(10.0)),
+            "T.b should be Real(10.0) after values() poison recovery"
         );
     }
 
-    /// values() recovers gracefully from a poisoned values RwLock and returns valid data.
+    /// take_results() recovers gracefully from a poisoned results Mutex: no panic,
+    /// returned results are empty, and exactly one tracing::warn! is emitted with
+    /// the "results Mutex poisoned" message.
     #[test]
-    fn values_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| adapter.values()));
-        assert!(
-            result.is_ok(),
-            "values() should recover from poisoned lock, not panic"
-        );
-        let values = result.unwrap();
-        // The recovered data should still contain the pre-poisoning values
-        assert!(values.contains(&ValueCellId::new("T", "a")));
-        assert!(values.contains(&ValueCellId::new("T", "b")));
-    }
-
-    /// take_results() recovers gracefully from a poisoned results Mutex and returns valid data.
-    #[test]
-    fn take_results_recovers_from_poisoned_results_lock() {
+    fn take_results_recovers_from_poisoned_results_lock_with_warn() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
         adapter.poison_results();
 
-        let result = catch_unwind(AssertUnwindSafe(|| adapter.take_results()));
-        assert!(
-            result.is_ok(),
-            "take_results() should recover from poisoned lock, not panic"
+        // take_results() acquires 1 lock: results Mutex. Only that lock is poisoned,
+        // so exactly 1 WARN fires, and the message must name the lock.
+        let results = assert_poison_recovers(
+            || adapter.take_results(),
+            1,
+            "results Mutex poisoned",
         );
-        let results = result.unwrap();
-        // Results should be empty (no evaluations have occurred), but accessible
-        assert!(results.is_empty());
+        assert_eq!(results.len(), 0, "results should be empty after poison recovery");
     }
 
-    /// Verify that tracing::warn! is emitted when take_results() recovers from a poisoned lock.
+    /// snapshot_values() recovers gracefully from a poisoned snapshot_values RwLock:
+    /// no panic, returned map contains both T.a and T.b with correct (Value, DeterminacyState)
+    /// tuples, and exactly one tracing::warn! is emitted with the "snapshot_values RwLock
+    /// poisoned" message.
     #[test]
-    fn tracing_warn_emitted_on_poison_results_lock() {
+    fn snapshot_values_recovers_from_poisoned_lock_with_warn() {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
 
-        adapter.poison_results();
+        adapter.poison_snapshot_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| adapter.take_results()))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // take_results() acquires 1 lock: results Mutex (via lock_results()). Only that lock is
-        // poisoned, so exactly 1 WARN fires.
-        assert_eq!(
-            count,
+        // snapshot_values() acquires 1 lock: snapshot_values RwLock. Only that lock is
+        // poisoned, so exactly 1 WARN fires, and the message must name the lock.
+        let sv = assert_poison_recovers(
+            || adapter.snapshot_values(),
             1,
-            "take_results() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+            "snapshot_values RwLock poisoned",
+        );
+        // Verify exact (Value, DeterminacyState) tuples from simple_setup
+        assert_eq!(
+            sv.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after poison recovery"
+        );
+        assert_eq!(
+            sv.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (Real(10.0), Determined) after poison recovery"
         );
     }
 
-    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from poisoned snapshot_values.
+    /// Verify that tracing::warn! is emitted when build_result_shared() recovers from
+    /// a poisoned snapshot_values lock.  Also asserts the action succeeds (is_ok),
+    /// fixing the previously discarded `_result`.
     #[test]
     fn tracing_warn_emitted_on_poison_snapshot_values_read() {
         let setup = simple_setup();
@@ -1674,21 +1723,13 @@ mod poison_recovery {
 
         adapter.poison_snapshot_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.build_result_shared(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
         // Only snapshot_values is poisoned; values and results locks are healthy.
         // build_result_shared() acquires all three (values RwLock, snapshot_values RwLock,
         // results Mutex), so exactly 1 of 3 lock acquisitions triggers a recovery WARN.
-        assert_eq!(
-            count,
+        assert_poison_recovers(
+            || adapter.build_result_shared(&eval_set, HashSet::new()),
             1,
-            "build_result_shared() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
+            "snapshot_values RwLock poisoned",
         );
     }
 }
@@ -1941,78 +1982,99 @@ async fn five_parent_fan_in_one_changed() {
 #[cfg(feature = "test-utils")]
 mod poison_recovery_extended {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    /// build_result_shared() recovers from poisoned values RwLock.
-    #[test]
-    fn build_result_shared_recovers_from_poisoned_values_lock() {
+    /// Parameterized helper for the three `tracing_warn_emitted_on_poison_into_result*`
+    /// tests.  Calls `poison_fn` on a freshly-built adapter, then asserts that
+    /// `into_result()` recovers without panic and emits exactly one WARN whose
+    /// message contains `message_substring`.
+    fn assert_into_result_poison_warn(
+        poison_fn: fn(&ConcurrentEvalAdapter),
+        message_substring: &str,
+    ) {
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned values lock, not panic"
+        poison_fn(&adapter);
+        assert_poison_recovers(
+            || adapter.into_result(&eval_set, HashSet::new()),
+            1,
+            message_substring,
         );
-        let edit_result = result.unwrap();
-        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
+    }
+
+    /// Poisons a lock via `$poison_method` (sole-owner path — no Arc guard held),
+    /// then delegates to [`assert_poison_recovers`] calling `$action_method` on
+    /// `into_result` / `build_result_shared`.  Returns the [`ConcurrentEditResult`]
+    /// for optional downstream data assertions.
+    macro_rules! poison_and_recover {
+        ($poison_method:ident, $action_method:ident, $msg:expr) => {{
+            let setup = simple_setup();
+            let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+            let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+            adapter.$poison_method();
+            assert_poison_recovers(
+                || adapter.$action_method(&eval_set, HashSet::new()),
+                1,
+                $msg,
+            )
+        }};
+    }
+
+    /// build_result_shared() recovers from poisoned values RwLock.
+    /// Verifies exact values for T.a and T.b from simple_setup.
+    #[test]
+    fn build_result_shared_recovers_from_poisoned_values_lock() {
+        let edit_result = poison_and_recover!(
+            poison_values,
+            build_result_shared,
+            "values RwLock poisoned"
+        );
+        // Verify both T.a and T.b are present with exact values from simple_setup
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after build_result_shared values poison recovery"
+        );
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(10.0)),
+            "T.b should be Real(10.0) after build_result_shared values poison recovery"
+        );
+        assert_eq!(
+            edit_result.values.len(),
+            2,
+            "values should have exactly T.a and T.b entries"
+        );
     }
 
     /// build_result_shared() recovers from poisoned snapshot_values RwLock.
+    /// Verifies exact (Value, DeterminacyState) tuples for T.a and T.b.
     #[test]
     fn build_result_shared_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned snapshot_values lock, not panic"
+        let edit_result = poison_and_recover!(
+            poison_snapshot_values,
+            build_result_shared,
+            "snapshot_values RwLock poisoned"
         );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result
-                .snapshot_values
-                .contains_key(&ValueCellId::new("T", "a")),
-            "snapshot_values should contain T.a after poison recovery"
+        // Verify exact (Value, DeterminacyState) tuples from simple_setup
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after poison recovery"
         );
-        // T.b was in eval_set and seeded by simple_setup — verify it's also present
-        assert!(
-            edit_result
-                .snapshot_values
-                .contains_key(&ValueCellId::new("T", "b")),
-            "snapshot_values should contain T.b (seeded by simple_setup)"
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (Real(10.0), Determined) after poison recovery"
         );
     }
 
     /// build_result_shared() recovers from poisoned results Mutex.
+    /// node_results should be empty because no evaluations occurred.
     #[test]
     fn build_result_shared_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.build_result_shared(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "build_result_shared() should recover from poisoned results lock, not panic"
-        );
-        // Verify the recovered result has accessible (empty) node_results
-        let edit_result = result.unwrap();
+        let edit_result =
+            poison_and_recover!(poison_results, build_result_shared, "results Mutex poisoned");
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
@@ -2020,156 +2082,73 @@ mod poison_recovery_extended {
     }
 
     /// into_result() recovers from poisoned values RwLock.
+    /// Verifies exact values for T.a and T.b from simple_setup.
     #[test]
     fn into_result_recovers_from_poisoned_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned values lock, not panic"
+        let edit_result =
+            poison_and_recover!(poison_values, into_result, "values RwLock poisoned");
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after into_result values poison recovery"
         );
-        let edit_result = result.unwrap();
-        assert!(edit_result.values.contains(&ValueCellId::new("T", "a")));
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "b")),
+            Some(&Value::Real(10.0)),
+            "T.b should be Real(10.0) after into_result values poison recovery"
+        );
     }
 
     /// into_result() recovers from poisoned snapshot_values RwLock.
+    /// Verifies exact (Value, DeterminacyState) tuples for T.a.
     #[test]
     fn into_result_recovers_from_poisoned_snapshot_values_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_snapshot_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned snapshot_values lock, not panic"
+        let edit_result = poison_and_recover!(
+            poison_snapshot_values,
+            into_result,
+            "snapshot_values RwLock poisoned"
         );
-        let edit_result = result.unwrap();
-        assert!(
-            edit_result
-                .snapshot_values
-                .contains_key(&ValueCellId::new("T", "a"))
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after into_result snapshot poison recovery"
         );
     }
 
     /// into_result() recovers from poisoned results Mutex.
+    /// node_results should be empty because no evaluations occurred.
     #[test]
     fn into_result_recovers_from_poisoned_results_lock() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        adapter.poison_results();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned results lock, not panic"
-        );
-        // Verify the recovered result has accessible (empty) node_results
-        let edit_result = result.unwrap();
+        let edit_result =
+            poison_and_recover!(poison_results, into_result, "results Mutex poisoned");
         assert!(
             edit_result.node_results.is_empty(),
             "node_results should be empty (no evaluations occurred) after poison recovery"
         );
     }
 
-    /// Verify that tracing::warn! is emitted when into_result() recovers from poisoned locks.
-    /// into_result() has 6 unwrap_or_else closures across 3 Arc::try_unwrap match arms.
-    /// These 3 tests exercise the Ok(lock) → into_inner() paths, which are reached when
-    /// Arc::try_unwrap succeeds (refcount == 1). The Err(arc) → read()/lock() →
-    /// unwrap_or_else() shared-fallback paths are covered by the `poison_shared_fallback`
-    /// module below.
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned values lock via the into_inner() path (Arc::try_unwrap succeeds).
+    /// Message must contain "values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Poison the values lock
-        adapter.poison_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        // Only values is poisoned; snapshot_values and results locks are healthy.
-        // into_result() unwraps 3 Arcs (values, snapshot_values, results) with recovery on
-        // each path, so exactly 1 of 3 Arc-unwrap paths triggers a recovery WARN.
-        assert_eq!(
-            count,
-            1,
-            "into_result() should emit exactly 1 tracing::warn! on poison recovery, got {count} WARN events"
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_values, "values RwLock poisoned");
     }
 
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
-    /// snapshot_values lock.
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned snapshot_values lock via the into_inner() path.
+    /// Message must contain "snapshot_values RwLock poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Poison the snapshot_values lock
-        adapter.poison_snapshot_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count,
-            1,
-            "into_result() should emit exactly 1 tracing::warn! on snapshot_values poison recovery, got {count} WARN events"
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_snapshot_values, "snapshot_values RwLock poisoned");
     }
 
-    /// Verify that tracing::warn! is emitted when into_result() recovers from a poisoned
-    /// results lock.
+    /// Verify that tracing::warn! is emitted when into_result() recovers from a
+    /// poisoned results lock via the into_inner() path.
+    /// Message must contain "results Mutex poisoned".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Poison the results lock
-        adapter.poison_results();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count,
-            1,
-            "into_result() should emit exactly 1 tracing::warn! on results poison recovery, got {count} WARN events"
-        );
+        assert_into_result_poison_warn(ConcurrentEvalAdapter::poison_results, "results Mutex poisoned");
     }
 }
 
@@ -2186,8 +2165,26 @@ mod poison_recovery_extended {
 #[cfg(feature = "test-utils")]
 mod poison_shared_fallback {
     use super::*;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-    use reify_test_support::tracing_support::warn_counting_subscriber;
+
+    /// Sets up a shared-fallback scenario: creates the adapter, holds a second
+    /// Arc for `$arc_method` (forcing `Arc::try_unwrap` to return `Err`), poisons
+    /// the lock via `$poison_method`, then delegates to [`assert_poison_recovers`]
+    /// with `into_result`.  Returns the [`ConcurrentEditResult`] for optional
+    /// downstream data assertions.
+    macro_rules! shared_fallback_recover {
+        ($arc_method:ident, $poison_method:ident, $msg:expr) => {{
+            let setup = simple_setup();
+            let adapter = ConcurrentEvalAdapter::from_setup(&setup);
+            let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
+            let _guard = adapter.$arc_method();
+            adapter.$poison_method();
+            assert_poison_recovers(
+                || adapter.into_result(&eval_set, HashSet::new()),
+                1,
+                $msg,
+            )
+        }};
+    }
 
     // -----------------------------------------------------------------------
     // values shared-fallback
@@ -2197,54 +2194,31 @@ mod poison_shared_fallback {
     /// poisoned values lock via the shared-fallback (Err(arc) → read()) path.
     ///
     /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 215-221 of concurrent_eval.rs.
+    /// exercising the shared-fallback branch in concurrent_eval.rs.
+    /// Message must contain "values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.values_arc();
-
-        // Poison the values lock
-        adapter.poison_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count,
-            1,
-            "into_result() shared-fallback (values) should emit exactly 1 tracing::warn!, got {count}"
+        shared_fallback_recover!(
+            values_arc,
+            poison_values,
+            "values RwLock poisoned (shared fallback)"
         );
     }
 
     /// Verify that into_result() does not panic and returns usable data when
     /// recovering from a poisoned values lock via the shared-fallback path.
+    /// Verifies T.a = Real(10.0) from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        // Hold a second Arc reference — try_unwrap will return Err(arc)
-        let _guard = adapter.values_arc();
-
-        adapter.poison_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned values lock (shared fallback), not panic"
+        let edit_result = shared_fallback_recover!(
+            values_arc,
+            poison_values,
+            "values RwLock poisoned (shared fallback)"
+        );
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after shared-fallback values poison recovery"
         );
     }
 
@@ -2255,52 +2229,36 @@ mod poison_shared_fallback {
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
     /// poisoned snapshot_values lock via the shared-fallback (Err(arc) → read()) path.
     ///
-    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 228-236 of concurrent_eval.rs.
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
+    /// Message must contain "snapshot_values RwLock poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.snapshot_values_arc();
-
-        adapter.poison_snapshot_values();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count,
-            1,
-            "into_result() shared-fallback (snapshot_values) should emit exactly 1 tracing::warn!, got {count}"
+        shared_fallback_recover!(
+            snapshot_values_arc,
+            poison_snapshot_values,
+            "snapshot_values RwLock poisoned (shared fallback)"
         );
     }
 
     /// Verify that into_result() does not panic and returns usable data when
     /// recovering from a poisoned snapshot_values lock via the shared-fallback path.
+    /// Verifies T.a and T.b tuples from simple_setup.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_snapshot_values() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.snapshot_values_arc();
-
-        adapter.poison_snapshot_values();
-
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
-
-        assert!(
-            result.is_ok(),
-            "into_result() should recover from poisoned snapshot_values lock (shared fallback), not panic"
+        let edit_result = shared_fallback_recover!(
+            snapshot_values_arc,
+            poison_snapshot_values,
+            "snapshot_values RwLock poisoned (shared fallback)"
+        );
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after shared-fallback poison recovery"
+        );
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "b")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.b snapshot should be (Real(10.0), Determined) after shared-fallback poison recovery"
         );
     }
 
@@ -2311,30 +2269,14 @@ mod poison_shared_fallback {
     /// Verify that tracing::warn! is emitted when into_result() recovers from a
     /// poisoned results lock via the shared-fallback (Err(arc) → lock()) path.
     ///
-    /// A second Arc clone is held alive so Arc::try_unwrap returns Err,
-    /// exercising lines 243-249 of concurrent_eval.rs.
+    /// A second Arc clone is held alive so Arc::try_unwrap returns Err.
+    /// Message must contain "results Mutex poisoned (shared fallback)".
     #[test]
     fn tracing_warn_emitted_on_poison_into_result_shared_fallback_results() {
-        let setup = simple_setup();
-        let adapter = ConcurrentEvalAdapter::from_setup(&setup);
-        let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
-
-        let _guard = adapter.results_arc();
-
-        adapter.poison_results();
-
-        let (subscriber, warn_count) = warn_counting_subscriber();
-        let _result = tracing::subscriber::with_default(subscriber, || {
-            catch_unwind(AssertUnwindSafe(|| {
-                adapter.into_result(&eval_set, HashSet::new())
-            }))
-        });
-
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            count,
-            1,
-            "into_result() shared-fallback (results) should emit exactly 1 tracing::warn!, got {count}"
+        shared_fallback_recover!(
+            results_arc,
+            poison_results,
+            "results Mutex poisoned (shared fallback)"
         );
     }
 
@@ -2343,26 +2285,101 @@ mod poison_shared_fallback {
     /// node_results should be empty because no evaluations occurred.
     #[test]
     fn into_result_shared_fallback_recovers_from_poisoned_results() {
+        let edit_result = shared_fallback_recover!(
+            results_arc,
+            poison_results,
+            "results Mutex poisoned (shared fallback)"
+        );
+        assert!(
+            edit_result.node_results.is_empty(),
+            "node_results should be empty (no evaluations occurred) after shared-fallback poison recovery"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // all-three shared-fallback: multi-lock simultaneous poison
+    // -----------------------------------------------------------------------
+
+    /// Verify that all three locks being poisoned simultaneously via the
+    /// shared-fallback path recovers gracefully: exactly 3 WARN events are
+    /// emitted with distinct messages, no panic occurs, and all result fields
+    /// contain usable data.
+    ///
+    /// Holds all 3 Arc guards so that `Arc::try_unwrap` fails for each lock,
+    /// forcing the shared-fallback (`Err(arc) → read()/lock()`) path for all three.
+    #[test]
+    fn all_three_locks_poisoned_shared_fallback_recovers_with_three_warns() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
         let setup = simple_setup();
         let adapter = ConcurrentEvalAdapter::from_setup(&setup);
         let eval_set = vec![NodeId::Value(ValueCellId::new("T", "b"))];
 
-        let _guard = adapter.results_arc();
+        // Hold all 3 Arc guards — each Arc::try_unwrap will return Err, forcing
+        // all three locks through the shared-fallback (Err(arc) → read()/lock()) path.
+        let _values_guard = adapter.values_arc();
+        let _snapshot_guard = adapter.snapshot_values_arc();
+        let _results_guard = adapter.results_arc();
 
+        // Poison all 3 locks via intentional panics in separate threads.
+        adapter.poison_values();
+        adapter.poison_snapshot_values();
         adapter.poison_results();
 
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            adapter.into_result(&eval_set, HashSet::new())
-        }));
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let result = tracing::subscriber::with_default(subscriber, || {
+            catch_unwind(AssertUnwindSafe(|| {
+                adapter.into_result(&eval_set, HashSet::new())
+            }))
+        });
 
+        // (1) No panic — into_result() must recover from all 3 poisoned locks.
         assert!(
             result.is_ok(),
-            "into_result() should recover from poisoned results lock (shared fallback), not panic"
+            "into_result() panicked when triple-lock poison recovery was expected"
         );
         let edit_result = result.unwrap();
+
+        // (2) Exactly 3 WARN events — one per poisoned lock.
+        capture.assert_count(3);
+
+        // (3) All 3 distinct shared-fallback messages present.
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("values RwLock poisoned (shared fallback)")),
+            "no WARN message contained 'values RwLock poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("snapshot_values RwLock poisoned (shared fallback)")),
+            "no WARN message contained 'snapshot_values RwLock poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("results Mutex poisoned (shared fallback)")),
+            "no WARN message contained 'results Mutex poisoned (shared fallback)'; \
+             captured messages: {msgs:?}"
+        );
+
+        // (4) T.a = Real(10.0) from simple_setup.
+        assert_eq!(
+            edit_result.values.get(&ValueCellId::new("T", "a")),
+            Some(&Value::Real(10.0)),
+            "T.a should be Real(10.0) after triple shared-fallback poison recovery"
+        );
+
+        // (5) T.a snapshot = (Real(10.0), Determined) from simple_setup.
+        assert_eq!(
+            edit_result.snapshot_values.get(&ValueCellId::new("T", "a")),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "T.a snapshot should be (Real(10.0), Determined) after triple shared-fallback poison recovery"
+        );
+
+        // (6) node_results is empty (no evaluations occurred).
         assert!(
             edit_result.node_results.is_empty(),
-            "node_results should be empty (no evaluations occurred) after shared-fallback poison recovery"
+            "node_results should be empty (no evaluations occurred) \
+             after triple shared-fallback poison recovery"
         );
     }
 }
@@ -2485,11 +2502,12 @@ mod poison_evaluate {
 
         // Verify results were actually pushed despite poisoning
         let results = adapter.take_results();
-        assert_eq!(results.len(), 1, "evaluate() should push exactly one result");
         assert_eq!(
-            results[0].node,
-            NodeId::Value(ValueCellId::new("T", "b"))
+            results.len(),
+            1,
+            "evaluate() should push exactly one result"
         );
+        assert_eq!(results[0].node, NodeId::Value(ValueCellId::new("T", "b")));
         assert_eq!(results[0].outcome, EvalOutcome::Changed);
         assert_eq!(
             results[0].value,
@@ -2505,7 +2523,8 @@ mod poison_evaluate {
 
     /// Verify that tracing::warn! is emitted when evaluate() recovers from poisoned locks.
     /// evaluate() touches read_values, write_values, write_snapshot_values, and lock_results,
-    /// so poisoning values should produce multiple WARN events.
+    /// so poisoning values should produce multiple WARN events.  At least one message must
+    /// contain "values RwLock poisoned" to confirm the correct lock triggered the warning.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tracing_warn_emitted_on_poison_evaluate() {
         let setup = simple_setup();
@@ -2515,29 +2534,36 @@ mod poison_evaluate {
         // Poison values lock — affects both read and write paths in evaluate()
         adapter.poison_values();
 
-        let (subscriber, warn_count) = warn_counting_subscriber();
+        let (subscriber, capture) = warn_capturing_subscriber();
         let outcome = tracing::subscriber::with_default(subscriber, || {
             evaluate_with_recovery(&adapter, node)
         });
-        let outcome = outcome.expect("evaluate() should recover from poisoned values lock, not panic");
+        let outcome =
+            outcome.expect("evaluate() should recover from poisoned values lock, not panic");
         assert_eq!(outcome, EvalOutcome::Changed);
 
-        let count = warn_count.load(std::sync::atomic::Ordering::Relaxed);
+        let count = capture.count();
         assert!(
             count >= 2,
             "expected at least 2 WARN events (read_values + write_values recovery), got {count}"
         );
+        // Verify the warning messages name the correct lock
+        let msgs = capture.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("values RwLock poisoned")),
+            "at least one WARN message should contain 'values RwLock poisoned'; \
+             captured messages: {msgs:?}"
+        );
     }
 }
-
 
 mod execute_with_config_tests {
     //! Tests for execute_with_config: priority, commitment, overrides.
     use super::*;
+    use reify_runtime::Priority;
     use reify_runtime::commitment::{CommitmentPolicy, CommitmentTracker, NodeCommitmentOverride};
     use reify_runtime::concurrent::{SchedulerConfig, SchedulerError};
     use reify_runtime::priority_promotion::SharedPriorityPromoter;
-    use reify_runtime::Priority;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -2550,698 +2576,774 @@ mod execute_with_config_tests {
     }
 
     /// Test that nodes within a level are spawned in priority order.
-/// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
-/// Uses TrackingAsyncEvaluator to record evaluation order.
-/// With #[tokio::test] (current_thread runtime), spawn order == eval order for
-/// synchronous evaluators.
-#[tokio::test]
-async fn test_priority_ordering_within_level() {
-    // TrackingAsyncEvaluator: records NodeId on each evaluate call
-    struct TrackingAsyncEvaluator {
-        eval_order: Arc<Mutex<Vec<NodeId>>>,
-    }
-    impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            self.eval_order.lock().unwrap().push(node);
-            EvalOutcome::Changed
+    /// Three nodes at the same level with priorities P0Interactive, P1Slow, P3Speculative.
+    /// Uses TrackingAsyncEvaluator to record evaluation order.
+    /// With #[tokio::test] (current_thread runtime), spawn order == eval order for
+    /// synchronous evaluators.
+    #[tokio::test]
+    async fn test_priority_ordering_within_level() {
+        // TrackingAsyncEvaluator: records NodeId on each evaluate call
+        struct TrackingAsyncEvaluator {
+            eval_order: Arc<Mutex<Vec<NodeId>>>,
         }
-    }
-
-    let e = "PRI";
-    // Use names whose hash order differs from priority order.
-    // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
-    let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
-    let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
-    let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
-
-    // All at same level (no inter-dependencies, empty traces → dirty by default)
-    let mut traces = HashMap::new();
-    traces.insert(node_p0.clone(), DependencyTrace::default());
-    traces.insert(node_p1slow.clone(), DependencyTrace::default());
-    traces.insert(node_p3.clone(), DependencyTrace::default());
-
-    let eval_order = Arc::new(Mutex::new(Vec::new()));
-    let evaluator = Arc::new(TrackingAsyncEvaluator {
-        eval_order: Arc::clone(&eval_order),
-    });
-
-    // Set up priorities
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
-    node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
-
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let config = SchedulerConfig {
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    // Reverse order in eval_set to ensure sorting actually reorders
-    let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    assert_eq!(result.changed.len(), 3);
-
-    // With priority sorting, spawn order should be: P0, P1Slow, P3
-    let order = eval_order.lock().unwrap();
-    assert_eq!(order.len(), 3);
-    assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
-    assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
-    assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
-}
-
-/// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
-/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
-/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
-/// node_b should be in result.skipped and NOT in result.changed.
-/// node_a should be in result.changed.
-#[tokio::test]
-async fn test_only_run_on_final_inputs_skipped() {
-    let e = "SKIP";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    // node_b has OnlyRunOnFinalInputs override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
-
-    // has_intermediate_inputs returns true for node_b
-    let b_clone = node_b.clone();
-    let config = SchedulerConfig {
-        node_overrides,
-        has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
-    assert!(
-        result.skipped.contains(&node_b),
-        "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
-    );
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed set"
-    );
-
-    // node_a should be evaluated and in changed
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed set (default CommitIfSlow)"
-    );
-}
-
-/// Test that a committed node's result survives cancellation.
-/// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
-/// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
-/// elapsed > 10ms → committed). After execute_with_config:
-/// - slow_node IS in result.changed (committed, survived cancel)
-/// - fast_node NOT in result.changed (uncommitted, cancelled)
-#[tokio::test]
-async fn test_committed_node_survives_cancellation() {
-    let e = "CMT";
-    let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
-    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(fast_node.clone(), DependencyTrace::default());
-    traces.insert(slow_node.clone(), DependencyTrace::default());
-
-    // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
-    let cancel = CancellationToken::new();
-
-    struct CommitmentTestEvaluator {
-        cancel: CancellationToken,
-        fast_node: NodeId,
-    }
-    impl AsyncNodeEvaluator for CommitmentTestEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.fast_node {
-                // Fast node: cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow node: sleep long enough to exceed always_commit_after
-                tokio::time::sleep(Duration::from_millis(50)).await;
+        impl AsyncNodeEvaluator for TrackingAsyncEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                self.eval_order.lock().unwrap().push(node);
                 EvalOutcome::Changed
             }
         }
+
+        let e = "PRI";
+        // Use names whose hash order differs from priority order.
+        // "zz_high" (P0) should be evaluated first despite hashing differently than "aa_low" (P3).
+        let node_p0 = NodeId::Value(ValueCellId::new(e, "zz_high"));
+        let node_p1slow = NodeId::Value(ValueCellId::new(e, "mm_mid"));
+        let node_p3 = NodeId::Value(ValueCellId::new(e, "aa_low"));
+
+        // All at same level (no inter-dependencies, empty traces → dirty by default)
+        let mut traces = HashMap::new();
+        traces.insert(node_p0.clone(), DependencyTrace::default());
+        traces.insert(node_p1slow.clone(), DependencyTrace::default());
+        traces.insert(node_p3.clone(), DependencyTrace::default());
+
+        let eval_order = Arc::new(Mutex::new(Vec::new()));
+        let evaluator = Arc::new(TrackingAsyncEvaluator {
+            eval_order: Arc::clone(&eval_order),
+        });
+
+        // Set up priorities
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_p0.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_p1slow.clone(), Priority::P1Slow);
+        node_priorities.insert(node_p3.clone(), Priority::P3Speculative);
+
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let config = SchedulerConfig {
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        // Reverse order in eval_set to ensure sorting actually reorders
+        let eval_set = vec![node_p3.clone(), node_p1slow.clone(), node_p0.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.changed.len(), 3);
+
+        // With priority sorting, spawn order should be: P0, P1Slow, P3
+        let order = eval_order.lock().unwrap();
+        assert_eq!(order.len(), 3);
+        assert_eq!(order[0], node_p0, "P0Interactive should be evaluated first");
+        assert_eq!(order[1], node_p1slow, "P1Slow should be evaluated second");
+        assert_eq!(order[2], node_p3, "P3Speculative should be evaluated last");
     }
 
-    let evaluator = Arc::new(CommitmentTestEvaluator {
-        cancel: cancel.clone(),
-        fast_node: fast_node.clone(),
-    });
+    /// Test that OnlyRunOnFinalInputs nodes with intermediate inputs are skipped.
+    /// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+    /// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns true for node_b.
+    /// node_b should be in result.skipped and NOT in result.changed.
+    /// node_a should be in result.changed.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_skipped() {
+        let e = "SKIP";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(10),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        ..SchedulerConfig::default()
-    };
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![fast_node.clone(), slow_node.clone()];
+        // has_intermediate_inputs returns true for node_b
+        let b_clone = node_b.clone();
+        let config = SchedulerConfig {
+            node_overrides,
+            has_intermediate_inputs: Arc::new(move |n| *n == b_clone),
+            ..SchedulerConfig::default()
+        };
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
 
-    // Verify cancellation actually occurred (fast_node fires cancel.cancel())
-    assert!(
-        cancel.is_cancelled(),
-        "cancel token should be fired by fast_node during evaluation"
-    );
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // Exactly one node survives: slow_node (committed) — fast_node dropped (uncommitted)
-    assert_eq!(
-        result.changed.len(),
-        1,
-        "exactly one node should survive cancellation (the committed slow_node)"
-    );
-    // slow_node should survive cancellation because it's committed (elapsed > 10ms)
-    assert!(
-        result.changed.contains(&slow_node),
-        "slow_node should be in changed (committed, survived cancel)"
-    );
-    // fast_node should be dropped because it's uncommitted when cancel fires
-    assert!(
-        !result.changed.contains(&fast_node),
-        "fast_node should NOT be in changed (uncommitted, cancelled)"
-    );
-}
+        // node_b should be in skipped (OnlyRunOnFinalInputs with intermediate inputs)
+        assert!(
+            result.skipped.contains(&node_b),
+            "node_b should be in skipped set (OnlyRunOnFinalInputs with intermediate inputs)"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed set"
+        );
 
-/// Test that uncommitted nodes in dirty cone are cancelled.
-/// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
-/// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
-/// Assert neither node is in result.changed (both uncommitted when cancel fires).
-#[tokio::test]
-async fn test_uncommitted_in_dirty_cone_cancelled() {
-    let e = "UNC";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    // Evaluator: node_a fires cancel, both are fast
-    struct CancellingEvaluator {
-        cancel: CancellationToken,
-        trigger_node: NodeId,
+        // node_a should be evaluated and in changed
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed set (default CommitIfSlow)"
+        );
     }
-    impl AsyncNodeEvaluator for CancellingEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger_node {
-                self.cancel.cancel();
-            }
-            EvalOutcome::Changed
+
+    /// Test that a committed node's result survives cancellation.
+    /// Two nodes at same level. CommitmentPolicy with always_commit_after=10ms.
+    /// fast_node takes <1ms and fires cancel; slow_node sleeps 50ms (accumulating
+    /// elapsed > 10ms → committed). After execute_with_config:
+    /// - slow_node IS in result.changed (committed, survived cancel)
+    /// - fast_node NOT in result.changed (uncommitted, cancelled)
+    #[tokio::test]
+    async fn test_committed_node_survives_cancellation() {
+        let e = "CMT";
+        let fast_node = NodeId::Value(ValueCellId::new(e, "fast"));
+        let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
+
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(fast_node.clone(), DependencyTrace::default());
+        traces.insert(slow_node.clone(), DependencyTrace::default());
+
+        // Evaluator: fast_node fires cancel instantly, slow_node sleeps 50ms
+        let cancel = CancellationToken::new();
+
+        struct CommitmentTestEvaluator {
+            cancel: CancellationToken,
+            fast_node: NodeId,
         }
+        impl AsyncNodeEvaluator for CommitmentTestEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.fast_node {
+                    // Fast node: cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow node: sleep long enough to exceed always_commit_after
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
+            }
+        }
+
+        let evaluator = Arc::new(CommitmentTestEvaluator {
+            cancel: cancel.clone(),
+            fast_node: fast_node.clone(),
+        });
+
+        // CommitmentPolicy: commit after 10ms (slow_node's 50ms will exceed this)
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![fast_node.clone(), slow_node.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Verify cancellation actually occurred (fast_node fires cancel.cancel())
+        assert!(
+            cancel.is_cancelled(),
+            "cancel token should be fired by fast_node during evaluation"
+        );
+
+        // Exactly one node survives: slow_node (committed) — fast_node dropped (uncommitted)
+        assert_eq!(
+            result.changed.len(),
+            1,
+            "exactly one node should survive cancellation (the committed slow_node)"
+        );
+        // slow_node should survive cancellation because it's committed (elapsed > 10ms)
+        assert!(
+            result.changed.contains(&slow_node),
+            "slow_node should be in changed (committed, survived cancel)"
+        );
+        // fast_node should be dropped because it's uncommitted when cancel fires
+        assert!(
+            !result.changed.contains(&fast_node),
+            "fast_node should NOT be in changed (uncommitted, cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(CancellingEvaluator {
-        cancel: cancel.clone(),
-        trigger_node: node_a.clone(),
-    });
+    /// Test that uncommitted nodes in dirty cone are cancelled.
+    /// Two nodes at same level. CommitmentPolicy with always_commit_after=5s (long).
+    /// One node fires cancel during eval. Both are fast (<1ms, well below threshold).
+    /// Assert neither node is in result.changed (both uncommitted when cancel fires).
+    #[tokio::test]
+    async fn test_uncommitted_in_dirty_cone_cancelled() {
+        let e = "UNC";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: 5s threshold — neither node will reach this
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_secs(5),
-        commit_when_proportion_done: 0.99,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        ..SchedulerConfig::default()
-    };
+        let cancel = CancellationToken::new();
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
-    // → both should be dropped
-    assert!(
-        !result.changed.contains(&node_a),
-        "node_a should NOT be in changed (uncommitted, cancelled)"
-    );
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed (uncommitted, cancelled)"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up after execution.
-/// Two nodes, normal execution (no cancel). After execute_with_config completes,
-/// tracker.task_count() == 0 and promoter.count() == 0.
-#[tokio::test]
-async fn test_cleanup_on_completion() {
-    let e = "CLN";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
-
-    assert_eq!(result.changed.len(), 2);
-
-    // After execution, all nodes should be cleaned up from tracker and promoter
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after completion, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after completion, got {promoter_count}"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up even when a task panics.
-/// The `return Err(TaskPanicked)` at line 353 bypasses the cleanup block, so this test
-/// should FAIL until the cleanup-on-error-path fix is implemented.
-#[tokio::test]
-async fn test_cleanup_on_task_panic() {
-    let e = "PNC";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(PanickingEvaluator);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await;
-
-    // Should return TaskPanicked error
-    assert!(result.is_err(), "scheduler should return error on panic");
-    match result.unwrap_err() {
-        SchedulerError::TaskPanicked(_) => {} // expected
-        other => panic!("Expected TaskPanicked, got {:?}", other),
-    }
-
-    // After error, all nodes should still be cleaned up from tracker and promoter
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after panic, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after panic, got {promoter_count}"
-    );
-}
-
-/// Test that commitment tracker and priority promoter are cleaned up on task cancellation.
-///
-/// The `TaskCancelled` error path (`Err(_)` non-panic in `handle.await`) shares the same
-/// cleanup closure as `TaskPanicked` (both call `cleanup_level` before returning).
-/// Since triggering a true `JoinError::Cancelled` through `execute_with_config`'s public API
-/// requires externally aborting internally-held JoinHandles (not accessible), this test
-/// exercises the error-path cleanup through `execute_with_config` using a `PanickingEvaluator`
-/// (TaskPanicked path) with three nodes. The cleanup closure handles all dirty_nodes for the
-/// level, so verifying cleanup on the panic path also validates the cancellation path's
-/// identical cleanup behavior.
-///
-/// This test FAILS because the early `return Err(...)` bypasses the cleanup block,
-/// leaving stale entries in both structures.
-#[tokio::test]
-async fn test_cleanup_on_task_cancelled() {
-    let e = "CXL";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-    let node_c = NodeId::Value(ValueCellId::new(e, "c"));
-
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-    traces.insert(node_c.clone(), DependencyTrace::default());
-
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
-        CommitmentPolicy::default(),
-    )));
-    let promoter = Arc::new(SharedPriorityPromoter::new());
-
-    let mut node_priorities = HashMap::new();
-    node_priorities.insert(node_a.clone(), Priority::P0Interactive);
-    node_priorities.insert(node_b.clone(), Priority::P1Slow);
-    node_priorities.insert(node_c.clone(), Priority::P3Speculative);
-
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        priority_promoter: Some(Arc::clone(&promoter)),
-        node_priorities,
-        ..SchedulerConfig::default()
-    };
-
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(PanickingEvaluator);
-    let eval_set = vec![node_a.clone(), node_b.clone(), node_c.clone()];
-
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await;
-
-    // Should return an error (TaskPanicked since that's what we can trigger)
-    assert!(result.is_err(), "scheduler should return error on panic");
-    match result.unwrap_err() {
-        SchedulerError::TaskPanicked(_) => {} // expected — exercises same cleanup path as TaskCancelled
-        other => panic!("Expected TaskPanicked, got {:?}", other),
-    }
-
-    // After error, ALL three nodes should be cleaned up from tracker and promoter.
-    // This verifies cleanup_level handles the full dirty_nodes list, not just the
-    // node that caused the error — same behavior needed for TaskCancelled path.
-    let tracker_count = tracker.lock().unwrap().task_count();
-    assert_eq!(
-        tracker_count, 0,
-        "tracker should have 0 tasks after error, got {tracker_count}"
-    );
-    let promoter_count = promoter.count();
-    assert_eq!(
-        promoter_count, 0,
-        "promoter should have 0 nodes after error, got {promoter_count}"
-    );
-}
-
-/// Test that node_overrides are correctly threaded from the dirty-check to
-/// the commitment tracker registration. Three nodes at same level:
-/// - trigger: fires cancel immediately (fast, < always_commit_after → cancelled)
-/// - node_a: default CommitIfSlow, sleeps 50ms (> 10ms always_commit_after → committed, survives cancel)
-/// - node_b: AlwaysCancelWhenStale override, sleeps 50ms (NeverCommit regardless of time → cancelled)
-///
-/// This validates that the override looked up during the dirty/skip pre-computation
-/// is the same override used during commitment tracker registration — if they diverge,
-/// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
-#[tokio::test]
-async fn test_node_override_threaded_to_commitment_tracker() {
-    let e = "THREAD";
-    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
-
-    // All at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(trigger.clone(), DependencyTrace::default());
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    struct OverrideThreadingEvaluator {
-        cancel: CancellationToken,
-        trigger: NodeId,
-    }
-    impl AsyncNodeEvaluator for OverrideThreadingEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger {
-                // Trigger: fire cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow nodes: sleep long enough to exceed always_commit_after
-                tokio::time::sleep(Duration::from_millis(50)).await;
+        // Evaluator: node_a fires cancel, both are fast
+        struct CancellingEvaluator {
+            cancel: CancellationToken,
+            trigger_node: NodeId,
+        }
+        impl AsyncNodeEvaluator for CancellingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger_node {
+                    self.cancel.cancel();
+                }
                 EvalOutcome::Changed
             }
         }
+
+        let evaluator = Arc::new(CancellingEvaluator {
+            cancel: cancel.clone(),
+            trigger_node: node_a.clone(),
+        });
+
+        // CommitmentPolicy: 5s threshold — neither node will reach this
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_secs(5),
+            commit_when_proportion_done: 0.99,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // Both nodes are uncommitted (fast, below 5s threshold) and cancel is fired
+        // → both should be dropped
+        assert!(
+            !result.changed.contains(&node_a),
+            "node_a should NOT be in changed (uncommitted, cancelled)"
+        );
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed (uncommitted, cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(OverrideThreadingEvaluator {
-        cancel: cancel.clone(),
-        trigger: trigger.clone(),
-    });
+    /// Test that commitment tracker and priority promoter are cleaned up after execution.
+    /// Two nodes, normal execution (no cancel). After execute_with_config completes,
+    /// tracker.task_count() == 0 and promoter.count() == 0.
+    #[tokio::test]
+    async fn test_cleanup_on_completion() {
+        let e = "CLN";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    // CommitmentPolicy: commit after 10ms (slow nodes' 50ms will exceed this)
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(10),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    // node_b has AlwaysCancelWhenStale override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        node_overrides,
-        ..SchedulerConfig::default()
-    };
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![trigger.clone(), node_a.clone(), node_b.clone()];
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
 
-    // node_a (CommitIfSlow default): elapsed 50ms > 10ms → committed → survives cancel
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed (CommitIfSlow, elapsed > always_commit_after → committed)"
-    );
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // node_b (AlwaysCancelWhenStale): NeverCommit regardless of elapsed time → cancelled
-    assert!(
-        !result.changed.contains(&node_b),
-        "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
-    );
-}
+        assert_eq!(result.changed.len(), 2);
 
-/// Test that AlwaysCancelWhenStale drops result even with always_commit_after=0ms.
-/// Two nodes at same level: trigger fires cancel immediately, slow_node has
-/// AlwaysCancelWhenStale override and sleeps 50ms. CommitmentPolicy with
-/// always_commit_after=0ms means any elapsed time would normally auto-commit
-/// under CommitIfSlow — but AlwaysCancelWhenStale should override this and
-/// return NeverCommit, so slow_node should NOT appear in result.changed.
-#[tokio::test]
-async fn test_always_cancel_when_stale_drops_result() {
-    let e = "ACWS";
-    let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
-    let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
-
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(trigger.clone(), DependencyTrace::default());
-    traces.insert(slow_node.clone(), DependencyTrace::default());
-
-    let cancel = CancellationToken::new();
-
-    struct AlwaysCancelEvaluator {
-        cancel: CancellationToken,
-        trigger: NodeId,
+        // After execution, all nodes should be cleaned up from tracker and promoter
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after completion, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after completion, got {promoter_count}"
+        );
     }
-    impl AsyncNodeEvaluator for AlwaysCancelEvaluator {
-        async fn evaluate(&self, node: NodeId) -> EvalOutcome {
-            if node == self.trigger {
-                // Trigger: fire cancel immediately
-                self.cancel.cancel();
-                EvalOutcome::Changed
-            } else {
-                // Slow node: sleep to accumulate elapsed time past the 0ms threshold
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                EvalOutcome::Changed
+
+    /// Test that commitment tracker and priority promoter are cleaned up even when a task panics.
+    /// The `return Err(TaskPanicked)` at line 353 bypasses the cleanup block, so this test
+    /// should FAIL until the cleanup-on-error-path fix is implemented.
+    #[tokio::test]
+    async fn test_cleanup_on_task_panic() {
+        let e = "PNC";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingEvaluator);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await;
+
+        // Should return TaskPanicked error
+        assert!(result.is_err(), "scheduler should return error on panic");
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(_) => {} // expected
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+
+        // After error, all nodes should still be cleaned up from tracker and promoter
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after panic, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after panic, got {promoter_count}"
+        );
+    }
+
+    /// Test that commitment tracker and priority promoter are cleaned up on task cancellation.
+    ///
+    /// The `TaskCancelled` error path (`Err(_)` non-panic in `handle.await`) shares the same
+    /// cleanup closure as `TaskPanicked` (both call `cleanup_level` before returning).
+    /// Since triggering a true `JoinError::Cancelled` through `execute_with_config`'s public API
+    /// requires externally aborting internally-held JoinHandles (not accessible), this test
+    /// exercises the error-path cleanup through `execute_with_config` using a `PanickingEvaluator`
+    /// (TaskPanicked path) with three nodes. The cleanup closure handles all dirty_nodes for the
+    /// level, so verifying cleanup on the panic path also validates the cancellation path's
+    /// identical cleanup behavior.
+    ///
+    /// This test FAILS because the early `return Err(...)` bypasses the cleanup block,
+    /// leaving stale entries in both structures.
+    #[tokio::test]
+    async fn test_cleanup_on_task_cancelled() {
+        let e = "CXL";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let node_c = NodeId::Value(ValueCellId::new(e, "c"));
+
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+        traces.insert(node_c.clone(), DependencyTrace::default());
+
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(
+            CommitmentPolicy::default(),
+        )));
+        let promoter = Arc::new(SharedPriorityPromoter::new());
+
+        let mut node_priorities = HashMap::new();
+        node_priorities.insert(node_a.clone(), Priority::P0Interactive);
+        node_priorities.insert(node_b.clone(), Priority::P1Slow);
+        node_priorities.insert(node_c.clone(), Priority::P3Speculative);
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            priority_promoter: Some(Arc::clone(&promoter)),
+            node_priorities,
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(PanickingEvaluator);
+        let eval_set = vec![node_a.clone(), node_b.clone(), node_c.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await;
+
+        // Should return an error (TaskPanicked since that's what we can trigger)
+        assert!(result.is_err(), "scheduler should return error on panic");
+        match result.unwrap_err() {
+            SchedulerError::TaskPanicked(_) => {} // expected — exercises same cleanup path as TaskCancelled
+            other => panic!("Expected TaskPanicked, got {:?}", other),
+        }
+
+        // After error, ALL three nodes should be cleaned up from tracker and promoter.
+        // This verifies cleanup_level handles the full dirty_nodes list, not just the
+        // node that caused the error — same behavior needed for TaskCancelled path.
+        let tracker_count = tracker.lock().unwrap().task_count();
+        assert_eq!(
+            tracker_count, 0,
+            "tracker should have 0 tasks after error, got {tracker_count}"
+        );
+        let promoter_count = promoter.count();
+        assert_eq!(
+            promoter_count, 0,
+            "promoter should have 0 nodes after error, got {promoter_count}"
+        );
+    }
+
+    /// Test that node_overrides are correctly threaded from the dirty-check to
+    /// the commitment tracker registration. Three nodes at same level:
+    /// - trigger: fires cancel immediately (fast, < always_commit_after → cancelled)
+    /// - node_a: default CommitIfSlow, sleeps 50ms (> 10ms always_commit_after → committed, survives cancel)
+    /// - node_b: AlwaysCancelWhenStale override, sleeps 50ms (NeverCommit regardless of time → cancelled)
+    ///
+    /// This validates that the override looked up during the dirty/skip pre-computation
+    /// is the same override used during commitment tracker registration — if they diverge,
+    /// node_b could incorrectly commit (CommitIfSlow default) instead of being cancelled.
+    #[tokio::test]
+    async fn test_node_override_threaded_to_commitment_tracker() {
+        let e = "THREAD";
+        let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+
+        // All at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(trigger.clone(), DependencyTrace::default());
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
+
+        let cancel = CancellationToken::new();
+
+        struct OverrideThreadingEvaluator {
+            cancel: CancellationToken,
+            trigger: NodeId,
+        }
+        impl AsyncNodeEvaluator for OverrideThreadingEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger {
+                    // Trigger: fire cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow nodes: sleep long enough to exceed always_commit_after
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
             }
         }
+
+        let evaluator = Arc::new(OverrideThreadingEvaluator {
+            cancel: cancel.clone(),
+            trigger: trigger.clone(),
+        });
+
+        // CommitmentPolicy: commit after 10ms (slow nodes' 50ms will exceed this)
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(10),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+
+        // node_b has AlwaysCancelWhenStale override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(
+            node_b.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
+
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            node_overrides,
+            ..SchedulerConfig::default()
+        };
+
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![trigger.clone(), node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_a (CommitIfSlow default): elapsed 50ms > 10ms → committed → survives cancel
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (CommitIfSlow, elapsed > always_commit_after → committed)"
+        );
+
+        // node_b (AlwaysCancelWhenStale): NeverCommit regardless of elapsed time → cancelled
+        assert!(
+            !result.changed.contains(&node_b),
+            "node_b should NOT be in changed (AlwaysCancelWhenStale → NeverCommit → cancelled)"
+        );
     }
 
-    let evaluator = Arc::new(AlwaysCancelEvaluator {
-        cancel: cancel.clone(),
-        trigger: trigger.clone(),
-    });
+    /// Test that AlwaysCancelWhenStale drops result even with always_commit_after=0ms.
+    /// Two nodes at same level: trigger fires cancel immediately, slow_node has
+    /// AlwaysCancelWhenStale override and sleeps 50ms. CommitmentPolicy with
+    /// always_commit_after=0ms means any elapsed time would normally auto-commit
+    /// under CommitIfSlow — but AlwaysCancelWhenStale should override this and
+    /// return NeverCommit, so slow_node should NOT appear in result.changed.
+    #[tokio::test]
+    async fn test_always_cancel_when_stale_drops_result() {
+        let e = "ACWS";
+        let trigger = NodeId::Value(ValueCellId::new(e, "trigger"));
+        let slow_node = NodeId::Value(ValueCellId::new(e, "slow"));
 
-    // CommitmentPolicy: always_commit_after=0ms — would normally auto-commit instantly
-    let policy = CommitmentPolicy {
-        always_commit_after: Duration::from_millis(0),
-        commit_when_proportion_done: 0.5,
-    };
-    let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(trigger.clone(), DependencyTrace::default());
+        traces.insert(slow_node.clone(), DependencyTrace::default());
 
-    // slow_node has AlwaysCancelWhenStale override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(slow_node.clone(), NodeCommitmentOverride::AlwaysCancelWhenStale);
+        let cancel = CancellationToken::new();
 
-    let config = SchedulerConfig {
-        commitment_tracker: Some(Arc::clone(&tracker)),
-        node_overrides,
-        ..SchedulerConfig::default()
-    };
+        struct AlwaysCancelEvaluator {
+            cancel: CancellationToken,
+            trigger: NodeId,
+        }
+        impl AsyncNodeEvaluator for AlwaysCancelEvaluator {
+            async fn evaluate(&self, node: NodeId) -> EvalOutcome {
+                if node == self.trigger {
+                    // Trigger: fire cancel immediately
+                    self.cancel.cancel();
+                    EvalOutcome::Changed
+                } else {
+                    // Slow node: sleep to accumulate elapsed time past the 0ms threshold
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    EvalOutcome::Changed
+                }
+            }
+        }
 
-    let scheduler = ConcurrentScheduler;
-    let eval_set = vec![trigger.clone(), slow_node.clone()];
+        let evaluator = Arc::new(AlwaysCancelEvaluator {
+            cancel: cancel.clone(),
+            trigger: trigger.clone(),
+        });
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        // CommitmentPolicy: always_commit_after=0ms — would normally auto-commit instantly
+        let policy = CommitmentPolicy {
+            always_commit_after: Duration::from_millis(0),
+            commit_when_proportion_done: 0.5,
+        };
+        let tracker = Arc::new(Mutex::new(CommitmentTracker::new(policy)));
 
-    // Positive control: trigger node should have evaluated and committed
-    assert!(
-        result.changed.contains(&trigger),
-        "trigger should be in changed (positive control: proves the scheduler actually ran)"
-    );
+        // slow_node has AlwaysCancelWhenStale override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(
+            slow_node.clone(),
+            NodeCommitmentOverride::AlwaysCancelWhenStale,
+        );
 
-    // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
-    assert!(
-        !result.changed.contains(&slow_node),
-        "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
-    );
-    // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
-    // It is neither committed (changed) nor preemptively skipped — it ran but
-    // its result was discarded due to cancellation, so it doesn't appear in
-    // either set. This is distinct from OnlyRunOnFinalInputs which skips
-    // evaluation entirely and places the node in `skipped`.
-    assert!(
-        !result.skipped.contains(&slow_node),
-        "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
-    );
-}
+        let config = SchedulerConfig {
+            commitment_tracker: Some(Arc::clone(&tracker)),
+            node_overrides,
+            ..SchedulerConfig::default()
+        };
 
-/// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
-/// Two nodes at same level: node_a (default CommitIfSlow) and node_b
-/// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns false
-/// for all nodes (all inputs are final). node_b should proceed normally:
-/// it should be in result.changed and NOT in result.skipped.
-#[tokio::test]
-async fn test_only_run_on_final_inputs_runs_when_final() {
-    let e = "FINAL";
-    let node_a = NodeId::Value(ValueCellId::new(e, "a"));
-    let node_b = NodeId::Value(ValueCellId::new(e, "b"));
+        let scheduler = ConcurrentScheduler;
+        let eval_set = vec![trigger.clone(), slow_node.clone()];
 
-    // Both at same level, empty traces → dirty by default
-    let mut traces = HashMap::new();
-    traces.insert(node_a.clone(), DependencyTrace::default());
-    traces.insert(node_b.clone(), DependencyTrace::default());
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
 
-    // node_b has OnlyRunOnFinalInputs override
-    let mut node_overrides = HashMap::new();
-    node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
+        // Positive control: trigger node should have evaluated and committed
+        assert!(
+            result.changed.contains(&trigger),
+            "trigger should be in changed (positive control: proves the scheduler actually ran)"
+        );
 
-    // has_intermediate_inputs returns false for all nodes (all inputs are final)
-    let config = SchedulerConfig {
-        node_overrides,
-        has_intermediate_inputs: Arc::new(|_| false),
-        ..SchedulerConfig::default()
-    };
+        // slow_node (AlwaysCancelWhenStale): NeverCommit despite 0ms threshold → cancelled
+        assert!(
+            !result.changed.contains(&slow_node),
+            "slow_node should NOT be in changed (AlwaysCancelWhenStale overrides 0ms always_commit_after)"
+        );
+        // AlwaysCancelWhenStale + NeverCommit: the node is dropped from both sets.
+        // It is neither committed (changed) nor preemptively skipped — it ran but
+        // its result was discarded due to cancellation, so it doesn't appear in
+        // either set. This is distinct from OnlyRunOnFinalInputs which skips
+        // evaluation entirely and places the node in `skipped`.
+        assert!(
+            !result.skipped.contains(&slow_node),
+            "slow_node should NOT be in skipped (ran but result discarded, not pre-emptively skipped)"
+        );
+    }
 
-    let cancel = CancellationToken::new();
-    let scheduler = ConcurrentScheduler;
-    let evaluator = Arc::new(AllChangedAsync);
-    let eval_set = vec![node_a.clone(), node_b.clone()];
+    /// Test that OnlyRunOnFinalInputs runs normally when inputs are final.
+    /// Two nodes at same level: node_a (default CommitIfSlow) and node_b
+    /// (OnlyRunOnFinalInputs override). has_intermediate_inputs returns false
+    /// for all nodes (all inputs are final). node_b should proceed normally:
+    /// it should be in result.changed and NOT in result.skipped.
+    #[tokio::test]
+    async fn test_only_run_on_final_inputs_runs_when_final() {
+        let e = "FINAL";
+        let node_a = NodeId::Value(ValueCellId::new(e, "a"));
+        let node_b = NodeId::Value(ValueCellId::new(e, "b"));
 
-    let result = scheduler
-        .execute_with_config(eval_set, evaluator, &traces, &cancel, &HashSet::new(), config)
-        .await
-        .unwrap();
+        // Both at same level, empty traces → dirty by default
+        let mut traces = HashMap::new();
+        traces.insert(node_a.clone(), DependencyTrace::default());
+        traces.insert(node_b.clone(), DependencyTrace::default());
 
-    // node_b should be evaluated (not skipped) because inputs are final
-    assert!(
-        result.changed.contains(&node_b),
-        "node_b should be in changed (OnlyRunOnFinalInputs with final inputs → runs normally)"
-    );
-    assert!(
-        !result.skipped.contains(&node_b),
-        "node_b should NOT be in skipped (inputs are final, not intermediate)"
-    );
+        // node_b has OnlyRunOnFinalInputs override
+        let mut node_overrides = HashMap::new();
+        node_overrides.insert(node_b.clone(), NodeCommitmentOverride::OnlyRunOnFinalInputs);
 
-    // node_a should also be evaluated
-    assert!(
-        result.changed.contains(&node_a),
-        "node_a should be in changed (default CommitIfSlow)"
-    );
-    assert!(
-        !result.skipped.contains(&node_a),
-        "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
-    );
-}
+        // has_intermediate_inputs returns false for all nodes (all inputs are final)
+        let config = SchedulerConfig {
+            node_overrides,
+            has_intermediate_inputs: Arc::new(|_| false),
+            ..SchedulerConfig::default()
+        };
+
+        let cancel = CancellationToken::new();
+        let scheduler = ConcurrentScheduler;
+        let evaluator = Arc::new(AllChangedAsync);
+        let eval_set = vec![node_a.clone(), node_b.clone()];
+
+        let result = scheduler
+            .execute_with_config(
+                eval_set,
+                evaluator,
+                &traces,
+                &cancel,
+                &HashSet::new(),
+                config,
+            )
+            .await
+            .unwrap();
+
+        // node_b should be evaluated (not skipped) because inputs are final
+        assert!(
+            result.changed.contains(&node_b),
+            "node_b should be in changed (OnlyRunOnFinalInputs with final inputs → runs normally)"
+        );
+        assert!(
+            !result.skipped.contains(&node_b),
+            "node_b should NOT be in skipped (inputs are final, not intermediate)"
+        );
+
+        // node_a should also be evaluated
+        assert!(
+            result.changed.contains(&node_a),
+            "node_a should be in changed (default CommitIfSlow)"
+        );
+        assert!(
+            !result.skipped.contains(&node_a),
+            "node_a should NOT be in skipped (default CommitIfSlow, evaluated normally)"
+        );
+    }
 } // mod execute_with_config_tests

@@ -4,7 +4,7 @@
  * Provides a keymap/event handler that on Ctrl+Click (or Cmd+Click on Mac)
  * sends a textDocument/definition request and navigates to the result.
  */
-import { type Extension } from '@codemirror/state';
+import { type Extension, type Text, type Line } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { invoke } from '@tauri-apps/api/core';
 import { isSameFile } from '../utils/pathUtils';
@@ -71,6 +71,37 @@ async function requestDefinition(
 }
 
 /**
+ * Return true if `value` is a non-negative integer — the minimum shape
+ * required for any LSP position component (line or character).
+ *
+ * Rejects NaN, null, Infinity, fractional numbers, and negative values in one
+ * call. Used as a fast pre-filter before any document-aware bound check.
+ */
+function isValidPositionShape(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * Validate an LSP (0-based) position against the current document.
+ *
+ * Returns the resolved CodeMirror `Line` on success, or `null` if the
+ * position is invalid (negative, beyond document bounds, or character past
+ * end-of-line). Groups all same-file invariants in one place so the
+ * validation surface is easy to audit.
+ */
+function isValidLspPosition(
+  doc: Text,
+  line: number,
+  character: number,
+): { targetLine: Line } | null {
+  if (!isValidPositionShape(line) || !isValidPositionShape(character)) return null;
+  if (line + 1 > doc.lines) return null;
+  const targetLine = doc.line(line + 1);
+  if (character > targetLine.to - targetLine.from) return null;
+  return { targetLine };
+}
+
+/**
  * Create a CodeMirror extension that handles Ctrl+Click for go-to-definition.
  *
  * Accepts either a static URI string or a `() => string` getter for dynamic
@@ -109,22 +140,34 @@ export function reifyGotoDefinition(
         const sameFile = isSameFile(location.uri, resolvedNow);
 
         if (sameFile) {
-          // Same document: navigate to definition in current view
-          const targetLine = view.state.doc.line(location.range.start.line + 1);
-          const targetPos = targetLine.from + location.range.start.character;
+          // Same document: navigate to definition in current view.
+          const valid = isValidLspPosition(
+            view.state.doc,
+            location.range.start.line,
+            location.range.start.character,
+          );
+          if (!valid) return;
+          const targetPos = valid.targetLine.from + location.range.start.character;
           view.dispatch({
             selection: { anchor: targetPos },
             scrollIntoView: true,
           });
         } else if (onNavigate) {
-          // Different file: delegate to the onNavigate callback
+          // Different file: delegate to the onNavigate callback.
+          // Minimum guard: reject non-integer/negative positions before delegating.
+          // Full doc-aware validation (character vs. line length) happens in the
+          // consumer (Editor.tsx) against the target file once it is opened.
+          if (
+            !isValidPositionShape(location.range.start.line) ||
+            !isValidPositionShape(location.range.start.character)
+          ) return;
           onNavigate(
             location.uri,
             location.range.start.line,
             location.range.start.character,
           );
         }
-      });
+      }).catch((err) => console.warn('gotoDefinition: failed to apply result', err));
 
       return true; // Consume the event
     },

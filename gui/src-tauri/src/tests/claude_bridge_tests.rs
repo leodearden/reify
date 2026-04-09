@@ -74,7 +74,9 @@ async fn make_ready_spawn_fn(
     let reader = BufReader::new(data_reader);
     let (stdin_writer, _stdin_reader) = tokio::io::duplex(1024);
     let handle = SidecarHandle::from_parts(stdin_writer, reader, state);
-    writer_tx.send(data_writer).expect("writer_tx receiver dropped");
+    writer_tx
+        .send(data_writer)
+        .expect("writer_tx receiver dropped");
     Ok(handle)
 }
 
@@ -629,6 +631,84 @@ async fn from_parts_with_mcp_threads_selection_into_tool_result() {
         selection_result["hovered_entity"], "Bracket.width",
         "Selection should contain pre-populated hovered_entity, got: {}",
         json_val
+    );
+
+    drop(stdout_writer);
+}
+
+#[tokio::test]
+async fn tool_result_write_failure_emits_claude_error_event() {
+    use crate::engine::EngineSession;
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_test_support::MockGeometryKernel;
+    use std::sync::Arc;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    // Set up engine for MCP dispatch
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let engine = Arc::new(std::sync::Mutex::new(session));
+
+    // stdin_writer: Rust writes tool_result here → sidecar would read it.
+    // Drop stdin_reader immediately so any write to stdin_writer will fail (broken pipe).
+    let (stdin_writer, stdin_reader) = tokio::io::duplex(4096);
+    drop(stdin_reader);
+
+    // stdout_writer: simulates sidecar writing tool_call → Rust reader task processes it.
+    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
+    let reader = BufReader::new(stdout_reader);
+    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
+
+    let events = Arc::new(std::sync::Mutex::new(vec![]));
+    let events_clone = Arc::clone(&events);
+    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
+
+    let _handle = SidecarHandle::from_parts_with_mcp(
+        stdin_writer,
+        reader,
+        state,
+        engine,
+        move |name: String, payload: serde_json::Value| {
+            events_clone.lock().unwrap().push((name, payload));
+        },
+        selection,
+    );
+
+    // Inject a reify_ tool_call from simulated sidecar stdout.
+    // The MCP handler will try to write the tool_result back to stdin_writer,
+    // which will fail because stdin_reader was dropped.
+    let tool_call =
+        r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{}}"#;
+    stdout_writer
+        .write_all(format!("{}\n", tool_call).as_bytes())
+        .await
+        .unwrap();
+
+    // Allow reader task + spawned MCP handler to execute and observe the write failure.
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+    }
+
+    // Verify the event sink contains a claude-error event with a relevant message.
+    let emitted = events.lock().unwrap();
+    let error_event = emitted.iter().find(|(name, _)| name == "claude-error");
+    assert!(
+        error_event.is_some(),
+        "Expected claude-error event in sink after write failure, got: {:?}",
+        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    let (_, payload) = error_event.unwrap();
+    let msg = payload["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("failed to send tool result to sidecar"),
+        "Expected error message to contain 'failed to send tool result to sidecar', got: {:?}",
+        msg
+    );
+    assert_eq!(
+        payload["id"].as_str().unwrap(),
+        "msg-fail",
+        "error event should carry the original tool_call id"
     );
 
     drop(stdout_writer);
@@ -2273,7 +2353,9 @@ async fn ensure_sidecar_ready_returns_ok_via_recheck_when_ready_during_spawn() {
             flag.store(true, Ordering::SeqCst);
 
             // Keep data_writer alive so the reader doesn't see EOF.
-            writer_tx.send(data_writer).expect("writer_tx receiver dropped");
+            writer_tx
+                .send(data_writer)
+                .expect("writer_tx receiver dropped");
             Ok(handle)
         }
     };

@@ -1,6 +1,6 @@
 // Snapshot: immutable evaluation state with provenance tracking.
 
-use reify_compiler::{CompiledModule, ValueCellKind};
+use reify_compiler::CompiledModule;
 use reify_types::{
     ContentHash, DeterminacyState, PersistentMap, SnapshotId, SnapshotProvenance, Value,
     ValueCellId, VersionId,
@@ -37,7 +37,7 @@ impl Snapshot {
         // all others get (Undef, Undetermined).
         let mut values = PersistentMap::new();
         for (id, node) in graph.value_cells.iter() {
-            let det = if node.kind == ValueCellKind::Auto {
+            let det = if node.kind.is_auto() {
                 DeterminacyState::Auto
             } else {
                 DeterminacyState::Undetermined

@@ -98,20 +98,14 @@ pub fn determine_context(source: &str, position: Position, ctx: &AnalysisContext
 
 /// Extract the text from the start of the current line to the given byte offset.
 fn extract_line_prefix(source: &str, offset: usize) -> &str {
-    let start = source[..offset]
-        .rfind('\n')
-        .map(|pos| pos + 1)
-        .unwrap_or(0);
+    let start = source[..offset].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
     &source[start..offset]
 }
 
 /// Check if a trimmed line starts with a declaration keyword (param, let, sub).
 fn starts_with_decl_keyword(trimmed: &str) -> bool {
     for kw in &["param", "let", "sub"] {
-        if trimmed.starts_with(kw)
-            && trimmed[kw.len()..]
-                .starts_with(|c: char| c.is_whitespace())
-        {
+        if trimmed.starts_with(kw) && trimmed[kw.len()..].starts_with(|c: char| c.is_whitespace()) {
             return true;
         }
     }
@@ -218,7 +212,11 @@ fn push_all_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
     }
 }
 
-fn push_scoped_members(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext, structure_name: &str) {
+fn push_scoped_members(
+    items: &mut Vec<CompletionItem>,
+    ctx: &AnalysisContext,
+    structure_name: &str,
+) {
     for (name, _kind, cell_type) in ctx.member_names_for_structure(structure_name) {
         items.push(CompletionItem {
             label: name.to_string(),
@@ -240,14 +238,7 @@ fn push_entity_names(items: &mut Vec<CompletionItem>, ctx: &AnalysisContext) {
 }
 
 /// Keywords that are only valid at the top level (outside structure bodies).
-const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "structure",
-    "occurrence",
-    "import",
-    "fn",
-    "trait",
-    "enum",
-];
+const TOP_LEVEL_KEYWORDS: &[&str] = &["structure", "occurrence", "import", "fn", "trait", "enum"];
 
 /// Keywords that start declaration lines inside a structure body.
 const BODY_KEYWORDS: &[&str] = &[
@@ -265,9 +256,7 @@ const BODY_KEYWORDS: &[&str] = &[
 ];
 
 /// Keywords valid inside expressions (conditions, values, operators).
-const EXPR_KEYWORDS: &[&str] = &[
-    "if", "then", "else", "and", "or", "not", "true", "false",
-];
+const EXPR_KEYWORDS: &[&str] = &["if", "then", "else", "and", "or", "not", "true", "false"];
 
 /// Metadata for a single built-in function exposed in LSP completions.
 struct BuiltinFunctionInfo {
@@ -1444,7 +1433,8 @@ mod tests {
     #[test]
     fn determine_context_dot_access_after_dot() {
         // "let x = part." — cursor immediately after the dot
-        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
+        let source =
+            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part.\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(3, 18), &ctx);
         assert!(
@@ -1457,7 +1447,8 @@ mod tests {
     #[test]
     fn determine_context_dot_access_with_trailing_space() {
         // "let x = part. " — cursor after dot + space
-        let source = "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part. \n}";
+        let source =
+            "structure Foo {\n    param a: Scalar = 1mm\n    sub part: Bar\n    let x = part. \n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let result = determine_context(source, Position::new(3, 19), &ctx);
         assert!(
@@ -1747,10 +1738,7 @@ mod tests {
             func_labels.contains(&"determinant"),
             "should include 'determinant'"
         );
-        assert!(
-            func_labels.contains(&"inverse"),
-            "should include 'inverse'"
-        );
+        assert!(func_labels.contains(&"inverse"), "should include 'inverse'");
         assert!(
             func_labels.contains(&"transpose"),
             "should include 'transpose'"
@@ -1810,7 +1798,10 @@ mod tests {
             .iter()
             .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
             .collect();
-        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        assert!(
+            !functions.is_empty(),
+            "expected at least one FUNCTION completion"
+        );
         for f in &functions {
             assert!(
                 f.detail.as_ref().map(|d| !d.is_empty()).unwrap_or(false),
@@ -1831,7 +1822,10 @@ mod tests {
             .iter()
             .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
             .collect();
-        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        assert!(
+            !functions.is_empty(),
+            "expected at least one FUNCTION completion"
+        );
         for f in &functions {
             match &f.documentation {
                 Some(Documentation::MarkupContent(mc)) => {
@@ -1864,7 +1858,10 @@ mod tests {
             .iter()
             .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
             .collect();
-        assert!(!functions.is_empty(), "expected at least one FUNCTION completion");
+        assert!(
+            !functions.is_empty(),
+            "expected at least one FUNCTION completion"
+        );
         // Every FUNCTION completion must have sort_text set
         for f in &functions {
             assert!(

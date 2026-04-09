@@ -27,7 +27,7 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
             reify_syntax::Declaration::Occurrence(o) => &o.members,
             reify_syntax::Declaration::Trait(t) => &t.members,
             reify_syntax::Declaration::Purpose(p) => &p.members,
-            _ => &[],  // Variants without members (Import, Enum, Function, etc.)
+            _ => &[], // Variants without members (Import, Enum, Function, etc.)
         };
         if let Some(info) = find_named_member_span(members, word) {
             return Some(Location {
@@ -96,14 +96,16 @@ pub fn compute_goto_definition_cross_file(
                 ImportKind::EntityAliased { entity, .. } => Some(entity.as_str()),
                 ImportKind::Destructured(names) => {
                     // Find which name the cursor is on
-                    names.iter().find(|n| n.as_str() == word).map(|n| n.as_str())
+                    names
+                        .iter()
+                        .find(|n| n.as_str() == word)
+                        .map(|n| n.as_str())
                 }
                 ImportKind::Module | ImportKind::Aliased { .. } => None,
             };
 
             if let Some(name) = entity_name
-                && let Some(loc) =
-                    find_declaration_in_source(&target_source, name, &target_uri)
+                && let Some(loc) = find_declaration_in_source(&target_source, name, &target_uri)
             {
                 return Some(loc);
             }
@@ -129,9 +131,10 @@ pub fn compute_goto_definition_cross_file(
                 ImportKind::EntityAliased { entity, alias } if alias == word => {
                     Some(entity.as_str())
                 }
-                ImportKind::Destructured(names) => {
-                    names.iter().find(|n| n.as_str() == word).map(|n| n.as_str())
-                }
+                ImportKind::Destructured(names) => names
+                    .iter()
+                    .find(|n| n.as_str() == word)
+                    .map(|n| n.as_str()),
                 _ => None,
             };
 
@@ -274,7 +277,10 @@ mod tests {
         assert_eq!(loc.uri, test_uri());
         // Should point to let declaration on line 2
         assert_eq!(loc.range.start.line, 2);
-        assert_eq!(loc.range.start.character, 4, "let keyword starts after 4-space indent");
+        assert_eq!(
+            loc.range.start.character, 4,
+            "let keyword starts after 4-space indent"
+        );
     }
 
     #[test]
@@ -315,11 +321,17 @@ mod tests {
         // Should point to the param declaration on line 3:
         // "        param guarded_x : Scalar = 5mm"
         assert_eq!(loc.range.start.line, 3);
-        assert_eq!(loc.range.start.character, 8, "param keyword starts after 8-space indent");
+        assert_eq!(
+            loc.range.start.character, 8,
+            "param keyword starts after 8-space indent"
+        );
         // Assert range.end covers the full declaration:
         // "        param guarded_x : Scalar = 5mm" → 30 chars after indent, end at (3, 8+30=38)
         assert_eq!(loc.range.end.line, 3, "declaration should be single-line");
-        assert_eq!(loc.range.end.character, 38, "end should cover full 'param guarded_x : Scalar = 5mm'");
+        assert_eq!(
+            loc.range.end.character, 38,
+            "end should cover full 'param guarded_x : Scalar = 5mm'"
+        );
     }
 
     #[test]
@@ -336,11 +348,17 @@ mod tests {
         // Should point to the let declaration on line 5:
         // "        let fallback = 10"
         assert_eq!(loc.range.start.line, 5);
-        assert_eq!(loc.range.start.character, 8, "let keyword starts after 8-space indent");
+        assert_eq!(
+            loc.range.start.character, 8,
+            "let keyword starts after 8-space indent"
+        );
         // Assert range.end covers the full declaration:
         // "        let fallback = 10" → 17 chars after indent, end at (5, 8+17=25)
         assert_eq!(loc.range.end.line, 5, "declaration should be single-line");
-        assert_eq!(loc.range.end.character, 25, "end should cover full 'let fallback = 10'");
+        assert_eq!(
+            loc.range.end.character, 25,
+            "end should cover full 'let fallback = 10'"
+        );
     }
 
     // --- enclosing-declaration scoping tests ---
@@ -498,7 +516,8 @@ mod tests {
         // Cursor on 'mass' inside structure S, which has no member named 'mass'.
         // Phase 1 scoped lookup returns None (S has member 'y', not 'mass').
         // Phase 2 fallback should find the trait param mass.
-        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}\nstructure S {\n    let y = mass\n}";
+        let source =
+            "trait Rigid {\n    param mass: Scalar = 5mm\n}\nstructure S {\n    let y = mass\n}";
         // Line 4: "    let y = mass"
         //                      ^ col 12 = 'mass' reference
         let position = Position::new(4, 12);
@@ -577,8 +596,7 @@ mod tests {
         let source =
             "import parts.{Bolt, Nut}\nstructure Assembly {\n    sub b = Bolt\n    sub n = Nut\n}";
         // Target file has both structures
-        let target_source =
-            "structure Bolt {\n    param length: Scalar = 20mm\n}\nstructure Nut {\n    param size: Scalar = 10mm\n}";
+        let target_source = "structure Bolt {\n    param length: Scalar = 20mm\n}\nstructure Nut {\n    param size: Scalar = 10mm\n}";
         let target_uri = parts_uri();
 
         let mut map = std::collections::HashMap::new();
@@ -602,8 +620,7 @@ mod tests {
     #[test]
     fn cross_file_aliased_entity_import_resolves_to_original_name() {
         // Main source imports 'parts.Bolt as StdBolt', cursor on 'StdBolt' in code.
-        let source =
-            "import parts.Bolt as StdBolt\nstructure Assembly {\n    sub b = StdBolt\n}";
+        let source = "import parts.Bolt as StdBolt\nstructure Assembly {\n    sub b = StdBolt\n}";
         // Target file has 'structure Bolt { ... }' (original name)
         let target_source = "structure Bolt {\n    param length: Scalar = 20mm\n}";
         let target_uri = parts_uri();
@@ -630,8 +647,7 @@ mod tests {
     fn cross_file_function_import_resolves_to_fn_declaration() {
         // Main source imports 'math.Sqrt' (entity import, uppercase) and uses it.
         // In Reify, entity imports use uppercase first letter per convention.
-        let source =
-            "import math.Sqrt\nstructure Circle {\n    param r: Scalar = 5mm\n    let d = Sqrt(r)\n}";
+        let source = "import math.Sqrt\nstructure Circle {\n    param r: Scalar = 5mm\n    let d = Sqrt(r)\n}";
         // Target file declares 'fn Sqrt(...)'
         let target_source = "fn Sqrt(x: Scalar) -> Scalar {\n    x\n}";
         let math_uri = Url::parse("file:///project/math.ri").unwrap();
@@ -764,8 +780,7 @@ mod tests {
 
         // Cursor on 'Foo' in 'sub f = Foo'
         let position = Position::new(2, 12);
-        let result =
-            compute_goto_definition_cross_file(source, &test_uri(), position, &resolver);
+        let result = compute_goto_definition_cross_file(source, &test_uri(), position, &resolver);
         assert!(
             result.is_none(),
             "unresolvable import should return None, not panic"
@@ -811,7 +826,8 @@ mod tests {
         // End-to-end: target source has multi-byte chars before a structure declaration.
         // Parser should still find the declaration, and find_name_offset_in_decl
         // should handle any tricky offsets gracefully.
-        let target_source = "// comment with é accent\nstructure Widget {\n    param size: Scalar = 5mm\n}";
+        let target_source =
+            "// comment with é accent\nstructure Widget {\n    param size: Scalar = 5mm\n}";
         let target_uri = Url::parse("file:///target.ri").unwrap();
         let result = find_declaration_in_source(target_source, "Widget", &target_uri);
         assert!(
@@ -832,15 +848,23 @@ mod tests {
         let resolver = |_: &str| -> Option<(Url, String)> { None };
 
         // Test 1: thickness ref in constraint → param declaration
-        let loc =
-            compute_goto_definition_cross_file(source, &test_uri(), Position::new(9, 15), &resolver)
-                .expect("thickness ref should still resolve in single-file mode");
+        let loc = compute_goto_definition_cross_file(
+            source,
+            &test_uri(),
+            Position::new(9, 15),
+            &resolver,
+        )
+        .expect("thickness ref should still resolve in single-file mode");
         assert_eq!(loc.range.start.line, 3);
 
         // Test 2: width ref in constraint expr → param declaration
-        let loc =
-            compute_goto_definition_cross_file(source, &test_uri(), Position::new(10, 30), &resolver)
-                .expect("width ref should still resolve in single-file mode");
+        let loc = compute_goto_definition_cross_file(
+            source,
+            &test_uri(),
+            Position::new(10, 30),
+            &resolver,
+        )
+        .expect("width ref should still resolve in single-file mode");
         assert_eq!(loc.range.start.line, 1);
 
         // Test 3: volume let → itself
@@ -889,7 +913,10 @@ mod tests {
         // Offset on 'x' standalone between declarations
         let offset = source.find("\nx\n").unwrap() + 1;
         let decl = enclosing_decl_at(&parsed.declarations, offset);
-        assert!(decl.is_none(), "offset outside declarations should return None");
+        assert!(
+            decl.is_none(),
+            "offset outside declarations should return None"
+        );
 
         // But goto_def should still find 'x' via fallback (line 3 is the standalone 'x')
         let loc = compute_goto_definition(source, &test_uri(), Position::new(3, 0))

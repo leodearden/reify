@@ -16,8 +16,13 @@ where
 {
     match FileWatcher::new(dir, target_file, callback) {
         Ok(w) => Some(w),
-        Err(e) if e.contains("Too many open files") => {
-            eprintln!("SKIP: inotify instances exhausted: {e}");
+        Err(e)
+            if e.contains("Too many open files")
+                || e.contains("OS file watch limit reached")
+                || e.contains("watch limit reached")
+                || e.contains("No space left on device") =>
+        {
+            eprintln!("SKIP: inotify resources exhausted: {e}");
             None
         }
         Err(e) => panic!("unexpected watcher error: {e}"),

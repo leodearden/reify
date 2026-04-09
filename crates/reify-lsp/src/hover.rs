@@ -30,7 +30,7 @@ pub fn compute_hover(source: &str, uri: &Url, position: Position) -> Option<Hove
         let kind_str = match info.kind {
             reify_compiler::ValueCellKind::Param => "param",
             reify_compiler::ValueCellKind::Let => "let",
-            reify_compiler::ValueCellKind::Auto => "auto",
+            reify_compiler::ValueCellKind::Auto { .. } => "auto",
         };
         let type_str = info.cell_type.to_string();
 
@@ -481,8 +481,8 @@ mod tests {
         let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
         // 'Joint' starts after 'occurrence def ' = col 15
         let position = Position::new(0, 16);
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for occurrence name");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for occurrence name");
         assert!(
             md.contains("occurrence Joint"),
             "should show 'occurrence Joint', not 'structure Joint', got: {md}"
@@ -496,18 +496,12 @@ mod tests {
         let position = Position::new(1, 10);
         let md = hover_markdown(source, position)
             .expect("hover should return info for occurrence member");
-        assert!(
-            md.contains("param"),
-            "should mention 'param', got: {md}"
-        );
+        assert!(md.contains("param"), "should mention 'param', got: {md}");
         assert!(
             md.contains("diameter"),
             "should mention 'diameter', got: {md}"
         );
-        assert!(
-            md.contains("Scalar"),
-            "should mention 'Scalar', got: {md}"
-        );
+        assert!(md.contains("Scalar"), "should mention 'Scalar', got: {md}");
     }
 
     #[test]
@@ -543,8 +537,8 @@ mod tests {
 }"#;
         // 'S' is on line 0 at col 10 (after 'structure ')
         let position = Position::new(0, 10);
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for structure S");
+        let md =
+            hover_markdown(source, position).expect("hover should return info for structure S");
         assert!(
             md.contains("structure S"),
             "should mention 'structure S', got: {md}"
@@ -653,12 +647,10 @@ structure B {
         // Hover on 'width' inside B should show B's evaluated value (0.02 m),
         // NOT A's value (0.005 m). This tests the bug scenario where
         // compute_hover used templates.first() for value lookup.
-        let source =
-            "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Scalar = 20mm\n}";
+        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Scalar = 20mm\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for width in B");
+        let md = hover_markdown(source, position).expect("hover should return info for width in B");
         assert!(
             md.contains("0.02 m"),
             "should show B's value (0.02 m), got: {md}"
@@ -694,12 +686,10 @@ structure B {
     fn hover_on_shared_member_in_second_structure() {
         // Two structures with identically-named member 'width' but different types.
         // Hover on 'width' inside B should show Bool, not Scalar.
-        let source =
-            "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
+        let source = "structure A {\n    param width: Scalar = 5mm\n}\nstructure B {\n    param width: Bool = true\n}";
         // 'width' inside B is on line 4, col 10
         let position = Position::new(4, 10);
-        let md = hover_markdown(source, position)
-            .expect("hover should return info for width in B");
+        let md = hover_markdown(source, position).expect("hover should return info for width in B");
         assert!(
             md.contains("Bool"),
             "should show Bool type from structure B, got: {md}"

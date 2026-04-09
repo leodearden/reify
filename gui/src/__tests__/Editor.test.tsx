@@ -265,6 +265,18 @@ describe('Editor active file switching', () => {
 });
 
 describe('Editor scrollToLocation', () => {
+  const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
+
+  function setupScrollToWithFile2Active() {
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file2.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+    return { view, setScrollTo };
+  }
+
   it('setting scrollToLocation signal moves cursor to target line/column', () => {
     const store = setupStore();
     const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
@@ -306,25 +318,26 @@ describe('Editor scrollToLocation', () => {
     expect(view.state.selection.main.head).toBe(0);
   });
 
-  it('scrollToLocation with mismatched file is a no-op', () => {
-    const store = setupStore([file1, file2]);
-    // Explicitly set active file to match multi-file test convention
-    store.setActiveFile(file2.path);
-    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
-    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
-    const container = screen.getByTestId('editor-container');
-    const view = getEditorView(container);
+  it('scrollToLocation targets active file with deterministic selection', () => {
+    const { view, setScrollTo } = setupScrollToWithFile2Active();
 
-    // Phase 1: target the active file (file2) to prove the effect fires
-    // file2 content: 'structure Mount {}' (18 chars, single line)
-    // column 5 -> head = 9 (col 10, 0-indexed)
+    // file2 content: 'structure Mount {}' (single line, starts at offset 0)
+    // end_column 10 -> head = 9 (0-indexed), column 5 -> anchor = 4 (0-indexed)
     setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
-    expect(view.state.selection.main.head).toBeGreaterThan(0);
+    expect(view.state.selection.main.anchor).toBe(4);
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
+  });
 
-    // Phase 2: now target mismatched file1 — effect must not move cursor
-    const headBefore = view.state.selection.main.head;
+  it('scrollToLocation with mismatched file does not move cursor', () => {
+    const { view, setScrollTo } = setupScrollToWithFile2Active();
+
+    // Establish baseline: target active file2 and confirm cursor moved to head=BASELINE_HEAD
+    setScrollTo({ file_path: file2.path, line: 1, column: 5, end_line: 1, end_column: 10 });
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
+
+    // Now target mismatched file1 — effect must not move cursor
     setScrollTo({ file_path: file1.path, line: 1, column: 5, end_line: 1, end_column: 10 });
-    expect(view.state.selection.main.head).toBe(headBefore);
+    expect(view.state.selection.main.head).toBe(BASELINE_HEAD);
   });
 
   it('scrollToLocation with no active file does not crash', () => {

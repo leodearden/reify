@@ -69,11 +69,7 @@ fn sample_field_with_undef_lambda() {
     };
 
     // sample(field, point) -> Undef because lambda is not a Lambda variant
-    let point = Value::Point(vec![
-        Value::Real(1.0),
-        Value::Real(2.0),
-        Value::Real(3.0),
-    ]);
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
     let sample_expr = make_function_call(
         "sample",
         vec![
@@ -470,10 +466,7 @@ fn gradient_of_field_with_non_numeric_lambda() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
     // Lambda: |x| "not_a_number"  (non-numeric return value)
-    let body = CompiledExpr::literal(
-        Value::String("not_a_number".to_string()),
-        Type::String,
-    );
+    let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
     let domain_type = Type::Real;

@@ -191,28 +191,50 @@ async fn lsp_bridge_with_sink_routes_diagnostics() {
 
 #[tokio::test]
 async fn lsp_request_impl_rejects_malformed_json_params() {
+    // Table-driven: each entry is a string that is not valid JSON.
+    // serde_json::from_str rejects all of them, so `lsp_request_impl` must
+    // return Err with the "invalid JSON params" prefix (from lsp_bridge.rs).
     let bridge = LspBridge::new();
-    let result = lsp_request_impl(&bridge, "initialize", "not json".to_string()).await;
-    assert!(result.is_err(), "malformed JSON params should return Err");
-    let err = result.unwrap_err();
+    for case in ["not json", "", "{", "\"unterminated"] {
+        let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
+        assert!(
+            result.is_err(),
+            "malformed JSON case {case:?} should return Err"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid JSON params"),
+            "case {case:?}: error should contain 'invalid JSON params', got: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lsp_request_impl_null_literal_passes_json_parse_step() {
+    let bridge = LspBridge::new();
+    // Invariant: `null` IS valid JSON (RFC 8259), so the JSON parse step in
+    // `lsp_request_impl` must accept it. Whether the downstream handler accepts
+    // or rejects null is outside this test's scope — we only assert that the
+    // "invalid JSON params" prefix is NOT emitted (that prefix is emitted only
+    // by the JSON parse step, not by any handler).
+    let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
     assert!(
-        err.contains("invalid JSON params"),
-        "error should contain 'invalid JSON params', got: {err}"
+        !matches!(&result, Err(e) if e.contains("invalid JSON params")),
+        "null literal should not trigger a JSON parse error, got: {result:?}"
     );
 }
 
 #[tokio::test]
-async fn lsp_request_impl_accepts_valid_json_null_literal() {
+async fn lsp_request_impl_valid_json_passes_json_parse_step() {
+    // Table-driven: each entry is valid JSON that serde_json::from_str accepts.
+    // `lsp_request_impl` must NOT return "invalid JSON params" for any of these
+    // (that error is emitted only by the JSON parse step, not by any handler).
     let bridge = LspBridge::new();
-    // "null" is valid JSON — parsing must succeed; the error (if any) must NOT
-    // come from the JSON parse step itself.
-    let result = lsp_request_impl(&bridge, "initialize", "null".to_string()).await;
-    if let Err(ref e) = result {
+    for case in ["{}", "[]", "42", "true", "null"] {
+        let result = lsp_request_impl(&bridge, "initialize", case.to_string()).await;
         assert!(
-            !e.contains("invalid JSON params"),
-            "null literal should not trigger a JSON parse error, got: {e}"
+            !matches!(&result, Err(e) if e.contains("invalid JSON params")),
+            "valid JSON case {case:?} should not trigger a JSON parse error, got: {result:?}"
         );
     }
-    // Whether the LSP handler accepts null params or not is its own concern;
-    // what matters is that the JSON parse step did not reject it.
 }

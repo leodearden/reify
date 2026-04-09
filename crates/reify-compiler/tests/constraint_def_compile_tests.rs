@@ -11,7 +11,11 @@ use reify_types::*;
 
 fn compile_module(source: &str) -> CompiledModule {
     let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -203,7 +207,11 @@ structure S {
             assert_eq!(*op, BinOp::Ge, "first constraint should be Ge (>=)");
             match &left.kind {
                 CompiledExprKind::ValueRef(id) => {
-                    assert_eq!(id.member, "d", "left should be ValueRef(d), got {}", id.member);
+                    assert_eq!(
+                        id.member, "d",
+                        "left should be ValueRef(d), got {}",
+                        id.member
+                    );
                 }
                 other => panic!("left should be ValueRef, got {:?}", other),
             }
@@ -458,13 +466,13 @@ structure S {
 "#;
     let (tmpl, diags) = compile_template(source, "S");
     let errors = error_diags(&diags);
-    assert!(errors.is_empty(), "expected no compile errors, got: {:?}", errors);
-
-    assert_eq!(
-        tmpl.constraints.len(),
-        1,
-        "expected exactly 1 constraint"
+    assert!(
+        errors.is_empty(),
+        "expected no compile errors, got: {:?}",
+        errors
     );
+
+    assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
 
     // The label "MinWall[0]" is the def name + predicate index.
     // When eval detects a violation, it replaces the raw ConstraintNodeId
@@ -568,7 +576,11 @@ fn cross_module_constraint_def_import() {
 fn pub_constraint_def_parsed() {
     let source = "pub constraint def Positive {\n    param v: Length\n    v > 0mm\n}\n";
     let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let constraint_def = parsed
         .declarations

@@ -1,0 +1,99 @@
+// M11 annotations: exercises @test annotations through the full pipeline.
+// Features covered:
+//   1. Basic @test structure with satisfied inline constraint
+//   2. Basic @test structure with violated inline constraint (intentional FAIL)
+//   3. @test structure with auto param producing Indeterminate
+//   4. @test structure exercising a constraint def reference (pass)
+//   5. @test structure exercising a constraint def reference (fail)
+//   6. @test structure with sub-structure fixture (multi-component assembly)
+//
+// Run with: reify test examples/m11_annotations.ri
+//
+// Expected output:
+//   PASS  TestPositiveWidth
+//   FAIL  TestNegativeWidth        ← intentional violation
+//   INDETERMINATE  TestUnknownLoad  ← auto param not yet resolved
+//   PASS  TestColumnPositive
+//   FAIL  TestColumnNegative       ← intentional violation
+//   PASS  TestAssemblyFits
+//   test result: FAIL. 3 passed; 2 failed; 1 indeterminate
+
+// ── Shared constraint defs ─────────────────────────────────────────────────────
+
+// Positive: value must be strictly above zero.
+constraint def Positive {
+    param v: Length
+    v > 0mm
+}
+
+// MinLength: value must meet a minimum threshold.
+constraint def MinLength {
+    param value: Length
+    param min: Length
+    value >= min
+}
+
+// ── Non-test structure defs (used as sub-component fixtures) ──────────────────
+
+structure def Column {
+    param height: Length = 200mm
+    param radius: Length = 15mm
+}
+
+structure def Pedestal {
+    param base: Length = 60mm
+    param thickness: Length = 10mm
+}
+
+// ── Feature 1: basic @test with satisfied inline constraint ───────────────────
+// width = 50mm satisfies width > 0mm.  → PASS
+
+@test structure TestPositiveWidth {
+    param width: Length = 50mm
+    constraint width > 0mm
+}
+
+// ── Feature 2: basic @test with violated inline constraint ────────────────────
+// width = -5mm violates width > 0mm.  → FAIL (intentional)
+
+@test structure TestNegativeWidth {
+    param width: Length = -5mm
+    constraint width > 0mm
+}
+
+// ── Feature 3: @test with auto param — constraint is Indeterminate ────────────
+// load = auto means the solver has not resolved it yet.
+// load > 0 cannot be evaluated → Indeterminate.  → INDETERMINATE
+
+@test structure TestUnknownLoad {
+    param load: Scalar = auto
+    constraint load > 0
+}
+
+// ── Feature 4: @test exercising a constraint def reference (pass) ─────────────
+// height = 200mm satisfies Positive(v: height) i.e. 200mm > 0mm.  → PASS
+
+@test structure TestColumnPositive {
+    param height: Length = 200mm
+    constraint Positive(v: height)
+}
+
+// ── Feature 5: @test exercising a constraint def reference (fail) ─────────────
+// height = -10mm violates Positive(v: height) i.e. -10mm > 0mm.  → FAIL (intentional)
+
+@test structure TestColumnNegative {
+    param height: Length = -10mm
+    constraint Positive(v: height)
+}
+
+// ── Feature 6: @test with sub-structure fixture assembly ──────────────────────
+// Assembly instantiates Column and Pedestal as sub-components.
+// Checks that height and base dimensions are positive.  → PASS
+
+@test structure TestAssemblyFits {
+    sub col = Column()
+    sub ped = Pedestal()
+    constraint self.col.height > 0mm
+    constraint self.ped.base > 0mm
+    constraint MinLength(value: self.col.radius, min: 10mm)
+}

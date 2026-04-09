@@ -45,6 +45,6 @@ assert "no npm lockfiles are gitignored" \
 # ── Check 4: pnpm-lock.yaml IS in .gitignore ────────────────────────
 echo ""
 echo "Check 4: pnpm-lock.yaml gitignored"
-assert "**/pnpm-lock.yaml glob in .gitignore" grep -q '\*\*/pnpm-lock\.yaml' "$ROOT/.gitignore"
+assert "gui/pnpm-lock.yaml in .gitignore" grep -q 'gui/pnpm-lock\.yaml' "$ROOT/.gitignore"
 
 test_summary

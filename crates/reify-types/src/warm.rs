@@ -94,4 +94,18 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<OpaqueState>();
     }
+
+    #[test]
+    fn opaque_state_downcast_ref_success() {
+        let state = OpaqueState::new(42i32, 4);
+        let value_ref = state.downcast_ref::<i32>();
+        assert_eq!(value_ref, Some(&42i32));
+    }
+
+    #[test]
+    fn opaque_state_downcast_ref_wrong_type_returns_none() {
+        let state = OpaqueState::new(42i32, 4);
+        let value_ref = state.downcast_ref::<String>();
+        assert_eq!(value_ref, None);
+    }
 }

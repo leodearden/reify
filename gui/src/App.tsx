@@ -30,6 +30,7 @@ import {
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
   onFileChanged,
+  onSerializationError,
   getSourceLocation as bridgeGetSourceLocation,
   focusEntity as bridgeFocusEntity,
   claudeSendMessage,
@@ -45,6 +46,7 @@ import type { ExportFormat, FileData, SourceLocation, ConstraintData, ToastMessa
 import { applyTheme } from './theme';
 import { errorMessage } from './utils/errorClassifier';
 import { loadPanelLayout, savePanelLayout } from './hooks/useLayoutPersistence';
+import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import styles from './App.module.css';
 
 const MIN_PANEL_WIDTH = 150;
@@ -113,6 +115,9 @@ const App: Component = () => {
     const id = String(++toastIdCounter);
     setToasts((prev) => [...prev, { id, type, message }]);
   }
+
+  // Coalescer for serialization-error events — debounces and deduplicates bursts
+  const serializationErrorCoalescer = createSerializationErrorCoalescer(showToast);
 
   // Reload prompt state — tracks all files changed since last reload/dismiss
   const [changedFiles, setChangedFiles] = createSignal<Set<string>>(new Set());
@@ -195,6 +200,7 @@ const App: Component = () => {
   let alive = true;
   let unsub: (() => void) | undefined;
   let fileChangedUnsub: (() => void) | undefined;
+  let serializationErrorUnsub: (() => void) | undefined;
   let claudeEventUnsub: (() => void) | undefined;
 
   async function initApp() {
@@ -204,6 +210,8 @@ const App: Component = () => {
     unsub = undefined;
     fileChangedUnsub?.();
     fileChangedUnsub = undefined;
+    serializationErrorUnsub?.();
+    serializationErrorUnsub = undefined;
     claudeEventUnsub?.();
     claudeEventUnsub = undefined;
 
@@ -255,6 +263,20 @@ const App: Component = () => {
       showToast('File change monitoring unavailable — external edits may not be detected', 'error');
     }
 
+    // Subscribe to serialization error events
+    try {
+      const unlistenSerializationError = await onSerializationError((data) => {
+        serializationErrorCoalescer.add(data);
+      });
+      if (!alive) {
+        unlistenSerializationError();
+        return;
+      }
+      serializationErrorUnsub = unlistenSerializationError;
+    } catch (_err) {
+      showToast('Serialization error monitoring unavailable', 'error');
+    }
+
     // Subscribe to Claude sidecar events
     try {
       const unlistenClaude = await subscribeToClaudeEvents(claudeStore.handleOutboundMessage);
@@ -281,6 +303,8 @@ const App: Component = () => {
     alive = false;
     unsub?.();
     fileChangedUnsub?.();
+    serializationErrorUnsub?.();
+    serializationErrorCoalescer.cleanup();
     claudeEventUnsub?.();
   });
 

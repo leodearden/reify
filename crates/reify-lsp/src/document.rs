@@ -52,9 +52,7 @@ impl DocumentStore {
     pub fn snapshot_as_path_map(&self) -> HashMap<PathBuf, String> {
         self.documents
             .iter()
-            .filter_map(|(uri, doc)| {
-                uri.to_file_path().ok().map(|p| (p, doc.text.clone()))
-            })
+            .filter_map(|(uri, doc)| uri.to_file_path().ok().map(|p| (p, doc.text.clone())))
             .collect()
     }
 }

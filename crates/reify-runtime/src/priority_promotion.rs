@@ -171,10 +171,7 @@ impl SharedPriorityPromoter {
 
     /// Return the number of tracked nodes (for test verification of cleanup).
     pub fn count(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .count()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).count()
     }
 
     /// Promote all in-flight dependencies of a demanded node transitively.

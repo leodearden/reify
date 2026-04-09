@@ -203,6 +203,7 @@ impl ConstraintSolver for CpSatSolver {
         if problem.auto_params.is_empty() {
             return SolveResult::Solved {
                 values: HashMap::new(),
+                unique: true,
             };
         }
 
@@ -241,7 +242,10 @@ impl ConstraintSolver for CpSatSolver {
             &auto_param_ids,
             &problem.functions,
         ) {
-            Some(solution) => SolveResult::Solved { values: solution },
+            Some(solution) => SolveResult::Solved {
+                values: solution,
+                unique: true,
+            },
             None => SolveResult::Infeasible {
                 diagnostics: vec![Diagnostic::error(format!(
                     "CpSatSolver: no satisfying assignment found for {} auto params with {} constraints",

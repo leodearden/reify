@@ -458,7 +458,7 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -527,7 +527,9 @@ fn edit_param_guard_false_preserves_solver_auto_param() {
     );
 
     // DeterminacyState in snapshot must remain Determined after guard deactivation
-    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
     let (snap_val, snap_det) = snapshot
         .values
         .get(&thickness_id)
@@ -557,7 +559,7 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -625,7 +627,9 @@ fn edit_param_guard_true_preserves_solver_auto_in_else_members() {
     );
 
     // DeterminacyState in snapshot must remain Determined after else branch deactivation
-    let snapshot = engine.snapshot().expect("snapshot should exist after edit_param");
+    let snapshot = engine
+        .snapshot()
+        .expect("snapshot should exist after edit_param");
     let (snap_val, snap_det) = snapshot
         .values
         .get(&thickness_id)
@@ -716,7 +720,7 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -757,8 +761,14 @@ fn guard_round_trip_true_false_true_re_resolves_auto_param() {
     let mut solved2 = HashMap::new();
     solved2.insert(thickness_id.clone(), mm(8.0));
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let checker = MockConstraintChecker::new();
@@ -836,7 +846,7 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
 
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -877,8 +887,14 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
     let mut solved2 = HashMap::new();
     solved2.insert(thickness_id.clone(), mm(8.0));
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let checker = MockConstraintChecker::new();
@@ -930,7 +946,9 @@ fn guard_round_trip_false_true_false_re_resolves_auto_in_else() {
         "Step 3: thickness should retain preserved value (5mm / 0.005 SI) after else re-activation, got {:?}",
         thickness_react
     );
-    let snap3 = engine.snapshot().expect("snapshot after else re-activation");
+    let snap3 = engine
+        .snapshot()
+        .expect("snapshot after else re-activation");
     let (_, det3) = snap3.values.get(&thickness_id).expect("thickness in snap3");
     assert_eq!(
         *det3,
@@ -953,7 +971,7 @@ fn eval_guard_false_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' as a guarded member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1021,7 +1039,7 @@ fn eval_guard_true_auto_param_in_else_gets_auto_determinacy() {
     // Auto param 'thickness' as an else_member (kind=Auto, no default_expr)
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1149,7 +1167,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'thickness' in members
     let thickness_decl = ValueCellDecl {
         id: thickness_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1159,7 +1177,7 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
     // Auto param 'depth' in else_members
     let depth_decl = ValueCellDecl {
         id: depth_id.clone(),
-        kind: ValueCellKind::Auto,
+        kind: ValueCellKind::Auto { free: false },
         visibility: Visibility::Public,
         cell_type: Type::length(),
         default_expr: None,
@@ -1220,5 +1238,326 @@ fn eval_guard_undef_auto_param_gets_auto_determinacy() {
         *depth_det,
         DeterminacyState::Auto,
         "Auto else_member deactivated by Undef guard should have DeterminacyState::Auto"
+    );
+}
+
+/// Regression test: topology_fingerprint round-trips correctly through guard state transitions.
+///
+/// Verifies that `edit_param` re-elaboration correctly reflects guard cell values in the
+/// topology_fingerprint. If guard cells were silently defaulting to `Value::Undef` (rather
+/// than reading the actual guard value from the values map), all guard states would produce
+/// the same fingerprint hash (hash of Undef), causing stale incremental caches.
+///
+/// Both `eval()` and `edit_param()` now use the same `"guard:{}={:?}"` format string for
+/// guard-state hashing, so cross-path fingerprints are directly comparable. F1 (from eval)
+/// must equal F3 (from edit_param with the same guard=true state).
+///
+/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3 == F1,
+///           edit_param(false) → F4 == F2.
+#[test]
+fn edit_param_guard_fingerprint_round_trips() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when guard is true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when guard is false)
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // Phase 1: initial eval with guard=true
+    let result1 = engine.eval(&module);
+    let f1 = engine.snapshot().unwrap().topology_fingerprint;
+
+    // Sanity-check initial state (use EvalResult.values which is HashMap<_, Value>)
+    assert_eq!(
+        result1.values.get(&x_id),
+        Some(&Value::length(0.005)),
+        "x should be 5mm when guard is true"
+    );
+    assert_eq!(
+        result1.values.get(&y_id),
+        Some(&Value::Undef),
+        "y should be Undef when guard is true"
+    );
+
+    // Phase 2: edit guard to false → fingerprint F2, must differ from F1
+    let result2 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) should succeed");
+    let f2 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_ne!(
+        f1, f2,
+        "topology_fingerprint must change when guard transitions true→false"
+    );
+
+    // Sanity-check: x deactivated, y active
+    assert_eq!(
+        result2.values.get(&x_id),
+        Some(&Value::Undef),
+        "x should be Undef after guard transitions to false"
+    );
+    assert_eq!(
+        result2.values.get(&y_id),
+        Some(&Value::length(0.01)),
+        "y should be 10mm after guard transitions to false"
+    );
+
+    // Phase 3: edit guard back to true → fingerprint F3 must differ from F2.
+    // KEY ASSERTION: if guard cells silently fell back to Undef, F3 would equal F2
+    // (both would hash Undef), making the fingerprint insensitive to guard state.
+    let result3 = engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param(active=true) should succeed");
+    let f3 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_ne!(
+        f2, f3,
+        "topology_fingerprint must change when guard transitions false→true (guard state must be reflected in fingerprint)"
+    );
+
+    // Cross-path consistency: eval(true) → F1 must equal edit_param(true) → F3.
+    // Both use the same "guard:{}={:?}" format string, so same guard state → same fingerprint.
+    assert_eq!(
+        f1, f3,
+        "topology_fingerprint from eval(true) must equal edit_param(true): cross-path consistency"
+    );
+
+    // Verify values returned to initial state
+    assert_eq!(
+        result3.values.get(&x_id),
+        Some(&Value::length(0.005)),
+        "x should be 5mm again after guard returns to true"
+    );
+    assert_eq!(
+        result3.values.get(&y_id),
+        Some(&Value::Undef),
+        "y should be Undef again after guard returns to true"
+    );
+
+    // Phase 4: edit guard back to false → fingerprint F4 must equal F2 (round-trip).
+    // This verifies consistency within the edit_param code path.
+    let _result4 = engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) second time should succeed");
+    let f4 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_eq!(
+        f2, f4,
+        "topology_fingerprint must be the same for identical guard states (false==false round-trip)"
+    );
+}
+
+/// Cross-path consistency: topology_fingerprint from eval() must equal the fingerprint
+/// from edit_param() when both represent the same logical guard state.
+///
+/// If `eval()` and `edit_param()` use different hash format strings for guard state,
+/// the same logical guard value (e.g. `Bool(true)`) produces different hashes depending
+/// on which code path computed it, causing spurious cache misses or stale incremental
+/// caches when switching between paths.
+///
+/// Sequence: eval(true) → F1, edit_param(false) → F2 ≠ F1, edit_param(true) → F3.
+/// Asserts: F1 == F3 (eval and edit_param produce identical fingerprints for same state).
+///
+/// **Why this test exists alongside `edit_param_guard_fingerprint_round_trips`:**
+/// `edit_param_guard_fingerprint_round_trips` comprehensively covers the round-trip
+/// property (F2==F4) and validates member values at each phase, but its cross-path
+/// assertion (F1==F3) is one of many assertions. This focused test is a minimal
+/// regression reproducer for the specific cross-path hash-format bug fixed in task 1112,
+/// where `eval()` and `edit_param()` used different format strings for guard-state
+/// hashing, causing identical logical states to produce different fingerprints.
+#[test]
+fn eval_edit_param_guard_fingerprint_cross_path_consistency() {
+    let active_id = ValueCellId::new("S", "active");
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when guard is true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when guard is false)
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // F1: initial eval with guard=true
+    engine.eval(&module);
+    let f1 = engine.snapshot().unwrap().topology_fingerprint;
+
+    // F2: edit guard to false (topology changes, fingerprint must differ from F1)
+    engine
+        .edit_param(active_id.clone(), Value::Bool(false))
+        .expect("edit_param(active=false) should succeed");
+    let f2 = engine.snapshot().unwrap().topology_fingerprint;
+    assert_ne!(f1, f2, "fingerprint must change on guard true→false");
+
+    // F3: edit guard back to true — must equal F1 (same logical state, same code path → same hash)
+    engine
+        .edit_param(active_id.clone(), Value::Bool(true))
+        .expect("edit_param(active=true) should succeed");
+    let f3 = engine.snapshot().unwrap().topology_fingerprint;
+
+    assert_eq!(
+        f1, f3,
+        "topology_fingerprint from eval(guard=true) must equal edit_param(guard=true): \
+         eval() and edit_param() must use the same guard-state hash format"
+    );
+}
+
+/// Multi-guarded-group fingerprint disambiguation.
+///
+/// Verifies that two guard cells with the same *value* but different *identities*
+/// produce different topology fingerprints. The hash format `"guard:{}={:?}"` includes
+/// the guard cell ID, so `__guard_0=Bool(true), __guard_1=Bool(false)` must hash
+/// differently from `__guard_0=Bool(false), __guard_1=Bool(true)` even though both
+/// represent "one true, one false" guard states.
+///
+/// This property prevents spurious cache hits when two guards have swapped values —
+/// if the fingerprint only captured the *multiset* of guard values, a swapped-guard
+/// topology would incorrectly reuse an incompatible cached evaluation.
+///
+/// Template: two boolean params `active_a` (controls `__guard_0`) and `active_b`
+/// (controls `__guard_1`), each with its own set of members.
+///
+/// Sequence: eval(a=T, b=T) → F_tt, edit_param(b=F) → F_tf, edit_param(a=F) +
+/// edit_param(b=T) → F_ft.
+/// Asserts: F_tt ≠ F_tf, F_tt ≠ F_ft, F_tf ≠ F_ft (all three pairwise distinct).
+#[test]
+fn multi_guard_fingerprint_disambiguates_by_guard_identity() {
+    let active_a_id = ValueCellId::new("S", "active_a");
+    let active_b_id = ValueCellId::new("S", "active_b");
+    let guard_a_id = ValueCellId::new("S", "__guard_0");
+    let guard_b_id = ValueCellId::new("S", "__guard_1");
+
+    let guard_a_expr = value_ref_typed("S", "active_a", Type::Bool);
+    let guard_b_expr = value_ref_typed("S", "active_b", Type::Bool);
+
+    // Members for guard_0 (controlled by active_a)
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    // Members for guard_1 (controlled by active_b)
+    let z_decl = make_param_decl("S", "z", Type::length(), Value::length(0.015));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active_a",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .param(
+            "S",
+            "active_b",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .guarded_group(
+            guard_a_expr,
+            guard_a_id.clone(),
+            vec![x_decl], // members: active when guard_0 is true
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .guarded_group(
+            guard_b_expr,
+            guard_b_id.clone(),
+            vec![z_decl], // members: active when guard_1 is true
+            vec![],       // constraints
+            vec![],       // else_members
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::new(Box::new(checker), None);
+
+    // F_tt: initial eval with both guards true (active_a=T, active_b=T)
+    engine.eval(&module);
+    let f_tt = engine.snapshot().unwrap().topology_fingerprint;
+
+    // F_tf: active_a=T, active_b=F
+    engine
+        .edit_param(active_b_id.clone(), Value::Bool(false))
+        .expect("edit_param(active_b=false) should succeed");
+    let f_tf = engine.snapshot().unwrap().topology_fingerprint;
+
+    // Transition to active_a=F, active_b=T: first set a=false (gives FF), then b=true (gives FT)
+    engine
+        .edit_param(active_a_id.clone(), Value::Bool(false))
+        .expect("edit_param(active_a=false) should succeed");
+    engine
+        .edit_param(active_b_id.clone(), Value::Bool(true))
+        .expect("edit_param(active_b=true) should succeed");
+    let f_ft = engine.snapshot().unwrap().topology_fingerprint;
+
+    // All three states must produce distinct fingerprints.
+    // F_tt vs F_tf: different because guard_1 changed (true → false)
+    assert_ne!(
+        f_tt, f_tf,
+        "F_tt must differ from F_tf: guard_1 changed from true to false"
+    );
+    // F_tt vs F_ft: different because guard_0 changed (true → false) and guard_1 changed (true → true, no wait...)
+    // Actually F_tt: g0=T g1=T; F_ft: g0=F g1=T — guard_0 changed
+    assert_ne!(
+        f_tt, f_ft,
+        "F_tt must differ from F_ft: guard_0 changed from true to false"
+    );
+    // KEY: F_tf vs F_ft — both have one true and one false guard, but WHICH guard holds WHICH value differs.
+    // F_tf: guard_0=Bool(true),  guard_1=Bool(false)
+    // F_ft: guard_0=Bool(false), guard_1=Bool(true)
+    // The "guard:{}={:?}" format includes guard cell ID, so these hash differently.
+    assert_ne!(
+        f_tf, f_ft,
+        "F_tf must differ from F_ft: guard_0 and guard_1 have swapped values; \
+         fingerprint must distinguish which specific guard cell holds which value, \
+         not just the multiset of guard values"
     );
 }

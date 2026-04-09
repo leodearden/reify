@@ -135,9 +135,7 @@ fn assert_no_unresolved(expr: &reify_types::CompiledExpr) {
         CompiledExprKind::OptionNone => {}
         CompiledExprKind::MetaAccess { .. } => {}
         CompiledExprKind::DeterminacyPredicate { .. } => {}
-        CompiledExprKind::RangeConstructor {
-            lower, upper, ..
-        } => {
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             if let Some(lo) = lower {
                 assert_no_unresolved(lo);
             }
@@ -247,9 +245,12 @@ fn type_error_dimension_mismatch() {
             ],
             span: SourceSpan::new(0, 55),
             content_hash: ContentHash::of_str("structure Bad"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("dim_mismatch module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -345,9 +346,12 @@ fn constraint_non_bool_produces_warning() {
             ],
             span: SourceSpan::new(0, 70),
             content_hash: ContentHash::of_str("structure Bad non_bool"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("non_bool_constraint module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -392,7 +396,7 @@ fn compile_auto_param() {
     // x should be Auto with no default_expr
     let x = &template.value_cells[0];
     assert_eq!(x.id, reify_types::ValueCellId::new("S", "x"));
-    assert_eq!(x.kind, ValueCellKind::Auto);
+    assert!(x.kind.is_auto());
     assert!(
         x.default_expr.is_none(),
         "auto param should have no default_expr"
@@ -432,7 +436,7 @@ fn compiled_auto_param_span_not_zero() {
 
     let template = &compiled.templates[0];
     let x = &template.value_cells[0];
-    assert_eq!(x.kind, ValueCellKind::Auto);
+    assert!(x.kind.is_auto());
 
     // Auto param span must not be (0,0)
     assert_ne!(
@@ -574,9 +578,12 @@ fn mul_div_different_dimensions_no_diagnostic() {
             ],
             span: SourceSpan::new(0, 100),
             content_hash: ContentHash::of_str("structure Good mul_div"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("mul_div_dims module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);
@@ -1198,7 +1205,7 @@ fn e2e_minimize_round_trip() {
     let auto_cells: Vec<_> = template
         .value_cells
         .iter()
-        .filter(|vc| vc.kind == ValueCellKind::Auto)
+        .filter(|vc| vc.kind.is_auto())
         .collect();
     assert_eq!(auto_cells.len(), 1, "expected 1 auto param");
     assert_eq!(
@@ -1563,9 +1570,12 @@ fn scalar_plus_int_type_error() {
             ],
             span: SourceSpan::new(0, 45),
             content_hash: ContentHash::of_str("structure Bad scalar_plus_int"),
+            pragmas: vec![],
+            annotations: vec![],
         })],
         errors: vec![],
         content_hash: ContentHash::of_str("scalar_plus_int module"),
+        pragmas: vec![],
     };
 
     let compiled = reify_compiler::compile(&module);

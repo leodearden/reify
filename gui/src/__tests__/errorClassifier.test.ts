@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyError, errorMessage } from '../utils/errorClassifier';
+import { errorMessage as canonical } from '@reify/shared-utils';
 
 describe('errorClassifier', () => {
   describe('auth errors', () => {
@@ -88,62 +89,17 @@ describe('errorClassifier', () => {
     });
   });
 
-  describe('errorMessage', () => {
-    it('returns .message for Error instances', () => {
-      expect(errorMessage(new Error('something broke'))).toBe('something broke');
+  describe('errorMessage re-export smoke test', () => {
+    it('is exported from errorClassifier', () => {
+      expect(typeof errorMessage).toBe('function');
     });
 
-    it('returns .message for Error subclass instances', () => {
-      expect(errorMessage(new TypeError('bad type'))).toBe('bad type');
-      expect(errorMessage(new RangeError('out of range'))).toBe('out of range');
+    it('delegates to @reify/shared-utils implementation', () => {
+      expect(errorMessage(new Error('x'))).toBe('x');
     });
 
-    it('returns the string itself for string inputs', () => {
-      expect(errorMessage('plain string error')).toBe('plain string error');
-    });
-
-    it('returns "Unknown error" for Error with empty message', () => {
-      expect(errorMessage(new Error(''))).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" for empty string input', () => {
-      expect(errorMessage('')).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" for Error with whitespace-only message', () => {
-      expect(errorMessage(new Error('   '))).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" for whitespace-only string input', () => {
-      expect(errorMessage('   ')).toBe('Unknown error');
-    });
-
-    it('returns "Unknown error" for plain object with whitespace-only .message', () => {
-      expect(errorMessage({ message: '   ' })).toBe('Unknown error');
-    });
-
-    it('coerces non-Error, non-string values via String()', () => {
-      expect(errorMessage(42)).toBe('42');
-      expect(errorMessage(null)).toBe('null');
-      expect(errorMessage(undefined)).toBe('undefined');
-      expect(errorMessage({ key: 'val' })).toBe('[object Object]');
-    });
-
-    it('returns .message for plain object with string .message property', () => {
-      expect(errorMessage({ code: 404, message: 'Not found' })).toBe('Not found');
-      expect(errorMessage({ message: 'structured error' })).toBe('structured error');
-    });
-
-    it('returns "Unknown error" for plain object with empty string .message', () => {
-      expect(errorMessage({ message: '' })).toBe('Unknown error');
-    });
-
-    it('falls through to String() for plain object with non-string .message', () => {
-      expect(errorMessage({ message: 42 })).toBe('[object Object]');
-    });
-
-    it('falls through to String() for plain object without .message', () => {
-      expect(errorMessage({ code: 500 })).toBe('[object Object]');
+    it('is the exact same function reference as @reify/shared-utils', () => {
+      expect(errorMessage).toBe(canonical);
     });
   });
 

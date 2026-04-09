@@ -94,4 +94,54 @@ echo "--- Test 8: wc -l output has whitespace stripped (cross-platform) ---"
 assert "script does not use bare 'wc -l)' without whitespace stripping" \
     bash -c "! grep -qE 'wc -l\)' '$SCRIPT'"
 
+# -- Test 9: orchestrator command placement and existence guards ---------------
+echo ""
+echo "--- Test 9: orchestrator command placement and existence guards ---"
+
+# S1: full-path assertion (the guard-pattern assertion below also provides full-path coverage)
+assert "scripts/check-pm-standardization.sh (full path) is in lint_command" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'scripts/check-pm-standardization.sh'"
+
+assert "check-pm-standardization.sh is NOT in test_command" \
+    bash -c "! grep 'test_command:' '$ORCH' | grep -q 'check-pm-standardization.sh'"
+
+# S2: symmetric negative assertion — test-only scripts should not be in lint_command
+assert "sync_comments_test.sh is NOT in lint_command" \
+    bash -c "! grep 'lint_command:' '$ORCH' | grep -q 'sync_comments_test.sh'"
+
+assert "sync_comments_test.sh uses 'if test -f' guard in test_command" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -q 'if test -f tests/sync_comments_test.sh'"
+
+assert "check-pm-standardization.sh uses 'if test -f' guard in lint_command" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'if test -f scripts/check-pm-standardization.sh'"
+
+# -- Test 10: WARNING echoes when guards trigger a skip ------------------------
+echo ""
+echo "--- Test 10: WARNING echoes for guard skips ---"
+
+assert "test_command has WARNING echo for sync_comments_test.sh skip" \
+    bash -c "grep 'test_command:' '$ORCH' | grep -q 'WARNING.*sync_comments_test'"
+
+assert "lint_command has WARNING echo for check-pm-standardization.sh skip" \
+    bash -c "grep 'lint_command:' '$ORCH' | grep -q 'WARNING.*check-pm-standardization'"
+
+# -- Test 11: end-to-end execution test ----------------------------------------
+echo ""
+echo "--- Test 11: check-pm-standardization.sh runs successfully ---"
+
+assert "check-pm-standardization.sh runs successfully in repo context" \
+    bash "$REPO_ROOT/scripts/check-pm-standardization.sh"
+
+# -- Test 12: build artifact tracking hygiene ----------------------------------
+echo ""
+echo "--- Test 12: build artifact tracking hygiene ---"
+
+# tree-sitter-reify/src/.grammar_hash.stamp is listed at .gitignore:34 but was
+# previously tracked (pre-dated the gitignore entry). While tracked, every
+# tree-sitter build regenerates it and dirties main's working tree, causing
+# advance_main to fail with stash_failed (task 1005 blocker). The fix is
+# `git rm --cached` to remove the stale index entry so the existing rule applies.
+assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
+    bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
+
 test_summary

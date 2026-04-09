@@ -460,10 +460,9 @@ fn cascading_kernel_failures_aborted_after_first() {
         .realization(e, 0, vec![box_op_0, box_op_1, box_op_2])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_kernel_cascade"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
@@ -606,10 +605,9 @@ fn tessellate_aborts_cascading_compile_failures() {
         .realization(e, 0, vec![union_op_0, union_op_1, union_op_2])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_tess_cascade"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -776,10 +774,9 @@ fn partial_failure_tessellate_produces_no_mesh() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_tess"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -851,10 +848,9 @@ fn partial_failure_build_produces_no_geometry() {
         .realization(e, 0, vec![box_op, union_op])
         .build();
 
-    let module =
-        CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
-            .template(template)
-            .build();
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_partial_build"))
+        .template(template)
+        .build();
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
@@ -1002,4 +998,114 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
             "should NOT have 'all geometry operations failed' since realization 1 succeeded"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Regression guard: missing primitive arg → no kernel call, no 'geometry error'
+// ---------------------------------------------------------------------------
+
+/// When a Box primitive is missing a required arg ('width'), build() should:
+/// 1. Short-circuit: return geometry_output=None (kernel never called).
+/// 2. Emit a Warning: "missing required geometry argument" mentioning 'width'.
+/// 3. Emit an Error: "failed to compile geometry operation".
+/// 4. NOT emit any diagnostic containing "geometry error" (kernel was never reached).
+#[test]
+fn build_primitive_missing_arg_no_kernel_error() {
+    use reify_types::Type;
+
+    let e = "TestShape";
+    let mm_literal = |v: f64| reify_types::CompiledExpr::literal(mm(v), Type::length());
+
+    // Box with height and depth present, but 'width' deliberately omitted
+    let box_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Box,
+        args: vec![
+            ("height".into(), mm_literal(100.0)),
+            ("depth".into(), mm_literal(5.0)),
+            // width deliberately omitted
+        ],
+    };
+
+    let template = TopologyTemplateBuilder::new(e)
+        .param(e, "height", Type::length(), Some(mm_literal(100.0)))
+        .param(e, "depth", Type::length(), Some(mm_literal(5.0)))
+        .realization(e, 0, vec![box_op])
+        .build();
+
+    let module = CompiledModuleBuilder::new(reify_types::ModulePath::single("test_missing_width"))
+        .template(template)
+        .build();
+
+    // Standard MockGeometryKernel — if execute() were called it would succeed,
+    // but it should never be reached.
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let result = engine.build(&module, ExportFormat::Step);
+
+    // (1) Kernel was never called
+    {
+        let ops = ops_ref.lock().unwrap();
+        assert!(
+            ops.is_empty(),
+            "kernel.execute() should never be called when compile_geometry_op returns None, \
+             but got {} kernel ops",
+            ops.len()
+        );
+    }
+
+    // (2) No geometry output — op failed to compile
+    assert!(
+        result.geometry_output.is_none(),
+        "expected geometry_output to be None when a required arg is missing"
+    );
+
+    // (3) Warning about the missing 'width' arg
+    let has_missing_arg_warning = result.diagnostics.iter().any(|d| {
+        d.severity == reify_types::Severity::Warning
+            && d.message.contains("missing required geometry argument")
+            && d.message.contains("width")
+    });
+    assert!(
+        has_missing_arg_warning,
+        "expected a Warning diagnostic about missing 'width' arg, got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (&d.severity, &d.message))
+            .collect::<Vec<_>>()
+    );
+
+    // (4) Error about failed compile
+    let has_compile_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("failed to compile geometry operation"));
+    assert!(
+        has_compile_error,
+        "expected an Error diagnostic 'failed to compile geometry operation', got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    // (5) No 'geometry error' diagnostic — kernel was never called
+    let has_kernel_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("geometry error"));
+    assert!(
+        !has_kernel_error,
+        "should NOT have a 'geometry error' diagnostic (kernel was never called), \
+         but got: {:?}",
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("geometry error"))
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }

@@ -6,7 +6,10 @@ use reify_syntax::*;
 
 /// Helper: parse source and return the first structure's members and errors.
 fn parse_structure_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
-    let module = reify_syntax::parse(source, reify_types::ModulePath::single("constraint_inst_test"));
+    let module = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("constraint_inst_test"),
+    );
     let errors = module.errors.clone();
     // Find the first structure declaration and return its members.
     for decl in &module.declarations {
@@ -26,9 +29,16 @@ fn parse_basic_constraint_inst() {
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
     // Find the ConstraintInst member
-    let inst = members.iter().find_map(|m| {
-        if let MemberDecl::ConstraintInst(ci) = m { Some(ci) } else { None }
-    }).expect("expected a ConstraintInst member");
+    let inst = members
+        .iter()
+        .find_map(|m| {
+            if let MemberDecl::ConstraintInst(ci) = m {
+                Some(ci)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintInst member");
 
     assert_eq!(inst.name, "MinWall");
     assert_eq!(inst.args.len(), 1, "expected 1 arg");
@@ -48,9 +58,16 @@ fn parse_multi_arg_constraint_inst() {
     let (members, errors) = parse_structure_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
-    let inst = members.iter().find_map(|m| {
-        if let MemberDecl::ConstraintInst(ci) = m { Some(ci) } else { None }
-    }).expect("expected a ConstraintInst member");
+    let inst = members
+        .iter()
+        .find_map(|m| {
+            if let MemberDecl::ConstraintInst(ci) = m {
+                Some(ci)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintInst member");
 
     assert_eq!(inst.name, "Bounded");
     assert_eq!(inst.args.len(), 3, "expected 3 args");
@@ -79,16 +96,27 @@ fn parse_multi_arg_constraint_inst() {
 
 #[test]
 fn parse_constraint_inst_with_where_clause() {
-    let source = "structure S { param mode: Bool  param t: Length  constraint MinWall(wall: t) where mode }";
+    let source =
+        "structure S { param mode: Bool  param t: Length  constraint MinWall(wall: t) where mode }";
     let (members, errors) = parse_structure_members(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
 
-    let inst = members.iter().find_map(|m| {
-        if let MemberDecl::ConstraintInst(ci) = m { Some(ci) } else { None }
-    }).expect("expected a ConstraintInst member");
+    let inst = members
+        .iter()
+        .find_map(|m| {
+            if let MemberDecl::ConstraintInst(ci) = m {
+                Some(ci)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintInst member");
 
     assert_eq!(inst.name, "MinWall");
-    let wc = inst.where_clause.as_ref().expect("expected Some(where_clause)");
+    let wc = inst
+        .where_clause
+        .as_ref()
+        .expect("expected Some(where_clause)");
     match &wc.condition.kind {
         ExprKind::Ident(name) => assert_eq!(name, "mode"),
         other => panic!("expected Ident('mode') in where_clause, got {:?}", other),

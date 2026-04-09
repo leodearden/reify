@@ -1,12 +1,15 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width};
+use reify_test_support::{
+    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
+};
 use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
-use crate::engine::{EngineSession, parse_value_string};
+use crate::engine::{EngineSession, module_key, parse_value_string};
 
 #[test]
 fn engine_session_new_with_mock_kernel() {
@@ -801,7 +804,7 @@ fn update_source_produces_meshes() {
 
 // --- Task 827: get_diagnostics tests ---
 
-/// Step-1 (TDD failing test): get_diagnostics() returns empty vec when no module is loaded.
+/// get_diagnostics() returns empty vec when no module is loaded.
 /// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
@@ -809,10 +812,13 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     let session = EngineSession::new(Box::new(checker), None);
 
     let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
-    assert!(diags.is_empty(), "no module loaded → diagnostics must be empty");
+    assert!(
+        diags.is_empty(),
+        "no module loaded → diagnostics must be empty"
+    );
 }
 
-/// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
+/// get_diagnostics() returns a non-empty vec
 /// when the compiled module contains a warning.
 ///
 /// Source with `port mount : NonExistentTrait` produces an "unknown port type" warning
@@ -829,11 +835,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warn_source_with_unknown_port_type();
 
     // load_from_source should succeed — warnings are not errors
     session
@@ -876,11 +878,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 
     // line and column must be valid 1-based values
-    assert!(
-        first.line >= 1,
-        "expected line >= 1, got {}",
-        first.line
-    );
+    assert!(first.line >= 1, "expected line >= 1, got {}", first.line);
     assert!(
         first.column >= 1,
         "expected column >= 1, got {}",
@@ -901,7 +899,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 }
 
-/// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
+/// get_diagnostics() returns empty vec for bracket_source() (warning-free source).
 /// Validates the method works end-to-end on a real compiled module.
 #[test]
 fn engine_get_diagnostics_clean_source_returns_empty() {
@@ -947,12 +945,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure S {
-    param width : Length = 80mm
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warn_source_with_unknown_port_type_with_width();
 
     session
         .load_from_source(source, "testmod")
@@ -963,7 +956,16 @@ fn diagnostics_and_source_location_agree_on_file_key() {
         !diags.is_empty(),
         "expected at least one diagnostic for unknown port type"
     );
-    assert_eq!(diags[0].file_path, "testmod.ri", "get_diagnostics file_path");
+    assert_eq!(
+        diags[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
+        diags[0].file_path, "testmod.ri",
+        "get_diagnostics file_path"
+    );
 
     let loc = session
         .get_source_location("S.width")
@@ -975,30 +977,37 @@ fn diagnostics_and_source_location_agree_on_file_key() {
 ///
 /// After load_from_source("initial") then update_source("updated.ri", ...),
 /// get_diagnostics must resolve the new key "updated.ri", not "initial.ri".
+///
+/// **Assumption**: `port mount : NonExistentTrait` produces a warning (not error).
+/// If the compiler changes this, the `.expect()` on load_from_source/update_source
+/// will panic — update the fixture accordingly.
 #[test]
 fn diagnostics_file_key_consistent_after_update_source() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let warning_source = r#"structure S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
-
     session
-        .load_from_source(warning_source, "initial")
+        .load_from_source(warn_source_with_unknown_port_type(), "initial")
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
-    assert!(!diags_before.is_empty(), "should have diagnostics after initial load");
+    assert!(
+        !diags_before.is_empty(),
+        "should have diagnostics after initial load"
+    );
+    assert_eq!(
+        diags_before[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, load_from_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
     assert_eq!(
         diags_before[0].file_path, "initial.ri",
         "before update: file_path should be 'initial.ri'"
     );
 
     session
-        .update_source("updated.ri", warning_source)
+        .update_source("updated.ri", warn_source_with_unknown_port_type())
         .expect("update_source should succeed");
 
     let diags_after = session.get_diagnostics();
@@ -1007,12 +1016,18 @@ fn diagnostics_file_key_consistent_after_update_source() {
         "should still have diagnostics after update_source"
     );
     assert_eq!(
+        diags_after[0].severity, "warning",
+        "this test relies on NonExistentTrait producing a warning — \
+         if severity changed to error, update_source would have returned Err above; \
+         update the test fixture if the compiler's severity classification changes"
+    );
+    assert_eq!(
         diags_after[0].file_path, "updated.ri",
         "after update_source, file_path should be 'updated.ri'"
     );
 }
 
-/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+/// A diagnostic with no labels gets (1,1,1,1) coordinates.
 ///
 /// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
 /// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
@@ -1044,10 +1059,26 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
         .expect("injected 'test labelless' diagnostic not found in results");
 
     // (b) All coordinates default to (1,1,1,1)
-    assert_eq!(injected.line, 1, "expected line=1 for labelless, got {}", injected.line);
-    assert_eq!(injected.column, 1, "expected column=1 for labelless, got {}", injected.column);
-    assert_eq!(injected.end_line, 1, "expected end_line=1 for labelless, got {}", injected.end_line);
-    assert_eq!(injected.end_column, 1, "expected end_column=1 for labelless, got {}", injected.end_column);
+    assert_eq!(
+        injected.line, 1,
+        "expected line=1 for labelless, got {}",
+        injected.line
+    );
+    assert_eq!(
+        injected.column, 1,
+        "expected column=1 for labelless, got {}",
+        injected.column
+    );
+    assert_eq!(
+        injected.end_line, 1,
+        "expected end_line=1 for labelless, got {}",
+        injected.end_line
+    );
+    assert_eq!(
+        injected.end_column, 1,
+        "expected end_column=1 for labelless, got {}",
+        injected.end_column
+    );
 
     // (c) Severity preserved
     assert_eq!(
@@ -1064,7 +1095,131 @@ fn engine_get_diagnostics_labelless_diagnostic_returns_default_span() {
     );
 }
 
-/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the source_map invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_source_map_for_test() clears source_map while leaving compiled and
+/// module_name intact. This exercises the fallback paths added in Task 900:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no resolve_source call)
+/// - get_source_location uses a fallible source_map lookup and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_source_map_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the source_map invariant
+    session.break_source_map_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when source_map is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when source_map is missing"
+    );
+}
+
+/// get_diagnostics returns empty and get_source_location returns None
+/// when the module_name invariant is deliberately broken after load.
+///
+/// After load_from_source with bracket_source (clean, 0 warnings), calling
+/// break_module_name_for_test() clears module_name while leaving compiled and
+/// source_map intact. This exercises the fallible path at engine.rs line 302:
+/// - get_diagnostics early-exits with [] when diagnostics is empty (no module_name needed)
+/// - get_source_location uses self.module_name.as_deref()? and returns None gracefully
+#[test]
+fn resolve_source_fallback_when_module_name_missing() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Deliberately break the module_name invariant
+    session.break_module_name_for_test();
+
+    // get_diagnostics must return empty without panicking
+    let diags: Vec<DiagnosticInfo> = session.get_diagnostics();
+    assert!(
+        diags.is_empty(),
+        "get_diagnostics should return [] via the empty-diagnostics early-exit even when module_name is missing"
+    );
+
+    // get_source_location must return None without panicking
+    let loc = session.get_source_location("Bracket.width");
+    assert!(
+        loc.is_none(),
+        "get_source_location should return None when module_name is missing"
+    );
+}
+
+// --- Task 837: build_line_offsets unit tests ---
+
+/// build_line_offsets returns empty vec for empty string.
+#[test]
+fn build_line_offsets_empty_string() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns empty vec for a single-line string (no '\n').
+#[test]
+fn build_line_offsets_single_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("hello world");
+    assert_eq!(offsets, Vec::<usize>::new());
+}
+
+/// build_line_offsets returns correct byte positions of '\n' for a multi-line string.
+///
+/// "abc\ndef\nghi"
+///  0123 4567 8910
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_multi_line() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\nghi");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a trailing newline (last char is '\n').
+///
+/// "abc\ndef\n"
+///  0123 4567 8
+/// '\n' at byte 3 and byte 7.
+#[test]
+fn build_line_offsets_trailing_newline() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("abc\ndef\n");
+    assert_eq!(offsets, vec![3, 7]);
+}
+
+/// build_line_offsets handles a string that is only newlines.
+///
+/// "\n\n\n" → '\n' at bytes 0, 1, 2.
+#[test]
+fn build_line_offsets_only_newlines() {
+    use crate::engine::build_line_offsets;
+    let offsets = build_line_offsets("\n\n\n");
+    assert_eq!(offsets, vec![0, 1, 2]);
+}
+
+/// After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
 /// module (and its diagnostics) are replaced on each update, so stale diagnostics
@@ -1076,13 +1231,8 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
     // Load warning source — establishes a non-empty diagnostics state
-    let warn_source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
     session
-        .load_from_source(warn_source, "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("warning source should compile");
 
     let diags_before = session.get_diagnostics();
@@ -1101,5 +1251,733 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
         diags_after.is_empty(),
         "expected empty diagnostics after updating to clean source, got: {:?}",
         diags_after
+    );
+}
+
+// --- byte_offset_to_line_col edge-case tests ---
+
+#[test]
+fn byte_offset_to_line_col_basic_conversion() {
+    use crate::engine::byte_offset_to_line_col;
+
+    let source = "abc\ndef";
+    // offset 0 → start of first line → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 3 → just before the '\n' → (1, 4) (col after 'a','b','c')
+    assert_eq!(byte_offset_to_line_col(source, 3), (1, 4));
+    // offset 4 → first char of second line → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 4), (2, 1));
+    // offset 6 → last char 'f' → (2, 3)
+    assert_eq!(byte_offset_to_line_col(source, 6), (2, 3));
+}
+
+#[test]
+fn byte_offset_to_line_col_empty_source() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Empty source: offset 0 → initial position (1, 1)
+    assert_eq!(byte_offset_to_line_col("", 0), (1, 1));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "offset <= source.len()")]
+fn byte_offset_to_line_col_offset_beyond_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In debug/test builds, passing an offset beyond source.len() must panic
+    // with a clear message, so stale-span bugs are caught loudly.
+    // Release builds retain silent clamping (debug_assert is a no-op there).
+    let _ = byte_offset_to_line_col("ab", 100);
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn byte_offset_to_line_col_offset_beyond_len_release() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // In release builds, debug_assert is a no-op, so passing an offset beyond
+    // source.len() silently clamps: the loop exhausts all characters and returns
+    // the position after the last character.
+    // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
+    assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+}
+
+#[test]
+fn get_diagnostics_empty_span_has_identical_start_end() {
+    use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+
+    // Verify that a zero-length span (start == end) produces identical
+    // start and end coordinates through the full get_diagnostics pipeline,
+    // including the optimised offset_to_line_col_fast path.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    let offset = source.find("width").expect("'width' not in bracket_source") as u32;
+
+    let diag = Diagnostic::warning("empty-span-test").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset, offset), // zero-length span
+        "zero-length label",
+    ));
+    session.inject_diagnostic_for_test(diag);
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "empty-span-test")
+        .expect("injected empty-span diagnostic not found");
+
+    // The real concern: start and end coords must be identical for an empty span.
+    assert_eq!(
+        d.line, d.end_line,
+        "empty span: line ({}) != end_line ({})",
+        d.line, d.end_line
+    );
+    assert_eq!(
+        d.column, d.end_column,
+        "empty span: column ({}) != end_column ({})",
+        d.column, d.end_column
+    );
+
+    // Cross-validate against the reference implementation.
+    let (exp_line, exp_col) = byte_offset_to_line_col(source, offset as usize);
+    assert_eq!(d.line, exp_line as u32, "line mismatch vs reference");
+    assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
+
+    // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
+    // bracket_source() starts "structure Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 30 (manually verified):
+    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    //   + 10 bytes "    param " → col 11 when 'w' is reached.
+    assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
+    assert_eq!(
+        d.column, 11,
+        "expected column for 'width' in bracket_source"
+    );
+}
+
+#[test]
+fn byte_offset_to_line_col_multibyte_chars() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source: "αβ\nγ"
+    // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
+    // β = U+03B2, 2 bytes (UTF-8: 0xCE 0xB2), byte offset 2
+    // \n              ,  byte offset 4
+    // γ = U+03B3, 2 bytes (UTF-8: 0xCE 0xB3), byte offset 5
+    //
+    // Columns must be codepoint-based (1, 2, 3), not byte-based (1, 3, 5).
+    let source = "αβ\nγ";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+
+    // offset 0 → 'α' (codepoint 1 on line 1) → (1, 1)
+    assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    // offset 1 → mid-codepoint inside α (byte 0xB1 of the 2-byte UTF-8 sequence CE B1).
+    // char_indices only yields valid codepoint boundaries: (0,'α'),(2,'β'),(4,'\n'),(5,'γ').
+    // Offset 1 is not a boundary; the loop processes α (col→2) then sees i=2 ≥ 1 and breaks.
+    assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
+    // offset 2 → 'β' (codepoint 2 on line 1) → (1, 2)
+    assert_eq!(byte_offset_to_line_col(source, 2), (1, 2));
+    // offset 4 → '\n' (codepoint 3 on line 1) → (1, 3)
+    assert_eq!(byte_offset_to_line_col(source, 4), (1, 3));
+    // offset 5 → 'γ' (first codepoint on line 2) → (2, 1)
+    assert_eq!(byte_offset_to_line_col(source, 5), (2, 1));
+}
+
+#[test]
+fn byte_offset_to_line_col_at_source_len() {
+    use crate::engine::byte_offset_to_line_col;
+
+    // Source "abc\ndef" has byte length 7.
+    // offset == source.len() is the EOF position, one past the last char 'f'.
+    // The loop iterates all chars (indices 0-6, all < 7) exhausting them,
+    // so: 'a'→col2, 'b'→col3, 'c'→col4, '\n'→line2,col1, 'd'→col2, 'e'→col3, 'f'→col4
+    // Then the loop ends and we return (2, 4).
+    let source = "abc\ndef";
+    assert_eq!(source.len(), 7, "sanity-check byte length");
+    assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
+}
+
+// --- Task 837: offset_to_line_col_fast unit tests ---
+
+/// offset_to_line_col_fast returns (1,1) for offset 0 on any source.
+#[test]
+fn offset_to_line_col_fast_offset_zero() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast cross-validates with byte_offset_to_line_col
+/// for every byte offset in a multi-line string.
+#[test]
+fn offset_to_line_col_fast_matches_original_every_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let line_offsets = build_line_offsets(source);
+    for offset in 0..source.len() {
+        let expected = byte_offset_to_line_col(source, offset);
+        let actual = offset_to_line_col_fast(source, &line_offsets, offset);
+        assert_eq!(
+            actual, expected,
+            "mismatch at offset {}: fast={:?} original={:?}",
+            offset, actual, expected
+        );
+    }
+}
+
+/// offset_to_line_col_fast returns correct values at specific key offsets.
+///
+/// "abc\ndef\nghi" — '\n' at bytes 3 and 7.
+/// offset 3  → (1,4) — the '\n' itself is still on line 1
+/// offset 4  → (2,1) — first char of line 2
+/// offset 7  → (2,4) — the second '\n'
+/// offset 8  → (3,1) — first char of line 3
+/// offset 10 → (3,3) — last char 'i'
+#[test]
+fn offset_to_line_col_fast_key_positions() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "abc\ndef\nghi";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 3), (1, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (2, 1)); // 'd'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 7), (2, 4)); // '\n'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 8), (3, 1)); // 'g'
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 10), (3, 3)); // 'i'
+}
+
+/// offset_to_line_col_fast works on empty source (no newlines).
+#[test]
+fn offset_to_line_col_fast_empty_source() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+}
+
+/// offset_to_line_col_fast works on single-line source (no newlines).
+#[test]
+fn offset_to_line_col_fast_single_line() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "hello";
+    let offsets = build_line_offsets(source);
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 0), (1, 1));
+    assert_eq!(offset_to_line_col_fast(source, &offsets, 4), (1, 5));
+}
+
+/// offset_to_line_col_fast agrees with byte_offset_to_line_col at source.len()
+/// (one-past-end / EOF position, the highest offset a compiler span can produce).
+///
+/// For offsets strictly beyond source.len() the two implementations diverge —
+/// the original stops iterating at the last source char while the fast version
+/// extrapolates the column — but that case never occurs in production because
+/// diagnostic spans are always within source bounds.
+#[test]
+fn offset_to_line_col_fast_at_eof_offset() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "abc\ndef";
+    let line_offsets = build_line_offsets(source);
+    // source.len() is the EOF position — both implementations must agree here.
+    let eof = source.len();
+    let expected = byte_offset_to_line_col(source, eof);
+    let actual = offset_to_line_col_fast(source, &line_offsets, eof);
+    assert_eq!(
+        actual, expected,
+        "EOF offset: fast={:?} original={:?}",
+        actual, expected
+    );
+}
+
+// --- Task 837: step-7 stress / multi-diagnostic tests ---
+
+/// get_diagnostics with multiple injected diagnostics at various byte offsets
+/// produces line/col values matching byte_offset_to_line_col for each span.
+///
+/// This is the primary end-to-end regression for the optimized path: we inject
+/// three warnings with labels at byte positions we compute from bracket_source,
+/// then verify get_diagnostics returns the same line/col as the O(M) reference.
+#[test]
+fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
+    use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let source = bracket_source();
+    session
+        .load_from_source(source, "bracket")
+        .expect("bracket source should compile cleanly");
+
+    // Pick three byte offsets that land at recognisable tokens across
+    // different lines, using `find` so the test stays robust to whitespace.
+    let offset_a = source.find("width").expect("'width' not in bracket_source") as u32;
+    let offset_b = source
+        .find("height")
+        .expect("'height' not in bracket_source") as u32;
+    let offset_c = source
+        .find("thickness")
+        .expect("'thickness' not in bracket_source") as u32;
+
+    let diag_a = Diagnostic::warning("stress-a").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_a, offset_a + 5),
+        "label a",
+    ));
+    let diag_b = Diagnostic::warning("stress-b").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_b, offset_b + 6),
+        "label b",
+    ));
+    let diag_c = Diagnostic::warning("stress-c").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_c, offset_c + 9),
+        "label c",
+    ));
+
+    session.inject_diagnostic_for_test(diag_a);
+    session.inject_diagnostic_for_test(diag_b);
+    session.inject_diagnostic_for_test(diag_c);
+
+    let diags = session.get_diagnostics();
+
+    // Find each injected diagnostic and verify its span against the reference.
+    for (msg, start, end) in [
+        ("stress-a", offset_a as usize, (offset_a + 5) as usize),
+        ("stress-b", offset_b as usize, (offset_b + 6) as usize),
+        ("stress-c", offset_c as usize, (offset_c + 9) as usize),
+    ] {
+        let d = diags
+            .iter()
+            .find(|d| d.message == msg)
+            .unwrap_or_else(|| panic!("diagnostic '{}' not found", msg));
+
+        let (exp_line, exp_col) = byte_offset_to_line_col(source, start);
+        let (exp_end_line, exp_end_col) = byte_offset_to_line_col(source, end);
+
+        assert_eq!(
+            d.line, exp_line as u32,
+            "{}: line mismatch (got {}, expected {})",
+            msg, d.line, exp_line
+        );
+        assert_eq!(
+            d.column, exp_col as u32,
+            "{}: column mismatch (got {}, expected {})",
+            msg, d.column, exp_col
+        );
+        assert_eq!(
+            d.end_line, exp_end_line as u32,
+            "{}: end_line mismatch (got {}, expected {})",
+            msg, d.end_line, exp_end_line
+        );
+        assert_eq!(
+            d.end_column, exp_end_col as u32,
+            "{}: end_column mismatch (got {}, expected {})",
+            msg, d.end_column, exp_end_col
+        );
+    }
+}
+
+/// The labelless (1,1,1,1) fallback is unaffected by the optimization.
+/// Delegates to the existing test — this is just a marker asserting step-7
+/// coverage of the labelless path specifically.
+#[test]
+fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket source should compile cleanly");
+
+    session.inject_diagnostic_for_test(Diagnostic::warning("no-label-stress"));
+
+    let diags = session.get_diagnostics();
+    let d = diags
+        .iter()
+        .find(|d| d.message == "no-label-stress")
+        .expect("injected 'no-label-stress' not found");
+
+    assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+}
+
+// --- Task 837 step-9: multibyte UTF-8 cross-validation tests ---
+
+/// offset_to_line_col_fast must match byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 2-byte UTF-8 sequences.
+///
+/// "héllo\nwörld": 'é' (U+00E9) = 2 bytes; 'ö' (U+00F6) = 2 bytes.
+/// The old byte-arithmetic implementation computes `offset - newline_pos` which
+/// gives byte distance, not codepoint count.  The new implementation must
+/// compute `source[line_start..offset].chars().count() + 1`.
+///
+/// Specific regression anchor:
+///   byte offset 3 = the first 'l' after 'é'.
+///   codepoint column = 3 (h=1, é=2, l=3) — NOT 4 (which byte distance gives).
+#[test]
+fn offset_to_line_col_fast_matches_original_multibyte_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    let line_offsets = build_line_offsets(source);
+    // Iterate only char-boundary offsets.
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "2-byte UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // Also check the EOF position (one past last byte).
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "2-byte UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+}
+
+/// Targeted assertion: byte offset 3 in "héllo\nwörld" must give column 3
+/// (codepoints h=1, é=2, l=3), NOT column 4 (byte distance from start).
+#[test]
+fn offset_to_line_col_fast_two_byte_char_column_is_codepoint_not_byte() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+    let source = "héllo\nwörld";
+    // 'é' occupies bytes 1..=2; the 'l' following it starts at byte 3.
+    let line_offsets = build_line_offsets(source);
+    // col should be 3 (h,é,l = 3 codepoints), not 4 (byte distance 3 → +1=4).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 3),
+        (1, 3),
+        "byte 3 ('l' after 'é') should have codepoint column 3, not byte-based 4"
+    );
+    // 'r' on line 2: 'ö' at bytes 8..=9, so 'r' at byte 10.
+    // Codepoints on line 2 before 'r': w=1, ö=2  → 'r' = col 3.
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 10),
+        (2, 3),
+        "byte 10 ('r' after 'ö') should have codepoint column 3, not byte-based 4"
+    );
+}
+
+/// offset_to_line_col_fast matches byte_offset_to_line_col for every
+/// char-boundary offset in a string containing 3-byte CJK UTF-8 sequences.
+///
+/// "ab\n你好world": '你' (U+4F60) = 3 bytes; '好' (U+597D) = 3 bytes.
+/// 'w' is the 3rd codepoint on line 2 (you=1, hao=2, w=3).
+/// Old byte arithmetic would give col = (9 - 2) = 7, which is wrong.
+#[test]
+fn offset_to_line_col_fast_matches_original_cjk_utf8() {
+    use crate::engine::{build_line_offsets, byte_offset_to_line_col, offset_to_line_col_fast};
+    let source = "ab\n\u{4F60}\u{597D}world";
+    let line_offsets = build_line_offsets(source);
+    for (byte_idx, _ch) in source.char_indices() {
+        let expected = byte_offset_to_line_col(source, byte_idx);
+        let actual = offset_to_line_col_fast(source, &line_offsets, byte_idx);
+        assert_eq!(
+            actual, expected,
+            "CJK UTF-8: mismatch at byte offset {} (char '{}'): fast={:?} original={:?}",
+            byte_idx, _ch, actual, expected
+        );
+    }
+    // EOF check.
+    let eof = source.len();
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, eof),
+        byte_offset_to_line_col(source, eof),
+        "CJK UTF-8: mismatch at EOF offset {}",
+        eof
+    );
+    // Targeted: 'w' at byte 9 should be (2, 3), not byte-arithmetic (2, 7).
+    assert_eq!(
+        offset_to_line_col_fast(source, &line_offsets, 9),
+        (2, 3),
+        "byte 9 ('w' after two 3-byte CJK chars) should have codepoint column 3"
+    );
+}
+
+/// offset_to_line_col_fast does not panic on non-char-boundary byte offsets;
+/// it snaps backward to the nearest valid boundary instead.
+#[test]
+fn offset_to_line_col_fast_non_char_boundary_no_panic() {
+    use crate::engine::{build_line_offsets, offset_to_line_col_fast};
+
+    // "é" is 2 bytes (0xC3 0xA9), so byte 1 is mid-char.
+    let source = "é";
+    let line_offsets = build_line_offsets(source);
+    // Byte 1 is not a char boundary — should not panic, should snap back to 0.
+    let (line, col) = offset_to_line_col_fast(source, &line_offsets, 1);
+    assert_eq!(line, 1);
+    assert_eq!(col, 1, "non-boundary offset should snap back to start");
+
+    // Multi-line with CJK: "日\nA" — '日' is 3 bytes; byte 2 is mid-char.
+    let source2 = "日\nA";
+    let offsets2 = build_line_offsets(source2);
+    let (l, c) = offset_to_line_col_fast(source2, &offsets2, 2);
+    assert_eq!(l, 1);
+    assert_eq!(c, 1, "mid-CJK offset should snap back to start of char");
+}
+
+// --- Task 899: resolve_source precondition test ---
+
+/// resolve_source panics (via debug_assert) when called without a loaded module.
+///
+/// The debug_assert!(self.compiled.is_some()) in resolve_source is the contract
+/// guard — this test verifies it fires when the precondition is violated.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "compiled")]
+fn resolve_source_panics_without_loaded_module() {
+    let checker = SimpleConstraintChecker;
+    let session = EngineSession::new(Box::new(checker), None);
+    // No load — compiled is None. debug_assert should fire.
+    let _ = session.resolve_source_for_test();
+}
+
+// --- Task 899: module_key unit tests ---
+
+/// module_key("bracket") == "bracket.ri" — normal identifier.
+#[test]
+fn module_key_normal_name() {
+    assert_eq!(module_key("bracket"), "bracket.ri");
+}
+
+/// module_key("some_module") == "some_module.ri" — underscored name.
+#[test]
+fn module_key_underscored_name() {
+    assert_eq!(module_key("some_module"), "some_module.ri");
+}
+
+/// module_key(name) matches the key that load_from_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that load_from_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into load_from_source without updating module_key.
+#[test]
+fn module_key_matches_load_from_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key(name) matches the key that update_source inserts into source_map.
+///
+/// module_key is the single authoritative point for key derivation (engine.rs:31-35).
+/// This test locks in the invariant that update_source and module_key stay in sync,
+/// guarding against a regression where someone inlines `format!("{}.ri", ...)` back
+/// into update_source without updating module_key (engine.rs:212).
+#[test]
+fn module_key_matches_update_source_insertion() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .update_source("bracket.ri", bracket_source())
+        .expect("update_source should succeed");
+    let (stored_key, stored_src) = session.resolve_source_for_test();
+    assert_eq!(stored_key, module_key("bracket"));
+    assert_eq!(stored_src, bracket_source());
+}
+
+/// module_key panics (via debug_assert) when called with an empty name.
+///
+/// An empty name would produce ".ri", which is never a valid module key —
+/// `load_file` falls back to "unnamed" so an empty name is a programming error.
+/// The debug_assert in module_key is the contract guard.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty")]
+fn module_key_empty_name_panics() {
+    let _ = module_key("");
+}
+
+// --- Task 1194: positive resolve_source pinning test ---
+
+/// resolve_source returns the key (module_key(name)) and the original source text
+/// after a successful load_from_source call.
+///
+/// Pins: (a) key derivation appends ".ri" to the module name, (b) the source text
+/// is stored verbatim and returned as a zero-copy &str borrow.
+#[test]
+fn resolve_source_returns_key_and_source_after_load() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+}
+
+// --- Task 1194: invariant regression test ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic, because resolve_source hits the unconditional
+/// expect() on module_name (line ~252 in engine.rs).
+///
+/// break_module_name_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    session.break_module_name_for_test();
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "module_name is None".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: source_map panic guard test ---
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic, because resolve_source hits the
+/// unconditional expect() on source_map.get_key_value().
+///
+/// break_source_map_for_test deliberately violates the invariant so that
+/// this test can verify the panic guard fires reliably in all build configs.
+///
+/// NOTE (Task 900): get_diagnostics now early-exits when diagnostics is empty,
+/// so we inject a synthetic diagnostic after breaking the invariant to ensure
+/// resolve_source is still reached and the panic guard fires.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map() {
+    use reify_types::Diagnostic;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+    // Deliberately break the invariant: compiled and module_name are Some, source_map is empty.
+    session.break_source_map_for_test();
+    // Inject a diagnostic so the early-exit branch is skipped and resolve_source
+    // is reached — which must panic with "source_map missing key".
+    session.inject_diagnostic_for_test(Diagnostic::warning("force-panic"));
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1225: resolve_source panic contract via real warning source ---
+
+/// Calling get_diagnostics when module_name has been cleared (while compiled
+/// remains Some) must panic via the unconditional expect() in resolve_source.
+///
+/// Unlike get_diagnostics_panics_on_broken_module_name (Task 1194), this test
+/// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
+/// This pins the panic contract on the user-visible failure mode: real source
+/// that the compiler emits warnings for, with a deliberately broken invariant.
+/// If a future refactor removes the inject_diagnostic_for_test helper or changes
+/// injection semantics, this test continues to pin the contract independently.
+#[test]
+#[should_panic(expected = "module_name is None")]
+fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // This source reliably produces a compiler warning (unknown port type), not
+    // an error — the same fixture used by engine_get_diagnostics_returns_populated_warning.
+
+    // load_from_source succeeds: warnings are not errors.
+    session
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    // Deliberately break the invariant: compiled is Some, module_name is None.
+    // compiled.diagnostics is non-empty (real warning), so the early-exit in
+    // get_diagnostics is skipped and resolve_source is reached — which must
+    // panic with "module_name is None".
+    session.break_module_name_for_test();
+    let _ = session.get_diagnostics();
+}
+
+/// Calling get_diagnostics when source_map has been cleared (while compiled
+/// and module_name remain Some) must panic via the unconditional expect() in
+/// resolve_source on source_map.get_key_value().
+///
+/// Unlike get_diagnostics_panics_on_broken_source_map (Task 1212), this test
+/// uses a real compiler-produced warning rather than inject_diagnostic_for_test.
+/// This pins the panic contract on the user-visible failure mode and removes
+/// coupling to the test injection helper — complementary, not duplicative.
+#[test]
+#[should_panic(expected = "source_map missing key")]
+fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    // Same real warning-producing fixture as above.
+
+    // load_from_source succeeds: warnings are not errors.
+    session
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
+        .expect("source with unknown port type should compile (warning, not error)");
+
+    // Deliberately break the invariant: compiled and module_name are Some,
+    // source_map is empty. compiled.diagnostics is non-empty (real warning), so
+    // the early-exit in get_diagnostics is skipped, module_name.as_deref()
+    // succeeds, and source_map.get_key_value(&key).expect(…) fires.
+    session.break_source_map_for_test();
+    let _ = session.get_diagnostics();
+}
+
+// --- Task 1212: update_source path test ---
+
+/// resolve_source returns updated content (and the same key) after a successful
+/// update_source call.
+///
+/// Pins: (a) the key derived from the path argument stays "bracket.ri",
+/// (b) the source text is replaced with the new content and returned verbatim.
+#[test]
+fn resolve_source_returns_updated_content_after_update_source() {
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed with bracket source");
+    // Baseline: resolve_source reflects the initial load.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", bracket_source()),
+    );
+    // Update the source with modified content (different width parameter).
+    let updated = bracket_source_with_width("120mm");
+    session
+        .update_source("bracket.ri", &updated)
+        .expect("update_source should succeed with modified bracket source");
+    // After update: key stays the same, content is the new text.
+    assert_eq!(
+        session.resolve_source_for_test(),
+        ("bracket.ri", updated.as_str()),
     );
 }

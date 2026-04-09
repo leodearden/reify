@@ -21,18 +21,25 @@ fn complex_val(re: f64, im: f64, dimension: DimensionVector) -> Value {
 }
 
 /// Assert that a Value is Complex with the expected re, im, and dimension.
-fn assert_complex_eq(actual: &Value, expected_re: f64, expected_im: f64, expected_dim: DimensionVector) {
+fn assert_complex_eq(
+    actual: &Value,
+    expected_re: f64,
+    expected_im: f64,
+    expected_dim: DimensionVector,
+) {
     match actual {
         Value::Complex { re, im, dimension } => {
             assert!(
                 (*re - expected_re).abs() < TOLERANCE,
                 "expected re={}, got {}",
-                expected_re, re
+                expected_re,
+                re
             );
             assert!(
                 (*im - expected_im).abs() < TOLERANCE,
                 "expected im={}, got {}",
-                expected_im, im
+                expected_im,
+                im
             );
             assert_eq!(
                 *dimension, expected_dim,
@@ -54,7 +61,8 @@ fn assert_real_approx(actual: &Value, expected: f64) {
             assert!(
                 (*v - expected).abs() < TOLERANCE,
                 "expected Real({}), got Real({})",
-                expected, v
+                expected,
+                v
             );
         }
         other => panic!("expected Real({}), got {:?}", expected, other),
@@ -64,11 +72,15 @@ fn assert_real_approx(actual: &Value, expected: f64) {
 /// Assert that a Value is Scalar with the expected SI value and dimension.
 fn assert_scalar_approx(actual: &Value, expected_si: f64, expected_dim: DimensionVector) {
     match actual {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert!(
                 (*si_value - expected_si).abs() < TOLERANCE,
                 "expected si_value={}, got {}",
-                expected_si, si_value
+                expected_si,
+                si_value
             );
             assert_eq!(
                 *dimension, expected_dim,

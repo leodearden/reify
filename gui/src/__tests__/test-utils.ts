@@ -1,7 +1,7 @@
 /**
  * Shared test helpers for async patterns.
  */
-import { vi, type MockInstance } from 'vitest';
+import { vi, expect, type MockInstance } from 'vitest';
 
 /** Yield to the macrotask queue so setTimeout callbacks execute. */
 export const flushMacrotasks = (ms = 0) => new Promise<void>((r) => setTimeout(r, ms));
@@ -34,6 +34,39 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
 }
 
 /**
+ * Run `fn` with a temporary `unhandledrejection` listener (a `vi.fn()` spy)
+ * and assert that no unhandled rejections fired during `fn`.  The listener is
+ * removed in a `finally` block so it never leaks across tests.
+ *
+ * Unlike `withSuppressedRejections`, this helper is the *inverse*: it is used
+ * when the production code is expected to handle all rejections internally, and
+ * any unhandled rejection would represent a regression.  The listener has no
+ * `{ once: true }` so every rejection is captured — not just the first.
+ */
+export async function expectNoUnhandledRejections(fn: () => Promise<void>): Promise<void> {
+  const spy = vi.fn();
+  window.addEventListener('unhandledrejection', spy);
+  try {
+    await fn();
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener('unhandledrejection', spy);
+  }
+}
+
+async function withSuppressedRejectionsAndConsoleSpy(
+  method: 'error' | 'warn',
+  fn: (spy: MockInstance) => Promise<void>,
+): Promise<void> {
+  const spy = vi.spyOn(console, method).mockImplementation(() => {});
+  try {
+    await withSuppressedRejections(() => fn(spy));
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/**
  * Run `fn` with both a temporary `console.error` spy (output suppressed) and
  * the `unhandledrejection` suppression from `withSuppressedRejections`.
  *
@@ -44,10 +77,19 @@ export async function withSuppressedRejections(fn: () => Promise<void>): Promise
 export async function withSuppressedRejectionsAndErrorSpy(
   fn: (errorSpy: MockInstance) => Promise<void>,
 ): Promise<void> {
-  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-  try {
-    await withSuppressedRejections(() => fn(errorSpy));
-  } finally {
-    errorSpy.mockRestore();
-  }
+  return withSuppressedRejectionsAndConsoleSpy('error', fn);
+}
+
+/**
+ * Run `fn` with both a temporary `console.warn` spy (output suppressed) and
+ * the `unhandledrejection` suppression from `withSuppressedRejections`.
+ *
+ * The spy is passed as the first argument to `fn` so callers can make
+ * targeted assertions (e.g. `expect(warnSpy).toHaveBeenCalledWith(...)`).
+ * The spy is restored in a `finally` block so it never leaks across tests.
+ */
+export async function withSuppressedRejectionsAndWarnSpy(
+  fn: (warnSpy: MockInstance) => Promise<void>,
+): Promise<void> {
+  return withSuppressedRejectionsAndConsoleSpy('warn', fn);
 }

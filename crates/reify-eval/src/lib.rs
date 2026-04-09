@@ -5,6 +5,8 @@ pub mod dirty;
 pub mod graph;
 pub mod journal;
 pub mod snapshot;
+pub mod tests_runner;
+pub use tests_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -25,6 +27,7 @@ use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace};
 use crate::dirty::topological_sort;
+use crate::graph::GuardedGroupInfo;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
 
@@ -155,7 +158,7 @@ pub struct CheckResult {
 }
 
 /// A single constraint's check result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstraintCheckEntry {
     pub id: reify_types::ConstraintNodeId,
     pub label: Option<String>,
@@ -260,6 +263,46 @@ pub struct ConcurrentEditResult {
     pub resolved_params: HashMap<ValueCellId, Value>,
     /// Diagnostics from constraint resolution (e.g., infeasibility messages).
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Controls how `guard_state_fingerprint` handles guard cells absent from the value map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardLookup {
+    /// Missing cells are treated as `Value::Undef` (safe during initial evaluation).
+    Lenient,
+    /// Missing cells cause a panic (required after `eval()` has fully populated all cells).
+    Strict,
+}
+
+/// Compute a content hash over the current guard-cell values in `groups`.
+///
+/// Each guard cell is hashed as `"guard:{cell}={value:?}"` to ensure that two
+/// different cells holding the same value still produce distinct hashes.
+///
+/// `GuardLookup::Lenient`: missing cells are treated as `Value::Undef`.
+/// Use this during or immediately after initial evaluation, where a guard cell
+/// might not yet have a value (semantically undetermined).
+///
+/// `GuardLookup::Strict`: panics if any guard cell is absent from `values`.
+/// Use this after `eval()` has completed, where every guard cell must be
+/// populated; a missing cell would silently produce a wrong fingerprint and
+/// corrupt the incremental cache.
+fn guard_state_fingerprint(
+    groups: &[GuardedGroupInfo],
+    values: &ValueMap,
+    mode: GuardLookup,
+) -> ContentHash {
+    let hashes = groups.iter().map(|g| {
+        let val = match mode {
+            GuardLookup::Strict => values
+                .get(&g.guard_cell)
+                .cloned()
+                .expect("guard cell must have a value after initial evaluation"),
+            GuardLookup::Lenient => values.get_or_undef(&g.guard_cell),
+        };
+        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
+    });
+    ContentHash::combine_all(hashes)
 }
 
 impl Engine {
@@ -708,7 +751,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in setup.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -716,14 +759,14 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
             }
 
             // Compute dirty cone from changed cells
-            let dirty_cone =
-                crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
+            let dirty_cone = crate::dirty::compute_dirty_cone(&setup.changed_cells, reverse_index);
 
             // Union of all resolved auto param IDs across groups for second wave
             let mut all_resolved_ids: HashSet<ValueCellId> = HashSet::new();
@@ -770,16 +813,16 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             result.values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
 
-                            result.snapshot_values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            result
+                                .snapshot_values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             let node_id = NodeId::Value(id.clone());
                             let trace = DependencyTrace::default();
@@ -791,6 +834,17 @@ impl Engine {
                                 setup.version,
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
@@ -827,14 +881,12 @@ impl Engine {
                                 .with_meta(&setup.meta_map),
                         );
                         result.values.insert(vcid.clone(), val.clone());
-                        result.snapshot_values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        result
+                            .snapshot_values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
@@ -972,7 +1024,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults and Auto cells to populate the value map
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     // Auto cells: Undef with DeterminacyState::Auto
                     let node_id = NodeId::Value(cell.id.clone());
                     let start = Instant::now();
@@ -1118,7 +1170,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1127,14 +1179,12 @@ impl Engine {
                     } else {
                         // Guard is false or Undef — member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
 
@@ -1160,7 +1210,7 @@ impl Engine {
                                     (Value::Undef, DeterminacyState::Undetermined),
                                 );
                             }
-                        } else if cell.kind == ValueCellKind::Auto {
+                        } else if cell.kind.is_auto() {
                             values.insert(cell.id.clone(), Value::Undef);
                             snapshot
                                 .values
@@ -1169,14 +1219,12 @@ impl Engine {
                     } else {
                         // Guard is true or Undef — else member is inactive
                         values.insert(cell.id.clone(), Value::Undef);
-                        let det = if cell.kind == ValueCellKind::Auto {
+                        let det = if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
                         };
-                        snapshot
-                            .values
-                            .insert(cell.id.clone(), (Value::Undef, det));
+                        snapshot.values.insert(cell.id.clone(), (Value::Undef, det));
                     }
                 }
             }
@@ -1334,7 +1382,7 @@ impl Engine {
                 let auto_ids: std::collections::HashSet<ValueCellId> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| cell.id.clone())
                     .collect();
 
@@ -1357,17 +1405,18 @@ impl Engine {
                 let auto_param_list: Vec<AutoParam> = template
                     .value_cells
                     .iter()
-                    .filter(|cell| cell.kind == ValueCellKind::Auto)
+                    .filter(|cell| cell.kind.is_auto())
                     .map(|cell| AutoParam {
                         id: cell.id.clone(),
                         param_type: cell.cell_type.clone(),
                         bounds: None,
+                        free: cell.kind.is_auto_free(),
                     })
                     .collect();
 
                 // Build ResolutionProblem
                 let problem = ResolutionProblem {
-                    auto_params: auto_param_list,
+                    auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: values.clone(),
                     objective: template.objective.clone(),
@@ -1383,6 +1432,7 @@ impl Engine {
                 match solve_result {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         // Allocate new snapshot/version IDs BEFORE recording cache
                         // entries so all resolution-phase entries share the same
@@ -1435,6 +1485,19 @@ impl Engine {
                             });
                         }
 
+                        // Emit warning for free auto params when solution is non-unique
+                        if !unique {
+                            for ap in &auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
+                        }
+
                         // Set child snapshot with Resolution provenance
                         snapshot.id = SnapshotId(res_snapshot_id);
                         snapshot.version = VersionId(res_version_id);
@@ -1469,6 +1532,17 @@ impl Engine {
                     }
                 }
             }
+        }
+
+        // ── Guard-state fingerprinting ──────────────────────────────
+        // Include guard-cell boolean states in the topology fingerprint so that
+        // eval() and edit_param() produce identical fingerprints for the same
+        // logical guard configuration.
+        if !snapshot.graph.guarded_groups.is_empty() {
+            let guard_state_hash =
+                guard_state_fingerprint(&snapshot.graph.guarded_groups, &values, GuardLookup::Lenient);
+            snapshot.topology_fingerprint =
+                snapshot.graph.topology_fingerprint().combine(guard_state_hash);
         }
 
         // Store internal state for incremental evaluation
@@ -1718,7 +1792,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1749,7 +1823,7 @@ impl Engine {
                             let is_auto = graph
                                 .value_cells
                                 .get(mid)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(mid.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -1761,14 +1835,9 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint including guard states
-                let guard_state_hash = {
-                    let hashes = graph.guarded_groups.iter().map(|g| {
-                        let gv = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("{:?}", gv))
-                    });
-                    ContentHash::combine_all(hashes)
-                };
+                // Recompute topology fingerprint including guard states.
+                let guard_state_hash =
+                    guard_state_fingerprint(&graph.guarded_groups, &values, GuardLookup::Lenient);
                 new_snapshot.topology_fingerprint =
                     graph.topology_fingerprint().combine(guard_state_hash);
             }
@@ -1787,7 +1856,7 @@ impl Engine {
                 HashMap::new();
 
             for (_, node) in new_snapshot.graph.value_cells.iter() {
-                if node.kind == ValueCellKind::Auto {
+                if node.kind.is_auto() {
                     let entry = entity_groups
                         .entry(node.id.entity.clone())
                         .or_insert_with(|| (Vec::new(), HashSet::new()));
@@ -1795,6 +1864,7 @@ impl Engine {
                         id: node.id.clone(),
                         param_type: node.cell_type.clone(),
                         bounds: None,
+                        free: node.kind.is_auto_free(),
                     });
                     entry.1.insert(node.id.clone());
                 }
@@ -1846,6 +1916,7 @@ impl Engine {
                 match solver.solve(&problem) {
                     SolveResult::Solved {
                         values: solver_values,
+                        unique,
                     } => {
                         for (id, val) in &solver_values {
                             values.insert(id.clone(), val.clone());
@@ -1853,10 +1924,9 @@ impl Engine {
                             all_resolved_ids.insert(id.clone());
 
                             // Update snapshot values
-                            new_snapshot.values.insert(
-                                id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
+                            new_snapshot
+                                .values
+                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
@@ -1873,6 +1943,17 @@ impl Engine {
                                 VersionId(version_id),
                                 trace,
                             );
+                        }
+                        if !unique {
+                            for ap in auto_param_list {
+                                if ap.free {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "Parameter `{}` resolved via auto(free) \
+                                         -- result is not uniquely determined.",
+                                        ap.id.member
+                                    )));
+                                }
+                            }
                         }
                     }
                     SolveResult::Infeasible {
@@ -1915,15 +1996,13 @@ impl Engine {
                                 .with_meta(&self.meta_map),
                         );
                         values.insert(vcid.clone(), val.clone());
-                        new_snapshot.values.insert(
-                            vcid.clone(),
-                            (val.clone(), DeterminacyState::Determined),
-                        );
+                        new_snapshot
+                            .values
+                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
                         // Update cache for re-evaluated node
                         let trace = extract_dependency_trace(expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
+                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
                         self.cache.record_evaluation(
                             node_id.clone(),
                             cached_result,
@@ -1954,10 +2033,12 @@ impl Engine {
             if guard_changed {
                 // Re-evaluate each guarded group based on current guard values
                 for group in new_snapshot.graph.guarded_groups.clone() {
+                    // Site 3: guard cell must be present — eval() has completed and populated all
+                    // guard cells into the values map. A missing guard cell here is a logic error.
                     let guard_val = values
                         .get(&group.guard_cell)
                         .cloned()
-                        .unwrap_or(Value::Undef);
+                        .expect("guard cell must have a value after initial evaluation");
                     let guard_is_true = matches!(&guard_val, Value::Bool(true));
                     let guard_is_false = matches!(&guard_val, Value::Bool(false));
 
@@ -1985,7 +2066,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2020,7 +2101,7 @@ impl Engine {
                                 .graph
                                 .value_cells
                                 .get(member_id)
-                                .is_some_and(|n| n.kind == ValueCellKind::Auto);
+                                .is_some_and(|n| n.kind.is_auto());
                             if !is_auto {
                                 values.insert(member_id.clone(), Value::Undef);
                                 new_snapshot.values.insert(
@@ -2032,19 +2113,14 @@ impl Engine {
                     }
                 }
 
-                // Recompute topology fingerprint to include guard states
-                let base_fingerprint = new_snapshot.graph.topology_fingerprint();
-                let guard_state_hashes: Vec<ContentHash> = new_snapshot
-                    .graph
-                    .guarded_groups
-                    .iter()
-                    .map(|g| {
-                        let val = values.get(&g.guard_cell).cloned().unwrap_or(Value::Undef);
-                        ContentHash::of_str(&format!("guard:{}={:?}", g.guard_cell, val))
-                    })
-                    .collect();
-                let guard_states_hash = ContentHash::combine_all(guard_state_hashes);
-                new_snapshot.topology_fingerprint = base_fingerprint.combine(guard_states_hash);
+                // Recompute topology fingerprint to include guard states.
+                let guard_state_hash = guard_state_fingerprint(
+                    &new_snapshot.graph.guarded_groups,
+                    &values,
+                    GuardLookup::Strict,
+                );
+                new_snapshot.topology_fingerprint =
+                    new_snapshot.graph.topology_fingerprint().combine(guard_state_hash);
             }
         }
 
@@ -2312,7 +2388,7 @@ impl Engine {
         for template in &module.templates {
             // First pass: evaluate Param defaults, Auto cells, (or use overrides)
             for cell in &template.value_cells {
-                if cell.kind == ValueCellKind::Auto {
+                if cell.kind.is_auto() {
                     let node_id = NodeId::Value(cell.id.clone());
 
                     // Check version fast path
@@ -2828,6 +2904,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -2907,6 +2984,7 @@ impl Engine {
                             &step_handles[handle_start..],
                             &module.functions,
                             &self.meta_map,
+                            &mut diagnostics,
                         );
                         match geom_op {
                             Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3027,6 +3105,7 @@ impl Engine {
                         &step_handles[handle_start..],
                         &module.functions,
                         meta_map,
+                        diagnostics,
                     );
                     match geom_op {
                         Some(geom_op) => match kernel.execute(&geom_op) {
@@ -3249,6 +3328,52 @@ impl Engine {
     }
 }
 
+/// Look up a named argument in `args`, evaluate it, and return the resulting
+/// `Value`.  If the argument is absent, push a `Warning` diagnostic and return
+/// `None`.  Non-finite numeric values do **not** trigger a diagnostic here;
+/// callers that need the `f64` representation should use [`eval_named_arg_f64`]
+/// which silently returns `None` for non-finite values.
+fn eval_named_arg(
+    name: &str,
+    kind_label: impl std::fmt::Debug,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_types::Value> {
+    match args.iter().find(|(n, _)| n == name) {
+        Some((_, expr)) => Some(reify_expr::eval_expr(
+            expr,
+            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
+        )),
+        None => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "missing required geometry argument '{}' for {:?}",
+                name, kind_label
+            )));
+            None
+        }
+    }
+}
+
+/// Look up a named argument, evaluate it, and convert to a finite `f64`.
+/// Returns `None` (without a diagnostic) when the argument is present but
+/// non-finite; returns `None` with a diagnostic when the argument is absent.
+fn eval_named_arg_f64(
+    name: &str,
+    kind_label: impl std::fmt::Debug,
+    args: &[(String, reify_types::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    eval_named_arg(name, kind_label, args, values, functions, meta_map, diagnostics)?
+        .as_f64()
+        .filter(|v| v.is_finite())
+}
+
 /// Compile a CompiledGeometryOp into a GeometryOp by evaluating expressions.
 /// Translate a compiled geometry operation into a runtime `GeometryOp`.
 ///
@@ -3272,35 +3397,28 @@ fn compile_geometry_op(
     step_handles: &[GeometryHandleId],
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_types::GeometryOp> {
     use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
 
     match op {
         CompiledGeometryOp::Primitive { kind, args } => {
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             };
 
             match kind {
                 PrimitiveKind::Box => Some(reify_types::GeometryOp::Box {
-                    width: eval_arg("width"),
-                    height: eval_arg("height"),
-                    depth: eval_arg("depth"),
+                    width: eval_arg("width")?,
+                    height: eval_arg("height")?,
+                    depth: eval_arg("depth")?,
                 }),
                 PrimitiveKind::Cylinder => Some(reify_types::GeometryOp::Cylinder {
-                    radius: eval_arg("radius"),
-                    height: eval_arg("height"),
+                    radius: eval_arg("radius")?,
+                    height: eval_arg("height")?,
                 }),
                 PrimitiveKind::Sphere => Some(reify_types::GeometryOp::Sphere {
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
             }
         }
@@ -3333,28 +3451,20 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg = |name: &str| -> reify_types::Value {
-                args.iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, expr)| {
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                    })
-                    .unwrap_or(reify_types::Value::Undef)
+            let mut eval_arg = |name: &str| -> Option<reify_types::Value> {
+                eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             };
             match kind {
                 reify_compiler::ModifyKind::Fillet => Some(reify_types::GeometryOp::Fillet {
                     target: target_id,
-                    radius: eval_arg("radius"),
+                    radius: eval_arg("radius")?,
                 }),
                 reify_compiler::ModifyKind::Chamfer => Some(reify_types::GeometryOp::Chamfer {
                     target: target_id,
-                    distance: eval_arg("distance"),
+                    distance: eval_arg("distance")?,
                 }),
                 reify_compiler::ModifyKind::Shell => {
-                    let thickness = eval_arg("thickness");
+                    let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
                     let faces_to_remove: Vec<usize> = args
                         .iter()
@@ -3376,7 +3486,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
-                    let angle = eval_arg("angle");
+                    let angle = eval_arg("angle")?;
                     // plane is passed as an expression that evaluates to a value;
                     // at this level we don't have the geometry handle yet, so we
                     // use step_handles.last() as a placeholder for the plane reference.
@@ -3388,7 +3498,7 @@ fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Thicken => {
-                    let offset = eval_arg("offset");
+                    let offset = eval_arg("offset")?;
                     Some(reify_types::GeometryOp::Thicken {
                         target: target_id,
                         offset,
@@ -3401,35 +3511,29 @@ fn compile_geometry_op(
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                 GeomRef::Sub(_) => step_handles.last().copied()?,
             };
-            let eval_arg_f64 = |name: &str| -> Option<f64> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                )
-                .as_f64()
-                .filter(|v| v.is_finite())
+            let mut f64_arg = |name: &str| {
+                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
             };
             match kind {
                 reify_compiler::TransformKind::Translate => {
                     Some(reify_types::GeometryOp::Translate {
                         target: target_id,
-                        dx: eval_arg_f64("dx")?,
-                        dy: eval_arg_f64("dy")?,
-                        dz: eval_arg_f64("dz")?,
+                        dx: f64_arg("dx")?,
+                        dy: f64_arg("dy")?,
+                        dz: f64_arg("dz")?,
                     })
                 }
                 reify_compiler::TransformKind::Rotate => Some(reify_types::GeometryOp::Rotate {
                     target: target_id,
                     axis: [
-                        eval_arg_f64("axis_x")?,
-                        eval_arg_f64("axis_y")?,
-                        eval_arg_f64("axis_z")?,
+                        f64_arg("axis_x")?,
+                        f64_arg("axis_y")?,
+                        f64_arg("axis_z")?,
                     ],
-                    angle_rad: eval_arg_f64("angle")?,
+                    angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
-                    let factor = eval_arg_f64("factor")?;
+                    let factor = f64_arg("factor")?;
                     // Reject negative scale: OCCT SetScale with negative factor
                     // produces inside-out geometry (point-symmetry), not mirroring.
                     if factor < 0.0 {
@@ -3444,37 +3548,21 @@ fn compile_geometry_op(
                     Some(reify_types::GeometryOp::RotateAround {
                         target: target_id,
                         point: [
-                            eval_arg_f64("px")?,
-                            eval_arg_f64("py")?,
-                            eval_arg_f64("pz")?,
+                            f64_arg("px")?,
+                            f64_arg("py")?,
+                            f64_arg("pz")?,
                         ],
                         axis: [
-                            eval_arg_f64("axis_x")?,
-                            eval_arg_f64("axis_y")?,
-                            eval_arg_f64("axis_z")?,
+                            f64_arg("axis_x")?,
+                            f64_arg("axis_y")?,
+                            f64_arg("axis_z")?,
                         ],
-                        angle_rad: eval_arg_f64("angle")?,
+                        angle_rad: f64_arg("angle")?,
                     })
                 }
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
-            let eval_arg = |name: &str| -> Option<reify_types::Value> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                Some(reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                ))
-            };
-            let eval_arg_f64 = |name: &str| -> Option<f64> {
-                let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                reify_expr::eval_expr(
-                    expr,
-                    &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                )
-                .as_f64()
-                .filter(|v| v.is_finite())
-            };
             // Pattern operations resolve target via step index
             let target_id = match target {
                 GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
@@ -3482,47 +3570,45 @@ fn compile_geometry_op(
             };
             match kind {
                 reify_compiler::PatternKind::Linear => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
+                    let count = f64_arg("count")? as usize;
+                    let spacing = eval_named_arg("spacing", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::LinearPattern {
                         target: target_id,
-                        direction: [
-                            eval_arg_f64("dx")?,
-                            eval_arg_f64("dy")?,
-                            eval_arg_f64("dz")?,
-                        ],
-                        count: eval_arg_f64("count")? as usize,
-                        spacing: eval_arg("spacing")?,
+                        direction,
+                        count,
+                        spacing,
                     })
                 }
                 reify_compiler::PatternKind::Circular => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
+                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
+                    let count = f64_arg("count")? as usize;
+                    let angle = eval_named_arg("angle", kind, args, values, functions, meta_map, diagnostics)?;
                     Some(reify_types::GeometryOp::CircularPattern {
                         target: target_id,
-                        axis_origin: [
-                            eval_arg_f64("ox")?,
-                            eval_arg_f64("oy")?,
-                            eval_arg_f64("oz")?,
-                        ],
-                        axis_dir: [
-                            eval_arg_f64("ax")?,
-                            eval_arg_f64("ay")?,
-                            eval_arg_f64("az")?,
-                        ],
-                        count: eval_arg_f64("count")? as usize,
-                        angle: eval_arg("angle")?,
+                        axis_origin,
+                        axis_dir,
+                        count,
+                        angle,
                     })
                 }
-                reify_compiler::PatternKind::Mirror => Some(reify_types::GeometryOp::Mirror {
-                    target: target_id,
-                    plane_origin: [
-                        eval_arg_f64("ox")?,
-                        eval_arg_f64("oy")?,
-                        eval_arg_f64("oz")?,
-                    ],
-                    plane_normal: [
-                        eval_arg_f64("nx")?,
-                        eval_arg_f64("ny")?,
-                        eval_arg_f64("nz")?,
-                    ],
-                }),
+                reify_compiler::PatternKind::Mirror => {
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
+                    };
+                    Some(reify_types::GeometryOp::Mirror {
+                        target: target_id,
+                        plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+                        plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+                    })
+                }
             }
         }
         CompiledGeometryOp::Sweep {
@@ -3549,17 +3635,16 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let distance =
-                        args.iter()
-                            .find(|(n, _)| n == "distance")
-                            .map(|(_, expr)| {
-                                reify_expr::eval_expr(
-                                    expr,
-                                    &reify_expr::EvalContext::new(values, functions)
-                                        .with_meta(meta_map),
-                                )
-                            })?;
-                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite())?;
+                    let distance = eval_named_arg(
+                        "distance",
+                        kind,
+                        args,
+                        values,
+                        functions,
+                        meta_map,
+                        diagnostics,
+                    )?;
+                    let _distance_f64 = distance.as_f64().filter(|v| v.is_finite() && v.abs() >= 1e-12)?;
                     Some(reify_types::GeometryOp::Extrude {
                         profile: profile_handle,
                         distance,
@@ -3570,33 +3655,24 @@ fn compile_geometry_op(
                         GeomRef::Step(idx) => step_handles.get(*idx).copied()?,
                         GeomRef::Sub(_) => step_handles.last().copied()?,
                     };
-                    let eval_arg_f64 = |name: &str| -> Option<f64> {
-                        let (_, expr) = args.iter().find(|(n, _)| n == name)?;
-                        reify_expr::eval_expr(
-                            expr,
-                            &reify_expr::EvalContext::new(values, functions).with_meta(meta_map),
-                        )
-                        .as_f64()
-                        .filter(|v| v.is_finite())
+                    let mut f64_arg = |name: &str| {
+                        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     };
-                    let axis_dir = [
-                        eval_arg_f64("ax")?,
-                        eval_arg_f64("ay")?,
-                        eval_arg_f64("az")?,
-                    ];
+                    let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
                     let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
                     if !mag.is_finite() || mag < 1e-12 {
                         return None;
                     }
+                    let angle_rad = f64_arg("angle")?;
+                    if angle_rad.abs() < 1e-12 {
+                        return None;
+                    }
+                    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
                     Some(reify_types::GeometryOp::Revolve {
                         profile: profile_handle,
-                        axis_origin: [
-                            eval_arg_f64("ox")?,
-                            eval_arg_f64("oy")?,
-                            eval_arg_f64("oz")?,
-                        ],
+                        axis_origin,
                         axis_dir,
-                        angle_rad: eval_arg_f64("angle")?,
+                        angle_rad,
                     })
                 }
                 reify_compiler::SweepKind::Sweep => {
@@ -4200,7 +4276,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(2.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Scale");
 
         match result {
@@ -4231,7 +4307,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for RotateAround");
 
         match result {
@@ -4267,7 +4343,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Loft");
 
         match result {
@@ -4293,7 +4369,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.05))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4342,7 +4418,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'ox' arg, got {:?}",
@@ -4361,7 +4437,7 @@ mod tests {
             args: vec![],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "expected None for missing 'distance' arg, got {:?}",
@@ -4381,7 +4457,7 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN extrude distance should return None");
     }
 
@@ -4397,8 +4473,27 @@ mod tests {
             args: vec![("distance".into(), literal_f64(f64::INFINITY))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "Inf extrude distance should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_near_zero_distance_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with a near-zero (1e-15 m) distance — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(1e-15))],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "near-zero extrude distance should return None"
+        );
     }
 
     #[test]
@@ -4421,7 +4516,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "zero-length rotation axis should return None"
@@ -4448,8 +4543,35 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN rotation axis should return None");
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_near_zero_angle_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with a near-zero (1e-15 rad) angle — should return None (degenerate geometry)
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(1e-15)),
+            ],
+        };
+
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
+        assert!(
+            result.is_none(),
+            "near-zero revolve angle should return None"
+        );
     }
 
     #[test]
@@ -4471,7 +4593,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result =
             result.expect("compile_geometry_op should return Some for Revolve with valid axis");
 
@@ -4506,7 +4628,7 @@ mod tests {
             args: vec![("distance".into(), literal_length(0.03))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         let result = result.expect("compile_geometry_op should return Some for Extrude");
 
         match result {
@@ -4541,7 +4663,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(-1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "negative scale factor should return None (inside-out geometry)"
@@ -4560,7 +4682,7 @@ mod tests {
             args: vec![("dx".into(), literal_f64(1.0))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing dy/dz should return None, not silently default to 0.0"
@@ -4578,7 +4700,7 @@ mod tests {
             args: vec![("factor".into(), literal_f64(f64::NAN))],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "NaN scale factor should return None");
     }
 
@@ -4602,7 +4724,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(result.is_none(), "missing axis_z should return None");
     }
 
@@ -4624,7 +4746,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing spacing should return None, not silently default to Value::Undef"
@@ -4652,7 +4774,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         assert!(
             result.is_none(),
             "missing angle should return None, not silently default to Value::Undef"
@@ -4676,7 +4798,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::LinearPattern {
                 target,
@@ -4717,7 +4839,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::CircularPattern {
                 target,
@@ -4758,7 +4880,7 @@ mod tests {
             ],
         };
 
-        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new());
+        let result = compile_geometry_op(&op, &values, &step_handles, &[], &HashMap::new(), &mut Vec::new());
         match result {
             Some(reify_types::GeometryOp::Mirror {
                 target,
@@ -4771,5 +4893,583 @@ mod tests {
             }
             other => panic!("expected Some(Mirror), got {:?}", other),
         }
+    }
+
+    // ── compile_geometry_op diagnostic tests ─────────────────────────────────
+
+    #[test]
+    fn compile_geometry_op_primitive_missing_arg_returns_none() {
+        let step_handles: Vec<GeometryHandleId> = vec![];
+        let values = ValueMap::new();
+
+        // Box with height and depth present, but 'width' deliberately omitted
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+                // width deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
+        );
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'width'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'width', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("width"),
+            "diagnostic message should mention 'width', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Box"),
+            "diagnostic message should mention 'Box', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_modify_missing_arg_returns_none() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Fillet with target but 'radius' deliberately omitted
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                // radius deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // When a required arg is missing, compile_geometry_op should short-circuit and return None
+        assert!(
+            result.is_none(),
+            "compile_geometry_op should return None when a required arg is missing"
+        );
+
+        // Exactly one diagnostic warning should have been emitted for the missing 'radius'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'radius', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("radius"),
+            "diagnostic message should mention 'radius', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Fillet"),
+            "diagnostic message should mention 'Fillet', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Primitive::Box with all required args present
+        let box_op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), literal_length(0.10)),
+                ("height".into(), literal_length(0.05)),
+                ("depth".into(), literal_length(0.04)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &box_op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Box with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Primitive args are present, got: {:?}",
+            diagnostics
+        );
+
+        // Modify::Fillet with target and radius present
+        let fillet_op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Fillet,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("radius".into(), literal_length(0.005))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &fillet_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Fillet with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected when all Modify args are present, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(1)];
+        let values = ValueMap::new();
+
+        // Transform::Translate — all three required args present
+        let translate_op = CompiledGeometryOp::Transform {
+            kind: reify_compiler::TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(1.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &translate_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Translate with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Translate with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Pattern::LinearPattern — all required args present
+        let linear_op = CompiledGeometryOp::Pattern {
+            kind: reify_compiler::PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                ("spacing".into(), literal_length(0.02)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "LinearPattern with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for LinearPattern with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Extrude — distance present
+        let extrude_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![("distance".into(), literal_length(0.05))],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &extrude_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Extrude with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Extrude with all args, got: {:?}",
+            diagnostics
+        );
+
+        // Sweep::Revolve — all seven args present with a valid axis
+        let revolve_op = CompiledGeometryOp::Sweep {
+            kind: reify_compiler::SweepKind::Revolve,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &revolve_op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_some(), "Revolve with all args should return Some");
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected for Revolve with all args, got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
+
+    #[test]
+    fn compile_geometry_op_sweep_extrude_missing_distance_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Extrude with no args at all — 'distance' is missing
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Extrude,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None
+        assert!(
+            result.is_none(),
+            "missing 'distance' should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'distance' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'distance', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("distance"),
+            "diagnostic message should mention 'distance', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Extrude"),
+            "diagnostic message should mention 'Extrude', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_sweep_revolve_missing_ox_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // Revolve with all args except 'ox' — should return None AND emit a diagnostic
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![reify_compiler::GeomRef::Step(0)],
+            args: vec![
+                // ox deliberately omitted
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None
+        assert!(
+            result.is_none(),
+            "missing 'ox' should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'ox' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'ox', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("ox"),
+            "diagnostic message should mention 'ox', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Revolve"),
+            "diagnostic message should mention 'Revolve', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_pattern_linear_missing_spacing_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // spacing deliberately omitted
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Pattern short-circuits on missing args)
+        assert!(
+            result.is_none(),
+            "missing spacing should still return None, got {:?}",
+            result
+        );
+
+        // Exactly one diagnostic warning for the missing 'spacing' arg
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'spacing', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("spacing"),
+            "diagnostic message should mention 'spacing', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Linear"),
+            "diagnostic message should mention 'Linear', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_transform_translate_missing_arg_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Translate with only dx — missing dy, dz
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("dx".into(), literal_f64(1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Transform short-circuits on missing f64 args)
+        assert!(
+            result.is_none(),
+            "missing dy/dz should still return None, got {:?}",
+            result
+        );
+
+        // But now exactly one diagnostic warning should be emitted for the first missing arg 'dy'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'dy', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("dy"),
+            "diagnostic message should mention 'dy', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Translate"),
+            "diagnostic message should mention 'Translate', got: {}",
+            diagnostics[0].message
+        );
+    }
+
+    // ── guard_state_fingerprint unit tests ────────────────────────────────────
+
+    fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
+        GuardedGroupInfo {
+            guard_cell: ValueCellId::new(entity, member),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }
+    }
+
+    #[test]
+    fn guard_state_fingerprint_empty_groups_returns_combine_all_empty() {
+        let values = ValueMap::new();
+        let result = guard_state_fingerprint(&[], &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::empty());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_single_group_present_value() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(true);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![GuardedGroupInfo {
+            guard_cell: cell.clone(),
+            members: vec![],
+            constraints: vec![],
+            else_members: vec![],
+            else_constraints: vec![],
+        }];
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, val)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_lenient_missing_value_uses_undef() {
+        let cell = ValueCellId::new("E", "g");
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        let result = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        let expected = ContentHash::combine_all(std::iter::once(
+            ContentHash::of_str(&format!("guard:{}={:?}", cell, Value::Undef)),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn guard_state_fingerprint_strict_present_matches_lenient() {
+        let cell = ValueCellId::new("E", "g");
+        let val = Value::Bool(false);
+        let mut values = ValueMap::new();
+        values.insert(cell.clone(), val.clone());
+        let groups = vec![make_guard_group("E", "g")];
+        let strict = guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
+        let lenient = guard_state_fingerprint(&groups, &values, GuardLookup::Lenient);
+        assert_eq!(strict, lenient);
+    }
+
+    #[test]
+    #[should_panic(expected = "guard cell must have a value")]
+    fn guard_state_fingerprint_strict_missing_panics() {
+        let values = ValueMap::new(); // cell absent
+        let groups = vec![make_guard_group("E", "g")];
+        guard_state_fingerprint(&groups, &values, GuardLookup::Strict);
     }
 }

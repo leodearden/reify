@@ -2,7 +2,7 @@
 //! scale_components, negate_value). These exercise the refactored helpers
 //! through the public eval_expr API.
 
-use reify_expr::{eval_expr, EvalContext};
+use reify_expr::{EvalContext, eval_expr};
 #[allow(unused_imports)]
 use reify_types::{BinOp, CompiledExpr, DimensionVector, Type, UnOp, Value, ValueMap};
 
@@ -148,11 +148,7 @@ fn negate_complex_with_dimension() {
 /// Negating Int::MIN (i64::MIN) overflows checked_neg → Undef.
 #[test]
 fn negate_int_min_returns_undef() {
-    let expr = CompiledExpr::unop(
-        UnOp::Neg,
-        lit(Value::Int(i64::MIN), Type::Real),
-        Type::Real,
-    );
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(i64::MIN), Type::Real), Type::Real);
     assert_eq!(eval(&expr), Value::Undef);
 }
 

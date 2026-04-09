@@ -79,7 +79,10 @@ impl MockConstraintSolver {
     /// Create a solver that returns Solved with the given values.
     pub fn new_solved(values: HashMap<ValueCellId, Value>) -> Self {
         Self {
-            result: SolveResult::Solved { values },
+            result: SolveResult::Solved {
+                values,
+                unique: true,
+            },
         }
     }
 
@@ -432,7 +435,22 @@ impl SpyConstraintSolver {
     pub fn new_solved(values: HashMap<ValueCellId, Value>) -> Self {
         Self {
             captured: Arc::new(Mutex::new(None)),
-            result: SolveResult::Solved { values },
+            result: SolveResult::Solved {
+                values,
+                unique: true,
+            },
+        }
+    }
+
+    /// Create a spy that will return `Solved` with `unique: false` and capture
+    /// the `ResolutionProblem` it receives.
+    pub fn new_solved_non_unique(values: HashMap<ValueCellId, Value>) -> Self {
+        Self {
+            captured: Arc::new(Mutex::new(None)),
+            result: SolveResult::Solved {
+                values,
+                unique: false,
+            },
         }
     }
 
@@ -502,12 +520,8 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
 ///   10 seconds (note: the background thread cannot be cancelled and will leak).
 /// * Panics with "unexpected disconnect" if the background thread terminates
 ///   without sending (should not happen in practice).
-pub fn run_with_deadlock_timeout<T: Send + 'static>(
-    f: impl FnOnce() -> T + Send + 'static,
-) -> T {
-    let (tx, rx) = std::sync::mpsc::sync_channel::<
-        Result<T, Box<dyn std::any::Any + Send>>,
-    >(1);
+pub fn run_with_deadlock_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<T, Box<dyn std::any::Any + Send>>>(1);
     std::thread::spawn(move || {
         let result = catch_unwind(AssertUnwindSafe(f));
         let _ = tx.send(result);
@@ -599,7 +613,7 @@ mod tests {
         let problem = empty_problem();
 
         match solver.solve(&problem) {
-            SolveResult::Solved { values: v } => {
+            SolveResult::Solved { values: v, .. } => {
                 assert_eq!(v.len(), 1);
                 assert!(v.contains_key(&ValueCellId::new("S", "x")));
             }
@@ -1656,12 +1670,15 @@ mod tests {
         let solver = SequencedMockConstraintSolver::new(vec![
             SolveResult::Solved {
                 values: values1.clone(),
+                unique: true,
             },
             SolveResult::Solved {
                 values: values2.clone(),
+                unique: true,
             },
             SolveResult::Solved {
                 values: values3.clone(),
+                unique: true,
             },
         ]);
 
@@ -1669,15 +1686,15 @@ mod tests {
 
         // Each call returns the next result in sequence
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values1),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values1),
             other => panic!("expected Solved #1, got {:?}", other),
         }
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values2),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values2),
             other => panic!("expected Solved #2, got {:?}", other),
         }
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values3),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values3),
             other => panic!("expected Solved #3, got {:?}", other),
         }
     }
@@ -1692,9 +1709,11 @@ mod tests {
         let solver = SequencedMockConstraintSolver::new(vec![
             SolveResult::Solved {
                 values: values1.clone(),
+                unique: true,
             },
             SolveResult::Solved {
                 values: values2.clone(),
+                unique: true,
             },
         ]);
 
@@ -1702,21 +1721,21 @@ mod tests {
 
         // Consume both results
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values1),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values1),
             other => panic!("expected Solved #1, got {:?}", other),
         }
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values2),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values2),
             other => panic!("expected Solved #2, got {:?}", other),
         }
 
         // 3rd and 4th calls should repeat the last result
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values2),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values2),
             other => panic!("expected Solved #3 (repeated last), got {:?}", other),
         }
         match solver.solve(&problem) {
-            SolveResult::Solved { values } => assert_eq!(values, values2),
+            SolveResult::Solved { values, .. } => assert_eq!(values, values2),
             other => panic!("expected Solved #4 (repeated last), got {:?}", other),
         }
     }
@@ -1822,7 +1841,10 @@ mod tests {
         let solver = SequencedMockConstraintSolver::new(
             expected_slots
                 .iter()
-                .map(|v| SolveResult::Solved { values: v.clone() })
+                .map(|v| SolveResult::Solved {
+                    values: v.clone(),
+                    unique: true,
+                })
                 .collect(),
         );
 
@@ -1852,7 +1874,7 @@ mod tests {
         let mut seen: Vec<f64> = results
             .iter()
             .map(|r| match r {
-                SolveResult::Solved { values } => {
+                SolveResult::Solved { values, .. } => {
                     let v = values
                         .get(&ValueCellId::new("S", "x"))
                         .expect("missing x value");
@@ -1890,21 +1912,17 @@ mod tests {
         // before phase-2 threads start, so they are guaranteed to see
         // `self.last == Some(...)` rather than racing with the writer.
         let mut expected_values = HashMap::new();
-        expected_values.insert(
-            ValueCellId::new("S", "x"),
-            Value::length(0.001),
-        );
+        expected_values.insert(ValueCellId::new("S", "x"), Value::length(0.001));
 
         let expected_clone = expected_values.clone();
 
         // Run inside a spawned thread so we can apply a timeout — a real
         // deadlock would hang CI forever without this.
         let (phase1_result, results) = run_with_deadlock_timeout(move || {
-            let solver = SequencedMockConstraintSolver::new(vec![
-                SolveResult::Solved {
-                    values: expected_clone.clone(),
-                },
-            ]);
+            let solver = SequencedMockConstraintSolver::new(vec![SolveResult::Solved {
+                values: expected_clone.clone(),
+                unique: true,
+            }]);
 
             let problem = empty_problem();
 
@@ -1928,11 +1946,14 @@ mod tests {
                 }
             });
 
-            (phase1_result, collected.into_inner().unwrap_or_else(|e| e.into_inner()))
+            (
+                phase1_result,
+                collected.into_inner().unwrap_or_else(|e| e.into_inner()),
+            )
         });
 
         match &phase1_result {
-            SolveResult::Solved { values } => {
+            SolveResult::Solved { values, .. } => {
                 assert_eq!(*values, expected_values);
             }
             other => panic!("expected Solved, got {:?}", other),
@@ -1941,16 +1962,13 @@ mod tests {
         assert_eq!(results.len(), 3, "all 3 fallback threads should complete");
         for result in &results {
             match result {
-                SolveResult::Solved { values } => {
+                SolveResult::Solved { values, .. } => {
                     assert_eq!(
                         *values, expected_values,
                         "fallback threads should return the last result"
                     );
                 }
-                other => panic!(
-                    "expected Solved variant from fallback, got {:?}",
-                    other
-                ),
+                other => panic!("expected Solved variant from fallback, got {:?}", other),
             }
         }
     }
@@ -1987,8 +2005,14 @@ mod tests {
         values_b.insert(ValueCellId::new("B", "y"), Value::length(0.010));
 
         let spy = MultiCallSpyConstraintSolver::new(vec![
-            SolveResult::Solved { values: values_a },
-            SolveResult::Solved { values: values_b },
+            SolveResult::Solved {
+                values: values_a,
+                unique: true,
+            },
+            SolveResult::Solved {
+                values: values_b,
+                unique: true,
+            },
         ]);
         let captured = spy.captured_problems();
 
@@ -1998,6 +2022,7 @@ mod tests {
                 id: ValueCellId::new("A", "x"),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             }],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -2006,7 +2031,7 @@ mod tests {
         };
         let result1 = spy.solve(&problem1);
         assert!(
-            matches!(&result1, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("A", "x"))),
+            matches!(&result1, SolveResult::Solved { values, unique: true } if values.contains_key(&ValueCellId::new("A", "x"))),
             "first call should return values_a"
         );
 
@@ -2016,6 +2041,7 @@ mod tests {
                 id: ValueCellId::new("B", "y"),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             }],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -2024,7 +2050,7 @@ mod tests {
         };
         let result2 = spy.solve(&problem2);
         assert!(
-            matches!(&result2, SolveResult::Solved { values } if values.contains_key(&ValueCellId::new("B", "y"))),
+            matches!(&result2, SolveResult::Solved { values, unique: true } if values.contains_key(&ValueCellId::new("B", "y"))),
             "second call should return values_b"
         );
 

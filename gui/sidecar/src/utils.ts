@@ -1,4 +1,1 @@
-/** Extract a human-readable message from an unknown thrown value. */
-export function errorMessage(err: unknown): string {
-  return (err instanceof Error ? err.message : String(err)).trim() || 'Unknown error';
-}
+export { errorMessage } from '@reify/shared-utils';

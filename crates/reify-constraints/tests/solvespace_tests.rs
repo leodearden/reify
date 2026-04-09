@@ -84,11 +84,13 @@ fn solve_simple_point_distance_constraint() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Point", 0), constraint_expr)],
@@ -99,7 +101,7 @@ fn solve_simple_point_distance_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
             let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
             let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
@@ -199,11 +201,13 @@ fn solve_angle_constraint() {
                 id: x2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Angle", 0), constraint_expr)],
@@ -214,7 +218,7 @@ fn solve_angle_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
             let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
 
@@ -326,11 +330,13 @@ fn solve_parallel_constraint() {
                 id: x2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Parallel", 0), constraint_expr)],
@@ -341,7 +347,7 @@ fn solve_parallel_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
             let y2 = values.get(&y2_id).unwrap().as_f64().unwrap();
 
@@ -435,21 +441,25 @@ fn solve_coincident_constraint() {
                 id: x1_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y1_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: x2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y2_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Coin", 0), constraint_expr)],
@@ -460,7 +470,7 @@ fn solve_coincident_constraint() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x1 = values.get(&x1_id).unwrap().as_f64().unwrap();
             let y1 = values.get(&y1_id).unwrap().as_f64().unwrap();
             let x2 = values.get(&x2_id).unwrap().as_f64().unwrap();
@@ -524,11 +534,13 @@ fn solve_overconstrained_returns_infeasible() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Over", 0), c1), (cnid("Over", 1), c2)],
@@ -587,16 +599,19 @@ fn solve_underconstrained_solves_with_dof() {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: y_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
             AutoParam {
                 id: z_id.clone(),
                 param_type: Type::length(),
                 bounds: None,
+                free: false,
             },
         ],
         constraints: vec![(cnid("Under", 0), constraint_expr)],
@@ -607,7 +622,7 @@ fn solve_underconstrained_solves_with_dof() {
 
     let result = solver.solve(&problem);
     match result {
-        SolveResult::Solved { values } => {
+        SolveResult::Solved { values, .. } => {
             let x = values.get(&x_id).unwrap().as_f64().unwrap();
             let y = values.get(&y_id).unwrap().as_f64().unwrap();
             let z = values.get(&z_id).unwrap().as_f64().unwrap();
@@ -664,11 +679,13 @@ fn solve_never_panics_on_valid_input() {
                     id: x_id,
                     param_type: Type::length(),
                     bounds: None,
+                    free: false,
                 },
                 AutoParam {
                     id: y_id,
                     param_type: Type::length(),
                     bounds: None,
+                    free: false,
                 },
             ],
             constraints: vec![(cnid("NoPanic", 0), constraint_expr)],
@@ -724,6 +741,7 @@ fn solve_unrecognized_pattern_falls_through() {
             id: x_id,
             param_type: Type::length(),
             bounds: None,
+            free: false,
         }],
         constraints: vec![(cnid("Unknown", 0), constraint_expr)],
         current_values: ValueMap::new(),
@@ -792,6 +810,7 @@ fn non_numeric_coord_returns_none() {
             id: x_id,
             param_type: Type::length(),
             bounds: None,
+            free: false,
         }],
         constraints: vec![(cnid("Point", 0), constraint_expr)],
         current_values: ValueMap::new(),
@@ -869,6 +888,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
             id: x_id.clone(),
             param_type: Type::length(),
             bounds: None,
+            free: false,
         }],
         constraints: vec![(cnid("Test", 0), constraint_expr)],
         current_values: ValueMap::new(),

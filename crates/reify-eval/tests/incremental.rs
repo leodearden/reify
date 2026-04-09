@@ -1129,8 +1129,14 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -1320,6 +1326,7 @@ fn edit_param_solver_diagnostics_propagated() {
     let solver = SequencedMockConstraintSolver::new(vec![
         SolveResult::Solved {
             values: solved_values,
+            unique: true,
         },
         SolveResult::Infeasible {
             diagnostics: vec![Diagnostic::error("constraints are infeasible")],
@@ -1388,8 +1395,14 @@ fn edit_param_snapshot_updated_after_re_resolution() {
     solved2.insert(x_id.clone(), mm(20.0));
 
     let solver = SequencedMockConstraintSolver::new(vec![
-        SolveResult::Solved { values: solved1 },
-        SolveResult::Solved { values: solved2 },
+        SolveResult::Solved {
+            values: solved1,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: solved2,
+            unique: true,
+        },
     ]);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -2473,9 +2486,7 @@ fn edit_param_on_undef_param_updates_cache() {
     let a_id = ValueCellId::new(e, "a");
 
     // Edit a → 42
-    engine
-        .edit_param(a_id.clone(), Value::Int(42))
-        .unwrap();
+    engine.edit_param(a_id.clone(), Value::Int(42)).unwrap();
 
     // The cache entry for a must now hold Value::Int(42)
     let cache = engine.cache_store();

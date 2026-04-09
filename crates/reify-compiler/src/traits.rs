@@ -1,0 +1,371 @@
+use super::*;
+
+pub(crate) fn compile_trait(
+    trait_decl: &reify_syntax::TraitDecl,
+    enum_defs: &[reify_types::EnumDef],
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledTrait {
+    let empty_params = HashSet::new();
+    let mut required_members = Vec::new();
+    let mut defaults = Vec::new();
+
+    for member in &trait_decl.members {
+        match member {
+            reify_syntax::MemberDecl::Param(param) => {
+                let ty = if let Some(type_expr) = &param.type_expr {
+                    if let Some(t) =
+                        resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
+                    {
+                        t
+                    } else if enum_defs.iter().any(|e| e.name == type_expr.name) {
+                        // Enum type defined in the same module
+                        Type::Enum(type_expr.name.clone())
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "unresolved type in trait '{}': {}",
+                                trait_decl.name, type_expr.name
+                            ))
+                            .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
+                        );
+                        Type::Real // fallback
+                    }
+                } else {
+                    Type::Real
+                };
+
+                if param.default.is_some() {
+                    // Param with default → trait default
+                    defaults.push(TraitDefault {
+                        name: Some(param.name.clone()),
+                        kind: DefaultKind::Param {
+                            cell_type: ty,
+                            default_decl: param.clone(),
+                        },
+                        span: param.span,
+                    });
+                } else {
+                    // Param without default → requirement
+                    required_members.push(TraitRequirement {
+                        name: param.name.clone(),
+                        kind: RequirementKind::Param(ty),
+                        span: param.span,
+                    });
+                }
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                // Let bindings always have a value expression → default
+                let ty = if let Some(type_expr) = &let_decl.type_expr {
+                    match resolve_type_with_aliases(&type_expr.name, &empty_params, alias_registry)
+                    {
+                        Some(t) => t,
+                        None => {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unresolved type in trait '{}': {}",
+                                    trait_decl.name, type_expr.name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    type_expr.span,
+                                    "unknown type name",
+                                )),
+                            );
+                            Type::Real
+                        }
+                    }
+                } else {
+                    Type::Real
+                };
+                let _ = ty; // type used for future type checking
+                defaults.push(TraitDefault {
+                    name: Some(let_decl.name.clone()),
+                    kind: DefaultKind::Let(let_decl.clone()),
+                    span: let_decl.span,
+                });
+            }
+            reify_syntax::MemberDecl::Constraint(constraint_decl) => {
+                if let Some(label) = &constraint_decl.label {
+                    // Labeled constraint with expression in trait → default
+                    // (override detection uses label matching at injection site)
+                    defaults.push(TraitDefault {
+                        name: Some(label.clone()),
+                        kind: DefaultKind::Constraint(constraint_decl.clone()),
+                        span: constraint_decl.span,
+                    });
+                } else {
+                    // Unlabeled constraint → always injected as default
+                    defaults.push(TraitDefault {
+                        name: None,
+                        kind: DefaultKind::Constraint(constraint_decl.clone()),
+                        span: constraint_decl.span,
+                    });
+                }
+            }
+            reify_syntax::MemberDecl::Sub(sub_decl) => {
+                required_members.push(TraitRequirement {
+                    name: sub_decl.name.clone(),
+                    kind: RequirementKind::Sub(sub_decl.structure_name.clone()),
+                    span: sub_decl.span,
+                });
+            }
+            _ => {
+                // Minimize, Maximize, GuardedGroup, AssociatedType — skip for now
+            }
+        }
+    }
+
+    let content_hash = trait_decl.content_hash;
+
+    // Convert parsed type parameters to compiled TypeParam structs
+    let type_params = convert_type_params(&trait_decl.type_params);
+
+    let annotations = lower_annotations(&trait_decl.annotations, diagnostics);
+    validate_annotations(&annotations, "trait", diagnostics);
+    validate_pragmas(&trait_decl.pragmas, "trait", diagnostics);
+
+    CompiledTrait {
+        name: trait_decl.name.clone(),
+        is_pub: trait_decl.is_pub,
+        type_params,
+        refinements: trait_decl.refinements.clone(),
+        required_members,
+        defaults,
+        content_hash,
+        annotations,
+        pragmas: trait_decl.pragmas.clone(),
+    }
+}
+
+/// Compile a parsed purpose declaration into a CompiledPurpose.
+pub(crate) fn compile_purpose(
+    purpose_def: &reify_syntax::PurposeDef,
+    enum_defs: &[reify_types::EnumDef],
+    functions: &[CompiledFunction],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    unit_registry: &UnitRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledPurpose {
+    let purpose_name = &purpose_def.name;
+
+    // Create a compilation scope for the purpose body.
+    // Purpose params are registered so their members can be referenced.
+    let mut scope = CompilationScope::new(purpose_name);
+    scope.set_unit_registry(unit_registry);
+
+    // Register purpose params as identifiers in scope.
+    // Each param binds an entity reference (e.g., `subject : Structure`).
+    // Use StructureRef so member access resolves correctly against the entity type.
+    for param in &purpose_def.params {
+        scope.register(&param.name, Type::StructureRef(param.entity_kind.clone()));
+        // Deprecation check: warn if the referenced entity kind is @deprecated.
+        if let Some(template) = template_registry.get(&param.entity_kind)
+            && let Some(msg) = deprecation_message(&template.annotations)
+        {
+            emit_deprecation_warning(
+                &template.entity_kind.to_string().to_lowercase(),
+                &param.entity_kind,
+                &msg,
+                param.span,
+                diagnostics,
+            );
+        }
+    }
+
+    let mut constraints = Vec::new();
+    let mut constraint_index = 0u32;
+    let mut objective = None;
+
+    for member in &purpose_def.members {
+        match member {
+            reify_syntax::MemberDecl::Constraint(constraint) => {
+                let compiled_expr =
+                    compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
+                let id = ConstraintNodeId::new(purpose_name, constraint_index);
+                constraints.push(CompiledConstraint {
+                    id,
+                    label: constraint.label.clone(),
+                    expr: compiled_expr,
+                    span: constraint.span,
+                    domain: None,
+                });
+                constraint_index += 1;
+            }
+            reify_syntax::MemberDecl::Minimize(min_decl) => {
+                let compiled_expr =
+                    compile_expr(&min_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Minimize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Maximize(max_decl) => {
+                let compiled_expr =
+                    compile_expr(&max_decl.expr, &scope, enum_defs, functions, diagnostics);
+                objective = Some(OptimizationObjective::Maximize(compiled_expr));
+            }
+            reify_syntax::MemberDecl::Let(let_decl) => {
+                // Let bindings in purpose bodies are not yet supported:
+                // CompiledPurpose has no storage for let expressions, and
+                // activate_purpose only injects constraints. Any constraint
+                // referencing a let-bound name would produce a ValueCellId
+                // with no backing node in the eval graph.
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "let bindings in purpose bodies are not yet supported: '{}'",
+                        let_decl.name
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        let_decl.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::GuardedGroup(g) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "guarded blocks in purpose bodies are not yet supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        g.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Param(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "param declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Sub(s) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "sub declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        s.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Port(p) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "port declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        p.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Connect(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "connect declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::Chain(c) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "chain declarations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        c.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::AssociatedType(a) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "associated type declarations in purpose bodies are not supported"
+                            .to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        a.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::MetaBlock(m) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "meta blocks in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        m.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+            reify_syntax::MemberDecl::ConstraintInst(ci) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "constraint instantiations in purpose bodies are not supported".to_string(),
+                    )
+                    .with_label(DiagnosticLabel::new(
+                        ci.span,
+                        "unsupported in purpose".to_string(),
+                    )),
+                );
+            }
+        }
+    }
+
+    let params: Vec<CompiledPurposeParam> = purpose_def
+        .params
+        .iter()
+        .map(|p| CompiledPurposeParam {
+            name: p.name.clone(),
+            entity_kind: p.entity_kind.clone(),
+        })
+        .collect();
+
+    // Resolve reflective schema queries for each purpose param.
+    // Look up the bound entity's TopologyTemplate and extract relevant ValueCellIds.
+    let mut resolved_queries = Vec::new();
+    for param in &params {
+        if let Some(template) = template_registry.get(&param.entity_kind) {
+            // Resolve "params" query: all Param and Auto value cells
+            let param_ids: Vec<ValueCellId> = template
+                .value_cells
+                .iter()
+                .filter(|vc| matches!(vc.kind, ValueCellKind::Param | ValueCellKind::Auto { .. }))
+                .map(|vc| vc.id.clone())
+                .collect();
+            if !param_ids.is_empty() {
+                resolved_queries.push(ResolvedSchemaQuery {
+                    param_name: param.name.clone(),
+                    query_kind: "params".to_string(),
+                    resolved_ids: param_ids,
+                });
+            }
+        }
+    }
+
+    let annotations = lower_annotations(&purpose_def.annotations, diagnostics);
+    validate_annotations(&annotations, "purpose", diagnostics);
+    validate_pragmas(&purpose_def.pragmas, "purpose", diagnostics);
+
+    CompiledPurpose {
+        name: purpose_def.name.clone(),
+        is_pub: purpose_def.is_pub,
+        params,
+        constraints,
+        objective,
+        resolved_queries,
+        content_hash: purpose_def.content_hash,
+        annotations,
+        pragmas: purpose_def.pragmas.clone(),
+    }
+}
+

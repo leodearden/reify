@@ -34,6 +34,27 @@ portable_sha256() {
 #
 # Returns the command's exit code, or 124 if the command was killed
 # due to exceeding the time limit (matches GNU timeout convention).
+#
+# Sets the global _PORTABLE_TIMEOUT_TIMED_OUT variable:
+#   true  — the command was killed by the timeout mechanism
+#   false — the command exited on its own (any exit code, including 124)
+#
+# POSIX fallback termination strategy:
+#   The POSIX fallback sends SIGTERM first, then waits a 2-second grace period.
+#   If the command has not exited, it escalates to SIGKILL via process-group
+#   kill (kill -9 -- -$cmd_pid).  Process-group kill is PID-reuse safe: the
+#   command has not been wait(2)ed on yet (the main shell is blocked), so the
+#   PID cannot have been recycled.  The process-group kill also terminates any
+#   orphaned child processes (e.g. a nested sleep inside a bash -c wrapper).
+#
+# Ambiguity note (GNU timeout / gtimeout paths):
+#   When using GNU timeout or gtimeout, _PORTABLE_TIMEOUT_TIMED_OUT is set
+#   to true whenever the exit code is 124.  However, exit 124 can also be
+#   returned by the wrapped command itself (e.g. `bash -c 'exit 124'`).
+#   There is no way to distinguish these two cases on the GNU path.
+#   _PORTABLE_TIMEOUT_TIMED_OUT is only fully reliable on the POSIX
+#   flag-file fallback path, where the flag is created by the timer process
+#   and the command's exit code is additionally required to be 143 (SIGTERM).
 portable_timeout() {
     local seconds="$1"
     shift
@@ -42,11 +63,14 @@ portable_timeout() {
     local cmd_exit=0
     if command -v timeout >/dev/null 2>&1; then
         timeout "$seconds" "$@" || cmd_exit=$?
+        # Ambiguity: exit 124 may mean the timeout fired OR the command
+        # naturally exited 124.  See doc comment above for details.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
     elif command -v gtimeout >/dev/null 2>&1; then
         gtimeout "$seconds" "$@" || cmd_exit=$?
+        # Same exit-124 ambiguity as the GNU timeout branch above.
         if [ "$cmd_exit" -eq 124 ]; then
             _PORTABLE_TIMEOUT_TIMED_OUT=true
         fi
@@ -57,31 +81,96 @@ portable_timeout() {
         local timeout_flag
         timeout_flag=$(mktemp "${TMPDIR:-/tmp}/portable_timeout.XXXXXX" 2>/dev/null) || timeout_flag=""
 
+        # Save caller's monitor-mode state BEFORE any set -m/set +m manipulation.
+        # Placing this save/restore BEFORE the first set -m ensures that $- still
+        # reflects the caller's original state; the subsequent set +m would clear
+        # 'm' from $- if we saved after it.  Without this, portable_timeout
+        # silently disables the caller's job control when they had set -m active.
+        local _pt_had_monitor=0
+        case $- in *m*) _pt_had_monitor=1 ;; esac
+
+        # Start the command in its own process group (PGID=cmd_pid) so that
+        # a later 'kill -- -$cmd_pid' can clean up any orphaned children (e.g.
+        # if the timer escalates to SIGKILL, killing the command wrapper but
+        # leaving its children running).  set +m immediately after to keep job
+        # control disabled for the rest of the main shell's logic.
+        set -m 2>/dev/null || true
         "$@" &
         local cmd_pid=$!
+        set +m 2>/dev/null || true
 
         if [ -n "$timeout_flag" ]; then
             # Normal path: use flag file for precise timeout detection.
             rm -f "$timeout_flag"  # Remove so its presence signals timeout fired.
-            ( sleep "$seconds" && { touch "$timeout_flag" 2>/dev/null; kill "$cmd_pid" 2>/dev/null; } ) &
+            # Trap INT/TERM so that if the caller's shell is interrupted during the
+            # wait window the temp flag path is cleaned up.  Save and restore any
+            # existing handler so we don't clobber the caller's traps.
+            local _pt_old_int _pt_old_term
+            _pt_old_int=$(trap -p INT 2>/dev/null || true)
+            _pt_old_term=$(trap -p TERM 2>/dev/null || true)
+            trap 'rm -f "$timeout_flag" 2>/dev/null' INT TERM
+            # Enable job control temporarily so the timer subshell is placed in its
+            # own process group, making 'kill -- -$timer_pid' safe and effective.
+            set -m 2>/dev/null || true
+            ( sleep "$seconds" && {
+                touch "$timeout_flag" 2>/dev/null
+                kill "$cmd_pid" 2>/dev/null
+                # Grace period: if SIGTERM is ignored, escalate to SIGKILL via
+                # process-group kill.  Safe: cmd_pid hasn't been wait(2)ed yet
+                # (main shell is blocked), so no PID-reuse risk.  Process-group
+                # kill also cleans up child processes (e.g. nested sleep).
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
+              } ) &
+            if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         else
             # Degraded path: mktemp failed, fall back to old 143-detection.
             echo "WARNING: mktemp failed, timeout detection degraded" >&2
-            ( sleep "$seconds" && kill "$cmd_pid" 2>/dev/null ) &
+            set -m 2>/dev/null || true
+            ( sleep "$seconds" && {
+                kill "$cmd_pid" 2>/dev/null
+                sleep 2
+                kill -9 -- -$cmd_pid 2>/dev/null
+              } ) &
+            if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         fi
         local timer_pid=$!
         wait "$cmd_pid" 2>/dev/null || cmd_exit=$?
-        # Clean up timer — if command finished before timeout, kill the sleep+kill subshell.
-        kill "$timer_pid" 2>/dev/null || true
+        # Clean up timer — if command finished before timeout, kill the timer subshell
+        # and its inner sleep child.  Process-group kill ('kill -- -$pid') terminates
+        # all children of the subshell atomically; fall back to plain kill if unsupported.
+        kill -- -$timer_pid 2>/dev/null || kill "$timer_pid" 2>/dev/null || true
         wait "$timer_pid" 2>/dev/null || true
+        # Kill any orphaned children in the command's process group.  When the timer
+        # escalates to SIGKILL it kills the command wrapper (e.g. a bash -c) but not
+        # its children (e.g. a nested sleep).  'kill -- -$cmd_pid' sends SIGTERM to
+        # every process in the command's process group, cleaning up those orphans.
+        # Safe after wait: if the group is already empty the signal is ignored.
+        kill -- -$cmd_pid 2>/dev/null || true
 
-        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ]; then
-            # Timer fired and killed the process — genuine timeout.
+        if [ -n "$timeout_flag" ] && [ -f "$timeout_flag" ] && { [ "$cmd_exit" -eq 143 ] || [ "$cmd_exit" -eq 137 ]; }; then
+            # Timer fired and killed the process — genuine timeout.  Two cases:
+            #   exit 143 (128+15): timer sent SIGTERM → command terminated normally.
+            #   exit 137 (128+9):  timer escalated to SIGKILL (command ignored SIGTERM).
+            # The flag file proves the timer touched it before killing; requiring the
+            # exit code to be 143 or 137 closes the false-positive race where the
+            # command exits naturally while the timer is between touch and kill.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
             rm -f "$timeout_flag"
-        elif [ -z "$timeout_flag" ] && [ "$cmd_exit" -eq 143 ]; then
-            # Degraded mode: 143 (SIGTERM) likely means our timer killed it.
+        elif [ -n "$timeout_flag" ]; then
+            # Flag path: timer may have touched the flag but the command exited
+            # naturally (not SIGTERM).  Clean up the stale flag file.
+            rm -f "$timeout_flag"
+        fi
+        # Restore caller's INT/TERM traps (only set in the flag-file path above).
+        if [ -n "$timeout_flag" ]; then
+            if [ -n "$_pt_old_int" ]; then eval "$_pt_old_int"; else trap - INT; fi
+            if [ -n "$_pt_old_term" ]; then eval "$_pt_old_term"; else trap - TERM; fi
+        fi
+        if [ -z "$timeout_flag" ] && { [ "$cmd_exit" -eq 143 ] || [ "$cmd_exit" -eq 137 ]; }; then
+            # Degraded mode: 143 (SIGTERM) or 137 (SIGKILL escalation) likely means
+            # our timer killed it.  Same logic as the flag-file path above.
             _PORTABLE_TIMEOUT_TIMED_OUT=true
             cmd_exit=124
         fi

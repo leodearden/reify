@@ -8,15 +8,24 @@
 //! tracking, not by the adapter. The adapter is purely computational — it evaluates
 //! expressions, computes content hashes, and records results.
 //!
-//! **Lock poisoning recovery:** All lock acquisitions recover gracefully from poisoned
-//! locks via private helper methods (`read_values()`, `write_values()`,
-//! `read_snapshot_values()`, `write_snapshot_values()`, `lock_results()`) that emit
-//! `tracing::warn!` on recovery. A poisoned lock means a previous evaluation task
-//! panicked while holding the lock — the data may be partially updated, but recovering
-//! prevents cascading panics that would take down all concurrent tasks sharing the
-//! adapter. The `into_result()` method uses inline recovery with `tracing::warn!`
-//! because `self` is consumed by `Arc::try_unwrap`. This matches the pattern used in
-//! `SharedPriorityPromoter`.
+//! **Lock poisoning recovery contract:** The public operations `values()`,
+//! `snapshot_values()`, `take_results()`, `build_result_shared()`, `into_result()`,
+//! and the `AsyncNodeEvaluator::evaluate()` implementation all guarantee that they
+//! will not panic when an internal lock is poisoned by a prior evaluation task that
+//! panicked while holding it. Each recovery emits a `tracing::warn!` so that
+//! cascading panics in a concurrent batch can be detected and diagnosed. Recovered
+//! data may reflect a partially-completed write from the panicking task. Without this
+//! graceful recovery, one panicking task would cascade to every concurrent task
+//! sharing the adapter via `Arc`, taking down the entire evaluation batch instead of
+//! just the faulting node.
+//!
+//! **Maintainer note:** When adding new public methods, route lock acquisitions through the private
+//! helper family — `read_values()`, `write_values()`, `read_snapshot_values()`,
+//! `write_snapshot_values()`, and `lock_results()` — which encapsulate the `unwrap_or_else` +
+//! `tracing::warn!` + `into_inner()` recovery pattern. The exception is methods that consume
+//! `self` (such as `into_result()`), which must use the inline `Arc::try_unwrap` +
+//! `into_inner()` pattern instead because the `&self` helpers cannot be called after consuming
+//! the receiver; see `into_result()`'s doc comment for the full rationale.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -47,9 +56,9 @@ use crate::concurrent::{
 /// hashes for Changed/Unchanged determination, and records results. Skip decisions
 /// are made by the scheduler via pre-computed `changed_vcids` tracking.
 ///
-/// All lock acquisitions recover gracefully from poisoning — if an evaluation task
-/// panics mid-computation, subsequent lock acquisitions on the same adapter will
-/// extract the inner data from the `PoisonError` rather than propagating the panic.
+/// This adapter upholds the module-level poison-recovery contract: all public operations
+/// remain panic-safe against prior task panics, so a single faulting node cannot take
+/// down the entire evaluation batch sharing this adapter via `Arc`.
 pub struct ConcurrentEvalAdapter {
     /// The evaluation graph (immutable during evaluation).
     graph: Arc<EvaluationGraph>,
@@ -142,9 +151,7 @@ impl ConcurrentEvalAdapter {
     /// Get a snapshot of the current snapshot_values (for testing/inspection).
     ///
     /// Recovers gracefully from poisoned locks via `read_snapshot_values()` helper.
-    pub fn snapshot_values(
-        &self,
-    ) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
+    pub fn snapshot_values(&self) -> PersistentMap<ValueCellId, (Value, DeterminacyState)> {
         self.read_snapshot_values().clone()
     }
 
@@ -268,6 +275,20 @@ impl ConcurrentEvalAdapter {
     }
 }
 
+/// Generates a `pub fn $fn_name(&self) -> $ret_ty` method that returns
+/// `Arc::clone(&self.$field)`.  Intended for use inside the test-utils impl
+/// block of [`ConcurrentEvalAdapter`] to eliminate repetitive Arc-accessor
+/// boilerplate.
+#[cfg(any(test, feature = "test-utils"))]
+macro_rules! arc_accessor {
+    ($(#[$meta:meta])* $fn_name:ident => $field:ident : $ret_ty:ty) => {
+        $(#[$meta])*
+        pub fn $fn_name(&self) -> $ret_ty {
+            Arc::clone(&self.$field)
+        }
+    };
+}
+
 // Test-only helpers that poison specific locks for recovery testing.
 // Gated behind cfg(test) for unit tests and feature = "test-utils" for integration tests.
 #[cfg(any(test, feature = "test-utils"))]
@@ -305,28 +326,26 @@ impl ConcurrentEvalAdapter {
         .ok();
     }
 
-    /// Return a second Arc owner for `values`, preventing `into_result()` from
-    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
-    /// to exercise the shared-reference fallback path.
-    pub fn values_arc(&self) -> Arc<std::sync::RwLock<ValueMap>> {
-        Arc::clone(&self.values)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `values`, preventing `into_result()` from
+        /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+        /// to exercise the shared-reference fallback path.
+        values_arc => values : Arc<std::sync::RwLock<ValueMap>>
+    );
 
-    /// Return a second Arc owner for `snapshot_values`, preventing `into_result()`
-    /// from taking exclusive ownership via `try_unwrap`. Intended for tests that
-    /// need to exercise the shared-reference fallback path.
-    pub fn snapshot_values_arc(
-        &self,
-    ) -> Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>> {
-        Arc::clone(&self.snapshot_values)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `snapshot_values`, preventing `into_result()`
+        /// from taking exclusive ownership via `try_unwrap`. Intended for tests that
+        /// need to exercise the shared-reference fallback path.
+        snapshot_values_arc => snapshot_values : Arc<RwLock<PersistentMap<ValueCellId, (Value, DeterminacyState)>>>
+    );
 
-    /// Return a second Arc owner for `results`, preventing `into_result()` from
-    /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
-    /// to exercise the shared-reference fallback path.
-    pub fn results_arc(&self) -> Arc<Mutex<Vec<ConcurrentNodeResult>>> {
-        Arc::clone(&self.results)
-    }
+    arc_accessor!(
+        /// Return a second Arc owner for `results`, preventing `into_result()` from
+        /// taking exclusive ownership via `try_unwrap`. Intended for tests that need
+        /// to exercise the shared-reference fallback path.
+        results_arc => results : Arc<Mutex<Vec<ConcurrentNodeResult>>>
+    );
 }
 
 impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
@@ -334,7 +353,7 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
         // Only evaluate Value nodes with expressions
         if let NodeId::Value(ref vcid) = node
             && let Some(cell_node) = self.graph.value_cells.get(vcid)
-            && (cell_node.kind == ValueCellKind::Let || cell_node.kind == ValueCellKind::Auto)
+            && (cell_node.kind == ValueCellKind::Let || cell_node.kind.is_auto())
             && cell_node.default_expr.is_some()
         {
             let expr = cell_node.default_expr.as_ref().unwrap();
@@ -382,12 +401,12 @@ impl AsyncNodeEvaluator for ConcurrentEvalAdapter {
             // Record result (no early cutoff propagation — skip decisions
             // are made by the scheduler using pre-computed changed_vcids)
             self.lock_results().push(ConcurrentNodeResult {
-                    node: node.clone(),
-                    value: val,
-                    determinacy: DeterminacyState::Determined,
-                    trace,
-                    outcome,
-                });
+                node: node.clone(),
+                value: val,
+                determinacy: DeterminacyState::Determined,
+                trace,
+                outcome,
+            });
 
             return outcome;
         }

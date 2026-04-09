@@ -13,13 +13,33 @@ use reify_types::{
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
 
 use crate::types::{
-    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy,
-    format_value,
+    ConstraintData, FileData, GuiState, MeshData, ValueData, format_determinacy, format_value,
 };
 
 /// Session wrapping an Engine with its compiled module and source text.
 ///
 /// Provides higher-level operations for the GUI: load, update, set parameter, export.
+///
+/// # Invariant: compiled / module_name / source_map must stay in sync
+///
+/// Whenever `compiled` is `Some`, **all three** of the following must hold:
+///
+/// 1. `module_name` is `Some(name)`.
+/// 2. `source_map` contains the key `module_key(name)` (i.e. `"{name}.ri"`).
+/// 3. The value stored at that key is the source text that produced the current
+///    `CompiledModule`.
+///
+/// Any code path that sets one of these fields without setting the others puts
+/// the session in an inconsistent state and will cause a panic in
+/// `get_diagnostics` or `get_source_location` (via `resolve_source`).
+///
+/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
+/// `update_source` (lines ~189–198) — both defer all field writes until after
+/// parse and compile succeed, so they maintain the invariant atomically.
+///
+/// **Future callers** that acquire partial state through serialization,
+/// snapshotting, or test injection **must** restore all three fields together
+/// before any subsequent `get_*` call.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -27,6 +47,16 @@ pub struct EngineSession {
     file_path: Option<PathBuf>,
     last_check: Option<CheckResult>,
     module_name: Option<String>,
+}
+
+/// Build the normalized source-map key for a module name: `"{name}.ri"`.
+///
+/// This is the single authoritative point for key derivation, replacing three
+/// formerly-identical `format!("{}.ri", ...)` call sites in
+/// `load_from_source`, `update_source`, and `resolve_source`.
+pub(crate) fn module_key(name: &str) -> String {
+    debug_assert!(!name.is_empty(), "module_key called with empty name");
+    format!("{}.ri", name)
 }
 
 impl EngineSession {
@@ -80,7 +110,7 @@ impl EngineSession {
         // Store source with normalized key; clear stale entries
         self.source_map.clear();
         self.source_map
-            .insert(format!("{}.ri", module_name), source.to_string());
+            .insert(module_key(module_name), source.to_string());
         self.module_name = Some(module_name.to_string());
 
         // Evaluate + check constraints
@@ -179,7 +209,7 @@ impl EngineSession {
         }
 
         // Parse+compile succeeded — now atomically update all state
-        let normalized_key = format!("{}.ri", module_name);
+        let normalized_key = module_key(module_name);
         self.source_map.clear();
         self.source_map.insert(normalized_key, content.to_string());
         self.module_name = Some(module_name.to_string());
@@ -219,35 +249,35 @@ impl EngineSession {
 
     /// Resolve the canonical source key and text for the currently loaded module.
     ///
-    /// Returns `Some((key, source_text))` where `key` is `"{module_name}.ri"` and
-    /// `source_text` is the stored source for that key.  Returns `None` when the
-    /// key is not present in `source_map` (should not happen in practice once a
-    /// module is loaded, but guards against any inconsistency).
+    /// Returns `(key, source_text)` where `key` is `"{module_name}.ri"` (a
+    /// reference into the map's owned key) and `source_text` is the stored
+    /// source for that key (a reference into the map's owned value).  Both
+    /// references borrow from `self` and require no allocation on the return path.
     ///
-    /// # Caller precondition
+    /// # Precondition
     ///
-    /// Callers **must** verify `self.compiled.is_some()` before calling this
-    /// method.  `load_from_source` and `update_source` always set `module_name`
-    /// atomically with `compiled` (they fail before mutating state on parse/compile
-    /// errors), so `compiled.is_some()` implies `module_name.is_some()`.  The
-    /// `None` arm of the `match` below is therefore unreachable under that
-    /// precondition.
-    fn resolve_source(&self) -> Option<(String, &str)> {
-        match self.module_name {
-            Some(ref name) => {
-                let key = format!("{}.ri", name);
-                let src = self.source_map.get(&key)?;
-                Some((key, src.as_str()))
-            }
-            None => {
-                // compiled.is_some() implies module_name.is_some() — this branch
-                // is dead whenever callers gate on compiled being present.
-                unreachable!(
-                    "resolve_source called with module_name = None; \
-                     callers must verify compiled.is_some() first"
-                )
-            }
-        }
+    /// Callers **must** verify `self.compiled.is_some()` before calling.
+    /// `load_from_source` and `update_source` set `module_name`, `source_map`,
+    /// and `compiled` atomically (they fail before mutating state on
+    /// parse/compile errors), so `compiled.is_some()` implies
+    /// `module_name.is_some()` AND `source_map` contains the derived key.
+    /// Violation of this precondition is a programming error caught by
+    /// `debug_assert` in debug/test builds.
+    fn resolve_source(&self) -> (&str, &str) {
+        debug_assert!(
+            self.compiled.is_some(),
+            "resolve_source: compiled must be Some — callers must verify compiled.is_some() first"
+        );
+        let name = self
+            .module_name
+            .as_deref()
+            .expect("resolve_source: module_name is None but compiled is Some — invariant violated");
+        let key = module_key(name);
+        let (k, v) = self
+            .source_map
+            .get_key_value(&key)
+            .expect("resolve_source: source_map missing key — load/update_source invariant violated");
+        (k.as_str(), v.as_str())
     }
 
     /// Look up source location for an entity path (e.g., "Bracket.width").
@@ -263,14 +293,22 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Resolve the source file key and text via the shared helper.
-        let (file, source) = self.resolve_source()?;
+        // Fallible source_map lookup — returns None when the invariant is broken
+        // (e.g., in tests via break_source_map_for_test) rather than panicking.
+        // resolve_source() is not used here because get_source_location returns
+        // Option and can propagate None gracefully; callers that require the
+        // invariant guarantee (get_diagnostics with non-empty diagnostics) still
+        // use resolve_source() to get a loud panic on violation.
+        let name = self.module_name.as_deref()?;
+        let key = module_key(name);
+        let (file, source) = self.source_map.get_key_value(key.as_str())?;
+        let (file, source) = (file.as_str(), source.as_str());
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
 
         Some(SourceLocationInfo {
-            file_path: file.clone(),
+            file_path: file.to_owned(),
             line: line as u32,
             column: col as u32,
             end_line: end_line as u32,
@@ -293,25 +331,38 @@ impl EngineSession {
             None => return Vec::new(),
         };
 
+        // Early-exit when there is nothing to map — avoids calling resolve_source
+        // (which panics on a broken invariant) when no work is needed.
+        if compiled.diagnostics.is_empty() {
+            return Vec::new();
+        }
+
         // Resolve file_path and source text via the shared helper.
-        let (file_path, source) = match self.resolve_source() {
-            Some(pair) => pair,
-            None => return Vec::new(),
-        };
+        // NOTE: Assumes all diagnostic spans refer to the single loaded source
+        // file — file_path from multi-file diagnostics would need threading here.
+        let (file_path, source) = self.resolve_source();
+
+        // Build the newline table once (O(M)) so each span lookup is O(log M).
+        let line_offsets = build_line_offsets(source);
+        // Allocate an owned String once; move it into the closure to avoid
+        // re-allocating per diagnostic.
+        let file_path = file_path.to_owned();
 
         compiled
             .diagnostics
             .iter()
             .map(|diag| {
                 // Use the first label's span if available; otherwise default to (1,1,1,1).
-                let (line, column, end_line, end_column) =
-                    if let Some(label) = diag.labels.first() {
-                        let (l, c) = byte_offset_to_line_col(source, label.span.start as usize);
-                        let (el, ec) = byte_offset_to_line_col(source, label.span.end as usize);
-                        (l as u32, c as u32, el as u32, ec as u32)
-                    } else {
-                        (1, 1, 1, 1)
-                    };
+                let (line, column, end_line, end_column) = if let Some(label) = diag.labels.first()
+                {
+                    let (l, c) =
+                        offset_to_line_col_fast(source, &line_offsets, label.span.start as usize);
+                    let (el, ec) =
+                        offset_to_line_col_fast(source, &line_offsets, label.span.end as usize);
+                    (l as u32, c as u32, el as u32, ec as u32)
+                } else {
+                    (1, 1, 1, 1)
+                };
 
                 DiagnosticInfo {
                     file_path: file_path.clone(),
@@ -319,7 +370,7 @@ impl EngineSession {
                     column,
                     end_line,
                     end_column,
-                    severity: format!("{}", diag.severity),
+                    severity: diag.severity.to_string(),
                     message: diag.message.clone(),
                     code: None,
                 }
@@ -350,7 +401,7 @@ impl EngineSession {
 
                 let determinacy = match &val {
                     reify_types::Value::Undef => {
-                        if cell.kind == ValueCellKind::Auto {
+                        if cell.kind.is_auto() {
                             DeterminacyState::Auto
                         } else {
                             DeterminacyState::Undetermined
@@ -362,7 +413,7 @@ impl EngineSession {
                 let kind = match cell.kind {
                     ValueCellKind::Param => "Param",
                     ValueCellKind::Let => "Let",
-                    ValueCellKind::Auto => "Auto",
+                    ValueCellKind::Auto { .. } => "Auto",
                 };
 
                 values.push(ValueData {
@@ -462,6 +513,37 @@ impl EngineSession {
             .expect("inject_diagnostic_for_test: no compiled module loaded")
             .diagnostics
             .push(diag);
+    }
+
+    /// Thin wrapper around `resolve_source` for use in tests.
+    ///
+    /// Exposes the private method so tests can call it directly and verify
+    /// that the `debug_assert!(self.compiled.is_some())` precondition fires
+    /// when no module is loaded.
+    pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
+        self.resolve_source()
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `module_name` while leaving `compiled` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on module_name fires correctly.
+    pub(crate) fn break_module_name_for_test(&mut self) {
+        self.module_name.take();
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `source_map` while leaving `compiled` and `module_name` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on source_map.get_key_value() fires correctly.
+    pub(crate) fn break_source_map_for_test(&mut self) {
+        self.source_map.clear();
     }
 }
 
@@ -681,23 +763,21 @@ fn format_expr(expr: &reify_types::CompiledExpr) -> String {
             upper,
             lower_inclusive,
             upper_inclusive,
-        } => {
-            match (lower, upper) {
-                (Some(lo), Some(hi)) => {
-                    let op = if *upper_inclusive { ".." } else { "..<" };
-                    format!("{}{}{}", format_expr(lo), op, format_expr(hi))
-                }
-                (Some(bound), None) => {
-                    let op = if *lower_inclusive { ">=" } else { ">" };
-                    format!("{}{}", op, format_expr(bound))
-                }
-                (None, Some(bound)) => {
-                    let op = if *upper_inclusive { "<=" } else { "<" };
-                    format!("{}{}", op, format_expr(bound))
-                }
-                (None, None) => "..".to_string(),
+        } => match (lower, upper) {
+            (Some(lo), Some(hi)) => {
+                let op = if *upper_inclusive { ".." } else { "..<" };
+                format!("{}{}{}", format_expr(lo), op, format_expr(hi))
             }
-        }
+            (Some(bound), None) => {
+                let op = if *lower_inclusive { ">=" } else { ">" };
+                format!("{}{}", op, format_expr(bound))
+            }
+            (None, Some(bound)) => {
+                let op = if *upper_inclusive { "<=" } else { "<" };
+                format!("{}{}", op, format_expr(bound))
+            }
+            (None, None) => "..".to_string(),
+        },
     }
 }
 
@@ -713,8 +793,78 @@ fn collect_value_refs(expr: &reify_types::CompiledExpr) -> Vec<String> {
     refs
 }
 
-/// Convert a byte offset in source text to (line, column), both 1-based.
-fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+/// Pre-compute byte positions of all `\n` characters in `source` in O(M).
+///
+/// Returns a sorted `Vec<usize>` of the byte offset of each newline.
+/// Pass this to [`offset_to_line_col_fast`] to binary-search for line/col
+/// in O(log M) instead of the O(M) scan done by [`byte_offset_to_line_col`].
+pub(crate) fn build_line_offsets(source: &str) -> Vec<usize> {
+    source
+        .bytes()
+        .enumerate()
+        .filter_map(|(i, b)| if b == b'\n' { Some(i) } else { None })
+        .collect()
+}
+
+/// Binary-search for the (line, column) of `offset` using a pre-built newline table.
+///
+/// `source` is the original source string; `line_offsets` must be the result of
+/// [`build_line_offsets`] for the same `source`.  Both line and column are 1-based
+/// and count **Unicode codepoints**, matching the semantics of [`byte_offset_to_line_col`].
+///
+/// Line lookup is O(log M).  Column computation is O(line_length) for codepoint
+/// counting — far cheaper than the O(M) full-source scan of the naive implementation.
+pub(crate) fn offset_to_line_col_fast(
+    source: &str,
+    line_offsets: &[usize],
+    offset: usize,
+) -> (usize, usize) {
+    // Count newlines that appear *strictly before* `offset`.
+    let line_idx = line_offsets.partition_point(|&nl| nl < offset);
+    let line = line_idx + 1;
+    // Byte offset of the first character on this line.
+    let line_start = if line_idx == 0 {
+        0
+    } else {
+        line_offsets[line_idx - 1] + 1
+    };
+    // Clamp offset to source length, then snap to the nearest char boundary
+    // (walking backward at most 3 bytes). This guards against non-boundary
+    // byte offsets from buggy span generation without panicking.
+    let clamped = offset.min(source.len());
+    let effective = if source.is_char_boundary(clamped) {
+        clamped
+    } else {
+        (0..clamped)
+            .rev()
+            .find(|&i| source.is_char_boundary(i))
+            .unwrap_or(0)
+    };
+    // Count codepoints from line_start to effective offset for 1-based column.
+    let col = source[line_start..effective].chars().count() + 1;
+    (line, col)
+}
+
+/// Convert a byte offset in `source` to a 1-based `(line, column)` pair.
+///
+/// The function iterates over Unicode scalar values and increments the column
+/// counter for each character, resetting to column 1 and advancing the line
+/// counter whenever a `'\n'` is encountered.
+///
+/// # Edge cases
+///
+/// - **Empty source**: returns `(1, 1)` — the initial position, since the loop
+///   body never executes.
+/// - **Offset beyond `source.len()`**: panics in debug builds via
+///   `debug_assert!(offset <= source.len())`; in release builds the
+///   `debug_assert` is a no-op, so the loop exhausts all characters without
+///   reaching the break condition and returns the position *after* the last
+///   character (silent clamping).
+/// - **Empty spans** (`start == end`): calling this function twice with the
+///   same offset produces identical `(line, col)` coordinates, as expected for
+///   zero-length diagnostic spans.
+pub(crate) fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    debug_assert!(offset <= source.len());
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.char_indices() {

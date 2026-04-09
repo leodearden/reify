@@ -1437,7 +1437,12 @@ fn bfs_traverses_through_wrapper_with_zero_value_cells() {
         )
         .let_binding("S", "inner_n", Type::Int, inner_n_expr)
         .is_recursive(true)
-        .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard_child)
+        .sub_component_with_guard(
+            "child",
+            "S",
+            vec![("n".to_string(), n_minus_1)],
+            guard_child,
+        )
         .sub_component_with_guard("w", "W", vec![], guard_w)
         .build();
 
@@ -1527,9 +1532,10 @@ fn missing_template_ref_emits_error_diagnostic() {
     let result = eval_single_template(template);
 
     // Should have an Error-severity diagnostic about the unknown structure.
-    let has_error = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error && d.message.contains("unknown structure")
-    });
+    let has_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("unknown structure"));
     assert!(
         has_error,
         "Expected Error-severity diagnostic about unknown structure 'Nonexistent', \
@@ -1538,9 +1544,10 @@ fn missing_template_ref_emits_error_diagnostic() {
     );
 
     // Should NOT have only warnings about it — the severity must be Error.
-    let has_only_warning = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Warning && d.message.contains("unknown structure")
-    });
+    let has_only_warning = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Warning && d.message.contains("unknown structure"));
     assert!(
         !has_only_warning,
         "Unknown structure reference should be Error, not Warning: {:?}",
@@ -1661,23 +1668,13 @@ fn bfs_terminates_for_cyclic_structural_intermediaries() {
         // Template W1: zero value_cells, sub next = W2() where true
         let template_w1 = TopologyTemplateBuilder::new("W1")
             .is_recursive(true)
-            .sub_component_with_guard(
-                "next",
-                "W2",
-                vec![],
-                literal(Value::Bool(true)),
-            )
+            .sub_component_with_guard("next", "W2", vec![], literal(Value::Bool(true)))
             .build();
 
         // Template W2: zero value_cells, sub next = W1() where true
         let template_w2 = TopologyTemplateBuilder::new("W2")
             .is_recursive(true)
-            .sub_component_with_guard(
-                "next",
-                "W1",
-                vec![],
-                literal(Value::Bool(true)),
-            )
+            .sub_component_with_guard("next", "W1", vec![], literal(Value::Bool(true)))
             .build();
 
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1692,12 +1689,12 @@ fn bfs_terminates_for_cyclic_structural_intermediaries() {
         let _ = tx.send(result);
     });
 
-    let result = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("BFS hung: elaborate_child_lets_only did not terminate within 5 seconds \
+    let result = rx.recv_timeout(Duration::from_secs(5)).expect(
+        "BFS hung: elaborate_child_lets_only did not terminate within 5 seconds \
                  for cyclic structural intermediaries W1↔W2. The BFS gate \
                  `found_any || value_cells.is_empty()` unconditionally descends through \
-                 structural intermediaries without checking if the entity was actually unfolded.");
+                 structural intermediaries without checking if the entity was actually unfolded.",
+    );
 
     // S.n=1 should exist
     assert_eq!(
@@ -1739,10 +1736,7 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
         .sub_component_with_guard(
             "b",
             "B",
-            vec![(
-                "x".to_string(),
-                value_ref_typed("A", "n", Type::Int),
-            )],
+            vec![("x".to_string(), value_ref_typed("A", "n", Type::Int))],
             guard_a,
         )
         .build();
@@ -1756,12 +1750,7 @@ fn non_recursive_child_guarded_sub_not_unfolded() {
             Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
         )
         .is_recursive(false)
-        .sub_component_with_guard(
-            "c",
-            "C",
-            vec![],
-            literal(Value::Bool(true)),
-        )
+        .sub_component_with_guard("c", "C", vec![], literal(Value::Bool(true)))
         .build();
 
     // Template C: param y: Int = 99
@@ -1850,12 +1839,7 @@ fn budget_not_consumed_when_guard_false() {
             vec![("n".to_string(), n_minus_1.clone())],
             guard.clone(),
         )
-        .sub_component_with_guard(
-            "right",
-            "S",
-            vec![("n".to_string(), n_minus_1)],
-            guard,
-        )
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1934,12 +1918,7 @@ fn budget_not_consumed_when_depth_limit_hit() {
             vec![("n".to_string(), n_minus_1.clone())],
             guard.clone(),
         )
-        .sub_component_with_guard(
-            "right",
-            "S",
-            vec![("n".to_string(), n_minus_1)],
-            guard,
-        )
+        .sub_component_with_guard("right", "S", vec![("n".to_string(), n_minus_1)], guard)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1953,9 +1932,10 @@ fn budget_not_consumed_when_depth_limit_hit() {
     let result = engine.eval(&module);
 
     // Should NOT have any budget-exhausted diagnostics
-    let has_budget_error = result.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error && d.message.contains("budget exhausted")
-    });
+    let has_budget_error = result
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("budget exhausted"));
     assert!(
         !has_budget_error,
         "Should not have budget-exhausted errors when depth limit prevents node creation. \

@@ -1,3 +1,7 @@
+mod calculus;
+mod complex;
+mod sanitize;
+
 use std::collections::HashMap;
 
 use reify_types::{
@@ -123,7 +127,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         lambda,
                         source,
                         domain_type,
-                        ..
+                        codomain_type: grad_codomain_type,
                     } = &evaluated_args[0]
                     {
                         match (lambda.as_ref(), source) {
@@ -132,18 +136,59 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                             }
                             // Gradient-produced field: lambda slot contains the
                             // original field (with its own lambda inside).
+                            // Pass grad_codomain_type (the gradient field's codomain,
+                            // already R/Q-divided by compute_gradient) instead of the
+                            // inner field's codomain — eliminates the redundant division
+                            // inside compute_numerical_gradient_at_point.
                             (
                                 Value::Field {
                                     lambda: inner_lambda,
-                                    codomain_type: inner_codomain_type,
                                     ..
                                 },
                                 FieldSourceKind::Gradient,
-                            ) => compute_numerical_gradient_at_point(
+                            ) => calculus::compute_numerical_gradient_at_point(
                                 inner_lambda,
                                 &evaluated_args[1],
                                 domain_type,
-                                inner_codomain_type,
+                                grad_codomain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Divergence,
+                            ) => calculus::compute_numerical_divergence_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                grad_codomain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Curl,
+                            ) => calculus::compute_numerical_curl_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Laplacian,
+                            ) => calculus::compute_numerical_laplacian_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                grad_codomain_type,
                                 ctx,
                             ),
                             _ => {
@@ -164,19 +209,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         Value::Undef
                     }
                 }
-                "gradient" if evaluated_args.len() == 1 => {
-                    compute_gradient(&evaluated_args[0])
+                "gradient" if evaluated_args.len() == 1 => calculus::compute_gradient(&evaluated_args[0]),
+                "divergence" if evaluated_args.len() == 1 => {
+                    calculus::compute_divergence(&evaluated_args[0])
                 }
-                "divergence" | "curl" if evaluated_args.len() == 1 => {
-                    if !matches!(&evaluated_args[0], Value::Field { .. }) {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[reify-expr] {}: argument is not a Field: {:?}",
-                            function.name, evaluated_args[0]
-                        );
-                    }
-                    // Stub: these field operations are not yet implemented.
-                    Value::Undef
+                "curl" if evaluated_args.len() == 1 => {
+                    calculus::compute_curl(&evaluated_args[0])
+                }
+                "laplacian" if evaluated_args.len() == 1 => {
+                    calculus::compute_laplacian(&evaluated_args[0])
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
@@ -552,343 +593,6 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
     }
 }
 
-/// Compute the gradient of a field value.
-///
-/// Returns a new Field with `FieldSourceKind::Gradient` whose lambda slot stores the
-/// original field. The sample handler detects this pattern and dispatches to
-/// `compute_numerical_gradient_at_point` for central-difference evaluation.
-///
-/// Validation:
-/// - Argument must be a Field with Analytical or Composed source (Gradient fields
-///   are excluded: their lambda slot contains a Value::Field, not a callable Lambda)
-/// - Lambda must be a Lambda (not Undef)
-/// - Domain must have scalar quantity components (Real, Int, Scalar, or Point{n, scalar})
-fn compute_gradient(field_val: &Value) -> Value {
-    let (domain_type, codomain_type, source, lambda) = match field_val {
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            lambda,
-        } => (domain_type, codomain_type, source, lambda),
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] gradient: argument is not a Field: {:?}",
-                field_val
-            );
-            return Value::Undef;
-        }
-    };
-
-    // Only Analytical and Composed fields support gradient.
-    // Gradient fields are excluded: their lambda slot contains a Value::Field (the
-    // original field), not a callable Value::Lambda, so numerical differentiation
-    // via apply_lambda is not possible.
-    if !matches!(source, FieldSourceKind::Analytical | FieldSourceKind::Composed) {
-        return Value::Undef;
-    }
-
-    // Lambda must be a callable Lambda
-    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
-        return Value::Undef;
-    }
-
-    // Determine dimensionality and validate scalar domain quantity
-    let n = match domain_type {
-        Type::Real | Type::Int | Type::Scalar { .. } => 1,
-        Type::Point { n, quantity } => {
-            if !matches!(quantity.as_ref(), Type::Real | Type::Int | Type::Scalar { .. }) {
-                return Value::Undef;
-            }
-            *n
-        }
-        _ => return Value::Undef,
-    };
-
-    // Compute gradient quantity type: R/Q (codomain dimension / domain dimension).
-    // Mirrors the runtime logic in compute_numerical_gradient_at_point (line 756).
-    let gradient_quantity = {
-        // Extract domain dimension from the domain type.
-        let domain_dim = match domain_type {
-            Type::Scalar { dimension } => Some(*dimension),
-            Type::Point { quantity, .. } => match quantity.as_ref() {
-                Type::Scalar { dimension } => Some(*dimension),
-                _ => None,
-            },
-            _ => None,
-        };
-
-        // Extract codomain dimension.
-        let codomain_dim = match codomain_type {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        };
-
-        // Divide codomain by domain dimension when both are non-trivial.
-        match (codomain_dim, domain_dim) {
-            (Some(cd), Some(dd))
-                if cd != DimensionVector::DIMENSIONLESS
-                    && dd != DimensionVector::DIMENSIONLESS =>
-            {
-                let grad_dim = cd.div(&dd);
-                if grad_dim != DimensionVector::DIMENSIONLESS {
-                    Type::Scalar {
-                        dimension: grad_dim,
-                    }
-                } else {
-                    Type::Real
-                }
-            }
-            _ => match codomain_type {
-                Type::Scalar { dimension }
-                    if *dimension == DimensionVector::DIMENSIONLESS =>
-                {
-                    Type::Real
-                }
-                _ => codomain_type.clone(),
-            },
-        }
-    };
-
-    // Construct result codomain type:
-    // 1D → gradient_quantity (scalar derivative with correct R/Q dimension)
-    // nD → Vector{n, gradient_quantity}
-    let result_codomain = if n == 1 {
-        gradient_quantity
-    } else {
-        Type::Vector {
-            n,
-            quantity: Box::new(gradient_quantity),
-        }
-    };
-
-    // Return a gradient field: source=Gradient, lambda slot stores the original field.
-    // The sample handler detects lambda=Field + source=Gradient and dispatches to
-    // compute_numerical_gradient_at_point.
-    Value::Field {
-        domain_type: domain_type.clone(),
-        codomain_type: result_codomain,
-        source: FieldSourceKind::Gradient,
-        lambda: Box::new(field_val.clone()),
-    }
-}
-
-/// Compute the numerical gradient of a field at a given point via central differences.
-///
-/// For each axis i, perturbs coordinate i by ±h where h = 1e-6 * max(|coord_i|, 1e-3),
-/// evaluates the original lambda, and computes df/dx_i ≈ (f(x+h) - f(x-h)) / (2h).
-///
-/// Returns:
-/// - Scalar (Real) for 1D fields
-/// - Vector for nD fields
-/// - Undef if any perturbation evaluation fails
-fn compute_numerical_gradient_at_point(
-    lambda: &Value,
-    point: &Value,
-    domain_type: &Type,
-    codomain_type: &Type,
-    ctx: &EvalContext,
-) -> Value {
-    // Decompose point into f64 coordinates.
-    // Guard every extracted value with is_finite() — NaN/Inf coordinates
-    // would produce NaN step sizes and silently corrupt gradient results.
-    let coords: Vec<f64> = match point {
-        Value::Real(r) if r.is_finite() => vec![*r],
-        Value::Real(_) => return Value::Undef, // NaN or Inf
-        Value::Int(i) => vec![*i as f64],      // i64 can never be NaN/Inf
-        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
-        Value::Scalar { .. } => return Value::Undef, // NaN or Inf
-        Value::Point(items) | Value::Vector(items) => {
-            let mut v = Vec::with_capacity(items.len());
-            for item in items {
-                match item.as_f64() {
-                    Some(f) if f.is_finite() => v.push(f),
-                    _ => return Value::Undef, // None (non-numeric) or NaN/Inf
-                }
-            }
-            v
-        }
-        _ => return Value::Undef,
-    };
-
-    let n = coords.len();
-    if n == 0 {
-        return Value::Undef;
-    }
-
-    // Determine if domain is dimensioned (for constructing perturbed args)
-    let domain_dim = match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    // Detect calling convention: single-Point param vs decomposed params.
-    // If lambda has 1 param and n > 1, wrap perturbed coords in a Value::Point.
-    // If lambda has n params, pass individual scalar values (current behavior).
-    let single_point_param = match lambda {
-        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
-        _ => false,
-    };
-
-    // Warn in debug builds when arity doesn't match and calling convention is
-    // decomposed. An arity mismatch silently produces Undef via apply_lambda;
-    // the warning surfaces the root cause during development.
-    #[cfg(debug_assertions)]
-    if let Value::Lambda { params, .. } = lambda
-        && !single_point_param && params.len() != n
-    {
-        eprintln!(
-            "[reify-expr] gradient: lambda has {} params but point has {} coords",
-            params.len(),
-            n
-        );
-    }
-
-    // Compute grad_dim once from codomain_type (avoids f_plus.dimension() per iteration).
-    // The gradient is df/dx, so its dimension is [codomain] / [domain].
-    let result_dim = match codomain_type {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    };
-    let grad_dim = match domain_dim {
-        Some(dd) if result_dim != DimensionVector::DIMENSIONLESS => result_dim.div(&dd),
-        _ => result_dim,
-    };
-
-    // Hoist make_arg before the loop — it only captures domain_dim (Copy),
-    // so constructing it once per axis would be redundant.
-    let make_arg = |val: f64| -> Value {
-        match domain_dim {
-            Some(dim) => Value::Scalar {
-                si_value: val,
-                dimension: dim,
-            },
-            None => Value::Real(val),
-        }
-    };
-
-    // Pre-allocate work_coords (one-time clone) and work_args for perturb-in-place.
-    // Each axis: perturb work_coords[i] by +h, eval, swing to -h, eval, restore.
-    // This reduces per-axis allocation from O(n) clones to O(1) f64 additions.
-    let mut work_coords = coords.clone();
-    // Capacity: 1 for single_point_param (wraps in a Point), n for decomposed.
-    let args_capacity = if single_point_param { 1 } else { n };
-    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
-
-    let mut gradient_components = Vec::with_capacity(n);
-
-    for i in 0..n {
-        let coord_i = coords[i];
-        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
-
-        // Perturb forward (+h), evaluate
-        work_coords[i] += h;
-        work_args.clear();
-        if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
-        let f_plus = apply_lambda(lambda, &work_args, ctx);
-
-        // Swing to backward (−h from original = −2h from current), evaluate
-        work_coords[i] -= 2.0 * h;
-        work_args.clear();
-        if single_point_param {
-            work_args.push(Value::Point(work_coords.iter().map(|&v| make_arg(v)).collect()));
-        } else {
-            work_args.extend(work_coords.iter().map(|&v| make_arg(v)));
-        }
-        let f_minus = apply_lambda(lambda, &work_args, ctx);
-
-        // Restore coord[i] to original value
-        work_coords[i] += h;
-
-        // Extract numeric values, propagate Undef.
-        // Guard with is_finite() — as_f64() returns Some(NaN) for
-        // Value::Real(NaN) and Some(Inf) for Value::Real(Inf), so
-        // the None check alone doesn't catch degenerate values.
-        let fp = match f_plus.as_f64() {
-            Some(v) if v.is_finite() => v,
-            _ => return Value::Undef,
-        };
-        let fm = match f_minus.as_f64() {
-            Some(v) if v.is_finite() => v,
-            _ => return Value::Undef,
-        };
-
-        let deriv = (fp - fm) / (2.0 * h);
-        // Guard the derivative: even finite fp/fm can produce
-        // Inf via overflow (e.g., (MAX - (-MAX)) / small_h).
-        if !deriv.is_finite() {
-            return Value::Undef;
-        }
-
-        if grad_dim != DimensionVector::DIMENSIONLESS {
-            gradient_components.push(Value::Scalar {
-                si_value: deriv,
-                dimension: grad_dim,
-            });
-        } else {
-            gradient_components.push(Value::Real(deriv));
-        }
-    }
-
-    if n == 1 {
-        gradient_components.into_iter().next().unwrap_or(Value::Undef)
-    } else {
-        Value::Vector(gradient_components)
-    }
-}
-
-/// Convert a Value that carries NaN or Inf to Undef.
-///
-/// All callers pass either a `Value::from_component(...)` result — which
-/// returns only `Value::Real` (dimensionless) or `Value::Scalar` (dimensioned)
-/// — or a directly-constructed `Value::Scalar`.  Consequently only the
-/// `Value::Real` and `Value::Scalar` arms are reachable from current call
-/// sites; the `Value::Orientation` arm is unreachable today but is included
-/// for structural parity with `reify-stdlib::sanitize_value` (defense-in-depth:
-/// if callers evolve to pass orientation values, sanitization is already in
-/// place).
-///
-/// **Divergence from stdlib:** the `Value::Complex` arm present in
-/// `reify-stdlib::sanitize_value` is intentionally absent here — it was
-/// removed as unreachable by task 860.  Restoring it for full SYNC parity
-/// is tracked as a separate follow-up.
-///
-/// This helper mirrors the private `sanitize_value` in `reify-stdlib` — the
-/// duplication is intentional (making stdlib's version public would widen its
-/// API surface; moving it to reify-types would add evaluation semantics to a
-/// type crate).
-// SYNC: mirror of reify-stdlib::sanitize_value — keep in sync
-fn sanitize_value(v: Value) -> Value {
-    match &v {
-        Value::Real(x) if x.is_nan() || x.is_infinite() => Value::Undef,
-        Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
-            Value::Undef
-        }
-        Value::Orientation { w, x, y, z }
-            if w.is_nan()
-                || w.is_infinite()
-                || x.is_nan()
-                || x.is_infinite()
-                || y.is_nan()
-                || y.is_infinite()
-                || z.is_nan()
-                || z.is_infinite() =>
-        {
-            Value::Undef
-        }
-        _ => v,
-    }
-}
-
 /// Evaluate a method call on a collection value.
 fn eval_method_call(
     obj: &Value,
@@ -1221,68 +925,11 @@ fn eval_method_call(
                 _ => Value::Undef,
             }
         }
-        "magnitude" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Complex { re, im, dimension } => {
-                    let mag = re.hypot(*im);
-                    sanitize_value(Value::from_component(mag, *dimension))
-                }
-                _ => Value::Undef,
-            }
-        }
-        "phase" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Complex { re, im, .. } => {
-                    if !re.is_finite() || !im.is_finite() {
-                        return Value::Undef;
-                    }
-                    if *re == 0.0 && *im == 0.0 {
-                        return Value::Undef;
-                    }
-                    // The pre-guard above is essential: atan2(y, Inf) = 0.0 and
-                    // atan2(y, -Inf) = ±π are both finite, so sanitize_value alone
-                    // cannot detect Inf inputs — it would silently return a wrong result.
-                    // After the guard, atan2(finite, finite) with at least one non-zero
-                    // argument always returns a value in [-π, π], so no output
-                    // sanitization is needed here.
-                    let angle = im.atan2(*re);
-                    Value::Scalar {
-                        si_value: angle,
-                        dimension: DimensionVector::ANGLE,
-                    }
-                }
-                _ => Value::Undef,
-            }
-        }
-        "conjugate" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Complex { re, im, dimension } => Value::Complex {
-                    re: *re,
-                    im: -im,
-                    dimension: *dimension,
-                },
-                _ => Value::Undef,
-            }
-        }
-        "re" | "im" => {
-            if !args.is_empty() {
-                return Value::Undef;
-            }
-            match obj {
-                Value::Complex { re, im, dimension } => {
-                    let component = if method == "re" { *re } else { *im };
-                    sanitize_value(Value::from_component(component, *dimension))
-                }
-                _ => Value::Undef,
+        // Complex number methods are in complex.rs.
+        "magnitude" | "phase" | "conjugate" | "re" | "im" => {
+            match complex::eval_complex_method(obj, method, args) {
+                Some(v) => v,
+                None => Value::Undef,
             }
         }
         "x" | "y" | "z" => {
@@ -1465,7 +1112,11 @@ fn neg_scalar(v: Value) -> Value {
             if !re.is_finite() || !im.is_finite() {
                 return Value::Undef;
             }
-            Value::Complex { re: -re, im: -im, dimension }
+            Value::Complex {
+                re: -re,
+                im: -im,
+                dimension,
+            }
         }
         _ => Value::Undef,
     }
@@ -1512,9 +1163,7 @@ fn negate_value(v: Value) -> Value {
 /// Check if a tensor slice represents rank-2 data (all elements are Tensor).
 /// Returns `true` if the first element is a Tensor; callers must verify `.all()`.
 fn is_rank2(slice: &[Value]) -> bool {
-    slice
-        .first()
-        .is_some_and(|v| matches!(v, Value::Tensor(_)))
+    slice.first().is_some_and(|v| matches!(v, Value::Tensor(_)))
 }
 
 /// Validate rank-2 tensor operands for addition/subtraction.
@@ -3156,7 +2805,10 @@ mod tests {
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar { si_value, dimension } => {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
                 assert!((si_value - 4.0).abs() < 1e-12);
                 assert!(dimension.is_dimensionless());
             }
@@ -3185,6 +2837,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"double"),
+            annotations: vec![],
         }
     }
 
@@ -3213,6 +2866,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
+            annotations: vec![],
         }
     }
 
@@ -3281,6 +2935,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"factorial"),
+            annotations: vec![],
         }
     }
 
@@ -3303,6 +2958,7 @@ mod tests {
                 },
             },
             content_hash: ContentHash::of(b"infinite"),
+            annotations: vec![],
         }
     }
 
@@ -3422,6 +3078,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"area"),
+            annotations: vec![],
         };
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_area"),
@@ -3486,6 +3143,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
+            annotations: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
         let process2 = CompiledFunction {
@@ -3503,6 +3161,7 @@ mod tests {
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
+            annotations: vec![],
         };
 
         let functions = [process1, process2];
@@ -3720,7 +3379,11 @@ mod tests {
             Value::Complex { re, im, dimension } => {
                 assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
                 assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
-                assert_eq!(dimension, DimensionVector::DIMENSIONLESS, "dimension should be DIMENSIONLESS");
+                assert_eq!(
+                    dimension,
+                    DimensionVector::DIMENSIONLESS,
+                    "dimension should be DIMENSIONLESS"
+                );
             }
             other => panic!("expected Complex, got {:?}", other),
         }
@@ -3741,659 +3404,14 @@ mod tests {
             Value::Complex { re, im, dimension } => {
                 assert!((re - (-2.0)).abs() < 1e-12, "re should be -2.0, got {}", re);
                 assert!((im - 3.0).abs() < 1e-12, "im should be 3.0, got {}", im);
-                assert_eq!(dimension, DimensionVector::LENGTH, "dimension should be LENGTH");
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "dimension should be LENGTH"
+                );
             }
             other => panic!("expected Complex, got {:?}", other),
         }
     }
 
-    // ── method: re ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn re_nan_dimensionless_returns_undef() {
-        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.re → Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.re with NaN real part should return Undef"
-        );
-    }
-
-    #[test]
-    fn re_inf_dimensionless_returns_undef() {
-        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.re → Undef
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.re with Inf real part should return Undef"
-        );
-    }
-
-    #[test]
-    fn re_nan_dimensioned_returns_undef() {
-        // Complex{re:NaN, im:1.0, LENGTH}.re → Undef (dimensioned Scalar path)
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "re".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.re with NaN real part (dimensioned) should return Undef"
-        );
-    }
-
-    // ── method: im ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn im_nan_dimensionless_returns_undef() {
-        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.im → Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.im with NaN imaginary part should return Undef"
-        );
-    }
-
-    #[test]
-    fn im_inf_dimensionless_returns_undef() {
-        // Complex{re:1.0, im:+Inf, DIMENSIONLESS}.im → Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.im with Inf imaginary part should return Undef"
-        );
-    }
-
-    #[test]
-    fn im_nan_dimensioned_returns_undef() {
-        // Complex{re:1.0, im:NaN, LENGTH}.im → Undef (dimensioned Scalar path)
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "im".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.im with NaN imaginary part (dimensioned) should return Undef"
-        );
-    }
-
-    // ── method: magnitude ─────────────────────────────────────────────────────
-
-    #[test]
-    fn magnitude_nan_dimensionless_returns_undef() {
-        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.magnitude → Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.magnitude with NaN should return Undef"
-        );
-    }
-
-    #[test]
-    fn magnitude_overflow_dimensionless_returns_undef() {
-        // Complex{re:f64::MAX, im:f64::MAX, DIMENSIONLESS}.magnitude → Undef (overflow to +Inf)
-        let complex_val = Value::Complex {
-            re: f64::MAX,
-            im: f64::MAX,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.magnitude overflowing to +Inf should return Undef"
-        );
-    }
-
-    #[test]
-    fn magnitude_nan_dimensioned_returns_undef() {
-        // Complex{re:NaN, im:1.0, LENGTH}.magnitude → Undef (dimensioned path)
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "magnitude".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.magnitude with NaN (dimensioned) should return Undef"
-        );
-    }
-
-    #[test]
-    fn magnitude_inf_dimensionless_returns_undef() {
-        // Complex{re:+Inf, im:0.0, DIMENSIONLESS}.magnitude → Undef (direct Inf input)
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.magnitude with +Inf input should return Undef"
-        );
-    }
-
-    // ── method regressions: finite values still work ──────────────────────────
-
-    #[test]
-    fn magnitude_finite_dimensionless_correct() {
-        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.magnitude == Real(5.0)
-        let complex_val = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "magnitude".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12, "expected 5.0, got {}", v),
-            other => panic!("expected Real(5.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn re_finite_dimensionless_correct() {
-        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.re == Real(3.0)
-        let complex_val = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "re".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected 3.0, got {}", v),
-            other => panic!("expected Real(3.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn im_finite_dimensionless_correct() {
-        // Complex{re:3.0, im:4.0, DIMENSIONLESS}.im == Real(4.0)
-        let complex_val = Value::Complex {
-            re: 3.0,
-            im: 4.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "im".to_string(),
-            vec![],
-            Type::Real,
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12, "expected 4.0, got {}", v),
-            other => panic!("expected Real(4.0), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn re_finite_dimensioned_correct() {
-        // Complex{re:0.003, im:0.004, LENGTH}.re == Scalar{0.003, LENGTH}
-        let complex_val = Value::Complex {
-            re: 0.003,
-            im: 0.004,
-            dimension: DimensionVector::LENGTH,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::length())),
-            "re".to_string(),
-            vec![],
-            Type::length(),
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 0.003).abs() < 1e-12, "expected 0.003, got {}", si_value);
-                assert_eq!(dimension, DimensionVector::LENGTH);
-            }
-            other => panic!("expected Scalar{{0.003, LENGTH}}, got {:?}", other),
-        }
-    }
-
-    // ── method: phase (NaN/Inf sanitization) ─────────────────────────────────
-
-    #[test]
-    fn phase_nan_re_returns_undef() {
-        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.phase → Undef
-        // atan2(1.0, NaN) = NaN; phase should return Undef
-        let complex_val = Value::Complex {
-            re: f64::NAN,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.phase with NaN real part should return Undef"
-        );
-    }
-
-    #[test]
-    fn phase_nan_im_returns_undef() {
-        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.phase → Undef
-        // atan2(NaN, 1.0) = NaN; phase should return Undef
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NAN,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.phase with NaN imaginary part should return Undef"
-        );
-    }
-
-    #[test]
-    fn phase_inf_re_returns_undef() {
-        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.phase → Undef
-        // Note: atan2(1.0, +Inf) = 0.0 which is finite — sanitize_value alone
-        // would NOT catch this Inf input. The pre-guard is what correctly rejects it.
-        let complex_val = Value::Complex {
-            re: f64::INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.phase with +Inf real part should return Undef"
-        );
-    }
-
-    #[test]
-    fn phase_neg_inf_im_returns_undef() {
-        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.phase → Undef
-        // The Complex carries an Inf component, violating sanitization convention
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: f64::NEG_INFINITY,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.phase with -Inf imaginary part should return Undef"
-        );
-    }
-
-    #[test]
-    fn phase_neg_inf_re_returns_undef() {
-        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.phase → Undef
-        //
-        // Note: atan2(1.0, -Inf) = π, which is finite — so sanitize_value alone
-        // would NOT catch this -Inf input and would silently return a wrong result.
-        // The pre-guard (!re.is_finite() || !im.is_finite()) is what correctly
-        // rejects this case. This test locks that behaviour as a regression guard.
-        let complex_val = Value::Complex {
-            re: f64::NEG_INFINITY,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        assert!(
-            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
-            "z.phase with -Inf real part should return Undef (atan2(1.0,-Inf)=π is finite, \
-             so the pre-guard, not sanitize_value, is what catches this)"
-        );
-    }
-
-    // ── method regressions: finite phase values still work ────────────────────
-
-    #[test]
-    fn phase_finite_45_degrees_correct() {
-        // Complex{re:1.0, im:1.0, DIMENSIONLESS}.phase == Scalar{π/4, ANGLE}
-        // atan2(1.0, 1.0) = π/4 ≈ 0.7853981633974483
-        let complex_val = Value::Complex {
-            re: 1.0,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
-                let expected = std::f64::consts::FRAC_PI_4;
-                assert!(
-                    (si_value - expected).abs() < 1e-12,
-                    "expected π/4 ≈ {}, got {}",
-                    expected,
-                    si_value
-                );
-                assert_eq!(dimension, DimensionVector::ANGLE);
-            }
-            other => panic!("expected Scalar{{π/4, ANGLE}}, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn phase_finite_180_degrees_correct() {
-        // Complex{re:-1.0, im:0.0, DIMENSIONLESS}.phase == Scalar{π, ANGLE}
-        // atan2(0.0, -1.0) = π
-        let complex_val = Value::Complex {
-            re: -1.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
-            "phase".to_string(),
-            vec![],
-            Type::angle(),
-        );
-        let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Scalar { si_value, dimension } => {
-                let expected = std::f64::consts::PI;
-                assert!(
-                    (si_value - expected).abs() < 1e-12,
-                    "expected π ≈ {}, got {}",
-                    expected,
-                    si_value
-                );
-                assert_eq!(dimension, DimensionVector::ANGLE);
-            }
-            other => panic!("expected Scalar{{π, ANGLE}}, got {:?}", other),
-        }
-    }
-
-    // ── sanitize_value direct unit tests ─────────────────────────────────────
-
-    #[test]
-    fn sanitize_real_nan_returns_undef() {
-        assert!(
-            sanitize_value(Value::Real(f64::NAN)).is_undef(),
-            "Real(NaN) should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_real_inf_returns_undef() {
-        assert!(
-            sanitize_value(Value::Real(f64::INFINITY)).is_undef(),
-            "Real(+Inf) should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_real_neg_inf_returns_undef() {
-        assert!(
-            sanitize_value(Value::Real(f64::NEG_INFINITY)).is_undef(),
-            "Real(-Inf) should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_real_finite_passthrough() {
-        let v = Value::Real(2.72);
-        match sanitize_value(v) {
-            Value::Real(x) => assert!((x - 2.72).abs() < 1e-12),
-            other => panic!("expected Real(2.72), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn sanitize_scalar_nan_returns_undef() {
-        let v = Value::Scalar {
-            si_value: f64::NAN,
-            dimension: DimensionVector::LENGTH,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Scalar with NaN si_value should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_scalar_inf_returns_undef() {
-        let v = Value::Scalar {
-            si_value: f64::INFINITY,
-            dimension: DimensionVector::LENGTH,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Scalar with +Inf si_value should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_scalar_neg_inf_returns_undef() {
-        let v = Value::Scalar {
-            si_value: f64::NEG_INFINITY,
-            dimension: DimensionVector::MASS,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Scalar with -Inf si_value should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_scalar_finite_passthrough() {
-        let v = Value::Scalar {
-            si_value: 0.001,
-            dimension: DimensionVector::LENGTH,
-        };
-        match sanitize_value(v) {
-            Value::Scalar { si_value, dimension } => {
-                assert!((si_value - 0.001).abs() < 1e-12);
-                assert_eq!(dimension, DimensionVector::LENGTH);
-            }
-            other => panic!("expected Scalar{{0.001, LENGTH}}, got {:?}", other),
-        }
-    }
-
-    // ── sanitize_value Orientation arm tests (task-914) ──────────────────────
-
-    #[test]
-    fn sanitize_orientation_nan_returns_undef() {
-        let v = Value::Orientation {
-            w: f64::NAN,
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with NaN w should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_inf_returns_undef() {
-        let v = Value::Orientation {
-            w: 0.0,
-            x: f64::INFINITY,
-            y: 0.0,
-            z: 0.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with +Inf x should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_neg_inf_returns_undef() {
-        let v = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: 0.0,
-            z: f64::NEG_INFINITY,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with -Inf z should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_nan_y_returns_undef() {
-        let v = Value::Orientation {
-            w: 0.0,
-            x: 0.0,
-            y: f64::NAN,
-            z: 0.0,
-        };
-        assert!(
-            sanitize_value(v).is_undef(),
-            "Orientation with NaN y should become Undef"
-        );
-    }
-
-    #[test]
-    fn sanitize_orientation_valid_passthrough() {
-        let v = Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        match sanitize_value(v) {
-            Value::Orientation { w, x, y, z } => {
-                assert!((w - 1.0).abs() < f64::EPSILON);
-                assert!((x - 0.0).abs() < f64::EPSILON);
-                assert!((y - 0.0).abs() < f64::EPSILON);
-                assert!((z - 0.0).abs() < f64::EPSILON);
-            }
-            other => panic!("expected Orientation{{1,0,0,0}}, got {:?}", other),
-        }
-    }
 }

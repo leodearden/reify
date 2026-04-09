@@ -43,8 +43,8 @@ fn assert_no_valid_binop_recovery(decls: &[Declaration]) {
         _ => None,
     }) {
         assert_eq!(ta.name, "Foo");
-        let looks_like_valid_binop =
-            (ta.type_expr.name == "/" || ta.type_expr.name == "*") && ta.type_expr.type_args.len() == 2;
+        let looks_like_valid_binop = (ta.type_expr.name == "/" || ta.type_expr.name == "*")
+            && ta.type_expr.type_args.len() == 2;
         assert!(
             !looks_like_valid_binop,
             "malformed input should not produce well-formed dimensional binary op, got type_expr.name={:?}, type_args={:?}",
@@ -323,10 +323,10 @@ fn parse_type_alias_empty_rhs_no_panic() {
     // that gets lowered to a TypeAlias with an empty-name type_expr.
     let source = "type Foo =";
     let (decls, errors) = parse_decls(source);
-
-    // NOTE: Tree-sitter silently recovers `type Foo =` without emitting parse errors.
-    // The `errors` vector is empty — this is expected Tree-sitter behavior, not a bug.
-    // The test verifies recovery shape, not error detection.
+    assert!(
+        errors.is_empty(),
+        "expected no parse errors for empty-RHS recovery, got: {errors:?}"
+    );
 
     // Tree-sitter recovery produces a TypeAlias — extract it.
     // This .expect() depends on the current Tree-sitter grammar/error-recovery behavior;

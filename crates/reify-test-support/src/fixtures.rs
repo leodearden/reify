@@ -4,7 +4,8 @@ use reify_types::{BinOp, ContentHash, DimensionVector, ModulePath, SourceSpan, T
 
 use crate::builders::{
     CompiledFieldBuilder, CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder,
-    TopologyTemplateBuilder, TraitDefBuilder, range_constraint,
+    TopologyTemplateBuilder, TraitDefBuilder, ann_str, annotation, annotation_with_args,
+    range_constraint,
 };
 
 /// The canonical bracket source code for end-to-end testing.
@@ -31,6 +32,32 @@ pub fn bracket_source() -> &'static str {
 /// E.g. `bracket_source_with_width("120mm")` gives `param width: Scalar = 120mm`.
 pub fn bracket_source_with_width(width_str: &str) -> String {
     bracket_source().replace("80mm", width_str)
+}
+
+/// Source that reliably produces an "unknown port type" warning (not error).
+///
+/// Used by tests that need a non-empty `compiled.diagnostics` to exercise
+/// post-early-exit code paths in `get_diagnostics`.
+/// Validated by `crates/reify-compiler/tests/port_compile_tests.rs:101-124`.
+pub fn warn_source_with_unknown_port_type() -> &'static str {
+    r#"structure def S {
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
+}
+
+/// Same as [`warn_source_with_unknown_port_type`] but with an additional `param width : Length = 80mm`.
+///
+/// Used by tests that need both an unknown-port-type warning AND a `width` field
+/// for `get_source_location` lookup.
+pub fn warn_source_with_unknown_port_type_with_width() -> &'static str {
+    r#"structure def S {
+    param width : Length = 80mm
+    port mount : NonExistentTrait {
+        param d : Length = 5mm
+    }
+}"#
 }
 
 /// Return the bracket source with thickness set to 1mm, which violates the
@@ -300,6 +327,8 @@ pub fn bracket_parsed_module() -> ParsedModule {
         ],
         span: SourceSpan::new(0, 387),
         content_hash,
+        pragmas: vec![],
+        annotations: vec![],
     };
 
     ParsedModule {
@@ -307,6 +336,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
         declarations: vec![reify_syntax::Declaration::Structure(structure)],
         errors: vec![],
         content_hash,
+        pragmas: vec![],
     }
 }
 
@@ -827,9 +857,44 @@ pub fn mutual_recursion_module() -> CompiledModule {
         .build()
 }
 
+/// Return a `CompiledModule` covering all four annotation-capable entity kinds.
+///
+/// - Trait `"Rigid"` with `@deprecated("use Rigid2")` annotation
+/// - Template `"Bolt"` with `@test` and `@optimized` annotations (no args)
+/// - Field `"temp"` (Geometry → Real, imported) with `@deprecated` annotation
+/// - Purpose `"mfg_ready"` with `@solver_hint` annotation
+pub fn annotated_module() -> CompiledModule {
+    let rigid_trait = CompiledTraitBuilder::new("Rigid")
+        .annotation(annotation_with_args("deprecated", vec![ann_str("use Rigid2")]))
+        .build();
+
+    let bolt_template = TopologyTemplateBuilder::new("Bolt")
+        .annotation(annotation("test"))
+        .annotation(annotation("optimized"))
+        .build();
+
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        .imported()
+        .annotation(annotation("deprecated"))
+        .build();
+
+    let purpose = CompiledPurposeBuilder::new("mfg_ready")
+        .annotation(annotation("solver_hint"))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("annotated_module"))
+        .trait_def(rigid_trait)
+        .template(bolt_template)
+        .field(temp_field)
+        .compiled_purpose(purpose)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_compiler::ValueCellKind;
+    use reify_types::Severity;
 
     #[test]
     fn bracket_parsed_module_structure() {
@@ -989,7 +1054,47 @@ mod tests {
         assert!(mass_cell.is_some(), "Bolt should have param mass");
     }
 
-    // --- Annotated entity fixture tests (step-21) ---
+    // --- Annotated entity fixture tests (steps 31-32) ---
+
+    #[test]
+    fn annotated_module_has_annotated_entities() {
+        let module = annotated_module();
+
+        // (a) one trait with @deprecated("use Rigid2") annotation
+        assert_eq!(module.trait_defs.len(), 1);
+        let rigid = &module.trait_defs[0];
+        assert_eq!(rigid.name, "Rigid");
+        assert_eq!(rigid.annotations.len(), 1);
+        assert_eq!(rigid.annotations[0].name, "deprecated");
+        assert_eq!(rigid.annotations[0].args.len(), 1);
+        assert!(matches!(
+            &rigid.annotations[0].args[0],
+            reify_types::AnnotationArg::String(s) if s == "use Rigid2"
+        ));
+
+        // (b) one template with @test and @optimized annotations (no args)
+        assert_eq!(module.templates.len(), 1);
+        let bolt = &module.templates[0];
+        assert_eq!(bolt.name, "Bolt");
+        assert_eq!(bolt.annotations.len(), 2);
+        let ann_names: Vec<&str> = bolt.annotations.iter().map(|a| a.name.as_str()).collect();
+        assert!(ann_names.contains(&"test"), "expected @test annotation");
+        assert!(ann_names.contains(&"optimized"), "expected @optimized annotation");
+
+        // (c) one field with @deprecated annotation
+        assert_eq!(module.fields.len(), 1);
+        let temp_field = &module.fields[0];
+        assert_eq!(temp_field.name, "temp");
+        assert_eq!(temp_field.annotations.len(), 1);
+        assert_eq!(temp_field.annotations[0].name, "deprecated");
+
+        // (d) one purpose with @solver_hint annotation
+        assert_eq!(module.compiled_purposes.len(), 1);
+        let purpose = &module.compiled_purposes[0];
+        assert_eq!(purpose.name, "mfg_ready");
+        assert_eq!(purpose.annotations.len(), 1);
+        assert_eq!(purpose.annotations[0].name, "solver_hint");
+    }
 
     #[test]
     fn trait_structure_module_has_trait_and_template() {
@@ -1139,5 +1244,137 @@ mod tests {
         assert_eq!(node_b.sub_components.len(), 1);
         assert_eq!(node_b.sub_components[0].name, "ref_back");
         assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
+    }
+
+    /// Helper: parse and compile `source`, assert no errors and exactly one
+    /// `Severity::Warning` mentioning both "unknown port type" and
+    /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
+    fn assert_warning_source_compiles_with_unknown_port_warning(
+        source: &str,
+    ) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = reify_compiler::compile(&parsed);
+
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        let warnings: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Warning
+                    && d.message.contains("unknown port type")
+                    && d.message.contains("NonExistentTrait")
+            })
+            .collect();
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected exactly 1 unknown-port-type warning mentioning NonExistentTrait, got: {:?}",
+            compiled.diagnostics
+        );
+
+        compiled
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_produces_unknown_port_warning_no_errors() {
+        assert_warning_source_compiles_with_unknown_port_warning(warn_source_with_unknown_port_type());
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_is_well_formed() {
+        let src = warn_source_with_unknown_port_type();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
+        );
+        assert!(
+            src.contains("param d : Length = 5mm"),
+            "missing 'param d : Length = 5mm'"
+        );
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+        let source = warn_source_with_unknown_port_type_with_width();
+        let compiled =
+            assert_warning_source_compiles_with_unknown_port_warning(source);
+        let s_template = compiled
+            .templates
+            .iter()
+            .find(|t| t.name == "S")
+            .expect("expected S template in compiled module");
+        let width_cell = s_template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "width")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected S template to have a value_cell with member 'width', got: {:?}",
+                    s_template
+                        .value_cells
+                        .iter()
+                        .map(|vc| &vc.id.member)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            width_cell.cell_type,
+            Type::length(),
+            "expected width cell to be Length-typed (Scalar{{dimension=LENGTH}}), got: {:?}",
+            width_cell.cell_type
+        );
+        let (start, end) = (width_cell.span.start as usize, width_cell.span.end as usize);
+        let span_text = source.get(start..end).unwrap_or_else(|| {
+            panic!(
+                "width_cell.span {:?} out of bounds for source of len {}",
+                width_cell.span,
+                source.len()
+            )
+        });
+        assert_eq!(
+            span_text,
+            "param width : Length = 80mm",
+            "expected width cell span to cover the full `param width : Length = 80mm` \
+             declaration, got span {:?} covering {:?}",
+            width_cell.span,
+            span_text,
+        );
+        assert!(
+            matches!(width_cell.kind, ValueCellKind::Param),
+            "expected width cell to be ValueCellKind::Param \
+             (from `param width : Length = 80mm`), got: {:?}",
+            width_cell.kind,
+        );
+        assert!(
+            width_cell.default_expr.is_some(),
+            "expected width cell to have a default expression (from `= 80mm`), \
+             got default_expr=None",
+        );
+    }
+
+    #[test]
+    fn warn_source_with_unknown_port_type_with_width_is_well_formed() {
+        let src = warn_source_with_unknown_port_type_with_width();
+        assert!(src.contains("structure def S"), "missing 'structure def S'");
+        assert!(
+            src.contains("param width : Length = 80mm"),
+            "missing 'param width : Length = 80mm'"
+        );
+        assert!(
+            src.contains("port mount : NonExistentTrait"),
+            "missing 'port mount : NonExistentTrait'"
+        );
     }
 }

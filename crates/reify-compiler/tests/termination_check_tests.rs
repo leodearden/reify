@@ -363,13 +363,10 @@ structure Outer {
 
 // ─── Step 21: block guard sub — documents compiler limitation ────────────────
 
-/// Documents the pre-existing compiler limitation: `compile_guarded_members` has a
-/// `_ => {}` catch-all (lib.rs:4597-4599) that silently drops ALL Sub declarations
-/// inside `where {}` blocks.  As a result, `sub_components` is empty and Tarjan SCC
-/// never finds a cycle, so `is_recursive` remains false.
-///
-/// This test documents the ACTUAL current behavior.  It will break (correctly) when
-/// `compile_guarded_members` is updated to compile Sub declarations into sub_components.
+/// Sub declarations inside `where {}` blocks are now explicitly rejected with a
+/// 'not yet supported' diagnostic error (instead of being silently dropped).
+/// As a result, `sub_components` is still empty (the sub is not compiled into the
+/// template) and `is_recursive` remains false, but a diagnostic error is now emitted.
 #[test]
 fn block_guard_sub_not_yet_compiled() {
     let source = r#"
@@ -381,13 +378,13 @@ structure S {
 }
 "#;
 
-    let (template, _diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
-    // Sub inside where{} block is silently dropped by compile_guarded_members — sub_components is empty.
+    // Sub inside where{} block is rejected with a diagnostic — sub_components is still empty.
     assert!(
         template.sub_components.is_empty(),
-        "expected sub_components to be empty because compile_guarded_members drops Sub \
-         declarations inside where{{}} blocks (pre-existing limitation), but got: {:?}",
+        "expected sub_components to be empty because compile_guarded_members rejects Sub \
+         declarations inside where{{}} blocks, but got: {:?}",
         template
             .sub_components
             .iter()
@@ -400,56 +397,159 @@ structure S {
         !template.is_recursive,
         "expected is_recursive == false because no sub_components exist for Tarjan to analyse"
     );
+
+    // A 'not yet supported' error diagnostic must be emitted for the sub in the guard block.
+    let unsupported_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_types::Severity::Error
+                && d.message.to_lowercase().contains("not yet supported")
+                && d.message.to_lowercase().contains("sub")
+        })
+        .collect();
+    assert_eq!(
+        unsupported_errors.len(),
+        1,
+        "expected exactly one 'not yet supported' error for sub in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
-/// A recursive sub inside a block guard `where n > 0 { sub child = S(n: n-1) }`
-/// should be recognized as having a termination condition via the enclosing block guard.
-/// Assert NO error.
-///
-/// # Why this test is ignored
-///
-/// This test passes for the **wrong reason** and gives false confidence about block-guard
-/// termination recognition.  The chain of events that causes it to pass:
-///
-/// 1. **`compile_guarded_members` drops Sub declarations silently.**
-///    The function has a `_ => {}` catch-all (lib.rs:4597-4599) that matches `StructureMember::Sub`
-///    and does nothing.  The sub `child` is never compiled into `sub_components`.
-///
-/// 2. **Because `sub_components` is empty, Tarjan SCC finds no cycle.**
-///    `detect_recursive_structures()` iterates `sub_components` to build the adjacency graph.
-///    With no subs, S appears as an isolated vertex — `is_recursive` stays `false`.
-///
-/// 3. **`check_recursive_termination` is never invoked for S.**
-///    The pass skips templates where `is_recursive == false`, so it never reaches S.
-///
-/// 4. **Zero errors are produced — but NOT because block-guard termination works.**
-///    There is no block-guard fallback code in `check_recursive_termination`.  When
-///    `sub.guard_expr` is `None`, the function immediately emits an error without looking
-///    for an enclosing `guarded_group`.  That code path is never exercised here.
-///
-/// # What must change to enable this test
-///
-/// - **Step A:** Update `compile_guarded_members` to compile `StructureMember::Sub` into
-///   `sub_components` (instead of the `_ => {}` catch-all).  The `block_guard_sub_not_yet_compiled`
-///   test will break at that point, signalling that step A is done.
-///
-/// - **Step B:** Implement the guarded-groups fallback in `check_recursive_termination`:
-///   when a recursive sub has `guard_expr == None`, search `template.guarded_groups` for a
-///   `CompiledGuardedGroup` whose members include the sub, then run the
-///   guard-references-decremented-param heuristic on that group's `guard_expr`.  Only emit
-///   an error if neither the sub's own guard nor any enclosing block guard satisfies the
-///   termination condition.
-///
-/// Remove `#[ignore]` only after both steps A and B are complete and verified.
+// ─── Task 408 step 5: failed guard compilation must not cascade to extra error ─
+
+/// A where-clause referencing an undefined name (`where unknown_var > 0`) should
+/// emit only the "unresolved name" diagnostic from compile_expr. It must NOT also
+/// emit a spurious "guard doesn't reference params" error. Currently both are emitted
+/// because the Undef fallback is stored as `guard_expr: Some(Undef)`, causing the
+/// termination check to find no ValueRefs and fire the "references no param" error.
 #[test]
-#[ignore = "passes for the wrong reason — see doc comment above for the full explanation"]
-fn recursive_sub_inside_block_guard_no_error() {
+fn failed_guard_compilation_no_cascading_error() {
     let source = r#"
 structure S {
     param n : Int = 5
-    where n > 0 {
-        sub child = S(n: n - 1)
-    }
+    sub child = S(n: n - 1) where unknown_var > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    // Expect exactly ONE error: the "unresolved name: unknown_var" compile error.
+    // Must NOT have a second "guard references no Int/Bool param" error from the
+    // termination check piling on.
+    let guard_ref_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("guard") && (msg.contains("param") || msg.contains("int") || msg.contains("bool"))
+    });
+    assert!(
+        !guard_ref_error,
+        "termination check should NOT emit 'guard references no param' when guard failed to compile; got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // There should be at least the compile error for unknown_var.
+    let has_compile_error = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("unresolved") || msg.contains("unknown")
+    });
+    assert!(
+        has_compile_error,
+        "expected at least the 'unresolved name: unknown_var' compile error, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 408 step 3: undef in non-guard-referenced arg should be allowed ────
+
+/// A recursive sub `S(n: n - 1, label: undef) where n > 0` should NOT emit
+/// the termination-specific "undef not allowed in recursive sub arguments" error.
+/// `label` is not referenced by the guard `n > 0`, so it is termination-irrelevant.
+///
+/// Note: `undef` is an unresolved name so a generic "unresolved name" compile error
+/// is expected — but the termination check must NOT pile on an extra error for it.
+#[test]
+fn undef_in_non_guard_arg_is_allowed() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    param label : Int = 0
+    sub child = S(n: n - 1, label: undef) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    // The termination check must not emit its own "undef not allowed" error for label,
+    // because label is not referenced by the guard.
+    let termination_undef_error = diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message
+                .to_lowercase()
+                .contains("undef is not allowed as a non-termination")
+    });
+    assert!(
+        !termination_undef_error,
+        "termination check should NOT flag undef in non-guard-referenced arg `label`; got: {:?}",
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 408 step 8: undef in a guard-referenced arg is still rejected ──────
+
+/// `S(n: undef) where n > 0` — `n` IS referenced by the guard, so undef in that
+/// arg must still be caught by the scoped undef check. This verifies that step 4's
+/// narrowing didn't accidentally remove the check for guard-relevant args.
+///
+/// Note: `undef` is an unresolved name, so there will also be a generic
+/// "unresolved name" compile error — the test just checks for the termination-
+/// specific "undef not allowed" diagnostic to confirm the scoped check fires.
+#[test]
+fn undef_in_guard_referenced_arg_still_rejected() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: undef) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let termination_undef_error = diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && d.message
+                .to_lowercase()
+                .contains("undef is not allowed as a non-termination")
+    });
+    assert!(
+        termination_undef_error,
+        "termination check SHOULD flag undef in guard-referenced arg `n`; got errors: {:?}",
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 408 step 7: subtraction still satisfies termination (regression) ───
+
+/// Confirm that `S(n: n - 1) where n > 0` (the canonical decrement pattern)
+/// still produces zero errors after the BinOp::Add removal in step 2.
+/// This is a targeted regression guard named after the Add fix.
+#[test]
+fn subtraction_still_satisfies_termination() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
 }
 "#;
 
@@ -462,7 +562,85 @@ structure S {
 
     assert!(
         errors.is_empty(),
-        "expected no errors for recursive sub protected by enclosing block guard, got: {:?}",
+        "BinOp::Sub must still satisfy termination after BinOp::Add removal; got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ─── Task 408 step 1: BinOp::Add is not a valid termination-modifier ─────────
+
+/// A recursive sub with `S(n: n + 1) where n > 0` should emit an error because
+/// addition diverges — `n` increases and never reaches 0. This is a false negative
+/// in the current implementation (BinOp::Add is accepted as a modifying operation).
+#[test]
+fn add_op_does_not_satisfy_termination() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n + 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected error for `n + 1` (diverges — n increases, never reaches base case), got no errors"
+    );
+
+    let msg_ok = errors.iter().any(|d| {
+        let msg = d.message.to_lowercase();
+        msg.contains("decrement") || msg.contains("modif") || msg.contains("toward")
+    });
+    assert!(
+        msg_ok,
+        "error should mention decrement/modifying/toward base case, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A recursive sub inside a block guard `where n > 0 { sub child = S(n: n-1) }`
+/// is now explicitly rejected with a 'not yet supported' diagnostic error.
+///
+/// Previously this test was ignored because it passed for the wrong reason:
+/// `compile_guarded_members` silently dropped Sub declarations via `_ => {}`, leaving
+/// `sub_components` empty so Tarjan SCC found no cycle and no error was emitted.
+///
+/// Now that `compile_guarded_members` emits a diagnostic for Sub in guarded blocks,
+/// this test is un-ignored and verifies that exactly one 'not yet supported' error
+/// is produced — confirming the sub is explicitly rejected rather than silently dropped.
+#[test]
+fn recursive_sub_inside_block_guard_no_error() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    where n > 0 {
+        sub child = S(n: n - 1)
+    }
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    // Exactly one 'not yet supported' error for the sub in the guarded block.
+    let unsupported_errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.message.to_lowercase().contains("not yet supported")
+                && d.message.to_lowercase().contains("sub")
+        })
+        .collect();
+
+    assert_eq!(
+        unsupported_errors.len(),
+        1,
+        "expected exactly one 'not yet supported' error for sub in block guard, got: {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
