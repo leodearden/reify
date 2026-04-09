@@ -392,6 +392,27 @@ impl WarnCapture {
     /// Each element is a [`HashMap`] of field name → field value (as a string)
     /// for the corresponding event.  The `message` field is **not** included in
     /// these maps — use [`messages()`](Self::messages) for the message text.
+    ///
+    /// # How field values are stored
+    ///
+    /// The storage format depends on the tracing field type:
+    ///
+    /// * **`&str`-typed fields** (e.g. `lock = "values"`) are captured verbatim
+    ///   via `record_str` — no extra quotes or decoration.
+    /// * **`%Display` fields** (e.g. `error = %e`) are routed through
+    ///   `record_debug`.  Because tracing wraps Display values in a newtype whose
+    ///   `Debug` delegates to `Display`, the stored string equals `format!("{e}")`
+    ///   — no extra decoration.
+    /// * **`?Debug` fields** (e.g. `info = ?v`) are also routed through
+    ///   `record_debug` and stored as `format!("{v:?}")`.  For a `Vec<i32>` this
+    ///   produces `"[1, 2, 3]"` — the brackets are part of the stored value.
+    ///
+    /// Use [`assert_any_event_has_fields`] for exact matches (safe for `&str`
+    /// and `%Display` fields).  Use [`assert_any_event_field_contains`] for
+    /// substring matches when the field may include Debug decoration.
+    ///
+    /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
+    /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
     pub fn fields_by_event(&self) -> Vec<HashMap<String, String>> {
         self.fields.lock().unwrap().clone()
     }
@@ -401,6 +422,21 @@ impl WarnCapture {
     ///
     /// Useful for verifying that a structured `tracing::warn!(key = "value", …)`
     /// emitted the expected field schema.
+    ///
+    /// # Value matching contract
+    ///
+    /// Exact matching is reliable for:
+    /// * **`&str`-typed fields** — stored verbatim (no decoration).
+    /// * **`%Display` fields** — tracing wraps Display in a newtype whose
+    ///   `Debug` delegates to `Display`, so the stored string equals the
+    ///   Display output.
+    ///
+    /// For **`?Debug` fields** the stored value includes the full Debug
+    /// representation (e.g. `"[1, 2, 3]"` for a `Vec`).  Asserting the exact
+    /// Debug string couples the test to `Debug` format stability.  Prefer
+    /// [`assert_any_event_field_contains`] for those fields.
+    ///
+    /// [`assert_any_event_field_contains`]: Self::assert_any_event_field_contains
     ///
     /// # Panics
     ///
@@ -517,9 +553,13 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = format!("{value:?}");
         } else {
-            // Non-message fields emitted with `%e` (Display) or `?e` (Debug)
-            // are captured in debug-formatted form.  Tests only assert on the
-            // string-literal fields (lock, access, path), so this is acceptable.
+            // Non-message fields are stored as `format!("{value:?}")`.
+            // For `%Display` fields, tracing's newtype wrapper makes `Debug`
+            // delegate to `Display`, so the result equals the Display output.
+            // For `?Debug` fields, the result includes the full Debug repr
+            // (e.g. `"[1, 2, 3]"` for a Vec).  See the public API docs on
+            // `WarnCapture::fields_by_event` and `assert_any_event_has_fields`
+            // for the complete value-matching contract.
             self.fields
                 .insert(field.name().to_owned(), format!("{value:?}"));
         }
