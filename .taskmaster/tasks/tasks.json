@@ -24626,11 +24626,11 @@
         "description": "Extract a shared `make_gradient_field(body_builder, ...)` helper that both `make_3d_dot_product_gradient_field` and `make_3d_quadratic_gradient_field` delegate to, reducing ~30 lines of duplicated setup/assert/return boilerplate. Also add a brief test or assertion sampling the quadratic gradient at the origin (0,0,0) to confirm the zero-vector edge case is handled correctly.\n\nmemory_hints: search \"make_3d_quadratic_gradient_field make_3d_dot_product_gradient_field factory\"; get_entity \"gradient_tests.rs\"",
         "details": "Two changes in crates/reify-expr/tests/gradient_tests.rs:\n\n(1) Factory dedup (S2): `make_3d_quadratic_gradient_field` (lines 2768-2816) and `make_3d_dot_product_gradient_field` (lines 2707-2756) are structurally identical — same domain/codomain setup, field creation, gradient expression building, eval, and assertion — differing only in the lambda body. Extract a parameterised `make_gradient_field(body_builder)` that accepts a closure for building the lambda body expression, and have both existing factories delegate to it.\n\n(2) Origin edge case (S3): The quadratic test `gradient_single_point_param_quadratic` (line 2866) only tests at (2,3,5). Add a test or assertion at (0,0,0) where the expected gradient is (0,0,0) — a zero-vector edge case for `dot(p,p)`.\n\nSource: review suggestions S2 and S3 from esc-1099-879 (task 1099 review triage).",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:58:46.475Z",
+        "updatedAt": "2026-04-09T21:11:18.463Z",
         "metadata": {
           "modules": [
             "crates/reify-expr/tests"
@@ -28472,7 +28472,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:11:12.221Z",
+      "lastModified": "2026-04-09T21:11:18.463Z",
       "taskCount": 1376,
       "completedCount": 1050,
       "tags": [
