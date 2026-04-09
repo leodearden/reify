@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source};
+use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source, warning_source_with_width};
 use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
@@ -942,12 +942,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = r#"structure S {
-    param width : Length = 80mm
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warning_source_with_width();
 
     session
         .load_from_source(source, "testmod")
