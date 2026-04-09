@@ -28029,15 +28029,16 @@
         "description": "The WarnCapture field-matching API in crates/reify-test-support/src/tracing_support.rs stores non-message fields via `format!(\"{value:?}\")`, which is reliable only for `&'static str` literals and for `%Display` fields. For `?Debug` fields on types like PoisonError, the stored form includes Debug decoration and silent breakage is possible.",
         "details": "Background: Task 600 extended WarnCapture in crates/reify-test-support/src/tracing_support.rs:480-491 to capture structured fields for testing. `MessageVisitor::record_debug` writes non-message fields as `format!(\"{value:?}\")`. This happens to work for the current callers (which use `&'static str` literals for lock/access/path — intercepted by `record_str` — and `error = %e` — where Display is wrapped such that Debug delegates to Display). But `assert_any_event_has_fields` doing value matching against this output is a non-obvious invariant: a future caller using `error = ?e` for a PoisonError would get `\"PoisonError { .. }\"` stored verbatim, and assertions would silently rely on the Debug format being stable. Reviewer suggestion #5.\n\nActions (pick one — prefer option A):\n\nA) **Document the invariant on the public API**: Add a rustdoc warning to `WarnCapture::assert_any_event_has_fields` (and any other field-value assertion helpers) explicitly stating that value matching is reliable only for `&str`-typed fields and for `%Display` fields where Debug delegates to Display. Point callers at option B for Debug/Display fields. Minimal change.\n\nB) **Add `assert_any_event_field_contains(key, substring)`**: A separate helper that does substring matching against the stored (possibly Debug-decorated) value. Useful for `?e`-style fields. Implement alongside option A.\n\nC) **Normalize record_debug output**: Strip surrounding Debug quotes for single-string Debug outputs so `%e` values and `?literal` look alike. Higher-risk — may break existing callers. Do NOT take this option without a broader survey.\n\nPreferred: A + B. Update the existing `assert_any_event_has_fields` doc to explain the contract, and add `assert_any_event_field_contains` for Debug/Display use.\n\nVerify:\n- cd /home/leo/src/reify && cargo test -p reify-test-support\n- cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils\n\nmemory_hints:\n  search: \"WarnCapture MessageVisitor record_debug tracing_support structured fields\"\n  entities: [\"WarnCapture\", \"MessageVisitor\"]",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:32:32.054Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:32:31.712Z",
+      "lastModified": "2026-04-09T19:32:32.054Z",
       "taskCount": 1353,
       "completedCount": 1021,
       "tags": [
