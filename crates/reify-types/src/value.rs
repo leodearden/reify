@@ -3725,16 +3725,8 @@ mod tests {
     #[test]
     fn value_complex_ord_im_third() {
         // Same dimension+re, different im — im bits compared third
-        let a = Value::Complex {
-            re: 1.0,
-            im: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let b = Value::Complex {
-            re: 1.0,
-            im: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let a = complex_with(1.0, 1.0);
+        let b = complex_with(1.0, 2.0);
         assert!(a < b);
     }
 
