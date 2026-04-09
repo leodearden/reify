@@ -1873,7 +1873,9 @@ fn module_key_matches_load_from_source_insertion() {
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("load_from_source should succeed");
-    let (stored_key, stored_src) = session.resolve_source_for_test();
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after successful load");
     assert_eq!(stored_key, module_key("bracket"));
     assert_eq!(stored_src, bracket_source());
 }
@@ -1892,7 +1894,9 @@ fn module_key_matches_update_source_insertion() {
     session
         .update_source("bracket.ri", bracket_source())
         .expect("update_source should succeed");
-    let (stored_key, stored_src) = session.resolve_source_for_test();
+    let (stored_key, stored_src) = session
+        .resolve_source_for_test()
+        .expect("resolve_source_for_test should return Some after successful update_source");
     assert_eq!(stored_key, module_key("bracket"));
     assert_eq!(stored_src, bracket_source());
 }
@@ -1925,7 +1929,7 @@ fn resolve_source_returns_key_and_source_after_load() {
         .expect("load_from_source should succeed with bracket source");
     assert_eq!(
         session.resolve_source_for_test(),
-        ("bracket.ri", bracket_source()),
+        Some(("bracket.ri", bracket_source())),
     );
 }
 
