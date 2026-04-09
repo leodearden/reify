@@ -5,6 +5,7 @@ use crate::common::*;
 
 mod complex;
 mod frames;
+mod geometry;
 mod numeric;
 mod orientation;
 mod trig;
@@ -32,6 +33,9 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = orientation::dispatch(name, args) {
         return v;
     }
+    if let Some(v) = frames::dispatch(name, args) {
+        return v;
+    }
     match name {
         // --- Determinacy predicates (stubs) ---
         // These predicates inspect DeterminacyState which is tracked in the Engine's
@@ -42,188 +46,6 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
         "undetermined" => Value::Undef,
         "constrained" => Value::Undef,
         "partially_determined" => Value::Undef,
-
-        // --- Frame constructors ---
-        "frame3_identity" => {
-            if args.is_empty() {
-                Value::Frame {
-                    origin: Box::new(Value::Point(vec![
-                        Value::length(0.0),
-                        Value::length(0.0),
-                        Value::length(0.0),
-                    ])),
-                    basis: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
-                }
-            } else {
-                Value::Undef
-            }
-        }
-        "frame3" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let origin = &args[0];
-            let basis = &args[1];
-            // First arg must be a Point with exactly 3 components
-            match origin {
-                Value::Point(components) if components.len() == 3 => {}
-                _ => return Value::Undef,
-            }
-            // Second arg must be an Orientation
-            if !matches!(basis, Value::Orientation { .. }) {
-                return Value::Undef;
-            }
-            Value::Frame {
-                origin: Box::new(origin.clone()),
-                basis: Box::new(basis.clone()),
-            }
-        }
-
-        // --- Transform constructors ---
-        "transform3" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            let rotation = &args[0];
-            let translation = &args[1];
-            // First arg must be an Orientation
-            if !matches!(rotation, Value::Orientation { .. }) {
-                return Value::Undef;
-            }
-            // Second arg must be a Vector with exactly 3 components
-            match translation {
-                Value::Vector(components) if components.len() == 3 => {}
-                _ => return Value::Undef,
-            }
-            Value::Transform {
-                rotation: Box::new(rotation.clone()),
-                translation: Box::new(translation.clone()),
-            }
-        }
-        "transform3_identity" => {
-            if args.is_empty() {
-                Value::Transform {
-                    rotation: Box::new(Value::Orientation {
-                        w: 1.0,
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
-                    translation: Box::new(Value::Vector(vec![
-                        Value::length(0.0),
-                        Value::length(0.0),
-                        Value::length(0.0),
-                    ])),
-                }
-            } else {
-                Value::Undef
-            }
-        }
-
-        // --- Transform operations ---
-        "frame_to_frame" => {
-            if args.len() != 2 {
-                return Value::Undef;
-            }
-            // Both args must be Frames
-            let (origin_from, basis_from) = match &args[0] {
-                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
-                _ => return Value::Undef,
-            };
-            let (origin_to, basis_to) = match &args[1] {
-                Value::Frame { origin, basis } => (origin.as_ref(), basis.as_ref()),
-                _ => return Value::Undef,
-            };
-            // Extract quaternions
-            let q_from = match basis_from {
-                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
-                _ => return Value::Undef,
-            };
-            let q_to = match basis_to {
-                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
-                _ => return Value::Undef,
-            };
-            // Extract origin points as f64 triples with finiteness and dimension validation
-            let (fx, fy, fz, f_dim) = match origin_from {
-                Value::Point(comps) if comps.len() == 3 => {
-                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => {
-                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                                return Value::Undef;
-                            }
-                            let dim = comps[0].dimension();
-                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
-                                return Value::Undef;
-                            }
-                            (x, y, z, dim)
-                        }
-                        _ => return Value::Undef,
-                    }
-                }
-                _ => return Value::Undef,
-            };
-            let (tx, ty, tz, t_dim) = match origin_to {
-                Value::Point(comps) if comps.len() == 3 => {
-                    match (comps[0].as_f64(), comps[1].as_f64(), comps[2].as_f64()) {
-                        (Some(x), Some(y), Some(z)) => {
-                            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
-                                return Value::Undef;
-                            }
-                            let dim = comps[0].dimension();
-                            if comps[1].dimension() != dim || comps[2].dimension() != dim {
-                                return Value::Undef;
-                            }
-                            (x, y, z, dim)
-                        }
-                        _ => return Value::Undef,
-                    }
-                }
-                _ => return Value::Undef,
-            };
-            // R = R_to * conj(R_from)
-            let r = quat_mul(q_to, quat_conj(q_from));
-            // Normalize the result quaternion
-            match normalize_quaternion(r.0, r.1, r.2, r.3) {
-                Some(rot_val) => {
-                    // t = origin_to - R * origin_from
-                    if f_dim != t_dim {
-                        return Value::Undef;
-                    }
-                    let dim = f_dim;
-                    // Use the normalized quaternion for rotation to ensure
-                    // consistency with the stored rotation in the result Transform
-                    let r_norm = match &rot_val {
-                        Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
-                        _ => unreachable!(),
-                    };
-                    let (rfx, rfy, rfz) = quat_rotate(r_norm, fx, fy, fz);
-                    let trans = Value::Vector(vec![
-                        Value::Scalar {
-                            si_value: tx - rfx,
-                            dimension: dim,
-                        },
-                        Value::Scalar {
-                            si_value: ty - rfy,
-                            dimension: dim,
-                        },
-                        Value::Scalar {
-                            si_value: tz - rfz,
-                            dimension: dim,
-                        },
-                    ]);
-                    Value::Transform {
-                        rotation: Box::new(rot_val),
-                        translation: Box::new(trans),
-                    }
-                }
-                None => Value::Undef,
-            }
-        }
 
         // --- Plane constructors ---
         "plane_xy" => make_plane(args, 2, [0.0, 0.0, 1.0]),
