@@ -28691,10 +28691,11 @@
         "description": "Three small hygiene improvements to the negative_extrude_distance_is_valid and negative_revolve_angle_is_valid tests added by Task 1181 in crates/reify-eval/tests/stress_sweep_degenerate.rs:\n\n1. Step numbering: the new tests are tagged 'step-1'/'step-2' (lines 221-222, 309-311) while the surrounding tests use 'step-13' through 'step-24'. Readers will assume the numbering is monotonic. Renumber as 'step-25'/'step-26' to continue the file's sequence, or use a namespaced tag like 'task-1181-step-1' so provenance is obvious.\n\n2. Unused 'profile' placeholder arg: both tests pass a 'profile' named arg (lines 255, 347) that is never read by the Extrude/Revolve compile paths (lib.rs:3633-3652 and 3653-3677 only read 'distance' / 'ox..angle'). This mirrors the existing zero_extrude_distance / revolve_zero_angle pattern, but the inline comment 'placeholder expr' under-explains why an unused arg is present. Add a one-line comment at the top of each args vec, e.g. `// 'profile' is an ignored placeholder — Extrude/Revolve compile paths only read 'distance'/'angle'.`\n\n3. Hardcoded SI constant: line 300 compares dist_si against the literal `-0.01` next to the literal `mm(-10.0)`. A refactor of the `mm` helper (unit-factor change) would silently desync literal and assertion. Replace with `let expected_si = mm(-10.0).as_f64().unwrap();` then `(dist_si - expected_si).abs() < 1e-9`.\n\nAll three are non-blocking review suggestions from Task 1181's reviewer_comprehensive pass (esc-1181-108).\n\nmemory_hints: search \"Task 1181 negative extrude revolve test coverage\" for task context.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:19:23.085Z"
       },
       {
         "id": "1389",
@@ -28710,7 +28711,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:19:22.497Z",
+      "lastModified": "2026-04-09T22:19:23.086Z",
       "taskCount": 1389,
       "completedCount": 1070,
       "tags": [
