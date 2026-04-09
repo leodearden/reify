@@ -1792,30 +1792,8 @@ mod tests {
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
 
-        let line_a = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        };
-        let line_b = LineRef {
-            start: PointRef::Fixed {
-                x: 0.0,
-                y: 1.0,
-                z: 0.0,
-            },
-            end: PointRef::Fixed {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        };
+        let line_a = fixed_line(0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+        let line_b = fixed_line(0.0, 1.0, 0.0, 1.0, 1.0, 0.0);
 
         let entities = builder
             .add_line_pair(&line_a, &line_b, &auto_params, &current_values)
