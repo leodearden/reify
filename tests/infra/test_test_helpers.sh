@@ -256,21 +256,26 @@ done
 
 SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
 
+# File-local helpers so the structural checks and robustness tests share the
+# same pattern source-of-truth and cannot drift independently.
+_check_defines_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
+_check_has_no_ref_guard() { ! grep -qE 'if \[ -n.*ref' "$1" 2>/dev/null; }
+
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
 
 # (a) file defines assert_sync_ref_exists() helper function
-if grep -qE '^assert_sync_ref_exists\(\)' "$SYNC_FILE" 2>/dev/null; then
+if _check_defines_assert_sync_ref_exists "$SYNC_FILE"; then
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "true"
 else
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
 fi
 
-# (b) file has NO conditional if [ -n "$_..." ] guard (defensive guards removed)
-if ! grep -Fq 'if [ -n "$_' "$SYNC_FILE" 2>/dev/null; then
-    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "true"
+# (b) file has NO defensive if-guard referencing ref (defensive guards removed)
+if _check_has_no_ref_guard "$SYNC_FILE"; then
+    check "sync_comments_test.sh has no defensive if-guard referencing ref" "true"
 else
-    check "sync_comments_test.sh has no if [ -n \"\$_...\" ] guard" "false"
+    check "sync_comments_test.sh has no defensive if-guard referencing ref" "false"
 fi
 
 # (c) head -1 pipeline has adjacent comment documenting single-reference limitation
@@ -366,6 +371,47 @@ if echo "$_beh_out" | grep -q 'FAIL'; then
 else
     check "guard fires and records FAIL when ref_fn extraction yields nothing (got: $_beh_out)" "false"
 fi
+
+# ==============================================================================
+# Robustness tests for sync_comments_test.sh structural checks
+# ==============================================================================
+
+echo ""
+echo "--- Robustness: assert_sync_ref_exists pattern tolerates whitespace ---"
+
+fixture=$(mktemp)
+printf 'assert_sync_ref_exists () {\n  : trivial body\n}\n' > "$fixture"
+if _check_defines_assert_sync_ref_exists "$fixture" 2>/dev/null; then
+    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "true"
+else
+    check "assert_sync_ref_exists pattern accepts 'fn ()' (space before parens)" "false"
+fi
+rm -f "$fixture"
+
+echo ""
+echo "--- Robustness: if-guard pattern catches non-underscore ref variable ---"
+
+# Fixture with a ref guard using a non-underscore variable (e.g. ref_fn).
+# The helper should detect this and return non-zero (guard IS present → check
+# for "no guard" must be FALSE).
+fixture_guard=$(mktemp)
+printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
+if _check_has_no_ref_guard "$fixture_guard" 2>/dev/null; then
+    check "if-guard pattern detects non-underscore ref variable (should FAIL)" "false"
+else
+    check "if-guard pattern detects non-underscore ref variable (guard present → false)" "true"
+fi
+rm -f "$fixture_guard"
+
+# Clean fixture with no if-guard: helper should return 0 (no guard → true).
+fixture_clean=$(mktemp)
+printf '# no guards here\necho hello\n' > "$fixture_clean"
+if _check_has_no_ref_guard "$fixture_clean" 2>/dev/null; then
+    check "if-guard pattern returns true for clean file (no guard)" "true"
+else
+    check "if-guard pattern returns true for clean file (no guard)" "false"
+fi
+rm -f "$fixture_clean"
 
 # ==============================================================================
 # Pipeline divergence documentation check

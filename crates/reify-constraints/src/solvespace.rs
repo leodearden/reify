@@ -637,7 +637,7 @@ impl SystemBuilder {
     /// - **Auto** points dedup when all three `ValueCellId` components are equal.
     ///
     /// If two or more of the four corner points are identical, the actual number
-    /// of new entities is between 3 (one shared endpoint: 3 points + 2 lines)
+    /// of new entities is between 5 (one shared endpoint: 3 points + 2 lines)
     /// and 6 (all distinct: 4 points + 2 lines).
     ///
     /// # Partial mutation
@@ -1162,6 +1162,29 @@ mod tests {
         );
     }
 
+    /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Drives step-1 TDD cycle.
+    #[test]
+    fn fixed_line_helper_produces_expected_line_ref() {
+        let line = fixed_line(0.0, 1.0, 2.0, 3.0, 4.0, 5.0);
+        match line.start {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 0.0);
+                assert_eq!(y, 1.0);
+                assert_eq!(z, 2.0);
+            }
+            other => panic!("expected Fixed start, got {other:?}"),
+        }
+        match line.end {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 3.0);
+                assert_eq!(y, 4.0);
+                assert_eq!(z, 5.0);
+            }
+            other => panic!("expected Fixed end, got {other:?}"),
+        }
+    }
+
     /// Shorthand for `PointRef::Fixed { x, y, z }`.
     fn fixed_point(x: f64, y: f64, z: f64) -> PointRef {
         PointRef::Fixed { x, y, z }
@@ -1170,6 +1193,12 @@ mod tests {
     /// Shorthand for `LineRef { start, end }`.
     fn line(start: PointRef, end: PointRef) -> LineRef {
         LineRef { start, end }
+    }
+
+    /// Constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Reduces boilerplate in tests that use all-fixed line segments.
+    fn fixed_line(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> LineRef {
+        line(fixed_point(x0, y0, z0), fixed_point(x1, y1, z1))
     }
 
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
@@ -1577,8 +1606,6 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBStart", "x");
 
-        let initial_point_count = builder.point_entities.len();
-
         // line_a is fully Fixed — both points will be created before the error
         let bad_start = PointRef::Auto {
             x: Some(cell_id.clone()),
@@ -1592,13 +1619,14 @@ mod tests {
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
         assert!(result.is_err(), "expected Err when lb_start is missing");
-        // At most 2 line_a points were inserted before the error — no more than that.
-        assert!(
-            builder.point_entities.len() <= initial_point_count + 2,
-            "builder.point_entities should contain at most the already-created line_a points \
-             (len={}, initial={}) — add_line_pair partial mutation is bounded",
+        // The two line_a points were inserted before the error — no rollback.
+        // Exactly 2: both Fixed, distinct coords (no dedup), line_b never reached.
+        assert_eq!(
             builder.point_entities.len(),
-            initial_point_count
+            2,
+            "builder.point_entities should contain exactly the 2 line_a points \
+             (len={}) — add_line_pair has no rollback on Err",
+            builder.point_entities.len()
         );
     }
 
@@ -1714,10 +1742,7 @@ mod tests {
             let mut builder = SystemBuilder::new();
             let result =
                 builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
-            assert!(
-                result.is_err(),
-                "expected Err when erroring Auto point is at position '{position_name}'"
-            );
+            assert_missing_err(result, &cell_id, position_name);
         }
     }
 

@@ -3127,9 +3127,9 @@ fn gradient_tensor_point_returns_undef() {
 
     // Lambda: |x, y, z| x + y + z
     let body = CompiledExpr::binop(
-        reify_types::BinOp::Add,
+        BinOp::Add,
         CompiledExpr::binop(
-            reify_types::BinOp::Add,
+            BinOp::Add,
             CompiledExpr::value_ref(x_id.clone(), Type::Real),
             CompiledExpr::value_ref(y_id.clone(), Type::Real),
             Type::Real,
@@ -3155,13 +3155,13 @@ fn gradient_tensor_point_returns_undef() {
 
     let field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
-        codomain: Box::new(codomain_type.clone()),
+        codomain: Box::new(codomain_type),
     };
 
     // Call gradient(field)
     let grad_expr = make_function_call(
         "gradient",
-        vec![CompiledExpr::literal(field, field_type.clone())],
+        vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
             codomain: Box::new(Type::vec3(Type::Real)),
@@ -3245,6 +3245,8 @@ fn gradient_tensor_single_point_param_returns_undef() {
         "gradient sampled at a Tensor point must return Undef (single_point_param=true path)"
     );
 }
+
+// ── Step-7: Decomposed calling convention ─────────────────────────────
 
 /// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
 ///
@@ -3507,6 +3509,8 @@ fn gradient_decomposed_n3_irrational_coords() {
     }
 }
 
+// ── Step-8: Declaration-vs-runtime type contract ──────────────────────
+
 /// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
 /// Sampling a gradient field panics in debug mode when codomain_type does not match
 /// the runtime dimension returned by the lambda.
@@ -3712,19 +3716,15 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
         lambda: Box::new(lambda),
     };
 
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
     let grad_expr = make_function_call(
         "gradient",
-        vec![CompiledExpr::literal(
-            field,
-            Type::Field {
-                domain: Box::new(domain_type),
-                codomain: Box::new(codomain_type.clone()),
-            },
-        )],
-        Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(codomain_type.clone()),
-        },
+        vec![CompiledExpr::literal(field, grad_field_type.clone())],
+        grad_field_type.clone(),
     );
 
     let values = ValueMap::new();
@@ -3732,10 +3732,6 @@ fn gradient_codomain_type_vs_runtime_mismatch() {
 
     // Sampling triggers the debug assertion: f_plus returns Real (dimensionless) but
     // codomain declares MASS — the assertion fires here.
-    let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(codomain_type),
-    };
     let sample_expr = make_function_call(
         "sample",
         vec![
