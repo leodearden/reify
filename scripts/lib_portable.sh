@@ -120,7 +120,7 @@ portable_timeout() {
                 # (main shell is blocked), so no PID-reuse risk.  Process-group
                 # kill also cleans up child processes (e.g. nested sleep).
                 sleep 2
-                kill -9 -- -$cmd_pid 2>/dev/null
+                kill -9 -- "-$cmd_pid" 2>/dev/null
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         else
@@ -130,7 +130,7 @@ portable_timeout() {
             ( sleep "$seconds" && {
                 kill "$cmd_pid" 2>/dev/null
                 sleep 2
-                kill -9 -- -$cmd_pid 2>/dev/null
+                kill -9 -- "-$cmd_pid" 2>/dev/null
               } ) &
             if [ "$_pt_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
         fi
