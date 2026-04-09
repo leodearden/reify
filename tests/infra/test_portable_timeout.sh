@@ -340,9 +340,9 @@ echo ""
 echo "--- Test 18: POSIX fallback: monitor mode (set -m) preserved ---"
 
 # If the caller has job control enabled (set -m), portable_timeout must restore
-# it after using set -m internally.  Current code unconditionally runs set +m
-# after launching the timer subshell (lines 98/108), which silently disables
-# the caller's monitor mode.  This test FAILS on unpatched code.
+# it after using set -m internally.  Before the fix, the code unconditionally
+# ran set +m after launching the timer subshell, which silently disabled the
+# caller's monitor mode.  This test guards against that regression.
 assert "POSIX fallback: monitor mode (set -m) preserved after portable_timeout call" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP="$POSIX_FALLBACK_SETUP" bash -c '
         eval "$POSIX_FALLBACK_SETUP"
