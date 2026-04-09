@@ -832,7 +832,7 @@ mod completion_items_tests {
     }
 
     #[test]
-    #[should_panic(expected = "CompletionResponse::List has non-array 'items' field")]
+    #[should_panic(expected = "\"items\":42")]
     fn completion_items_panics_on_non_array_items_field() {
         completion_items(&json!({"items": 42}));
     }
