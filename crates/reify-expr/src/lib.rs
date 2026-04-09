@@ -800,10 +800,50 @@ fn compute_divergence(field_val: &Value) -> Value {
         return Value::Undef;
     }
 
-    // Result: scalar field with same domain
+    // Compute result codomain type: component_dim / domain_dim.
+    // Mirrors the gradient_quantity block in compute_gradient (line 650-690).
+    let result_codomain = {
+        // Extract domain dimension from the Point's quantity.
+        let domain_dim = match domain_type {
+            Type::Point { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Extract codomain component dimension from the Vector's quantity.
+        let codomain_component_dim = match codomain_type {
+            Type::Vector { quantity, .. } => match quantity.as_ref() {
+                Type::Scalar { dimension } => Some(*dimension),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        // Divide codomain component by domain dimension when both are non-trivial.
+        match (codomain_component_dim, domain_dim) {
+            (Some(cd), Some(dd))
+                if cd != DimensionVector::DIMENSIONLESS
+                    && dd != DimensionVector::DIMENSIONLESS =>
+            {
+                let result_dim = cd.div(&dd);
+                if result_dim != DimensionVector::DIMENSIONLESS {
+                    Type::Scalar {
+                        dimension: result_dim,
+                    }
+                } else {
+                    Type::Real
+                }
+            }
+            _ => Type::Real,
+        }
+    };
+
+    // Result: scalar field with dimensionally-correct codomain
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::Real,
+        codomain_type: result_codomain,
         source: FieldSourceKind::Divergence,
         lambda: Box::new(field_val.clone()),
     }
