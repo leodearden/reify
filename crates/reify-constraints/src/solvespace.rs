@@ -416,7 +416,7 @@ impl ParamMapping {
 ///
 /// Carries the `cell_id` as a structured field so it can be logged
 /// separately by the `solve()` call site, and a human-readable `message`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BuilderError {
     cell_id: ValueCellId,
     message: String,
