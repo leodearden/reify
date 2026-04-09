@@ -26221,13 +26221,13 @@
         "description": "reify-expr/src/lib.rs (5,776 lines) is a single-file crate with ~28 active tasks contending on it. Split into submodules to reduce merge conflicts and enable parallel orchestrator execution.\n\nProposed splits:\n- sanitize.rs — Value sanitization (NaN/Inf canonicalization, finite checks, sanitize_value arms). Unlocks ~23 tasks.\n- complex.rs — Complex number operations (conjugate, phase, magnitude, im/re guards). Unlocks ~4 tasks.\n- lib.rs (remainder) — Value enum, Ord impl, content_hash, core type definitions.\n\nTarget: lib.rs under 2000 lines, no submodule over 2500 lines. Keep lib.rs as re-export facade.\n\nmemory_hints: search \"value sanitize reify-expr\", search \"NaN canonicalization\"",
         "details": "",
         "testStrategy": "",
-        "status": "deferred",
+        "status": "done",
         "dependencies": [
           "534"
         ],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T07:56:05.021Z",
+        "updatedAt": "2026-04-09T08:16:01.192Z",
         "metadata": {
           "memory_hints": {
             "entities": [],
@@ -26262,9 +26262,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:14:08.155Z",
+      "lastModified": "2026-04-09T08:16:01.192Z",
       "taskCount": 1305,
-      "completedCount": 968,
+      "completedCount": 969,
       "tags": [
         "master"
       ]
