@@ -3246,6 +3246,8 @@ fn gradient_tensor_single_point_param_returns_undef() {
     );
 }
 
+// ── Step-7: Decomposed calling convention ─────────────────────────────
+
 /// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
 ///
 /// Uses the decomposed calling convention (single_point_param=false, params.len()==3==n)
@@ -3506,6 +3508,8 @@ fn gradient_decomposed_n3_irrational_coords() {
         ),
     }
 }
+
+// ── Step-8: Declaration-vs-runtime type contract ──────────────────────
 
 /// Gradient uses the declared codomain_type for dimensioning, not the runtime value variant.
 /// Sampling a gradient field panics in debug mode when codomain_type does not match
