@@ -18890,11 +18890,11 @@
         "description": "In crates/reify-constraints/src/solvespace.rs:\n1. Remove add_auto_coord_returns_missing_non_auto_variant (lines ~1162-1179) entirely — it is a strict subset of add_auto_coord_errors_on_missing_non_auto_value.\n2. Strip the Display sub-assertions from add_auto_coord_errors_on_missing_non_auto_value (lines ~1144-1152) — builder_error_display_contains_cell_id already covers the Display contract.\n3. Refactor the surviving match arm in add_auto_coord_errors_on_missing_non_auto_value to avoid the ref id + unwrap_err() NLL dependency: destructure to take ownership of the inner id, then assert equality directly, removing the need to call unwrap_err() on an already-matched result.\n\nmemory_hints: search(\"BuilderError test consolidation solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.397Z",
+        "updatedAt": "2026-04-09T16:51:02.400Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -27515,7 +27515,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:51:01.655Z",
+      "lastModified": "2026-04-09T16:51:02.400Z",
       "taskCount": 1324,
       "completedCount": 997,
       "tags": [
