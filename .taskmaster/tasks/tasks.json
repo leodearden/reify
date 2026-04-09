@@ -10415,7 +10415,7 @@
         "description": "The pattern .diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() appears ~125 times across ~25 test files. Add a collect_errors() helper to reduce boilerplate.",
         "details": "Add to crates/reify-test-support/src/lib.rs:\npub fn collect_errors(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> { diagnostics.iter().filter(|d| d.severity == Severity::Error).collect() }\n\nMigrate the two new stdlib test files first; existing files can be migrated incrementally.\n\nFiles: crates/reify-test-support/src/lib.rs, crates/reify-compiler/tests/stdlib_loader_tests.rs, crates/reify-eval/tests/stdlib_prelude_tests.rs",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -10425,9 +10425,9 @@
             "crates/reify-test-support/src/lib.rs"
           ],
           "modules": [
-            "crates/reify-compiler",
-            "crates/reify-eval",
-            "crates/reify-test-support"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests",
+            "crates/reify-test-support/src"
           ],
           "memory_hints": {
             "entities": [],
@@ -10436,7 +10436,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T08:14:08.155Z"
+        "updatedAt": "2026-04-09T08:17:36.368Z"
       },
       {
         "id": "508",
@@ -26282,7 +26282,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:17:15.482Z",
+      "lastModified": "2026-04-09T08:17:36.368Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
