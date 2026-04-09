@@ -24534,6 +24534,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1207,
+        "title": "Sync sanitize_value test coverage between reify-expr and reify-stdlib",
+        "description": "The sanitize_value test suites in reify-expr and reify-stdlib have drifted out of sync:\n\n1. reify-expr is missing `sanitize_complex_nan_im_returns_undef` (NaN on imaginary component) — stdlib has it at line 5940.\n2. reify-stdlib is missing two Orientation isolation tests that reify-expr has:\n   - `sanitize_orientation_neg_inf_returns_undef` (z = -Inf, reify-expr line 4776)\n   - `sanitize_orientation_nan_y_returns_undef` (y = NaN, reify-expr line 4790)\n\nAdd the missing tests to each crate to achieve symmetric coverage. Also add a SYNC comment header to the test sections (similar to the one on the function itself) noting they should be kept in sync.\n\nMemory hints: search \"sanitize_value test SYNC\", search \"Task 1174 sanitize\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -24546,7 +24557,7 @@
       ],
       "created": "2026-04-09T00:10:38.112Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T00:10:38.117Z"
+      "updated": "2026-04-09T00:10:42.579Z"
     }
   }
 }
