@@ -489,6 +489,34 @@ structure S {
     );
 }
 
+// ─── Task 408 step 7: subtraction still satisfies termination (regression) ───
+
+/// Confirm that `S(n: n - 1) where n > 0` (the canonical decrement pattern)
+/// still produces zero errors after the BinOp::Add removal in step 2.
+/// This is a targeted regression guard named after the Add fix.
+#[test]
+fn subtraction_still_satisfies_termination() {
+    let source = r#"
+structure S {
+    param n : Int = 5
+    sub child = S(n: n - 1) where n > 0
+}
+"#;
+
+    let (_templates, diagnostics) = compile_all(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        errors.is_empty(),
+        "BinOp::Sub must still satisfy termination after BinOp::Add removal; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 // ─── Task 408 step 1: BinOp::Add is not a valid termination-modifier ─────────
 
 /// A recursive sub with `S(n: n + 1) where n > 0` should emit an error because
