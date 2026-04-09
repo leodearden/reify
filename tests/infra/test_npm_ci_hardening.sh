@@ -165,4 +165,11 @@ echo "--- Test 15: Check 1 for-loop iterates \$PKG_FILES ---"
 assert "Check 1 for-loop iterates \$PKG_FILES" \
     bash -c "grep -qE 'for pkg in \\\$PKG_FILES' '$SCRIPT'"
 
+# -- Test 16: Check 2 grep arguments expand $PKG_FILES ------------------------
+echo ""
+echo "--- Test 16: Check 2 grep arguments expand \$PKG_FILES ---"
+
+assert "Check 2 grep arguments expand \$PKG_FILES" \
+    bash -c "awk '/Check 2:/,/Check 3:/' '$SCRIPT' | grep -q PKG_FILES"
+
 test_summary
