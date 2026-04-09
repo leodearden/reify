@@ -476,29 +476,28 @@ async fn initialize_error_does_not_corrupt_server_state() {
     );
 }
 
-/// A valid notification should return exactly `Ok(Value::Null)`, not an error and not
-/// any JSON payload.
+/// The `initialized` notification should return exactly `Ok(Value::Null)`.
 ///
-/// This documents the `Ok(Value::Null)` contract for successfully processed
-/// one-way LSP messages (initialized, didOpen, didChange, didClose).
-///
-/// Uses initialize-only setup (no prior `initialized`) so the `initialized`
-/// notification in the body is the first and only one, directly testing the
-/// first-time Ok(Value::Null) contract.
+/// Documents the `Ok(Value::Null)` contract for the `initialized` arm of
+/// `handle_request`. Uses initialize-only setup (no prior `initialized`) so
+/// the `initialized` notification in the body is the first and only one,
+/// directly testing the first-time Ok(Value::Null) contract. The paired
+/// `did_open_returns_ok_null` test below covers the `textDocument/didOpen`
+/// arm separately.
 #[tokio::test]
-async fn valid_notification_returns_ok_null() {
+async fn initialized_returns_ok_null() {
     let lsp = InProcessLsp::new();
     lsp.handle_request("initialize", json!({"capabilities": {}}))
         .await
-        .expect("initialize should succeed before testing notification");
+        .expect("initialize should succeed before testing initialized");
 
     let result = lsp.handle_request("initialized", json!({})).await;
 
-    let val = result.expect("valid notification should return Ok");
+    let val = result.expect("initialized should return Ok");
     assert_eq!(
         val,
         serde_json::Value::Null,
-        "valid notification should return exactly Ok(Value::Null)"
+        "initialized should return exactly Ok(Value::Null)"
     );
 }
 
