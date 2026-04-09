@@ -117,6 +117,33 @@ fn assert_gradient_vector(result: &Value, expected: &[f64], tol: f64, label: &st
     }
 }
 
+/// Characterization test: `assert_gradient_vector` accepts a matching Value::Vector.
+///
+/// Calls the helper with a Value::Vector([Real(1.0), Real(2.0), Real(3.0)]),
+/// expected &[1.0, 2.0, 3.0], tol=1e-4.  This confirms the helper works for the
+/// exact inputs that `gradient_decomposed_n3_dimensionless` produces before we
+/// rely on it as a drop-in replacement.
+#[test]
+fn test_assert_gradient_vector_accepts_matching_vector() {
+    let result = Value::Vector(vec![
+        Value::Real(1.0),
+        Value::Real(2.0),
+        Value::Real(3.0),
+    ]);
+    assert_gradient_vector(&result, &[1.0, 2.0, 3.0], 1e-4, "matching vector");
+}
+
+/// Characterization test: `assert_gradient_vector` panics on a non-Vector value.
+///
+/// Calls the helper with Value::Undef; the helper's `_ =>` arm must panic.
+/// This mirrors the `_ => panic!(...)` branch present in the inline code we
+/// are about to replace, ensuring the helper covers that error path.
+#[test]
+#[should_panic(expected = "expected Value::Vector")]
+fn test_assert_gradient_vector_panics_on_non_vector() {
+    assert_gradient_vector(&Value::Undef, &[1.0, 2.0, 3.0], 1e-4, "non-vector");
+}
+
 /// Sampling a field with a wrong-size Tensor point returns Undef.
 ///
 /// Build a 3D analytical field whose lambda expects 3 decomposed coordinate
