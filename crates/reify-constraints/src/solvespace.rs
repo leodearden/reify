@@ -1340,6 +1340,40 @@ mod tests {
         let _: &dyn std::error::Error = &err;
     }
 
+    /// Guard: `BuilderError` must not implement `Clone`.
+    /// The type is module-private and no call site clones it; `ValueCellId`
+    /// carries heap-allocated `String` fields so the derive is non-trivial dead
+    /// code. Uses the autoref-specialization trick (inherent-method-shadows-
+    /// trait-method) because Rust stable has no negative trait bounds.
+    #[test]
+    fn builder_error_does_not_implement_clone() {
+        use std::marker::PhantomData;
+
+        struct Probe<T>(PhantomData<T>);
+
+        trait NotClone {
+            fn implements_clone(&self) -> bool {
+                false
+            }
+        }
+        impl<T> NotClone for Probe<T> {}
+
+        impl<T: Clone> Probe<T> {
+            #[allow(dead_code)]
+            fn implements_clone(&self) -> bool {
+                true
+            }
+        }
+
+        let p: Probe<BuilderError> = Probe(PhantomData);
+        assert!(
+            !p.implements_clone(),
+            "BuilderError must not derive Clone — it is module-private and no call site \
+             clones it; ValueCellId carries heap-allocated String fields so the derive \
+             is non-trivial dead code"
+        );
+    }
+
     /// Non-auto param whose cell_id is missing from current_values should return
     /// Err(BuilderError) — a logic error (eval pass incomplete) that must not be
     /// silently swallowed per the project's noisy-error convention.
