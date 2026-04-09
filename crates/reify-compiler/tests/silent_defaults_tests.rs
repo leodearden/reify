@@ -474,3 +474,101 @@ fn empty_map_literal_emits_type_inference_warning() {
         warnings
     );
 }
+
+// ── task-823 step-11: range/stdlib-fn-zero-arg/match-no-arms diagnostics ───
+
+/// Range with valid bounds (green-path ICE documentation).
+///
+/// expr.rs:369 has `.unwrap_or(Type::Real)` for the case where both
+/// `compiled_lower` and `compiled_upper` are `None`.  The parser
+/// (`lower_range_expr`) requires **both** lower and upper nodes via `?`, so
+/// `ExprKind::Range { lower: None, upper: None, .. }` is unreachable from user
+/// code — it is a pure ICE path.  This test confirms a valid range compiles
+/// without triggering the fallback or emitting any ICE diagnostic.
+#[test]
+fn range_valid_compiles_without_ice() {
+    let source = r#"
+        structure S {
+            let x = 1.0..10.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid range, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors on valid range, got: {:?}", errors);
+}
+
+/// Zero-arg stdlib function call should emit a type-inference warning.
+///
+/// expr.rs:575 falls through to `compiled_args.first().map(...).unwrap_or(Type::Real)`
+/// for non-geometry stdlib functions.  When `args` is empty the `first()` is
+/// `None`, so the result type silently defaults to `Type::Real`.  After
+/// step-12 this site will emit a warning.  This test is currently FAILING
+/// because no warning is emitted.
+#[test]
+fn stdlib_fn_no_args_emits_type_inference_warning() {
+    let source = r#"
+        structure S {
+            let x = pi()
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors.is_empty(),
+        "zero-arg stdlib call should not produce errors, got: {:?}",
+        errors
+    );
+
+    let warnings = warning_diagnostics(&module);
+    let has_type_warning = warnings.iter().any(|d| {
+        d.message.contains("zero-arg")
+            || d.message.contains("cannot infer")
+            || d.message.contains("return type")
+    });
+    assert!(
+        has_type_warning,
+        "expected warning about type inference for zero-arg stdlib call, got: {:?}",
+        warnings
+    );
+}
+
+/// Match with no arms (ICE-path documentation / parse-guard).
+///
+/// expr.rs:1046 has `.unwrap_or(Type::Real)` on `compiled_arms.first()`.
+/// If the grammar allows `match x {}` (no arms), that path is reachable and
+/// should emit an ICE diagnostic.  If the grammar rejects it (parse error),
+/// the code at expr.rs:1046 is an unreachable ICE path.
+///
+/// This test first checks parsability.  If the source parses without errors,
+/// it asserts that some diagnostic is emitted so the user is informed.  If
+/// the source produces parse errors, the ICE path is documented as unreachable.
+#[test]
+fn match_no_arms_emits_diagnostic() {
+    let source = r#"
+        structure S {
+            let disc = 1
+            let x = match disc { }
+        }
+    "#;
+    let parsed = reify_syntax::parse(
+        source,
+        reify_types::ModulePath::single("silent_defaults_test"),
+    );
+    if !parsed.errors.is_empty() {
+        // Grammar does not allow empty match — expr.rs:1046 is an ICE path
+        // that is unreachable from user code.  Document and pass.
+        return;
+    }
+    // Grammar allows empty match: verify the compiler emits some diagnostic.
+    let module = reify_compiler::compile(&parsed);
+    assert!(
+        !module.diagnostics.is_empty(),
+        "expected a diagnostic for match with no arms, got none"
+    );
+}
