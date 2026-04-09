@@ -5316,11 +5316,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-constraints",
-            "crates/reify-eval"
+            "crates/reify-eval",
+            "crates/reify-constraints"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-constraints/src/solver.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
@@ -5338,11 +5342,15 @@
         "status": "pending",
         "metadata": {
           "modules": [
-            "crates/reify-constraints",
-            "crates/reify-eval"
+            "crates/reify-compiler/tests",
+            "crates/reify-eval/tests"
           ],
           "milestone": "M11",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-compiler/tests/annotation_compile_tests.rs",
+            "crates/reify-eval/tests/constraint_def_eval.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-03-24T06:01:46.000Z"
