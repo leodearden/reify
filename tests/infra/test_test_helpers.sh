@@ -511,6 +511,14 @@ else
 fi
 check "file-local helpers use symmetric positive _has_ naming" "$ok"
 
+# Self-check: no check() calls use 'should FAIL' in descriptions (grep-ambiguous).
+if ! grep -qE 'check "[^"]*should FAIL' "${BASH_SOURCE[0]}"; then
+    ok=true
+else
+    ok=false
+fi
+check "robustness check descriptions avoid ambiguous should-FAIL phrasing" "$ok"
+
 # ==============================================================================
 # Pipeline divergence documentation check
 # test_helpers.sh must document that test_tree_sitter_pipeline.sh uses its own
