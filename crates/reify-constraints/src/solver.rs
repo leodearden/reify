@@ -1169,6 +1169,72 @@ mod tests {
     }
 
     #[test]
+    fn verify_uniqueness_aggregates_warn_for_multiple_missing_params() {
+        use std::collections::HashMap;
+
+        use reify_test_support::warn_capturing_subscriber;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        use super::verify_uniqueness;
+
+        let param_x = ValueCellId::new("Part", "x");
+        let param_y = ValueCellId::new("Part", "y");
+        let problem = ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: param_x.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+                AutoParam {
+                    id: param_y.clone(),
+                    param_type: Type::length(),
+                    bounds: Some((0.0, 1.0)),
+                    free: false,
+                },
+            ],
+            constraints: vec![],
+            current_values: ValueMap::new(),
+            objective: None,
+            functions: vec![],
+        };
+
+        // Empty solved_values: both params are missing → both hit the None branch
+        let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
+        });
+
+        // Exactly 1 aggregated WARN from verify_uniqueness (both missing params in one event)
+        let msgs = capture.messages();
+        let vu_warn_count = msgs
+            .iter()
+            .filter(|m| m.contains("midpoint as comparison anchor"))
+            .count();
+        assert_eq!(
+            vu_warn_count, 1,
+            "expected exactly 1 aggregated verify_uniqueness WARN for 2 missing params; \
+             got {vu_warn_count}; messages: {msgs:?}"
+        );
+
+        // Both param names must appear in the aggregated WARN (via ?missing_params field)
+        let all_msgs = msgs.join("\n");
+        assert!(
+            all_msgs.contains("Part.x"),
+            "aggregated WARN must mention Part.x; messages: {msgs:?}"
+        );
+        assert!(
+            all_msgs.contains("Part.y"),
+            "aggregated WARN must mention Part.y; messages: {msgs:?}"
+        );
+
+        assert!(!unique, "expected verify_uniqueness to return false when both params are missing");
+    }
+
+    #[test]
     fn build_trial_values_empty_params() {
         use super::build_trial_values;
         use reify_types::{DimensionVector, Value, ValueCellId};
