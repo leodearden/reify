@@ -1708,3 +1708,214 @@ fn laplacian_dimensionless_still_real() {
         );
     }
 }
+
+// ── Step 9: Mixed-dim divergence fallback tests ───────────────────────────────
+
+/// Divergence of Point{3, Real} → Vector{3, Scalar<Length>}: the domain is
+/// dimensionless (Real), so the unified preserve-codomain strategy should
+/// preserve the Vector's component type (Scalar<Length>) as the result codomain.
+///
+/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+#[test]
+fn divergence_real_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Real);
+    let component_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::vec3(component_type.clone());
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Real}}→Vector{{3,Length}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            component_type,
+            "divergence of Point{{3,Real}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Divergence of Point{3, Scalar<Length>} → Vector{3, Real}: the codomain
+/// component is dimensionless (Real), so the result codomain is Real.
+///
+/// Under the unified preserve-codomain strategy this coincides with the current
+/// fallback, but this test documents the intended behavior explicitly.
+#[test]
+fn divergence_dim_domain_preserves_real_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_quantity = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let domain_type = Type::point3(domain_quantity);
+    let codomain_type = Type::vec3(Type::Real);
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Length}}→Vector{{3,Real}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            Type::Real,
+            "divergence of Point{{3,Length}}→Vector{{3,Real}} should preserve codomain Real, got {:?}",
+            codomain_type
+        );
+    }
+}
+
+/// Divergence of Point{3, Int} → Vector{3, Scalar<Length>}: Int is treated as
+/// dimensionless, so the unified preserve-codomain strategy preserves Scalar<Length>.
+///
+/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+#[test]
+fn divergence_int_domain_preserves_dim_codomain() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    let domain_type = Type::point3(Type::Int);
+    let component_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain_type = Type::vec3(component_type.clone());
+
+    // Lambda body unused (metadata-only test).
+    let body = make_function_call(
+        "vec3",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+        ],
+        codomain_type.clone(),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        codomain_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { .. }),
+        "divergence of Point{{3,Int}}→Vector{{3,Length}} should return a Field, got {:?}",
+        div_result
+    );
+
+    if let Value::Field { codomain_type, .. } = &div_result {
+        assert_eq!(
+            *codomain_type,
+            component_type,
+            "divergence of Point{{3,Int}}→Vector{{3,Length}} should preserve codomain Scalar<Length>, got {:?}",
+            codomain_type
+        );
+    }
+}
