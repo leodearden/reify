@@ -27738,7 +27738,12 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T17:24:41.108Z"
+        "updatedAt": "2026-04-09T17:24:41.108Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-lsp/src"
+          ]
+        }
       }
     ],
     "metadata": {
