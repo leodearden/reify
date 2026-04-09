@@ -20701,7 +20701,7 @@
         "description": "Depth-limit returns silent None — LSP go-to-def fails with no log signal. analysis.rs still has duplicated depth-limit tests after the function moved to reify-syntax, and the duplicated tests hardcode `33` instead of MAX_MEMBER_NESTING_DEPTH+1. Test coverage gaps for combined Port+GuardedGroup recursion and first-match-wins ordering.\n\n## Observability (crates/reify-syntax/src/lib.rs:210)\nAdd `tracing::warn!(name, depth, \"find_named_member_span: depth limit exceeded\")` at the depth-limit return site so silent LSP go-to-def failures are diagnosable in server logs.\n\n## Cleanup duplication (crates/reify-lsp/src/analysis.rs:1333-1393)\n1. Delete the depth-limit tests (find_named_member_span_succeeds_within_depth_limit, find_named_member_span_returns_none_beyond_depth_limit, helper build_nested_guarded_members) from analysis.rs. The authoritative copy now lives in crates/reify-syntax/tests/member_span_tests.rs and the analysis.rs copy hardcodes 33 instead of MAX_MEMBER_NESTING_DEPTH + 1.\n2. Move the `pub use reify_syntax::{find_named_member_span, MemberSpanInfo}` re-export from analysis.rs:5 to crates/reify-lsp/src/lib.rs (the layering owner), or import directly from reify_syntax in goto_def.rs.\n\n## Tests (crates/reify-syntax/tests/member_span_tests.rs)\n3. Add let_without_doc_returns_none_doc (mirror of the existing param_without_doc_returns_none_doc).\n4. Add a combined Port-inside-GuardedGroup test exercising shared-depth-counter behaviour across both recursion arms.\n5. Add a first-match test where the same name appears at top level and inside a nested GuardedGroup; assert the top-level (earlier byte offset) is returned.\n\nSource: review escalation esc-601-98 (auto-dismissed, never triaged).",
         "details": "",
         "testStrategy": "",
-        "status": "blocked",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -20717,9 +20717,15 @@
             "crates/reify-syntax/src",
             "crates/reify-syntax/tests",
             "crates/reify-lsp/src"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: find_named_member_span: depth-limit observability + cleanup duplicated tests"
+            ]
+          }
         },
-        "updatedAt": "2026-04-09T09:05:41.961Z"
+        "updatedAt": "2026-04-09T09:06:40.738Z"
       },
       {
         "id": "998",
@@ -26392,7 +26398,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T09:05:41.962Z",
+      "lastModified": "2026-04-09T09:06:40.739Z",
       "taskCount": 1308,
       "completedCount": 972,
       "tags": [
