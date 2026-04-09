@@ -2652,6 +2652,63 @@ fn gradient_composed_field_returns_field() {
 
 // ── Steps 3-5: 1-param lambda helper and non-trivial gradient tests ───
 
+/// Shared scaffolding for building a 3D gradient field.
+///
+/// Accepts a `body_builder` closure that receives the lambda parameter's `ValueCellId`
+/// and returns the body `CompiledExpr`. Constructs the full `Value::Field`, wraps it in a
+/// gradient expression, evaluates it, asserts the result is a `Value::Field`, and returns
+/// `(grad_result, domain_type, Type::vec3(Type::Real))`.
+///
+/// # Parameters
+/// - `body_builder`: closure `FnOnce(ValueCellId) -> CompiledExpr` — builds the lambda body
+///   from the parameter id. The closure receives a *clone* of `p_id`; the original is retained
+///   for `make_value_lambda`.
+/// - `label`: included in the assertion message for diagnostic specificity.
+fn make_gradient_field(
+    body_builder: impl FnOnce(ValueCellId) -> CompiledExpr,
+    label: &str,
+) -> (Value, Type, Type) {
+    let p_id = ValueCellId::new("$lambda0.S", "p");
+
+    let body = body_builder(p_id.clone());
+    let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
+
+    let domain_type = Type::point3(Type::Real);
+    let codomain_type = Type::Real;
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type),
+    };
+
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Field {
+            domain: Box::new(domain_type.clone()),
+            codomain: Box::new(Type::vec3(Type::Real)),
+        },
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { .. }),
+        "{label}: gradient should return a Field, got {:?}",
+        grad_result
+    );
+
+    (grad_result, domain_type, Type::vec3(Type::Real))
+}
+
 /// Build a gradient field for `|p: Point3<Real>| dot(p, [1,2,3])`.
 ///
 /// Returns `(grad_field, domain_type, grad_codomain_type)` where:
