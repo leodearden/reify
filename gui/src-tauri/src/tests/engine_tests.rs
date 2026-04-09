@@ -3,7 +3,7 @@ use std::path::Path;
 use reify_constraints::SimpleConstraintChecker;
 use reify_test_support::{
     MockGeometryKernel, bracket_source, bracket_source_with_width,
-    warn_source_with_unknown_port_type, warning_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
 use reify_types::ExportFormat;
 
@@ -945,7 +945,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = warning_source_with_width();
+    let source = warn_source_with_unknown_port_type_with_width();
 
     session
         .load_from_source(source, "testmod")

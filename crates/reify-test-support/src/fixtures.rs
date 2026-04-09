@@ -51,7 +51,7 @@ pub fn warn_source_with_unknown_port_type() -> &'static str {
 ///
 /// Used by tests that need both an unknown-port-type warning AND a `width` field
 /// for `get_source_location` lookup.
-pub fn warning_source_with_width() -> &'static str {
+pub fn warn_source_with_unknown_port_type_with_width() -> &'static str {
     r#"structure def S {
     param width : Length = 80mm
     port mount : NonExistentTrait {
@@ -1306,8 +1306,8 @@ mod tests {
     }
 
     #[test]
-    fn warning_source_with_width_param_cell_has_length_type_span_kind_and_default() {
-        let source = warning_source_with_width();
+    fn warn_source_with_unknown_port_type_with_width_param_cell_has_length_type_span_kind_and_default() {
+        let source = warn_source_with_unknown_port_type_with_width();
         let compiled =
             assert_warning_source_compiles_with_unknown_port_warning(source);
         let s_template = compiled
