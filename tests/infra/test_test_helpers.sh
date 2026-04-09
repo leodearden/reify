@@ -258,8 +258,11 @@ SYNC_FILE="$REPO_ROOT/tests/sync_comments_test.sh"
 
 # File-local helpers so the structural checks and robustness tests share the
 # same pattern source-of-truth and cannot drift independently.
+# _check_has_no_if_n_guard catches any 'if [ -n' conditional regardless of
+# the variable name — so $marker, $fn_name, $ref_fn, $_expr_ref_fn, etc. all
+# count as prohibited defensive guards.
 _check_defines_assert_sync_ref_exists() { grep -qE '^assert_sync_ref_exists\s*\(\)' "$1" 2>/dev/null; }
-_check_has_no_ref_guard() { ! grep -qE 'if \[ -n.*ref' "$1" 2>/dev/null; }
+_check_has_no_if_n_guard() { ! grep -qE 'if \[ -n' "$1" 2>/dev/null; }
 
 echo ""
 echo "--- sync_comments_test.sh structural checks ---"
@@ -271,11 +274,11 @@ else
     check "sync_comments_test.sh defines assert_sync_ref_exists()" "false"
 fi
 
-# (b) file has NO defensive if-guard referencing ref (defensive guards removed)
-if _check_has_no_ref_guard "$SYNC_FILE"; then
-    check "sync_comments_test.sh has no defensive if-guard referencing ref" "true"
+# (b) file has NO defensive if [ -n ] guard (defensive guards removed)
+if _check_has_no_if_n_guard "$SYNC_FILE"; then
+    check "sync_comments_test.sh has no defensive if [ -n ] guard" "true"
 else
-    check "sync_comments_test.sh has no defensive if-guard referencing ref" "false"
+    check "sync_comments_test.sh has no defensive if [ -n ] guard" "false"
 fi
 
 # (c) head -1 pipeline has adjacent comment documenting single-reference limitation
@@ -447,14 +450,14 @@ fi
 rm -f "$fixture"
 
 echo ""
-echo "--- Robustness: if-guard pattern catches non-underscore ref variable ---"
+echo "--- Robustness: if-guard pattern catches defensive non-empty guards ---"
 
-# Fixture with a ref guard using a non-underscore variable (e.g. ref_fn).
+# Fixture with a guard using $ref_fn (non-underscore).
 # The helper should detect this and return non-zero (guard IS present → check
 # for "no guard" must be FALSE).
 fixture_guard=$(mktemp)
 printf 'if [ -n "$ref_fn" ]; then\n  echo cleanup\nfi\n' > "$fixture_guard"
-if _check_has_no_ref_guard "$fixture_guard" 2>/dev/null; then
+if _check_has_no_if_n_guard "$fixture_guard" 2>/dev/null; then
     check "if-guard pattern detects non-underscore ref variable (should FAIL)" "false"
 else
     check "if-guard pattern detects non-underscore ref variable (guard present → false)" "true"
@@ -464,20 +467,19 @@ rm -f "$fixture_guard"
 # Clean fixture with no if-guard: helper should return 0 (no guard → true).
 fixture_clean=$(mktemp)
 printf '# no guards here\necho hello\n' > "$fixture_clean"
-if _check_has_no_ref_guard "$fixture_clean" 2>/dev/null; then
+if _check_has_no_if_n_guard "$fixture_clean" 2>/dev/null; then
     check "if-guard pattern returns true for clean file (no guard)" "true"
 else
     check "if-guard pattern returns true for clean file (no guard)" "false"
 fi
 rm -f "$fixture_clean"
 
-# Fixture with a non-ref-named guard variable ($marker): the current narrow
-# regex 'if \[ -n.*ref' does NOT match because 'marker' lacks the substring
-# 'ref'.  A properly broadened helper should detect the guard and return
-# non-zero (guard IS present).
+# Fixture with a non-ref-named guard variable ($marker): the broadened regex
+# 'if \[ -n' matches regardless of the variable name, so this guard is
+# correctly detected and the helper returns non-zero.
 fixture_marker=$(mktemp)
 printf 'if [ -n "$marker" ]; then echo skip; fi\n' > "$fixture_marker"
-if _check_has_no_ref_guard "$fixture_marker" 2>/dev/null; then
+if _check_has_no_if_n_guard "$fixture_marker" 2>/dev/null; then
     check "if-guard pattern detects non-ref-named variable \$marker (should FAIL)" "false"
 else
     check "if-guard pattern detects non-ref-named variable \$marker (guard present → false)" "true"
