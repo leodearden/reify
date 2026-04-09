@@ -422,6 +422,42 @@ impl WarnCapture {
             );
         }
     }
+
+    /// Assert that at least one captured WARN event has a field named `key`
+    /// whose value **contains** `substring`.
+    ///
+    /// This is a safer alternative to [`assert_any_event_has_fields`] when the
+    /// field value may include Debug decoration.  For example, a field emitted
+    /// with `?e` (Debug) is stored as `format!("{:?}", e)`, which may include
+    /// type wrappers or quotes; substring matching avoids coupling the assertion
+    /// to the exact Debug representation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no captured event has a field named `key` whose value contains
+    /// `substring`.  The panic message includes `fields_by_event()` and
+    /// `messages()` for diagnostics.
+    ///
+    /// [`assert_any_event_has_fields`]: Self::assert_any_event_has_fields
+    pub fn assert_any_event_field_contains(&self, key: &str, substring: &str) {
+        let all_fields = self.fields_by_event();
+        let found = all_fields
+            .iter()
+            .any(|event_fields| {
+                event_fields
+                    .get(key)
+                    .map(|v| v.contains(substring))
+                    .unwrap_or(false)
+            });
+        if !found {
+            let msgs = self.messages();
+            panic!(
+                "no WARN event had a field {key:?} containing {substring:?};\n  \
+                 fields_by_event: {all_fields:?}\n  \
+                 messages: {msgs:?}"
+            );
+        }
+    }
 }
 
 /// Build a minimal [`tracing::Subscriber`] that captures WARN-level events:
@@ -1434,5 +1470,26 @@ mod tests {
             result.is_err(),
             "assert_any_event_has_fields must panic when no event has lock=snapshot_values"
         );
+    }
+
+    /// `assert_any_event_field_contains` succeeds when a captured field value
+    /// contains the given substring.
+    ///
+    /// Emits a WARN with `error = %"some display error"` and verifies that
+    /// `assert_any_event_field_contains("error", "display")` passes.
+    #[test]
+    fn assert_any_event_field_contains_matches_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                error = %"some display error",
+                "test event"
+            );
+        });
+
+        capture.assert_any_event_field_contains("error", "display");
     }
 }
