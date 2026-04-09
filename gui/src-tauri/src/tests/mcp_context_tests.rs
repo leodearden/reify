@@ -535,13 +535,23 @@ fn get_diagnostics_clean_source_returns_empty() {
     );
 }
 
-/// Spot-check that the TauriToolContext mapping closure passes DiagnosticData
-/// fields through to DiagnosticInfo correctly.
+/// Thin wrapping-path smoke test for [`TauriToolContext::get_diagnostics`].
 ///
-/// Loads source with `port mount : NonExistentTrait` which produces an
-/// "unknown port type" warning. Checks file_path, severity, and message
-/// to verify field passthrough — span arithmetic is already covered by
-/// engine_get_diagnostics_returns_populated_warning.
+/// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
+/// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
+/// mapping closure (including the `offset_to_line_col_fast` span conversion and the
+/// hardcoded `code: None`) lives entirely in `engine.rs` and is already covered by
+/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.
+///
+/// This test therefore focuses on two things the engine test cannot cover: (a) that
+/// the wrapping path returns `Result::Ok`, and (b) that every field passes through
+/// without a field-swap bug. For span fields the pinned exact-coordinate assertions
+/// (line/column/end_line/end_column) are unique to this test — they catch any
+/// accidental transposition in the wrapping path that a bare `>= 1` range check would
+/// miss. The `code: None` assertion confirms the `Option<String>` field passes through
+/// unchanged (the mapping closure hardcodes `None`; a future code-extraction change
+/// that starts populating it will break this assertion and prompt the implementing
+/// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     let source = r#"structure def S {
