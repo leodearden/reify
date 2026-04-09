@@ -3688,11 +3688,7 @@ mod tests {
         // (lower tag sorts first, so Undef=0 < Complex=14)
         // But also test vs something with tag > 14 doesn't exist yet,
         // so just verify cross-type ordering is consistent
-        let complex = Value::Complex {
-            re: 0.0,
-            im: 0.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
+        let complex = complex_with(0.0, 0.0);
         let undef = Value::Undef;
         assert!(
             complex > undef,
