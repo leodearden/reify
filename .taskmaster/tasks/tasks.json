@@ -28159,6 +28159,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1362,
+        "title": "Broaden gradient debug_assert guards, fix consistency with divergence/laplacian",
+        "description": "Fix debug_assert guards in calculus.rs result_dim extraction that incorrectly panic on valid Type::Int codomain",
+        "details": "1. compute_numerical_gradient_at_point (calculus.rs:578-594): Broaden debug_assert from `matches!(codomain_type, Type::Real)` to `matches!(codomain_type, Type::Real | Type::Int | Type::Scalar { .. })` — Type::Int is DIMENSIONLESS per scalar_dimension() and computes correct gradients, but currently false-panics in debug mode.\n2. Apply matching debug_assert guards to the catch-all arms in compute_numerical_divergence_at_point (line 827) and compute_numerical_laplacian_at_point (line 1162) for consistency.\n3. Update the 'DESIGN DECISION: trust-the-declaration' comment block (lines 555-568) to document the three-tier validation strategy: hard assert for impossible types (Bool, String), soft eprintln! for dimension mismatches, trust for valid types.\n\nSource: review suggestions from task 1130 (esc-1130-50), items S1+S2+S3",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28171,7 +28182,7 @@
       ],
       "created": "2026-04-09T19:58:11.833Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T19:58:11.853Z"
+      "updated": "2026-04-09T19:59:18.367Z"
     }
   }
 }
