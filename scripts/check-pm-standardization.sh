@@ -32,10 +32,9 @@ done
 echo ""
 echo "Check 2: packageManager version consistent across package.json files"
 assert "all package.json files agree on packageManager version" bash -c "
-    count=\$(grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \
-        '$ROOT/gui/package.json' \
-        '$ROOT/gui/sidecar/package.json' \
-        '$ROOT/tree-sitter-reify/package.json' | sort -u | wc -l | tr -d ' ')
+    count=\$(for p in $PKG_FILES; do
+        grep -ohE '\"packageManager\"\\s*:\\s*\"[^\"]+\"' \"$ROOT/\$p\"
+    done | sort -u | wc -l | tr -d ' ')
     [ \"\$count\" = '1' ]
 "
 
