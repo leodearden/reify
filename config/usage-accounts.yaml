@@ -1,0 +1,24 @@
+# Reify automation account pool — Claude Max accounts for multi-account failover.
+#
+# These accounts are used exclusively for automation (dark-factory orchestrated tasks).
+# Account A (max-a) is EXCLUDED: it is reserved for interactive sessions.
+# Account G (max-g) is EXCLUDED: not in reify's automation pool.
+#
+# Order matters: accounts are tried in list order during failover.
+# When one account hits its usage cap, the orchestrator rotates to the next.
+# All five accounts are rotated before blocking (waiting for a cap to reset).
+#
+# Env var naming: CLAUDE_OAUTH_TOKEN_<LETTER> — set these in the environment
+# where the orchestrator runs (e.g., ~/.bashrc or a secrets manager).
+
+accounts:
+  - name: max-f
+    oauth_token_env: CLAUDE_OAUTH_TOKEN_F
+  - name: max-e
+    oauth_token_env: CLAUDE_OAUTH_TOKEN_E
+  - name: max-c
+    oauth_token_env: CLAUDE_OAUTH_TOKEN_C
+  - name: max-b
+    oauth_token_env: CLAUDE_OAUTH_TOKEN_B
+  - name: max-d
+    oauth_token_env: CLAUDE_OAUTH_TOKEN_D
