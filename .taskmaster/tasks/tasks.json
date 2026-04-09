@@ -27850,15 +27850,16 @@
         "description": "The ~35-line probe test `builder_error_does_not_implement_clone` in crates/reify-constraints/src/solvespace.rs:1343-1375 (added in Task 886) is over-engineered for its purpose: guarding a private derive on a module-private type with a handful of call sites. Replace with one of: (A) `static_assertions::assert_not_impl_all!(BuilderError: Clone);` if the crate adds static_assertions as a dev-dependency; (B) delete the test entirely and add a short `// DO NOT derive Clone — ValueCellId holds two String fields and nothing clones BuilderError` comment on the `#[derive(Debug)]` line. Option B is preferred (no new dependency, private type). If the probe is kept instead, also apply two secondary fixes: (1) correct the doc comment — the pattern is *inherent-method shadows trait-default*, NOT the canonical autoref-specialization (dtolnay) trick, which requires `impl<T> Trait for &Probe<T>` for autoref chain length discrimination; (2) add a dual-direction assertion `Probe::<String>(PhantomData).implements_clone() == true` so the specialization mechanism is verified and any future silent breakage of the probe fails loudly. memory_hints: search(\"BuilderError Clone derive solvespace\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:16:22.508Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:16:21.083Z",
+      "lastModified": "2026-04-09T19:16:22.508Z",
       "taskCount": 1341,
       "completedCount": 1016,
       "tags": [
