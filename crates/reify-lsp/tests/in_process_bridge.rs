@@ -33,7 +33,7 @@ async fn assert_malformed_params_returns_error(lsp: &InProcessLsp, method: &str,
 ///
 /// The caller is responsible for constructing `lsp` (either `InProcessLsp::new()` for
 /// pre-handshake tests or `initialized_lsp().await` for post-handshake tests).
-async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: serde_json::Value) {
+async fn assert_shutdown_returns_null(lsp: &InProcessLsp, params: &serde_json::Value) {
     let result = lsp.handle_request("shutdown", params.clone()).await;
     let val = result.unwrap_or_else(|e| {
         panic!("shutdown(params={params}) should return Ok, got Err: {e}")
@@ -604,7 +604,7 @@ async fn did_close_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_returns_ok_null() {
     let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, json!({})).await;
+    assert_shutdown_returns_null(&lsp, &json!({})).await;
 }
 
 /// The `shutdown` request with `null` params should return exactly `Ok(Value::Null)`.
@@ -620,7 +620,7 @@ async fn shutdown_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_with_null_params_returns_ok_null() {
     let lsp = initialized_lsp().await;
-    assert_shutdown_returns_null(&lsp, json!(null)).await;
+    assert_shutdown_returns_null(&lsp, &json!(null)).await;
 }
 
 /// Calling `shutdown` on a bare [`InProcessLsp`] before the initialize/initialized
@@ -633,7 +633,7 @@ async fn shutdown_with_null_params_returns_ok_null() {
 #[tokio::test]
 async fn shutdown_before_initialize() {
     let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, json!({})).await;
+    assert_shutdown_returns_null(&lsp, &json!({})).await;
 }
 
 /// Calling `shutdown` with `null` params on a bare [`InProcessLsp`] before the
@@ -646,7 +646,7 @@ async fn shutdown_before_initialize() {
 #[tokio::test]
 async fn shutdown_before_initialize_with_null_params() {
     let lsp = InProcessLsp::new();
-    assert_shutdown_returns_null(&lsp, json!(null)).await;
+    assert_shutdown_returns_null(&lsp, &json!(null)).await;
 }
 
 /// The `shutdown` bridge arm ignores params entirely — it never deserializes or
@@ -665,9 +665,9 @@ async fn shutdown_before_initialize_with_null_params() {
 async fn shutdown_ignores_unexpected_params() {
     let lsp = InProcessLsp::new();
     // Object with unexpected extra fields — bridge must not reject this.
-    assert_shutdown_returns_null(&lsp, json!({"foo": 42})).await;
+    assert_shutdown_returns_null(&lsp, &json!({"foo": 42})).await;
     // Wrong JSON type entirely — bridge must not reject this either.
-    assert_shutdown_returns_null(&lsp, json!("oops")).await;
+    assert_shutdown_returns_null(&lsp, &json!("oops")).await;
 }
 
 /// Each `error_prefix` constant must actually appear in the error message
