@@ -28896,6 +28896,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1401,
+        "title": "Consolidate tracing_warn_emitted_on_poison_into_result* tests with into_result_recovers_from_poisoned_*_lock",
+        "description": "After Task 1350's centralization of the canonical-message + error-field contract in `assert_poison_recovers`, the three `tracing_warn_emitted_on_poison_into_result*` tests are fully subsumed by the `into_result_recovers_from_poisoned_*_lock` tests. Delete the warn-specific family and the `assert_into_result_poison_warn` helper.",
+        "details": "Location: crates/reify-runtime/tests/concurrent_eval.rs:2017-2034 (`assert_into_result_poison_warn` helper) and 2161-2192 (three `tracing_warn_emitted_on_poison_into_result*` tests).\n\nContext: the intent split between the two test families was \"one proves the warn fires, the other proves data is recoverable.\" With the new helper-level canonical-message + error-field contract (Task 1350), both families now assert the warn contract identically via `assert_poison_recovers` — the only remaining difference is whether the caller also asserts on returned `edit_result` values. The `into_result_recovers_from_poisoned_*_lock` tests (concurrent_eval.rs:2117-2159) cover both recovery and the warn contract, making the warn-specific tests redundant.\n\nActions:\n1. Delete `assert_into_result_poison_warn` (concurrent_eval.rs:2017-2034).\n2. Delete these three tests:\n   - `tracing_warn_emitted_on_poison_into_result` (concurrent_eval.rs:2161-2170)\n   - `tracing_warn_emitted_on_poison_into_result_snapshot_values` (concurrent_eval.rs:2172-2181)\n   - `tracing_warn_emitted_on_poison_into_result_results` (concurrent_eval.rs:2183-2192)\n3. Audit each of the three `into_result_recovers_from_poisoned_*_lock` tests (concurrent_eval.rs:2117-2159) to confirm they still go through `assert_poison_recovers` via the `poison_and_recover!` macro (they do). If any field assertion in the deleted family was NOT present in the recovery family, lift it over.\n4. Verify: `cd /home/leo/src/reify && cargo test -p reify-runtime --test concurrent_eval --features test-utils` — all remaining poison_* tests must pass.\n\nNote from reviewer: \"Not introduced by this diff, but this PR is the natural moment to consolidate.\" Task 1350 was that natural moment but the suggestion arrived post-commit; this follow-up completes the consolidation.\n\nDerived from Task 1350 reviewer suggestion #5 (code_duplication), reviewer_comprehensive.\n\nmemory_hints:\n  search: \"into_result_recovers_from_poisoned tracing_warn_emitted assert_into_result_poison_warn\"\n  entities: [\"ConcurrentEvalAdapter\"]",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28908,7 +28919,7 @@
       ],
       "created": "2026-04-09T22:28:33.978Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T22:28:58.301Z"
+      "updated": "2026-04-09T22:29:13.503Z"
     }
   }
 }
