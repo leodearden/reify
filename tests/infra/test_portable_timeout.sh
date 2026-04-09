@@ -543,7 +543,11 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
 
         # Brief wait then verify no orphan sleep 31339.
         "$_abs_sleep" 0.5
-        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$"
+        _check_rc=0
+        ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
+        # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
+        rm -rf "$rescue_dir"
+        exit "$_check_rc"
     '
 
 # -- Summary ------------------------------------------------------------------
