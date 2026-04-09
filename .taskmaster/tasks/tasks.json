@@ -6994,9 +6994,16 @@
         "metadata": {
           "milestone": "stdlib-M8.4",
           "modules": [
+            "examples",
             "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/linalg.ri",
+            "examples/fields_analysis.ri",
+            "examples/io_export.ri",
+            "crates/reify-eval/tests/m8_stdlib_integration.rs"
+          ]
         },
         "subtasks": [],
         "details": "Three .ri tests: (1) linalg — rotation matrix det=1, inverse=transpose, eigenvalues of diagonal, complex ops; (2) fields — temperature field gradient, von_mises stress, safety_factor; (3) io — part with material+tolerance, STEP/STL/Display output.",
@@ -7016,9 +7023,14 @@
         "metadata": {
           "milestone": "stdlib-stress",
           "modules": [
+            "examples",
             "crates/reify-eval/tests"
           ],
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "examples/boolean_edge_cases.ri",
+            "crates/reify-eval/tests/stress_error_messages.rs"
+          ]
         },
         "subtasks": [],
         "details": "Degenerate booleans: coincident faces, tangent solids, union of identical shapes, difference→empty, nested ((A∪B)∩C)\\D, thin solid (1μm), union_all 20+ solids. Verify no panics, graceful errors.",
