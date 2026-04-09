@@ -24942,15 +24942,16 @@
         "description": "Address 5 review suggestions from Task 1224 on gui/src-tauri/src/tests/mcp_context_tests.rs::get_diagnostics_maps_warning_fields_to_diagnostic_info. All changes are confined to that one test function (~lines 538-618).\n\n1. **Stale doc comment (lines 538-544):** The doc comment says \"span arithmetic is already covered by engine_get_diagnostics_returns_populated_warning\" but Task 1224 just added column/end_column/same-line-ordering assertions that contradict this. Update the doc comment to explain: (a) this test is the thin wrapping-path smoke test for TauriToolContext, (b) mcp_context.rs::get_diagnostics delegates straight to engine.rs via Ok(session.get_diagnostics()), so the mapping closure lives in engine.rs, (c) the same-line end_column >= column check is unique here; the rest of the span assertions intentionally duplicate engine_tests coverage or should be dropped (see #2).\n\n2. **Duplicate range checks (lines 600-605):** `first.column >= 1` and `first.end_column >= 1` duplicate engine_tests.rs:884-887 and 896-900, which already cover the same mapping closure via EngineSession. Drop the bare `>= 1` checks here. Keep only the genuinely new same-line `end_column >= column` check (see #3). Optionally, move the same-line check into engine_tests.rs::engine_get_diagnostics_returns_populated_warning where the rest of the span coverage lives — that keeps mcp_context_tests focused on Result-wrapping.\n\n3. **Conditional same-line check (lines 606-613):** The `if first.end_line == first.line { ... }` guard makes the `end_column >= column` assertion a silent no-op if the diagnostic ever becomes multi-line. For the `port mount : NonExistentTrait` fixture the diagnostic is always single-line, so assert `first.end_line == first.line` unconditionally (so the ordering check always runs), OR pin exact coordinates with assert_eq! against the known offset of `NonExistentTrait` in the source string. Pinning is strictly better at catching field-swap bugs.\n\n4. **Bare TODO (line 616):** `// TODO: update when code extraction is implemented` has no task reference. Repo convention (seen in crates/reify-lsp/src/completion.rs:759,787,821,...) is `TODO(task-N): ...`. Either drop the TODO entirely (the line-615 comment already documents the invariant: \"the mapping closure hardcodes code: None\") or file a task for DiagnosticInfo.code extraction and reference it here. Preferred: drop the TODO, since it restates the line-615 comment.\n\n5. **Comment accuracy (line 615):** The comment \"the mapping closure hardcodes code: None (engine.rs)\" is correct but understates the delegation: this test reaches engine.rs only through `Ok(session.get_diagnostics())` in mcp_context.rs:127-133. Fold the delegation note into the updated doc comment from #1 rather than leaving it at line 615.\n\nmemory_hints: search(\"Task 1224 mcp_context diagnostic test assertions\", project_id=\"reify\"); search(\"TODO task convention reify-lsp completion\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T01:47:21.767Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T01:47:21.641Z",
+      "lastModified": "2026-04-09T01:47:21.768Z",
       "taskCount": 1229,
       "completedCount": 915,
       "tags": [
