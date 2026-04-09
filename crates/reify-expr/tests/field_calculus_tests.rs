@@ -1274,3 +1274,60 @@ fn divergence_gradient_field_returns_undef() {
         result
     );
 }
+
+/// divergence(Field<Point3, Vec2>) returns Undef — domain dim 3 ≠ codomain dim 2.
+///
+/// compute_divergence validates that vec_n (codomain dimension) equals n (domain
+/// dimension) before constructing the result field (lib.rs:795–801). A field
+/// mapping R³ → Vec2 fails that guard and returns Undef.
+#[test]
+fn divergence_field_with_mismatched_dims_returns_undef() {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let y_id = ValueCellId::new("$lambda0.S", "y");
+    let z_id = ValueCellId::new("$lambda0.S", "z");
+
+    // Lambda: |x, y, z| vec2(x, y)
+    let body = make_function_call(
+        "vec2",
+        vec![
+            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+        ],
+        Type::vec2(Type::Real),
+    );
+    let lambda = make_value_lambda(
+        vec![("x", x_id), ("y", y_id), ("z", z_id)],
+        body,
+        ValueMap::new(),
+    );
+
+    let domain_type = Type::point3(Type::Real);   // n=3
+    let codomain_type = Type::vec2(Type::Real);   // n=2 — mismatch!
+
+    let field = Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Analytical,
+        lambda: Box::new(lambda),
+    };
+
+    let field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Real, // result type doesn't matter — we expect Undef
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&result, Value::Undef),
+        "divergence of Field<Point3, Vec2> (mismatched dims) must return Undef, got {:?}",
+        result
+    );
+}
