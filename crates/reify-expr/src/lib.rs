@@ -1049,11 +1049,7 @@ fn sanitize_value(v: Value) -> Value {
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
             Value::Undef
         }
-        Value::Complex { re, im, .. }
-            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
-        {
-            Value::Undef
-        }
+        Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z }
             if w.is_nan()
                 || w.is_infinite()
