@@ -144,4 +144,42 @@ echo "--- Test 12: build artifact tracking hygiene ---"
 assert "tree-sitter-reify/src/.grammar_hash.stamp is NOT tracked by git" \
     bash -c "cd '$REPO_ROOT' && ! git ls-files --error-unmatch tree-sitter-reify/src/.grammar_hash.stamp >/dev/null 2>&1"
 
+# -- Test 13: behavioral integration tests ------------------------------------
+echo ""
+echo "--- Test 13: behavioral integration tests ---"
+
+FIXTURE_DIR="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_DIR"' EXIT
+
+# Create directory layout mirroring the repo structure expected by the script
+mkdir -p "$FIXTURE_DIR/scripts"
+mkdir -p "$FIXTURE_DIR/tests/infra"
+mkdir -p "$FIXTURE_DIR/gui/sidecar"
+mkdir -p "$FIXTURE_DIR/tree-sitter-reify"
+
+# Copy the real script and test helpers into the fixture
+cp "$REPO_ROOT/scripts/check-pm-standardization.sh" "$FIXTURE_DIR/scripts/"
+cp "$SCRIPT_DIR/test_helpers.sh" "$FIXTURE_DIR/tests/infra/"
+
+# .gitignore: pnpm-lock.yaml gitignored (Check 4); package-lock.json files NOT listed (Check 3)
+echo "gui/pnpm-lock.yaml" > "$FIXTURE_DIR/.gitignore"
+
+# Initialize a git repo so 'git check-ignore' works inside Check 3
+git -C "$FIXTURE_DIR" init -q
+
+# Write consistent packageManager versions for Test 13a
+for pkg in gui/package.json gui/sidecar/package.json tree-sitter-reify/package.json; do
+    printf '{"packageManager":"npm@10.9.0"}\n' > "$FIXTURE_DIR/$pkg"
+done
+
+# Test 13a: all files agree on the same version -> script exits 0
+assert "13a: consistent packageManager versions -> exit 0" \
+    bash -c "cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh"
+
+# Test 13b: introduce a version mismatch -> script exits non-zero
+printf '{"packageManager":"npm@9.0.0"}\n' > "$FIXTURE_DIR/tree-sitter-reify/package.json"
+
+assert "13b: mismatched packageManager versions -> exit non-zero" \
+    bash -c "! (cd '$FIXTURE_DIR' && bash scripts/check-pm-standardization.sh)"
+
 test_summary
