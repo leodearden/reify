@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source, warning_source_with_width};
+use reify_test_support::{
+    MockGeometryKernel, bracket_source, bracket_source_with_width,
+    warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
+};
 use reify_types::ExportFormat;
 
 use reify_mcp::{DiagnosticInfo, SourceLocationInfo};
@@ -832,7 +835,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = warning_source();
+    let source = warn_source_with_unknown_port_type();
 
     // load_from_source should succeed — warnings are not errors
     session
@@ -942,7 +945,7 @@ fn diagnostics_and_source_location_agree_on_file_key() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
 
-    let source = warning_source_with_width();
+    let source = warn_source_with_unknown_port_type_with_width();
 
     session
         .load_from_source(source, "testmod")
@@ -984,7 +987,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     session
-        .load_from_source(warning_source(), "initial")
+        .load_from_source(warn_source_with_unknown_port_type(), "initial")
         .expect("initial load should succeed");
 
     let diags_before = session.get_diagnostics();
@@ -1004,7 +1007,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     );
 
     session
-        .update_source("updated.ri", warning_source())
+        .update_source("updated.ri", warn_source_with_unknown_port_type())
         .expect("update_source should succeed");
 
     let diags_after = session.get_diagnostics();
@@ -1229,7 +1232,7 @@ fn engine_get_diagnostics_cleared_after_update_to_clean_source() {
 
     // Load warning source — establishes a non-empty diagnostics state
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("warning source should compile");
 
     let diags_before = session.get_diagnostics();
@@ -1302,8 +1305,8 @@ fn byte_offset_to_line_col_offset_beyond_len_release() {
 
 #[test]
 fn get_diagnostics_empty_span_has_identical_start_end() {
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     // Verify that a zero-length span (start == end) produces identical
     // start and end coordinates through the full get_diagnostics pipeline,
@@ -1319,11 +1322,10 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
 
     let offset = source.find("width").expect("'width' not in bracket_source") as u32;
 
-    let diag = Diagnostic::warning("empty-span-test")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset, offset), // zero-length span
-            "zero-length label",
-        ));
+    let diag = Diagnostic::warning("empty-span-test").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset, offset), // zero-length span
+        "zero-length label",
+    ));
     session.inject_diagnostic_for_test(diag);
 
     let diags = session.get_diagnostics();
@@ -1355,7 +1357,10 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
     //   + 10 bytes "    param " → col 11 when 'w' is reached.
     assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
-    assert_eq!(d.column, 11, "expected column for 'width' in bracket_source");
+    assert_eq!(
+        d.column, 11,
+        "expected column for 'width' in bracket_source"
+    );
 }
 
 #[test]
@@ -1484,7 +1489,11 @@ fn offset_to_line_col_fast_at_eof_offset() {
     let eof = source.len();
     let expected = byte_offset_to_line_col(source, eof);
     let actual = offset_to_line_col_fast(source, &line_offsets, eof);
-    assert_eq!(actual, expected, "EOF offset: fast={:?} original={:?}", actual, expected);
+    assert_eq!(
+        actual, expected,
+        "EOF offset: fast={:?} original={:?}",
+        actual, expected
+    );
 }
 
 // --- Task 837: step-7 stress / multi-diagnostic tests ---
@@ -1497,8 +1506,8 @@ fn offset_to_line_col_fast_at_eof_offset() {
 /// then verify get_diagnostics returns the same line/col as the O(M) reference.
 #[test]
 fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
-    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
     use crate::engine::byte_offset_to_line_col;
+    use reify_types::{Diagnostic, DiagnosticLabel, SourceSpan};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -1512,24 +1521,25 @@ fn get_diagnostics_multi_diagnostic_stress_matches_reference() {
     // Pick three byte offsets that land at recognisable tokens across
     // different lines, using `find` so the test stays robust to whitespace.
     let offset_a = source.find("width").expect("'width' not in bracket_source") as u32;
-    let offset_b = source.find("height").expect("'height' not in bracket_source") as u32;
-    let offset_c = source.find("thickness").expect("'thickness' not in bracket_source") as u32;
+    let offset_b = source
+        .find("height")
+        .expect("'height' not in bracket_source") as u32;
+    let offset_c = source
+        .find("thickness")
+        .expect("'thickness' not in bracket_source") as u32;
 
-    let diag_a = Diagnostic::warning("stress-a")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_a, offset_a + 5),
-            "label a",
-        ));
-    let diag_b = Diagnostic::warning("stress-b")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_b, offset_b + 6),
-            "label b",
-        ));
-    let diag_c = Diagnostic::warning("stress-c")
-        .with_label(DiagnosticLabel::new(
-            SourceSpan::new(offset_c, offset_c + 9),
-            "label c",
-        ));
+    let diag_a = Diagnostic::warning("stress-a").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_a, offset_a + 5),
+        "label a",
+    ));
+    let diag_b = Diagnostic::warning("stress-b").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_b, offset_b + 6),
+        "label b",
+    ));
+    let diag_c = Diagnostic::warning("stress-c").with_label(DiagnosticLabel::new(
+        SourceSpan::new(offset_c, offset_c + 9),
+        "label c",
+    ));
 
     session.inject_diagnostic_for_test(diag_a);
     session.inject_diagnostic_for_test(diag_b);
@@ -1901,7 +1911,7 @@ fn get_diagnostics_panics_on_broken_module_name_with_real_warning() {
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled is Some, module_name is None.
@@ -1930,7 +1940,7 @@ fn get_diagnostics_panics_on_broken_source_map_with_real_warning() {
 
     // load_from_source succeeds: warnings are not errors.
     session
-        .load_from_source(warning_source(), "test_warn")
+        .load_from_source(warn_source_with_unknown_port_type(), "test_warn")
         .expect("source with unknown port type should compile (warning, not error)");
 
     // Deliberately break the invariant: compiled and module_name are Some,

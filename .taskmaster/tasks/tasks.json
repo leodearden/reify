@@ -2617,7 +2617,7 @@
           }
         },
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:29:34.025Z"
+        "updatedAt": "2026-04-09T03:31:48.673Z"
       },
       {
         "id": "160",
@@ -5015,7 +5015,7 @@
         "id": "267",
         "title": "@test: compiler support",
         "description": "When @test annotation is present on a constraint def or structure def, tag the compiled entity with `is_test: true`. Test entities are excluded from the normal evaluation graph (not instantiated during regular evaluation). They are only evaluated by the test runner. Additionally, integrate memory_hints to optimize knowledge context during execution.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "265"
         ],
@@ -5039,7 +5039,7 @@
             ]
           }
         },
-        "updatedAt": "2026-04-09T02:29:36.133Z"
+        "updatedAt": "2026-04-09T02:53:44.040Z"
       },
       {
         "id": "268",
@@ -5051,7 +5051,7 @@
         "dependencies": [
           "267"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -5060,7 +5060,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-09T03:43:39.255Z"
       },
       {
         "id": "269",
@@ -5072,7 +5072,7 @@
         "dependencies": [
           "268"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-cli"
@@ -5081,7 +5081,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-03-24T06:01:46.000Z"
+        "updatedAt": "2026-04-09T04:12:58.278Z"
       },
       {
         "id": "270",
@@ -5137,7 +5137,7 @@
         "dependencies": [
           "271"
         ],
-        "status": "pending",
+        "status": "done",
         "metadata": {
           "modules": [
             "crates/reify-compiler",
@@ -5147,7 +5147,7 @@
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
         },
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.155Z"
+        "updatedAt": "2026-04-09T03:21:55.341Z"
       },
       {
         "id": "273",
@@ -7162,11 +7162,11 @@
         "description": "Fix cross-trait requirement check (lib.rs:4137,4155-4172) matching name+type only, not kind — a param requirement can be silently satisfied by a let default. Restrict cross-check to kind-matching defaults. Improve trait conflict error messages to identify which specific traits are in conflict (currently unnamed).\n\nMissing tests to add:\n- requirement_type_mismatch_from_cross_trait_default error branch (entirely untested)\n- requirement_satisfied_by_cross_trait_default should assert value cell exists, not just 0 errors\n\nMemory hints: search \"cross-trait requirement kind param let mismatch\", entities: compile_traits, trait_merge",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:03:56.751Z",
+        "updatedAt": "2026-04-09T03:47:40.465Z",
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
@@ -19171,11 +19171,11 @@
         "description": "The warn source string (`structure def S { port mount : NonExistentTrait { ... } }`) is copy-pasted in 4 locations:\n- gui/src-tauri/src/tests/engine_tests.rs (~lines 814, 917, 1026)\n- gui/src-tauri/src/tests/mcp_context_tests.rs (~line 544)\n\nTask 839 already had to patch it in two places when the syntax changed from `structure S` to `structure def S`, proving the maintenance friction.\n\nAdd a `warn_source_with_unknown_port_type() -> &'static str` fixture function to `crates/reify-test-support/src/fixtures.rs` (analogous to `bracket_source()`), and replace the four inline literals with calls to it. This collapses future syntax-change updates to a single file.\n\nmemory_hints: search(\"shared test fixtures reify-test-support bracket_source\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-04T04:35:22.265Z",
+        "updatedAt": "2026-04-09T04:15:09.819Z",
         "metadata": {
           "files": [
             "crates/reify-test-support/src/fixtures.rs",
@@ -19297,11 +19297,11 @@
         "description": "In gui/src-tauri/src/tests/lsp_bridge_tests.rs: (1) Rewrite lsp_request_impl_accepts_valid_json_null_literal to use an unconditional assertion (currently vacuously passes on Ok path). (2) Add test cases for empty string and partial JSON to confirm invalid JSON params error.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-07T16:25:54.614Z",
+        "updatedAt": "2026-04-09T04:15:10.697Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -23120,7 +23120,7 @@
         "description": "The `self.member` branch (lib.rs:2669) and `self.sub.member` branch (lib.rs:2710) check `sub_component_types` without excluding collection subs. For a collection sub like `sub items : List<Bolt>`, `self.items` returns `Type::StructureRef(\"Bolt\")` (single-entity ref) instead of being rejected or producing a collection type, causing silently wrong evaluation results at runtime.\n\nFix: Add `&& !scope.collection_sub_names.contains(member.as_str())` guard at line 2669 and `&& !scope.collection_sub_names.contains(sub_name.as_str())` guard at line 2710. Optionally emit a diagnostic directing users to indexed access for collection subs.\n\nAlso add test coverage for `self.collection_sub` and `self.collection_sub.member` in self_keyword_tests.rs to assert correct behavior.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; get_entity \"self keyword compiler\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -23133,7 +23133,8 @@
             "crates/reify-compiler/src",
             "crates/reify-compiler/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T03:47:39.632Z"
       },
       {
         "id": "1126",
@@ -23360,11 +23361,11 @@
         "description": "Refactor `value_orientation_ord_within_type` (line ~3716) and `value_orientation_ord_equal_w_different_x` (line ~3749) in value.rs to use the `orient()` helper instead of manually constructing `Value::Orientation { w, x, y, z }`. The helper was extracted in task 959 and is used by `value_ord_orientation_negative_components` but the earlier tests were not updated, creating inconsistency.\n\nAlso consider updating `value_orientation_ord_cross_type` (line ~3700) for the Orientation value (the Complex value must remain manually constructed).\n\nmemory_hints:\n- search: \"orient helper value.rs Orientation test\"\n- search: \"task 959 orient helper extraction\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:16:04.021Z",
+        "updatedAt": "2026-04-09T03:42:10.174Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -23496,11 +23497,11 @@
         "description": "The `nan_partialeq_bit_identity` test in `crates/reify-types/src/value.rs` (around line 1898) only covers `Value::Real(f64::NAN)`. The PartialEq-via-to_bits contract should also be verified for `Value::Scalar { si_value: f64::NAN, .. }` and `Value::Complex` with NaN components. Add test cases like:\n```rust\nlet s1 = Value::Scalar { si_value: f64::NAN, dimension: DimensionVector::LENGTH };\nassert_eq!(s1, s1.clone());\n```\nand similar for `Value::Complex`.\n\nmemory_hints: search \"NaN PartialEq to_bits Value Ord implementation\" for prior context on the total_cmp and PartialEq implementations.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:40:24.877Z",
+        "updatedAt": "2026-04-09T04:03:35.666Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -23559,11 +23560,11 @@
         "description": "Two small improvements to the NaN hash-equality invariant documentation and test in `crates/reify-types/src/value.rs`:\n\n1. **Test robustness (line 1964):** Change `debug_assert!(non_canon_nan.is_nan(), ...)` to `assert!(non_canon_nan.is_nan(), ...)` in `nan_payload_hash_equality_invariant_exception`. The `debug_assert!` is a test-setup precondition that becomes a no-op if tests are ever run under `--release`, silently passing even if the NaN construction is wrong.\n\n2. **Documentation accuracy (lines 315-319):** The caller guidance says \"treat a hash-hit as 'possibly equal' and re-check PartialEq if exact bit-pattern identity of the NaN payload matters.\" Add a note that the incremental cache (`cache.rs` `record_evaluation`) intentionally relies on hash-only comparison — collapsing NaN payloads is the desired behaviour there — so future readers don't think `cache.rs` has a bug.\n\nMemory hints: search \"Value content_hash NaN canonicalization hash-equality invariant\", search \"cache record_evaluation early cutoff hash\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T21:46:26.744Z",
+        "updatedAt": "2026-04-09T04:13:13.350Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -23716,11 +23717,11 @@
         "description": "Two small improvements to the `assert_ord_consistent` test helper in `crates/reify-types/src/value.rs`:\n\n1. **Symmetric check in equal branch** (line ~2454): The `expect_equal=true` branch checks `a.cmp(b) == Equal` but not `b.cmp(a) == Equal`. Add `assert_eq!(b.cmp(a), std::cmp::Ordering::Equal, ...)` so the contract validation is fully symmetric, matching the antisymmetry check already present in the `expect_equal=false` branch.\n\n2. **Float meta-test** (lines ~2476-2486): The two meta-tests only use `Value::Int`, which takes a trivial integer comparison path. Add at least one meta-test using a float-bearing variant (e.g. `Value::Real(1.0)` vs `Value::Real(2.0)`) to exercise the `to_bits`/`total_cmp` code paths that the helper was specifically created to validate.\n\nBoth are minor hardening — the downstream bit-identity tests already provide real coverage.\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:11:48.930Z",
+        "updatedAt": "2026-04-09T04:21:27.546Z",
         "metadata": {
           "modules": [
             "crates/reify-types"
@@ -23912,11 +23913,11 @@
         "description": "In tests/infra/test_test_helpers.sh (lines 301-312), the behavioral test for `assert_sync_ref_exists` sources the entire `sync_comments_test.sh` file to get access to the helper function. This executes all top-level code (real assertions, `set -euo pipefail`, variable assignments) as a side effect, which is fragile.\n\nTwo improvements:\n1. **Isolate the function extraction**: Instead of `source '${SYNC_FILE}'`, extract just the `assert_sync_ref_exists` function definition (e.g., via `sed -n '/^assert_sync_ref_exists/,/^}/p'`) or move the function to a shared helper that can be sourced independently. This prevents future top-level code additions from breaking the test.\n2. **Use trap-based cleanup**: Replace the explicit `rm -f` at the end with `trap 'rm -f \"$tmp_src\" \"$tmp_tgt\"' EXIT` immediately after the mktemp calls, so temp files are cleaned up even on early exit (e.g., if `set -euo pipefail` from the sourced file triggers unexpectedly).\n\nmemory_hints: search(\"assert_sync_ref_exists behavioral test\", project_id=\"reify\"); search(\"test_test_helpers sourcing fragile\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:30:08.844Z",
+        "updatedAt": "2026-04-09T03:10:35.324Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -24004,11 +24005,11 @@
         "description": "Follow-up from task 1066 review (esc-1066-883). Four small fixes in tests/infra/test_sync_comments_grep.sh:\n\n1. **Stale comment (line 4):** File header says `[[:space:](]` but pattern was updated to `[[:space:](<]`. Update to `# function name with [[:space:](<] instead.`\n\n2. **Stale comment (line 28):** Extraction pipeline comment says `[[:space:](]` but actual grep on line 36 uses `[[:space:](<]`. Update to `#   1. find the grep -qE invocation line that contains [[:space:](<]`\n\n3. **Combination accept tests (after line 87):** Add 1-2 cases exercising multiple qualifier groups together, e.g.:\n   - `pub(crate) const fn sanitize_value(`\n   - `pub(crate) unsafe fn sanitize_value(`\n\n4. **Generic reject case (after line 107):** Add reject case for `fn sanitize_value_raw<T>(` to document that the `<` terminator doesn't create false positives for suffixed names.\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-08T22:58:47.967Z",
+        "updatedAt": "2026-04-09T03:45:09.304Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -24167,11 +24168,11 @@
         "description": "Follow-up from Task 1068 review (esc-1068-904, suggestions S1 and S2). Both suggestions target tests/infra/test_run_all.sh.\n\nS1 (resource_cleanup, lines 41-55): Temp dirs (TMPDIR_T2, TMPDIR_T3, TMPDIR_PASS, TMPDIR_FAIL, TMPDIR_EMPTY) are cleaned up inline via `rm -rf`, but there is no trap-based cleanup. Under `set -euo pipefail`, an unexpected early exit leaks them.\n\nFix: Add a trap at the top of the script that tracks and removes all temp dirs on EXIT. Pattern:\n\n    _TMPDIRS=()\n    cleanup() { for d in \"${_TMPDIRS[@]+${_TMPDIRS[@]}}\"; do rm -rf \"$d\"; done; }\n    trap cleanup EXIT\n\nThen replace each `rm -rf \"$TMPDIR_*\"` with `_TMPDIRS+=(\"$TMPDIR_*\")` (or keep the inline rm and just register the dir for safety-net cleanup).\n\nS2 (dead_code, line 43): `t2_rc` is captured via `&& t2_rc=0 || t2_rc=$?` but never referenced — Test 2 only checks output text. Either drop the rc capture (`t2_output=\"$(...)\" || true`) or add an assertion that t2_rc is 0 (the empty/excluded suite should succeed).\n\nVerify by running `bash tests/infra/test_run_all.sh` and `bash tests/infra/run_all.sh` after the change.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:16:20.148Z",
+        "updatedAt": "2026-04-09T03:45:10.758Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -24219,11 +24220,11 @@
         "description": "In crates/reify-eval/src/lib.rs `compile_geometry_op`, the Primitive and Modify branches (lines ~3357-3388, 3413-3484) emit a `Severity::Warning` for a missing required arg, then still build a `GeometryOp { ..., field: Value::Undef }` and return `Some(...)`. The op then flows to `kernel.execute(...)`, which (almost certainly) fails with `Err`, and the caller pushes a second diagnostic (`geometry error: ...`). The user gets a Warning + a downstream Error for the same root cause with no obvious linkage between them. The other branches (Transform/Pattern/Sweep) sidestep this by short-circuiting via `?` so only one error appears.\n\n**Two viable fixes — pick one, document rationale in commit:**\n\n1. Make the missing-arg helper `Option`-returning so the closure call short-circuits the whole match arm (`compile_geometry_op` returns `None`). Aligns with the existing Transform/Pattern/Sweep convention. The caller will then emit the single generic `failed to compile geometry operation` error — consider whether the warning text alone is enough context.\n\n2. Raise the warning's severity to `Severity::Error` and have the caller suppress the now-redundant generic error message when this specific diagnostic has already been emitted for the op.\n\nOption (1) is consistent with existing convention; option (2) gives the user a more specific error message but requires de-duplication logic in the caller.\n\n**Source review suggestion:** S2 (robustness) from Task 1167 review.\n\n**Cross-task note:** This change should be coordinated with the shared-helper extraction task (S1+S7 follow-up). Doing them together is cleaner — the helper API determines whether short-circuit semantics are baked in.\n\nmemory_hints: search \"compile_geometry_op diagnostic short-circuit\" entity \"compile_geometry_op\"",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-08T23:48:04.603Z",
+        "updatedAt": "2026-04-09T03:43:43.267Z",
         "metadata": {
           "modules": [
             "crates/reify-eval"
@@ -24973,11 +24974,17 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:04:32.897Z",
+        "updatedAt": "2026-04-09T03:39:59.428Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
-          ]
+          ],
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Refactor field-calculus Vector sample-point tests and add dimension-guard coverage"
+            ]
+          }
         }
       },
       {
@@ -25055,11 +25062,11 @@
         "description": "Task 1221 updated compute_divergence (lib.rs:803-841) and compute_laplacian (lib.rs:999-1035) to stamp the result Field's codomain_type with a dimensioned Type::Scalar, but the corresponding runtime sample handlers compute_numerical_divergence_at_point (lib.rs ~1536) and compute_numerical_laplacian_at_point (lib.rs ~1855) still return Value::Real(divergence) / Value::Real(laplacian) — i.e. dimensionless. This breaks the metadata-vs-runtime contract that was established for gradient: compute_gradient AND compute_numerical_gradient_at_point were updated together (see lib.rs:1206-1213 and 1368-1375 which build Value::Scalar { dimension: result_dim, ... } when result_dim != DIMENSIONLESS). Any downstream consumer that does `sample(div_field, p) * other_velocity` will silently treat the divergence as dimensionless because Value::Real propagates through arithmetic, whereas the type system thinks it's Scalar<1/Time>. This is the same class of bug the gradient fix closed.\n\nFix:\n1. Compute the result dimension inside compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point (mirroring the result_dim derivation in compute_numerical_gradient_at_point at lib.rs:1206-1213). This requires the dispatcher to forward the result codomain type — currently the sample handler dispatch at lib.rs:158/182 only forwards grad_codomain_type for the Gradient case. Add equivalent forwarding for Divergence/Laplacian, or compute the result_dim from domain_type alone (laplacian: cd / dd^2; divergence: cd / dd) inside the handler.\n2. At the return site, wrap in Value::Scalar { si_value: ..., dimension: result_dim } when result_dim != DIMENSIONLESS, mirroring lib.rs:1368-1375.\n3. Add at least one sample()-level test per operator: build a concrete dimensioned analytical lambda (e.g. f(x,y,z) = vec3(x, y, z) with x,y,z in meters and components in m/s), then assert sample(divergence(field), origin) returns a Value::Scalar with dimension == 1/Time, not Value::Real. The current new tests in field_calculus_tests.rs:1126-1438 only inspect metadata via divergence()/laplacian() and never call sample(), so they would not catch this drift.\n\nMemory hints:\n- search \"gradient codomain_type result_dim Value::Scalar\" — pattern from compute_numerical_gradient_at_point\n- search \"grad_codomain_type forwarded sample handler dispatch\" — see lib.rs:158/182 for how dispatch carries codomain\n- get_entity \"Task 1221\" — the partial fix this task completes",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:55.925Z",
+        "updatedAt": "2026-04-09T03:13:10.361Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25072,11 +25079,11 @@
         "description": "After Task 1221 the three field-calculus operators have three different fallback strategies for the dimension-extraction-and-divide logic, despite a comment claiming compute_divergence \"Mirrors the gradient_quantity block\":\n- compute_gradient (lib.rs:650-690): falls back to Type::Real for dimensionless Scalar codomain, otherwise codomain_type.clone()\n- compute_divergence (lib.rs:803-841): unconditionally falls back to Type::Real\n- compute_laplacian (lib.rs:999-1035): unconditionally falls back to codomain_type.clone()\n\nThis creates corner-case asymmetries. Examples missing or wrong:\n- (S4) Point{n, Real} → Vector{n, Scalar<Length>} should yield divergence codomain Length (Length/1), but compute_divergence returns Real\n- (S4) Point{n, Scalar<Length>} → Vector{n, Real} should yield divergence codomain 1/Length, but returns Real\n- (S8) compute_laplacian's domain validation accepts Type::Real, Type::Int, Type::Scalar, and Point{quantity ∈ {Real,Int,Scalar}}, but the new dim-extraction at lib.rs:1003-1010 only handles Type::Scalar and Point{Scalar} — Type::Real, Type::Int, Point{Real}, and Point{Int} all collapse to None. Same issue for codomain extraction at lib.rs:1013-1016.\n\nFix:\n1. Pick one strategy and apply it to all three operators. The gradient strategy is most defensible: preserve codomain when one side is dimensionless, downgrade to Real only for explicitly-dimensionless Scalar. For divergence, this means extracting the Vector's component type and falling back to it.\n2. Treat Type::Real and Type::Int as Some(DimensionVector::DIMENSIONLESS) in the extraction match arms, so the existing `dd != DIMENSIONLESS` guard handles them correctly (rather than silently missing the guard via None fallback).\n3. Update the misleading comment at compute_divergence:804 to be accurate.\n4. Add tests for the mixed-dimensional cases enumerated above (Real domain × Length codomain, Length domain × Real codomain, Int domain × dimensioned codomain) for all three operators.\n\nLikely subsumed if the helper-extraction task lands first (the helper would force consistency). If both tasks proceed in parallel, coordinate via dependency.\n\nMemory hints:\n- search \"compute_gradient gradient_quantity dimensionless fallback\" for the canonical pattern\n- get_entity \"DimensionVector::DIMENSIONLESS\" for the dim algebra",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:35:29.539Z",
+        "updatedAt": "2026-04-09T03:39:59.812Z",
         "metadata": {
           "modules": [
             "crates/reify-expr"
@@ -25123,11 +25130,11 @@
         "description": "Address 3 review suggestions on Task 1229's update to gui/src-tauri/src/tests/mcp_context_tests.rs::get_diagnostics_maps_warning_fields_to_diagnostic_info (current lines ~538-612). All changes are doc/comment-only and confined to that one test function.\n\n1. **Doc comment accuracy (lines 541-545):** The comment currently says the `DiagnosticData → DiagnosticInfo` mapping closure \"is already covered by `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.\" Confirmed against engine_tests.rs:881-900 — that test only does `first.line >= 1`, `first.column >= 1`, `first.end_line >= first.line`, `first.end_column >= 1` range checks. It does NOT validate exact span arithmetic, and would not catch a `(line, end_line)` or `(column, end_column)` transposition. After Task 1229, the new mcp_context test is in fact the ONLY place where exact span coordinates are pinned — the opposite of what the comment implies. Reword to be precise, e.g.: \"The mapping closure is exercised by `engine_get_diagnostics_returns_populated_warning`, but that test only range-checks the span fields. The exact-coordinate assertions in this test are intentionally the only span-arithmetic regression guard for the diagnostics path.\"\n\n2. **Exclusive-end clarity (lines 601-608):** The comments say \"closing `}` of port body ends at line 4 of the fixture\" / \"ends at column 6 (1-indexed).\" Ambiguous: the `}` itself is at L4:C5 (4 leading spaces + `}`). Column 6 is the position immediately AFTER the `}`, because tree-sitter's `end_byte` is exclusive and `offset_to_line_col_fast` computes `chars().count() + 1` from the line start. A future reader counting characters in the fixture will get column 5 for the `}` and may think the assertion is wrong. Clarify the exclusive-end convention, e.g.: \"The span end is the byte one-past the closing `}`: the `}` itself sits at L4:C5, so the exclusive end position is L4:C6.\"\n\n3. **Brittleness note in doc comment (lines 538-554):** Pinning exact coordinates couples this test to (a) the exact whitespace of the inline fixture, (b) which AST node tree-sitter reports as the label span for \"unknown port type\" warnings, and (c) the grammar's port_decl boundary definition. The current doc comment justifies the trade-off for `code: None` but doesn't warn that a more useful diagnostic — e.g. one that points at just `NonExistentTrait` instead of the whole port_decl — would also break this test. Add a sentence such as: \"If the diagnostic span is later narrowed (e.g. to point at just `NonExistentTrait`), update the pinned coordinates rather than reverting to range checks — the exact pinning is the regression guard.\"\n\nmemory_hints: search(\"Task 1229 mcp_context diagnostic doc comment\", project_id=\"reify\"); search(\"engine_get_diagnostics_returns_populated_warning range checks\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:50.475Z",
+        "updatedAt": "2026-04-09T02:58:06.927Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -25157,11 +25164,11 @@
         "description": "The relaxed `_check_has_no_ref_guard` pattern in tests/infra/test_test_helpers.sh:262 (`grep -qE 'if \\[ -n.*ref'`) and its robustness fixture have two related gaps:\n\n1. **Missing literal historical fixture (line 262 robustness suite).** The robustness suite verifies the relaxed pattern catches `$ref_fn` (non-underscore), but it does NOT include a fixture matching the EXACT historical pre-refactor guard pattern that this work was meant to defend against — `if [ -n \"$_expr_ref_fn\" ]` and `if [ -n \"$_stdlib_ref_fn\" ]` (removed in commit ff0880bfe). Without that fixture, a future tightening of the regex could silently lose coverage of the actual historical regression while the new robustness test still passes. Add a third fixture mimicking the historical guard literally — e.g. `printf 'if [ -n \"$_expr_ref_fn\" ]; then echo skip; fi\\n'` — and assert `_check_has_no_ref_guard` returns non-zero. This pins the regression case the helper exists to prevent.\n\n2. **Pattern scope clarity (line 262).** The pattern `if \\[ -n.*ref` only catches defensive guards whose tested variable name contains the literal substring `ref`. A future guard reintroduced as `if [ -n \"$marker\" ]` or `if [ -n \"$fn_name\" ]` would slip through. The commit message says \"relax if-guard pattern beyond underscore prefix\", but the relaxation is bounded to a different — equally narrow — keyword. Decide between:\n   - (a) Tighten the comment/check description on lines 262/274 to make explicit that the helper only catches guards on `ref`-named variables (the historical regression class), OR\n   - (b) Broaden the regex to catch any defensive existence guard around an extracted-name local — e.g. `if \\[ -n .*\\$.*_fn` or `if \\[ -n.*_(ref_)?fn`.\n\nThese are tightly coupled: deciding the pattern scope (item 2) determines what fixtures should be pinned (item 1). Resolve them together.\n\nVerification: run `bash tests/infra/test_test_helpers.sh` and confirm both new fixtures behave as asserted, total tests still pass.\n\nmemory_hints: search(\"_check_has_no_ref_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:33:44.876Z",
+        "updatedAt": "2026-04-09T03:30:24.707Z",
         "metadata": {
           "modules": [
             "tests/infra"
@@ -25174,11 +25181,11 @@
         "description": "Optimize verify_uniqueness in crates/reify-constraints/src/solver.rs:781-816 to return false immediately after the aggregated WARN if `missing` is non-empty. The current code runs a full perturbed solve_core + solutions_agree cycle even though solutions_agree is guaranteed to return false on its first iteration (because the original solved_values map is missing the same param the perturbation closure already detected). This wastes a Nelder-Mead solve. Returning false directly both saves the work and produces a single, clean WARN per call.</description>\n<parameter name=\"details\">Source: review_comprehensive S5 from Task 1228 review (esc-1228-1017).\n\nImplementation:\n- After the `if !missing.is_empty()` warn block at solver.rs:807-816, add `return false;`.\n- Update or add a test asserting that verify_uniqueness returns false WITHOUT calling solve_core when an auto_param is missing from solved_values. (One way: count solve_core invocations via a probe; simpler: rely on the existing `assert!(!unique, ...)` assertions in verify_uniqueness_warns_when_param_missing_from_solved_values and verify_uniqueness_warns_when_param_is_non_numeric, plus a runtime/timing observation in CI.)\n- Confirm no other call site of verify_uniqueness depends on the side effects of the perturbed solve when missing != empty.\n\nReviewer note: \"Outside the scope of [Task 1228] (which is purely a logging cleanup), but worth flagging because the new aggregation makes the fact that we already know the answer more obvious in the code.\"\n\nmemory_hints: search \"verify_uniqueness solutions_agree perturbed solve\", get_entity \"DimensionalSolver\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestion S5).</parameter>\n<parameter name=\"priority\">medium",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:52:24.861Z",
+        "updatedAt": "2026-04-09T03:05:27.701Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25191,11 +25198,11 @@
         "description": "Two related improvements to the three verify_uniqueness warn tests in crates/reify-constraints/src/solver.rs (lines ~1077-1277): (1) Restore the previously-tested invariant that solutions_agree also emits its WARN on the missing/non-numeric path. The current single-param tests (verify_uniqueness_warns_when_param_missing_from_solved_values at ~1086, verify_uniqueness_warns_when_param_is_non_numeric at ~1132) filter on the verify_uniqueness substring and assert == 1, dropping the prior `count == 2` assertion that covered solutions_agree's WARN — if solutions_agree's warn is later removed or downgraded, these tests will not catch it. (2) Reduce ~80% duplication across the three verify_uniqueness warn tests (missing-from-map, Value::Undef, two-missing aggregation) by extracting a small helper.</description>\n<parameter name=\"details\">Source: review_comprehensive S3 + S4 from Task 1228 review (esc-1228-1017).\n\nS3 (lost_test_coverage at ~1086, ~1132):\n- Add a second filter (e.g. count messages containing \"cannot verify uniqueness\" or whatever solutions_agree's WARN substring is) and assert it equals 1 in the single-missing-param tests.\n- Alternative: assert `msgs.len() >= 2` plus the substring filter.\n- Note: this assertion may need to be skipped if Task 1228-S5 (early-return when missing is non-empty) lands first, because early-return would prevent solve_core/solutions_agree from running. Coordinate sequencing — if the early-return task lands first, S3 becomes obsolete (instead, document that the test no longer exercises solutions_agree because the function short-circuits).\n\nS4 (test_duplication at ~1044-1240):\n- Extract a helper like `assert_verify_uniqueness_aggregated_warn(problem, solved_values, expected_param_substrings: &[&str])` that builds the WarnCapturingSubscriber, runs verify_uniqueness, applies the count/substring assertions, and returns the unique flag for the caller to assert against.\n- Each test then becomes a few lines of setup.\n\nCoordinate with S5 sibling task (early-return optimization) — if that lands first, the cross-coverage assertion in S3 becomes moot and the helper from S4 should be designed accordingly.\n\nmemory_hints: search \"WarnCapturingSubscriber verify_uniqueness test helper\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestions S3 + S4).</parameter>\n<parameter name=\"priority\">low",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:48:55.067Z",
+        "updatedAt": "2026-04-09T03:24:47.255Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25208,11 +25215,11 @@
         "description": "Cosmetic cleanup of the aggregated warn! macro in crates/reify-constraints/src/solver.rs:807-816 and its companion test comment: (1) The warn! macro references `missing` three times — as the structured field `missing_params = ?missing`, as `missing.len()`, and as `{:?}` interpolated into the message body — duplicating identical data. Drop one of the two redundant references. (2) The test comment at ~1265 in `verify_uniqueness_aggregates_warn_for_multiple_missing_params` is misleading: it claims param names appear \"via ?missing_params field\", but WarnCapturingSubscriber's MessageVisitor only captures the `message` field and ignores all structured fields. The test actually passes because of the `{:?}` placeholder in the format-string body. Fix the comment to reflect the truth.</description>\n<parameter name=\"details\">Source: review_comprehensive S1 + S2 from Task 1228 review (esc-1228-1017).\n\nS2 (redundant_data at solver.rs:807-816): Choose one option:\n  Option A (simpler, no test churn): Drop `missing_params = ?missing` from the structured fields, keep the body's `{}` and `{:?}` placeholders. The test continues to assert against the message body unchanged.\n  Option B (richer, requires test_support enhancement): Drop the `{:?}` placeholder from the body, keep `missing_params = ?missing` as the canonical structured carrier, then enhance MessageVisitor in crates/reify-test-support/src/tracing_support.rs (or add a new visitor) to capture structured fields, and update tests to match against the structured rendering.\n\nRecommendation: Option A is the smaller change. Option B is preferable architecturally (structured logs are best practice) but pulls in test_support changes.\n\nS1 (test_comment_misleading at ~1265): Update the comment to reflect Option A or B. For Option A: `// Both param names must appear in the formatted message body (via the {:?} placeholder); WarnCapturingSubscriber's MessageVisitor does not capture structured fields.` Optionally add a brief note pointing at MessageVisitor in tracing_support.rs.\n\nThese two suggestions are coupled and should be addressed in one commit.\n\nmemory_hints: search \"WarnCapturingSubscriber MessageVisitor structured fields message capture\"\nParent task: 1228. Reviewer: reviewer_comprehensive (suggestions S1 + S2).</parameter>\n<parameter name=\"priority\">low",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:45:56.924Z",
+        "updatedAt": "2026-04-09T03:37:42.849Z",
         "metadata": {
           "modules": [
             "crates/reify-constraints"
@@ -25242,11 +25249,11 @@
         "description": "Two cleanup items left over from task 1232's warning_source() dedup that should land together since they touch the same crate and are both about the new fixture import.\n\n**1. Migrate the remaining inline NonExistentTrait literal** at `gui/src-tauri/src/tests/mcp_context_tests.rs:547-551` to call `warning_source()`. The test `get_diagnostics_maps_warning_fields_to_diagnostic_info` currently has the exact same `structure def S { port mount : NonExistentTrait { param d : Length = 5mm } }` literal that 1232 just deduplicated everywhere else. Leaving this site behind partially defeats the dedup goal — the two strings can drift apart. Add `warning_source` to the `reify_test_support` import in `mcp_context_tests.rs` and replace the raw string with `let source = warning_source();`.\n\n**2. Wrap the over-length import line** at `gui/src-tauri/src/tests/engine_tests.rs:4`. The current `use reify_test_support::{MockGeometryKernel, bracket_source, bracket_source_with_width, warning_source, warning_source_with_width};` is 131 columns wide, well past rustfmt's default 100-column limit. Wrap across multiple lines (or run `cargo fmt -p reify-tauri`).\n\nVerify: `cargo test -p reify-tauri tests::mcp_context_tests::get_diagnostics_maps_warning_fields_to_diagnostic_info` and `cargo fmt --check -p reify-tauri`.\n\nSource: review_comprehensive suggestions S1 + S4 on task 1232 (esc-1232-1020).",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:45:57.596Z",
+        "updatedAt": "2026-04-09T03:05:57.414Z",
         "metadata": {
           "modules": [
             "gui/src-tauri"
@@ -25259,11 +25266,11 @@
         "description": "In `crates/reify-test-support/src/fixtures.rs:1247-1262`, the new tests `warning_source_is_well_formed` and `warning_source_with_width_has_width_param` only assert substrings of the literal they were just defined from. They don't verify the contract documented in the docstrings — namely that the source `reliably produces an \"unknown port type\" warning (not error)`.\n\nIf a future edit accidentally broke that contract (typo in `NonExistentTrait`, change in spacing the parser cares about, or a compiler severity reclassification), these tests would still pass while every dependent test in `engine_tests.rs` and `mcp_context_tests.rs` would explode. The crate already depends on `reify-compiler`, so the contract is testable here at fixture-definition time rather than waiting for the dependent suites to fail.\n\n**Suggested fix:** Replace (or augment) the substring checks with a real compile assertion:\n- Parse the source via `reify_syntax::parse`\n- Run `reify_compiler::compile`\n- Assert exactly one warning whose message contains both `\"unknown port type\"` and `\"NonExistentTrait\"`\n- Assert no errors\n\nFor the `warning_source_with_width_has_width_param` variant, additionally assert that a `width` member is present in the compiled module.\n\nReference for the compile-and-assert pattern: `crates/reify-compiler/tests/port_compile_tests.rs:101-124` (already cited in the fixture's doc comment at fixtures.rs:41 as the validating test).\n\nSource: review_comprehensive suggestion S2 on task 1232 (esc-1232-1020).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "medium",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:42:50.268Z"
+        "updatedAt": "2026-04-09T02:54:41.659Z"
       },
       {
         "id": "1248",
@@ -25289,11 +25296,16 @@
         "description": "Three small follow-up improvements to the verify_uniqueness tracing tests in `crates/reify-constraints/src/solver.rs` from Task 1234's review (reviewer_comprehensive S1 + S2 + S3). All three address the same diff and should be done together.\n\n(S1 — drop verdict assertions) The `assert!(!unique, ...)` lines added in Task 1234 at ~line 1126 (`verify_uniqueness_warns_when_param_missing_from_solved_values`) and ~line 1179 (`verify_uniqueness_warns_when_param_is_non_numeric`) are implicitly coupled to `solve_core` converging on the perturbed point so `solutions_agree` runs and returns false. Each test's stated contract (per its name and the `vu_warn_count` assertion) is the *fallback warn count*, not the verdict — the verdict assertion is redundant noise that introduces a real failure mode if `solve_core` is ever changed. Delete both `assert!(!unique, ...)` lines so each test focuses on the single behavior its name advertises. The warn-count assertion is sufficient to cover the None branch in `verify_uniqueness`.\n\n(S2 — comment brittleness, becomes moot if S1 is done) The two NB comments at ~lines 1121-1125 and ~1174-1178 reference `(~line 826)` for the conservative early-return branch. Line-number references rot. If S1 is applied, both NB blocks should be deleted entirely (no verdict assertion → no fragility to document). If for any reason S1 is *not* applied, replace `(~line 826)` with a symbolic reference such as \"the `_ => true` arm of the `match solve_core(...)` in `verify_uniqueness`\" and de-duplicate by extracting the shared NB block.\n\n(S3 — revert misleading binding) In `verify_uniqueness_no_warn_when_param_has_valid_f64` (~line 1222), revert `let _unique = tracing::subscriber::with_default(...)` back to `let _ = tracing::subscriber::with_default(...)`. The binding name `_unique` falsely suggests the value matters, then the comment has to walk that suggestion back. Idiomatic Rust uses `let _ = expr;` for explicit discard. Keep the explanatory comment above the line (it's the rationale; the variable name shouldn't carry it).\n\nAll changes are tiny, single-file, test-only.",
         "details": "memory_hints: search \"Task 1234 review verify_uniqueness verdict assertion fragility\", get_task \"1234\", get_task \"1227\"\n\nParent: Task 1234. Reviewer: reviewer_comprehensive (S1 + S2 + S3).\n\nFile: crates/reify-constraints/src/solver.rs\nApproximate line ranges (from current main as of 2026-04-09):\n- 1117-1127  (warn test 1: drop assert!(!unique, ...) and the NB comment block above it)\n- 1170-1180  (warn test 2: same)\n- 1216-1224  (happy-path test: revert _unique → _, keep the comment)\n\nVerification: cargo test -p reify-constraints verify_uniqueness",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:52:25.016Z"
+        "updatedAt": "2026-04-09T04:11:30.539Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
       },
       {
         "id": "1250",
@@ -25305,14 +25317,627 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T02:52:25.242Z"
+        "updatedAt": "2026-04-09T04:11:31.389Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "1251",
+        "title": "Return iterators and slim API surface of CompiledModule filter helpers",
+        "description": "In `crates/reify-compiler/src/lib.rs` lines 178-199, change `test_templates`, `non_test_templates`, `test_constraint_defs`, and `non_test_constraint_defs` to return `impl Iterator<Item = &TopologyTemplate>` / `&ConstraintDef` instead of `Vec`. While doing so, evaluate whether the four methods can be replaced by two (`test_templates_iter`, `test_constraint_defs_iter`) and let callers negate with `.filter(|t| !t.is_test)` — eliminating the API-surface doubling identified in suggestion [1].",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:57:22.231Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1252",
+        "title": "Extract has_test_annotation helper to eliminate three-site duplication",
+        "description": "The expression `annotations.iter().any(|a| a.name == \"test\")` is inlined verbatim in three places: `crates/reify-compiler/src/lib.rs:6384`, `crates/reify-syntax/src/lib.rs:465`, and `crates/reify-test-support/src/builders/topology.rs:356`. Extract a single helper (e.g. `fn has_test_annotation(anns: &[impl HasName]) -> bool` or one helper per annotation type) and replace all three call sites. Document that `\"test\"` is the canonical lowercase spelling.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:03:37.776Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-syntax",
+            "crates/reify-test-support",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "1253",
+        "title": "Encapsulate is_test on TopologyTemplate and document is_test asymmetry",
+        "description": "In `crates/reify-compiler/src/lib.rs` around line 248: (a) make `is_test` a private field and expose it via a `pub fn is_test(&self) -> bool` getter, with a doc note that mutating `annotations` post-construction is unsupported. This is symmetric with `ConstraintDef::is_test()`. (b) Add TODO comments on `test_constraint_defs`/`non_test_constraint_defs` (lib.rs ~192-199) and on `ConstraintDef::is_test()` in `crates/reify-syntax/src/lib.rs:465` noting that the method will move to a `CompiledConstraintDef::is_test` field once constraint-def lowering lands.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:00:46.777Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-syntax",
+            "crates/reify-test-support"
+          ]
+        }
+      },
+      {
+        "id": "1254",
+        "title": "Resolve @test-on-function half-support",
+        "description": "In `crates/reify-compiler/src/lib.rs:4728`, `function` is listed as a valid context for `@test`, but `CompiledFunction` (re-exported from `reify_types`) has no `is_test` field and `CompiledModule` has no `test_functions()` helper. Either (a) remove `function` from the valid context match arm if test-functions are out of scope for Task 267, or (b) add `CompiledFunction::is_test()` in `reify_types` and `CompiledModule::test_functions()` / `non_test_functions()` in `crates/reify-compiler/src/lib.rs` to make the API coherent.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:57:43.171Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "1255",
+        "title": "Improve @test annotation test coverage and fix misleading substring filter",
+        "description": "In `crates/reify-compiler/tests/test_marker_compile_tests.rs`: (1) Add `unknown_pragma_on_constraint_def_emits_warning` test that compiles a constraint def with `#unknownfoo` and asserts the warning fires (covers `validate_pragmas` call at lib.rs:4397). (2) Change `annotation_warnings(&module, \"unknown\")` on line 132 to `annotation_warnings(&module, \"unknown annotation\")` (or `\"@unknownfoo\"`) so the first assertion is actually meaningful. (3) Add `multiple_annotations_with_test_marks_constraint_def` mirroring the template version at line 235 — parse `@test @deprecated(\"old\") constraint def C { ... }`, assert `def.is_test()` and that `def.annotations` still contains `deprecated`. (4) Extract a `parse_first_constraint_def(source: &str) -> &ConstraintDef` helper and use it in both `constraint_def_is_test_returns_true_when_test_annotation` (line 85) and `constraint_def_is_test_returns_false_without_annotation` (line 104) to remove the duplicated parse boilerplate.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T02:58:04.172Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1256",
+        "title": "Polish warning_source fixture validation helpers (style + width type assertion)",
+        "description": "Two small improvements to the validation helpers added in Task 1247 to `crates/reify-test-support/src/fixtures.rs`:\n\n**S1 — style_imports (line 1252, 1264, 1272):** The helper return type uses the fully-qualified `reify_compiler::CompiledModule`, but `CompiledModule` is already brought into scope at line 1 (`use reify_compiler::{CompiledModule, RequirementKind};`). Same for `reify_types::Severity` references at lines 1264 and 1272.\n\nFix:\n- Change the return type of `assert_warning_source_compiles_with_unknown_port_warning` to bare `CompiledModule`.\n- Add `use reify_types::Severity;` either to the test mod or to the existing top-level use list, then use `Severity::Error` / `Severity::Warning` directly in the predicates.\n\n**S2 — test_coverage (lines 1293-1310):** `warning_source_with_width_compiles_and_has_width_value_cell` only asserts that some value cell whose `id.member == \"width\"` exists. The fixture's stated purpose (lines 52-53) is to provide a `width` field for `get_source_location` lookup, which depends on the cell having the right *type* (`Length`) and a real source span. A regression that silently swapped `param width : Length = 80mm` to e.g. `Int = 0` would still pass.\n\nFix:\n- After locating the `width` value cell, also assert it is the expected `Length`/`Scalar` shape (inspect `vc.cell_type` against the actual enum variants in `reify_types`).\n- And/or assert that its source span is non-empty, mirroring how `get_source_location` will use it.\n\nSource: review_comprehensive S1 + S2 on Task 1247 (esc-1247-1023).",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:04:22.381Z"
+      },
+      {
+        "id": "1257",
+        "title": "Extract shared compile_source helper into reify-test-support",
+        "description": "The validation helper added in Task 1247 (`crates/reify-test-support/src/fixtures.rs:1247-1285`) duplicates parse+compile+filter-by-severity boilerplate that already lives in `crates/reify-compiler/tests/port_compile_tests.rs:9-28` (`compile_module` / `compile_first_template`).\n\nSince `reify-test-support` already depends on `reify-compiler`, this helper could be lifted to a public utility in test-support and reused by both call sites.\n\nProposed approach:\n- Add `pub fn compile_source(source: &str) -> CompiledModule` (and optionally `compile_first_template`) in a `reify-test-support` module — likely a new `compile_helpers.rs` so `fixtures.rs` stays focused on data fixtures.\n- Migrate `crates/reify-compiler/tests/port_compile_tests.rs` to use the shared helper.\n- Migrate the in-`fixtures.rs` test mod to call the shared helper.\n\nWatch for: dev-dependency direction. `reify-test-support` is already a normal dep of `reify-compiler` (so `port_compile_tests.rs` can use it via dev-deps). Confirm Cargo.toml wiring before refactor.\n\nNot blocking — the duplication is small and intents differ slightly (fixture validation vs. compiler behavior tests) — but worth doing as the codebase keeps growing copies of this pattern.\n\nSource: review_comprehensive S4 on Task 1247 (esc-1247-1023).",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:00:18.165Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler",
+            "crates/reify-test-support"
+          ]
+        }
+      },
+      {
+        "id": "1258",
+        "title": "Task 1239 follow-up: soften \"ONLY\" claim and reorder exclusive-end comment in get_diagnostics_maps_warning_fields_to_diagnostic_info",
+        "description": "Doc/comment-only refinements to gui/src-tauri/src/tests/mcp_context_tests.rs::get_diagnostics_maps_warning_fields_to_diagnostic_info from a second-round review of Task 1239's doc updates. Both changes are confined to that one test function (current lines ~538-622).\n\n1. **Soften \"ONLY span-arithmetic regression guard\" claim (lines ~550-552).** The current doc comment from Task 1239 says the pinned-coordinate assertions are \"the ONLY span-arithmetic regression guard in the test suite.\" Verified against `gui/src-tauri/src/tests/engine_tests.rs::get_diagnostics_multi_diagnostic_stress_matches_reference` at lines 1499-1575: that test pins exact line/column/end_line/end_column for THREE injected diagnostics by comparing against a `byte_offset_to_line_col` oracle for each span. It does catch any line↔column transposition bug in the engine.rs mapping closure (engine.rs:354-365). The wrapping path in mcp_context.rs:127-133 is a pure passthrough with no field reassignment, so the actual span-arithmetic logic the doc is worried about is also covered by that engine stress test. The mcp_context test still has unique value (it uses a real compiler-emitted span on a real port_decl AST node and exercises the wrapping path's `Ok` return), but the \"ONLY\" claim mis-describes coverage redundancy. Reword to something like: \"the only test that pins literal exact-coordinate values for a real compiler-emitted span — the engine multi-diagnostic stress test (`get_diagnostics_multi_diagnostic_stress_matches_reference`) pins coordinates against a `byte_offset_to_line_col` reference for synthetic injected spans, so this test provides complementary coverage on a real port_decl span shape.\"\n\n2. **Reorder the exclusive-end clarity comment (lines ~607-612).** The new explanatory block from Task 1239 currently arrives at column 5 first (\"four leading spaces → prefix chars().count() = 4, 1-indexed = 5\") then pivots to column 6 via the exclusive end byte. Since the assertion is `end_column == 6`, leading with the end-byte semantics and treating the glyph column as a sanity check reads more linearly. Rephrase along these lines: \"// Tree-sitter end_byte is exclusive — for the closing `}` of the port body on line 4 (4 spaces + `}`), end_byte points one past `}` (at the trailing `\\\\n`). offset_to_line_col_fast computes chars().count() of source[line_start..end_byte] + 1 = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column 6 is the exclusive one-past position.)\"\n\nBoth edits are pure rewording — no test logic, no assertions, no fixture changes. Verify the test still compiles and runs after the comment edits (`cargo test -p reify-tauri get_diagnostics_maps_warning_fields_to_diagnostic_info` from gui/src-tauri).\n\nmemory_hints: search(\"Task 1239 mcp_context doc comment span coordinates\", project_id=\"reify\"); search(\"get_diagnostics_multi_diagnostic_stress_matches_reference oracle byte_offset_to_line_col\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:34:04.244Z",
+        "metadata": {
+          "modules": [
+            "gui/src-tauri"
+          ]
+        }
+      },
+      {
+        "id": "1259",
+        "title": "Strengthen warning_source_with_width test assertions and rename",
+        "description": "Three related polish items on `warning_source_with_width_compiles_and_has_width_value_cell` in `crates/reify-test-support/src/fixtures.rs` (lines ~1293-1327), flagged by reviewer_comprehensive on Task 1256 (esc-1256-1031).\n\n**S1 — test_naming (line 1294):** The test name `warning_source_with_width_compiles_and_has_width_value_cell` no longer captures the newly added assertions (type is Length, span is non-empty). Rename to reflect the broader scope, e.g. `warning_source_with_width_produces_length_typed_width_cell_with_span`, or split into two focused tests.\n\n**S2 — test_quality (line 1322):** `!width_cell.span.is_empty()` is weak — any span with start != end passes, even one pointing at wrong text. Since the source is a known literal from `warning_source_with_width()`, assert the span actually covers the token `width` in the source string.\n- Compute expected byte offsets via `source.find(\"width\")` and assert `span.start`/`span.end` match, OR\n- Assert `&source[span.start as usize..span.end as usize] == \"width\"`.\n\n**S3 — test_coverage (line 1302):** Add cheap insurance against regressions in how `param width : Length = 80mm` is lowered into value cells:\n- `assert!(matches!(width_cell.kind, ValueCellKind::Param))`\n- `assert!(width_cell.default_expr.is_some())`\n\nAll three target the same small test block and can be a single commit. Verify with `cargo test -p reify-test-support`.\n\nmemory_hints:\n- search: \"Task 1247 warning_source fixture validation helpers\"\n- search: \"Task 1256 CompiledModule style_imports\"\n- file: crates/reify-test-support/src/fixtures.rs:1293\n",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:24:03.309Z"
+      },
+      {
+        "id": "1260",
+        "title": "Harden assert_sync_ref_exists test isolation via sourceable helper",
+        "description": "Follow-up to Task 1168. Reviewer flagged 6 related concerns about the behavioral/robustness tests for assert_sync_ref_exists in tests/infra/test_test_helpers.sh. The primary refactor addresses the root cause; the remaining items are smaller hardenings in the same region.",
+        "details": "Six suggestions from reviewer_comprehensive (esc-1168-1030), grouped because they all target the same test region and most become moot once the primary refactor lands.\n\n**S1 — Fragile sed extraction (primary fix)**\nLocation: tests/infra/test_test_helpers.sh:364,422\nThe sed range `/^assert_sync_ref_exists()/,/^}/p` extracts to the first `^}` line. A future heredoc terminator, nested function, or JSON/shell formatted with `}` in column 0 inside the body would silently truncate mid-body; the extracted snippet may parse but be semantically broken, causing confusing false FAILs.\nFix: Move `assert_sync_ref_exists` out of `tests/sync_comments_test.sh` into a sourceable helper (e.g., `tests/infra/sync_ref_helpers.sh`) so tests can `source` it directly without text extraction. Update `sync_comments_test.sh` to source the helper. As a fallback, place `# region:assert_sync_ref_exists` / `# endregion:assert_sync_ref_exists` markers around the function and narrow the sed range to the sentinels.\n\n**S2 — Structural meta-tests duplicate the robustness test**\nLocation: tests/infra/test_test_helpers.sh:376-403 (behavioral_test_block isolation meta-tests)\nThe three checks (sed -n present, no bare source, trap registered) duplicate what the robustness test at lines 405-431 already proves behaviorally (the `exit 99` injection strictly proves full-file sourcing is not happening). They also couple to a specific implementation (exact regex, single-quoted source, literal trap-with-rm-f-EXIT), so any future cleanup breaks them without a real regression. Per simplify principle: test overengineering.\nFix: Drop the three structural meta-tests at 380-403 and rely on the robustness test plus the existing structural check at line 268 (\"defines assert_sync_ref_exists\"). Collapse to a single comment explaining why the robustness test exists.\n\n**S3 — Negative-source regex incomplete**\nLocation: tests/infra/test_test_helpers.sh:392\nRegex `source[[:space:]]+'[^<]*SYNC_FILE` only catches single-quoted `source '${SYNC_FILE}'`. Double-quoted, unquoted variable, or `$SYNC_FILE` would slip past. Addressed as a byproduct of S2 (deletion). If meta-test is retained for any reason, broaden to `source[[:space:]]+[\"'\\$][^<]*SYNC_FILE`.\n\n**S4 — Trap-detection regex loose**\nLocation: tests/infra/test_test_helpers.sh:399\nRegex `trap[[:space:]]+.*rm[[:space:]]*-f.*EXIT` — `[[:space:]]*` allows `rm-f` (invalid), and `.*EXIT` is unanchored (would match EXIT appearing anywhere later). Addressed as a byproduct of S2 (deletion). Otherwise tighten to `trap[[:space:]]+'[^']*rm[[:space:]]+-f[^']*'[[:space:]]+EXIT`.\n\n**S5 — Robustness test FAIL check is weak**\nLocation: tests/infra/test_test_helpers.sh:427\nCurrently only greps for word `FAIL` in `_rob_out`. Doesn't check subshell exit code — could spuriously pass if `FAIL` appears in unrelated error output (e.g., parse error mentioning \"FAILED\"). Stronger form: capture rc separately and assert rc != 99 AND grep for the anchored `^  FAIL:` form that the assert helper actually emits.\nFix: `_rob_out=$(bash -c \"...\" 2>&1); _rob_rc=$?; [ \"$_rob_rc\" -ne 99 ] && echo \"$_rob_out\" | grep -q '^  FAIL:'`.\nApply the same tightening to the sibling behavioral test at line 370.\n\n**S6 — Duplication between behavioral test and robustness test**\nLocation: tests/infra/test_test_helpers.sh:356-367, 412-425\nThe two subshells share ~80% scaffolding (mktemp pair, trap, SYNC marker file, stub target, source HELPER_FILE, source extracted function, reset PASS/FAIL, call assert_sync_ref_exists). Only the SYNC source differs (original vs. altered-with-exit-99).\nFix: Extract a helper function in the test file that takes the sync file path to extract from, runs the scenario, and echoes output. Both tests then call it with different file arguments.\n\n**Suggested order**\n1. S1 (sourceable helper) — removes the extraction text-munging entirely\n2. S2/S3/S4 (delete structural meta-tests) — eliminated by S1\n3. S6 (dedupe scaffolding into helper function)\n4. S5 (harden FAIL assertion with exit code + anchored match)\n\nmemory_hints: search(\"Task 1168 behavioral test isolation assert_sync_ref_exists\", project_id=\"reify\"); search(\"sync_comments_test.sh sourceable helper\", project_id=\"reify\")",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:20:03.754Z",
+        "metadata": {
+          "modules": [
+            "tests/infra",
+            "tests/sync_comments_test.sh"
+          ]
+        }
+      },
+      {
+        "id": "1261",
+        "title": "Cleanup: refactor div/lap sample handlers (rename binding, extract helper, debug_assert, stable comments)",
+        "description": "Follow-up from Task 1235 review (esc-1235-1032). Four related cleanups in crates/reify-expr/src/lib.rs around the div/lap sample-handler dispatch:\n\nS1 (naming, lib.rs:126,149,162,187): The destructure `codomain_type: grad_codomain_type` is now forwarded to compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point as well as the gradient arm. The `grad_` prefix is misleading. Rename to `outer_codomain_type` (or drop the rename-on-destructure to use `codomain_type`) and update all three forwarding call sites.\n\nS2 (duplication, lib.rs ~1150-1395, ~1397-1563, ~1728-1908): The result_dim extraction (`match codomain_type { Type::Scalar { dimension } => *dimension, _ => DIMENSIONLESS }`) and the Value::Scalar/Value::Real return-site wrap are now triplicated across gradient, divergence, and laplacian. Divergence and laplacian blocks are identical word-for-word; gradient's variant additionally matches Type::Vector. Extract a helper like `fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value` returning Value::Scalar for Type::Scalar and Value::Real otherwise. Use from divergence/laplacian return sites; gradient can reuse per-component (Vector arm handled separately).\n\nS3 (doc_drift, lib.rs:1448, 1554, 1784, 1896): The new comments reference gradient-handler line numbers (`lib.rs:1206-1213`, `lib.rs:1368-1375`) which are already off by a couple of lines. Replace with stable descriptors like \"Mirrors the result_dim extraction in compute_numerical_gradient_at_point\" and \"Mirrors the gradient handler's return-site wrapping (result_dim != DIMENSIONLESS branch)\".\n\nS7 (robustness, lib.rs:1445-1452, 1781-1788): Add `debug_assert!(matches!(codomain_type, Type::Real | Type::Scalar { .. }), \"divergence/laplacian codomain must be scalar, got {:?}\", codomain_type);` at the top of compute_numerical_divergence_at_point and compute_numerical_laplacian_at_point. Guards against future stamping drift in compute_divergence/compute_laplacian without changing release behavior.\n\nMemory hints:\n- search \"Task 1235 metadata runtime dimension drift divergence laplacian\" — the parent fix\n- get_entity \"Task 1221\" — the initial partial fix establishing the pattern\n- Look at compute_numerical_gradient_at_point (~lib.rs:1150-1395) for the canonical shape",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:32:30.016Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "1262",
+        "title": "Propagate dimensions through curl (compute_curl + compute_numerical_curl_at_point)",
+        "description": "Follow-up from Task 1235 review (esc-1235-1032, S4, consistency). Curl was not updated by Tasks 1221 or 1235, creating an inconsistent story where div/lap/grad propagate dimensions under the type system but curl silently does not.\n\nLocations:\n- crates/reify-expr/src/lib.rs compute_curl (lines ~863-933): currently preserves the input codomain verbatim (`codomain_type: codomain_type.clone()`) rather than dividing the vector-component dimension by domain_dim.\n- crates/reify-expr/src/lib.rs compute_numerical_curl_at_point (~lines 1717-1725): unconditionally wraps components in Value::Real.\n- crates/reify-expr/src/lib.rs sample-handler dispatch (~lib.rs:170-176): currently does NOT forward codomain_type to compute_numerical_curl_at_point. Will need the equivalent plumbing the Divergence/Laplacian arms already have.\n\nExpected behavior: a curl of Point{3,Length} → Vector{3,Velocity} should produce per-component dimension 1/Time (same as divergence). compute_curl should stamp Vector{3, Scalar{dim = input_component_dim / domain_dim}} and compute_numerical_curl_at_point should wrap components in Value::Scalar when result_dim != DIMENSIONLESS.\n\nTests: mirror the div/lap sample-level dimensional-correctness tests in field_calculus_tests.rs — build a concrete dimensioned analytical lambda, call sample(curl(field), point), assert per-component Value::Scalar with the expected derived dimension.\n\nMemory hints:\n- search \"Task 1235 divergence laplacian dimension drift\" — the parent task that established the pattern\n- search \"compute_numerical_gradient_at_point result_dim Value::Scalar\" — canonical reference\n- get_entity \"Task 1221\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:29:16.802Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "1263",
+        "title": "Strengthen div/lap sample tests: numeric asserts + mixed-case coverage",
+        "description": "Follow-up from Task 1235 review (esc-1235-1032), two test gaps in crates/reify-expr/tests/field_calculus_tests.rs.\n\nS5 (test_quality, lines 1723-1734, 2040-2051): `divergence_sample_dimensionless_returns_real` and `laplacian_sample_dimensionless_returns_real` only assert on the Value variant, not the numeric value. Both test lambdas have a known analytical answer (divergence of vec3(1,1,1) ≡ 0, laplacian of x+2y+3z ≡ 0). Destructure the Value::Real(v) arm and assert `v.abs() < 1e-4` against the analytical value. Zero fixture cost, catches numerics regressions as well.\n\nS6 (test_coverage_gap, lines 1746-1878, 2063-2206): The two new dimensional-correctness tests only cover both-sides-dimensioned cases (Length→Velocity, Length→Temperature). The mixed cases — dimensioned domain + dimensionless codomain (Point{3,Length}→Vector{3,Real}), and dimensionless domain + dimensioned codomain (Point{3,Real}→Vector{3,Velocity}) — are never exercised at the sample level. Both currently hit compute_divergence/compute_laplacian's `_ => Type::Real` fallback and end up in the dimensionless runtime branch. A divergence of Length→Real field should physically be 1/Length but no test documents this. Either add `#[test] #[ignore]` placeholders or TODO tests for the two mixed cases, or add a code comment on compute_divergence/compute_laplacian explaining the fallback intentionally loses dimensional information, so future readers don't \"fix\" the fallback without also updating the numerical call sites.\n\nMemory hints:\n- search \"Task 1235 metadata runtime dimension drift\" — parent task\n- The existing tests to enhance are in field_calculus_tests.rs around the line ranges above",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:31:03.896Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "1264",
+        "title": "Consolidate Task 272 @deprecated tests with pre-existing coverage",
+        "description": "Refactor crates/reify-compiler/tests/deprecated_use_tests.rs to eliminate the duplication introduced by the \"Task 272: five dedicated regression tests\" block. Four of the five new scenarios re-use identical source strings with pre-existing tests and add only exact-count and weak-substring assertions. The parallel \"Task 272\" section header also competes with the existing Step 1 / Step 3 / Step 5 organization, creating two organization schemes for the same behaviors.",
+        "details": "Source: reviewer_comprehensive (8 suggestions) on commit that added tests around lines 333-555.\n\nApply these changes to crates/reify-compiler/tests/deprecated_use_tests.rs:\n\n1. Scenario (1) `task_272_deprecated_entity_emits_warning_on_use` (lines 337-383) vs. `deprecated_structure_used_as_sub_emits_warning` (lines 49-76): fold the new `assert_eq!(warns.len(), 1, ...)` and the use-site span check into the existing test, then delete the task_272 duplicate. Identical source strings will drift.\n\n2. Scenario (2) `task_272_no_warning_on_definition_alone` (lines 388-400): drop part (a) (structure) — it is already covered by `defining_deprecated_entity_without_using_produces_no_use_warning` (lines 231-252) AND `annotation_compile_tests_no_regression` (lines 316-331). Keep only parts (b) (fn-only) and (c) (trait-only), and rename to reflect that narrower scope (e.g. `deprecated_fn_and_trait_definition_alone_produce_no_warning`).\n\n3. Scenario (4) `task_272_deprecated_trait_emits_warning_when_implemented` (lines 485-517) vs. `deprecated_trait_used_as_trait_bound_emits_warning` (lines 144-170): fold the exact-count assertion into the existing test and delete the duplicate. The `msg.contains(\"trait\")` check is a no-op because `deprecation_warnings` already filters by the substring `OldTrait`.\n\n4. Also rename: the phrase `when_implemented` is misleading — in Reify terminology `structure S : OldTrait` is a trait bound, not a trait implementation (see lib.rs ~5381, ~5396). If any variant survives, use `when_used_as_trait_bound`, matching `deprecated_trait_used_as_trait_bound_emits_warning`.\n\n5. Scenario (5) `task_272_deprecated_fn_emits_warning_when_called` (lines 520-555) vs. `deprecated_function_called_emits_warning` (lines 111-140): fold the exact-count assertion into the existing test and delete the duplicate. `msg.contains(\"function\")` is a no-op for the same reason.\n\n6. Scenario (1) use-site span assertion (lines 373-382) is too loose — it only checks `span.start >= use_site_offset`, accepting any span that starts at or after `sub b`, including spans at EOF. Tighten to also assert `label.span.end as usize <= source.len()` and that `&source[label.span.start as usize .. label.span.end as usize]` contains `\"OldBolt\"`. (After consolidation, these assertions should live in the now-enriched `deprecated_structure_used_as_sub_emits_warning`.)\n\n7. Scenario (3) `task_272_message_includes_annotation_argument` (lines 477-481): the individual `contains` checks are redundant with the final `assert_eq!` on the exact message. Pick one style. Recommend keeping `assert_eq!` (contract test) and dropping the `contains` checks, plus add a one-line comment linking to `emit_deprecation_warning` in crates/reify-compiler/src/lib.rs (~line 4800) so future readers know where the contract is defined. This scenario is the only genuinely new coverage worth keeping under a `task_272_` name — or fold it into the file's \"message format\" section.\n\n8. Remove the `// ── Task 272: five dedicated regression tests ─────` section header (line 333). After consolidation, group tests by behavior (structure use, fn call, trait bound, trait refinement, definition-only, message format, span correctness) matching the existing Step 1 / Step 3 / Step 5 scheme — not by task number.\n\nVerify with `cargo test -p reify-compiler --test deprecated_use_tests` and `cargo fmt --check`.\n\nContext: Task 272 is the @deprecated test work. Dependencies: 271 (implementation).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:31:58.208Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1265",
+        "title": "Polish warning_source_with_width_produces_length_typed_width_cell_with_span test",
+        "description": "Three small polish items on the `warning_source_with_width_produces_length_typed_width_cell_with_span` test in `crates/reify-test-support/src/fixtures.rs` (lines ~1294-1346), flagged by reviewer_comprehensive on Task 1259 (esc-1259-1035). All three target the same small test block and can be a single commit.\n\n**S1 — test_maintainability (lines 1329-1334):** The assertion failure message hard-codes the byte range `(bytes 22..49 in warning_source_with_width())`. The test itself is resilient (it derives `span_text` dynamically from `width_cell.span.start/end`), but this diagnostic comment will silently go stale if `warning_source_with_width()` is ever reformatted. The assertion already prints `{width_cell.span:?}` and the covered text, so the literal byte offsets add little value. Fix: drop the `(bytes 22..49 in warning_source_with_width())` parenthetical from the assertion message.\n\n**S2 — test_naming (line 1295):** The test is named `warning_source_with_width_produces_length_typed_width_cell_with_span`, but now also asserts `ValueCellKind::Param` and `default_expr.is_some()`. The name undersells the extra behaviors covered, making it harder to locate this test when scanning failures for kind/default_expr regressions. Fix: rename to reflect all four assertions, e.g. `warning_source_with_width_param_cell_has_length_type_span_kind_and_default`, OR split into two focused tests (one for span, one for kind/default) if the single name gets unwieldy.\n\n**S3 — robustness (lines 1324-1325, optional):** `&source[width_cell.span.start as usize..width_cell.span.end as usize]` will panic with an opaque out-of-bounds / non-char-boundary message if the compiler ever produces a span outside the source or straddling a multibyte boundary. The fixture is ASCII and the compiler-produced span is in-range today, so this is fine in practice. Optional fix:\n```rust\nlet (start, end) = (width_cell.span.start as usize, width_cell.span.end as usize);\nlet span_text = source.get(start..end).unwrap_or_else(|| {\n    panic!(\"width_cell.span {:?} out of bounds for source of len {}\", width_cell.span, source.len())\n});\n```\n\nVerify with `cargo test -p reify-test-support`.\n\nmemory_hints:\n- search: \"Task 1259 warning_source_with_width test assertions\"\n- file: crates/reify-test-support/src/fixtures.rs:1294",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:31:45.574Z"
+      },
+      {
+        "id": "1266",
+        "title": "verify_uniqueness test helper: doc/naming polish (S1/S3/S4 from Task 1243 review)",
+        "description": "Three small doc/naming polish items on the `assert_verify_uniqueness_aggregated_warn` helper and surrounding section comment in crates/reify-constraints/src/solver.rs, from the reviewer_comprehensive review of Task 1243. Non-blocking; purely readability.",
+        "details": "Source: reviewer_comprehensive review of Task 1243 (esc-1243-1036). Three suggestions:\n\nS1 (solver.rs:942-944, doc forward reference):\n- The helper doc comment at ~L942 says \"See the section comment at `// ---- verify_uniqueness tracing tests ----`\" but that section comment lives ~185 lines later (~L1130).\n- Fix: either (a) inline a 2-line tl;dr of the S3/early-return rationale directly in the helper doc, or (b) say \"see the section comment below, above the `verify_uniqueness_warns_*` tests\" so the pointer is self-locating.\n\nS3 (solver.rs:948, parameter naming):\n- `expected_param_substrings: &[&str]` is slightly misleading — the helper only checks substring presence in the joined WARN text, but all 3 call sites pass `ValueCellId`-style strings (e.g. \"Part.x\").\n- Fix: rename to `expected_missing_param_ids` (matches what callers pass) OR `expected_warn_substrings` (matches what the helper actually checks). Either is fine; pick one.\n\nS4 (solver.rs:1130-1147, section comment load-bearing):\n- The section comment asserts that a `solutions_agree` WARN count on these tests \"would always be 0\" because of the Task 1242 early-return. This is load-bearing — if the early-return invariant ever changes, the comment becomes stale guidance.\n- Fix: add a one-line cross-reference at the end of the section comment to the existing test `verify_uniqueness_skips_solve_core_when_param_missing` at solver.rs:1307, which ALREADY asserts 0 DEBUG events from the `reify_constraints` target (proving solve_core is not invoked). This makes the invariant test-enforced and the section comment self-witnessed.\n- Suggested wording: `// NB: the early-return invariant is directly asserted by `verify_uniqueness_skips_solve_core_when_param_missing` below.`\n\nDismissed from the same review:\n- S2 (test_coverage/strictness at solver.rs:959-968) — reviewer explicitly said \"No change needed if the decoupling is intentional.\" It is intentional per the section comment at L1130-1147, and the S3 substring check already ties each match to a specific missing_params payload.\n\nmemory_hints: search \"Task 1243 verify_uniqueness helper S3 early-return\"; search \"verify_uniqueness_skips_solve_core_when_param_missing test\"\nParent escalation: esc-1243-1036. Reviewer: reviewer_comprehensive. Parent task: 1243.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:29:44.537Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "1267",
+        "title": "Tighten _check_has_no_if_n_guard regex scope and false-positive robustness",
+        "description": "The `_check_has_no_if_n_guard` helper in tests/infra/test_test_helpers.sh:265 uses the regex `if \\[ -n`, which has two related gaps flagged by reviewer_comprehensive on Task 1241:\n\n1. **Alternate guard forms slip through.** The regex only matches the single-bracket single-line `if [ -n` form. Equivalent defensive guards that a future author might (re)introduce without realizing they're prohibited are not caught:\n   - `if [[ -n \"$x\" ]]`\n   - `if test -n \"$x\"`\n   - `if [ ! -z \"$x\" ]`\n   - split-line variants with a newline after `[`\n   The stated intent of the new comment (\"any `if [ -n` conditional regardless of the variable name\") is narrower than the broader goal of banning defensive guards.\n\n2. **False-positive risk from comments and string literals.** Because `grep` inspects every line of the file (including comments and heredocs), a future comment or string literal in `tests/sync_comments_test.sh` containing the literal text `if [ -n` (e.g. a comment explaining *why* the guard was removed) would cause structural check (b) to fail even though no actual guard exists.\n\nResolution: pick one of these approaches and apply it consistently.\n- (a) Extend the regex to e.g. `(if|&&|\\|\\|)[[:space:]]*(\\[\\[?|test)[[:space:]]+-n` to cover `[[` / `test` forms; and anchor to start-of-line (`^[[:space:]]*`) OR strip comment lines before matching (`grep -v '^[[:space:]]*#' | grep -qE ...`) to kill the comment false-positive.\n- (b) Document the limitation explicitly adjacent to `_check_has_no_if_n_guard` so a future contributor debugging a surprising failure finds the explanation, AND add an explicit comment noting that `[[` / `test` forms are intentionally out of scope and must be banned by reviewers rather than the automated check.\n\nIf you choose (a), add fixtures exercising each newly-supported form (`[[`, `test`, `!-z`) in the robustness suite, plus a negative fixture proving a comment line containing `if [ -n` does NOT trip the helper.\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes with the new fixtures.\n\nmemory_hints: search(\"_check_has_no_if_n_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:38:34.835Z",
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
+      },
+      {
+        "id": "1268",
+        "title": "Add positive -z fixture to pin _check_has_no_if_n_guard n/z boundary",
+        "description": "In tests/infra/test_test_helpers.sh:409-417, the current \"clean file\" fixture (`printf '# no guards here\\necho hello\\n'`) only proves `_check_has_no_if_n_guard` tolerates a file with *nothing* that looks like a guard. It does NOT prove the helper tolerates the legitimate early-fail `-z` guards that actually exist in `tests/sync_comments_test.sh` — specifically `[ -z \"$ref_fn\" ]` and `[ -z \"$expr_body\" ]`.\n\nSince the whole point of broadening the regex from `if \\[ -n.*ref` to `if \\[ -n` was to keep `-z` guards allowed while banning `-n` guards, a positive fixture that asserts `_check_has_no_if_n_guard` returns 0 (true) for a file containing `if [ -z \"$ref_fn\" ]; then ...` would directly pin that contract and catch a future over-tightening such as someone broadening the regex to `\\[ -[nz]`.\n\nFix (mirror of the historical-pin test, but in the positive direction):\n```bash\nfixture_z=$(mktemp)\nprintf 'if [ -z \"$ref_fn\" ]; then echo fail; fi\\n' > \"$fixture_z\"\nif _check_has_no_if_n_guard \"$fixture_z\" 2>/dev/null; then\n    check \"if-guard pattern tolerates legitimate -z early-fail guard (should PASS)\" \"true\"\nelse\n    check \"if-guard pattern tolerates legitimate -z early-fail guard\" \"false\"\nfi\nrm -f \"$fixture_z\"\n```\n\nVerification: `bash tests/infra/test_test_helpers.sh` passes; the new fixture asserts TRUE.\n\nFlagged by reviewer_comprehensive on Task 1241.\n\nmemory_hints: search(\"_check_has_no_if_n_guard ref_fn pattern relax sync_comments_test\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:33:23.720Z",
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
+      },
+      {
+        "id": "1269",
+        "title": "Disambiguate 'should FAIL' labels in test_test_helpers.sh guard-detection fixtures",
+        "description": "In tests/infra/test_test_helpers.sh, the four guard-detection fixtures at lines 402-405, 412-415, 424-427, and 439-442 use the phrasing `(should FAIL)` on the `check \"...\" \"false\"` branches. But `check` with `\"false\"` always records a FAIL in test output regardless — the phrasing reads as an instruction when it is actually a branch-taken annotation.\n\nA reader scanning `FAIL: ... (should FAIL)` lines in CI output is likely to misread them as \"expected-to-fail\" tests rather than \"this is the wrong-outcome branch I hope is never taken.\" The new `$marker` and `$_expr_ref_fn` historical-pin tests added in Task 1241 inherit and perpetuate this confusing convention.\n\nFix: rename the wrong-outcome branch labels to be self-explanatory, e.g.:\n- `(wrong: helper said no guard, but guard is present)`\n- `(wrong: helper reported guard in clean file)`\n\nApply consistently to all four guard-detection fixtures. Pre-existing stylistic issue, but since the Task 1241 diff is the last code that added new fixtures inheriting this convention, it's the right place to fix it.\n\nVerification: `bash tests/infra/test_test_helpers.sh` still passes and CI output FAIL lines (if triggered) read unambiguously.\n\nFlagged by reviewer_comprehensive on Task 1241.\n\nmemory_hints: search(\"check function label (should FAIL) guard detection fixture\", project_id=\"reify\")",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:37:49.648Z",
+        "metadata": {
+          "modules": [
+            "tests/infra"
+          ]
+        }
+      },
+      {
+        "id": "1270",
+        "title": "Consolidate field-calculus test helpers and add dimension-guard symmetry",
+        "description": "Follow-up from Task 1230 review (esc-1230-1040). Four related suggestions on crates/reify-expr/tests/field_calculus_tests.rs:\n\nS1 (code_duplication, lines 596-675): `curl_two_element_vector_sample_point_returns_undef` reintroduces ~55 lines of field/lambda/curl-expr construction that Task 1230's refactor had just eliminated. Extract a shared builder — e.g. `build_curl_rotation_field() -> (Value curl_result, Type curl_field_type)` — or let `run_curl_rotation_test` take an `ExpectedCurl { Vec3([f64;3]), Undef }` enum, and have both the happy-path helper and the new regression test call it.\n\nS2 (test_coverage_symmetry, line 595): Only `curl` has a 2-element dimension-guard regression test. `compute_numerical_divergence_at_point` and `compute_numerical_laplacian_at_point` have the same `items.len() == 3` guard and were fixed in the same Task 1220 pass. Add `divergence_two_element_vector_sample_point_returns_undef` and `laplacian_two_element_vector_sample_point_returns_undef` using the corresponding run_*_test helper (ideally via the shared sampler helper from S1).\n\nS3 (test_clarity, lines 651-663): The curl regression test declares the sample point literal's static type as `Type::vec2(Type::Real)` while the curl field's domain is `Type::point3(Type::Real)`. Runtime dispatch only inspects the `Value`, so it still exercises the dimension guard, but the static-type mismatch is subtle. Add a short inline comment above the `CompiledExpr::literal(point, point_literal_type)` call noting that `vec2` is intentional because the declared type here is not used by the curl sample handler — the guard matches on `Value` shape at runtime.\n\nS4 (api_design, line 84): The three helpers take `(point: Value, point_literal_type: Type, label: &str)`, but `point_literal_type` is mechanically `Type::point3(Type::Real)` for `Value::Point` and `Type::vec3(Type::Real)` for `Value::Vector` at every call site. That coupling is implicit and easy to desynchronize. Either derive `point_literal_type` from the `Value` variant inside each helper, or replace the `(Value, Type)` pair with a small `SamplePoint::{Point([f64;3]), Vector([f64;3])}` enum so callers can't desync.\n\nVerify: `cargo test -p reify-expr --test field_calculus_tests` passes after the refactor.\n\nmemory_hints: parent task 1220 + review esc-1230-1040; helper signatures live around lines 84, 354, 536, 730; dimension guards are in `compute_numerical_*_at_point` in crates/reify-expr/src/lib.rs around lines 1325-1720.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:14:49.812Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr"
+          ]
+        }
+      },
+      {
+        "id": "1271",
+        "title": "Sweep remaining Value::Orientation literals in value.rs tests to use orient() helper",
+        "description": "Finish the refactor begun in task 959 (orient() helper extraction) and extended in task 1137. The helper is still not applied uniformly across the `mod tests` block in crates/reify-types/src/value.rs. Replace the remaining `Value::Orientation { w, x, y, z }` literal sites with `orient(w, x, y, z)` calls to reduce verbosity and eliminate split style.\n\nRemaining sites to convert (line numbers approximate, in crates/reify-types/src/value.rs):\n- value_orientation_construction (~3558)\n- value_orientation_eq_same (~3570, 3576)\n- value_orientation_eq_different (~3587, 3593)\n- value_orientation_eq_nan_bitwise (~3605, 3611)\n- value_orientation_eq_neg_zero (~3623, 3629)\n- value_orientation_bit_identity_nan_and_neg_zero_consistent (~3644, 3650, 3662, 3668, 3683, 3689)\n- value_orientation_display (~3747)\n- value_orientation_display_fractional (~3759)\n- value_orientation_content_hash_deterministic (~3772, 3778)\n- value_orientation_content_hash_nan_canonical (~3789, 3795)\n- value_orientation_content_hash_distinct_from_complex (~3807)\n- value_orientation_content_hash_neg_zero (~3823, 3829)\n- value_orientation_as_f64_none (~3840)\n- value_orientation_dimension_dimensionless (~3851)\n- value_range_content_hash_no_collision_with_orientation (~3947) — also rename local `orient` binding\n- value_range_ord_cross_type_after_orientation (~3969) — also rename local `orient` binding\n\nAdditional cleanups to include in the same PR:\n1. **Shadow elimination** — Two pre-existing tests declare `let orient = Value::Orientation { .. }` at ~3947 and ~3969, which now shadow the new `orient()` helper in scope. Converting these to `let orient_v = orient(1.0, 0.0, 0.0, 0.0);` both uses the helper AND removes the shadow.\n2. **Stale comment fix** — The doc comment in `value_orientation_ord_equal_w_different_x` (~3720-3723) still references names `e` and `f` that no longer exist in the source after task 1137's refactor. Either restore `let e = orient(..); let f = orient(..);` bindings or rewrite the comment to describe the literal tuples directly (e.g., \"w=0.5,x=1.0 > w=0.5,x=0.5 once y is tied\").\n\nVerification: `cargo test -p reify-types value_orientation` should pass unchanged. `cargo clippy -p reify-types -- -D warnings` should stay green. A grep for `\\bValue::Orientation \\{` within crates/reify-types/src/value.rs should find zero remaining sites inside `mod tests` after the sweep.\n\nmemory_hints:\n- search: \"orient helper value.rs sweep follow-up\"\n- search: \"task 1137 Orientation Ord refactor\"\n- search: \"task 959 orient helper extraction\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "in-progress",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:21:28.317Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
+      },
+      {
+        "id": "1272",
+        "title": "Harden run_tests isolation + clarify TestResult.diagnostics semantics",
+        "description": "Two related robustness improvements in `crates/reify-eval/src/tests_runner.rs` from Task 268 review:\n\nS1 (lines 48-68): `build_isolated_module` only strips `t.constraints`, `guarded_groups.{constraints,else_constraints}`, and `t.objective` from non-test templates. It does NOT strip `CompiledPort.constraints` or connection-attached constraints (`compatibility_constraint`, `frame_constraint`). This is currently safe only because `Engine::collect_active_constraints()` (crates/reify-eval/src/lib.rs ~line 2743) gathers exclusively from `template.constraints` + `template.guarded_groups`. The coupling is implicit and fragile — if the check pipeline ever extends to port/connection constraints, tests will silently pick up unrelated non-test failures.\n\nAction: (a) add a doc comment in both `build_isolated_module` and `collect_active_constraints` pointing at each other as the shared invariant; and/or (b) defensively clear `t.ports[*].constraints` and any connection-embedded constraint IDs in the strip step.\n\nS2 (lines 115-117): `TestResult.diagnostics` is populated from `check_result.diagnostics`, which includes `eval_result.diagnostics` computed over the entire isolated module. Any eval warning/error from an unrelated non-test template (e.g. a faulty default_expr) therefore leaks into a passing test's diagnostics. The docstring (\"Diagnostics emitted by constraint checking during the test run\") is misleading.\n\nAction: pick one — either filter diagnostics to those originating from the target test template (and its sub-component closure), or update the docstring to state that diagnostics may include eval diagnostics from the whole isolated module. Lock the chosen behavior in with a dedicated test (faulty default_expr in a non-test fixture, passing test, assert leak-or-no-leak).",
+        "details": "",
+        "testStrategy": "",
+        "status": "blocked",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:09:54.332Z",
+        "metadata": {
+          "memory_hints": {
+            "entities": [],
+            "queries": [
+              "resolution for: Harden run_tests isolation + clarify TestResult.diagnostics semantics"
+            ]
+          }
+        }
+      },
+      {
+        "id": "1273",
+        "title": "Optimize run_tests to avoid per-test full CompiledModule clone",
+        "description": "Performance suggestion from Task 268 review (crates/reify-eval/src/tests_runner.rs:78-93).\n\n`run_tests` currently calls `module.clone()` once per test via `build_isolated_module`, then mutates template lists/constraints and constructs a fresh `Engine`. Cost is O(tests × module_size) just for the clones, plus fresh engine re-eval of everything each iteration. Fine for small test suites but will scale poorly as suite/module sizes grow.\n\nProposed approach: build a single shared \"base\" `CompiledModule` with all non-test templates pre-stripped once, then per-test replace just the one retained test template slot (or wrap in a lightweight borrowing newtype). Reduces per-test overhead from a full deep clone to one template swap.\n\nLow priority — defer until there is evidence of a slow test suite. Confirm no behavioral change via the existing integration tests in crates/reify-eval/tests/test_runner.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:12:11.634Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1274",
+        "title": "Fix tautological unit tests in tests_runner.rs",
+        "description": "Test quality cleanup from Task 268 review (crates/reify-eval/src/tests_runner.rs).\n\nS4 (lines 267-279): `build_isolated_module_preserves_shared_infrastructure` asserts `isolated.X.len() == module.X.len()` for `functions`, `fields`, `type_aliases`, `enum_defs`, `trait_defs` — but the inline source only declares a `constraint def` and one `@test structure`. All of those collections are empty in both modules, so assertions reduce to `0 == 0` and prove nothing. Fix: use a source that actually populates each collection (a `fn`, a module-level `field`, a `type` alias, an `enum def`, a `trait def`), or split into per-field tests each with a minimal populating snippet.\n\nS5 (lines 96-103): `test_status_variants_exist_and_are_distinct` is tautological — the variants are distinct by construction via `PartialEq` derive and separate discriminants. The test cannot fail unless a variant is deleted, in which case the file won't compile anyway. Fix: delete the test. The behavior-carrying `compute_status_*` tests already cover all three variants.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:11:14.820Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1275",
+        "title": "Rename tests_runner module to test_runner",
+        "description": "Naming consistency fix from Task 268 review.\n\nThe source module is `crates/reify-eval/src/tests_runner.rs` (plural) while the integration test file is `crates/reify-eval/tests/test_runner.rs` (singular), and the public items (`run_tests`, `TestResult`, `TestStatus`) use singular `test`. The `tests_runner` module name is inconsistent with both the integration test and the public API, and `tests` awkwardly shadows the common unit-test module convention.\n\nAction:\n1. Rename `crates/reify-eval/src/tests_runner.rs` → `crates/reify-eval/src/test_runner.rs`.\n2. Update `pub mod tests_runner;` → `pub mod test_runner;` and any `pub use tests_runner::…` in `crates/reify-eval/src/lib.rs`.\n3. Run `cargo build -p reify-eval` and `cargo test -p reify-eval` to verify.\n\nNo external API changes — the re-exported symbols stay the same.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:45:48.105Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1276",
+        "title": "Strengthen run_tests_propagates_violation_diagnostics assertion",
+        "description": "Test quality improvement from Task 268 review (crates/reify-eval/tests/test_runner.rs:138-151).\n\n`run_tests_propagates_violation_diagnostics` currently only asserts that `diagnostics` is non-empty when a test fails. Because diagnostics flow through `eval_result.diagnostics` over the whole isolated module, an unrelated eval warning could satisfy this assertion — so a regression that zeroed out constraint diagnostics but left an unrelated eval warning would still pass.\n\nAction: assert that at least one diagnostic references the violated constraint — e.g. `id.entity == \"TestA\"` on the constraint result, or that a diagnostic mentions the `Positive` constraint id / text / label. Exact form depends on which Diagnostic fields are populated for constraint violations; inspect `reify_types::Diagnostic` structure.\n\nNote: coordinate with the task that clarifies `TestResult.diagnostics` semantics (S2 follow-up) — if that task decides to filter diagnostics to target-template only, this assertion becomes trivially enforceable.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:48:08.108Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1277",
+        "title": "Add run_tests_simple convenience wrapper for stateless checkers",
+        "description": "Ergonomic suggestion from Task 268 review (crates/reify-eval/src/tests_runner.rs:78-93).\n\n`run_tests` takes `make_checker: FnMut() -> Box<dyn ConstraintChecker>`, called once per test to produce a fresh checker. For stateless checkers (the common case), every call site writes `|| Box::new(SimpleConstraintChecker)` — seven test call sites in `crates/reify-eval/tests/test_runner.rs` already repeat this boilerplate.\n\nAction: add a thin wrapper — `pub fn run_tests_simple(module: &CompiledModule) -> Vec<TestResult> { run_tests(module, || Box::new(SimpleConstraintChecker)) }` — gated on whether `reify-eval` is allowed to depend on `reify-constraints`. If the crate dependency direction forbids that, instead: document the closure idiom at the item level on `run_tests` and leave callers as-is.\n\nUpdate all seven integration test call sites to use the new wrapper once added.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [
+          "268"
+        ],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T03:48:16.624Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1278",
+        "title": "Fix Rust grammar qualifier order in sync_comments_test.sh fn-existence regex",
+        "description": "Follow-up from Task 1174 review (esc-1174-1043, S1). The fn-existence regex at tests/sync_comments_test.sh:39 hardcodes the alternation order `(unsafe)? (const)? (async)? fn`, but Rust's actual grammar order is `const? async? unsafe? fn`. Combinations like `const unsafe fn foo(...)` and `async unsafe fn foo(...)` are legal Rust but would silently fail to match the current regex.\n\nCurrent regex:\n```\n^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?(unsafe[[:space:]]+)?(const[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+\n```\n\nNot currently a bug because the sanitize_value definitions in reify-expr/reify-stdlib don't use those combinations, but it's a latent false-negative that silently weakens the SYNC comment checker.\n\nFix options:\n1. Reorder alternation groups to match Rust grammar: `(const)? (async)? (unsafe)? fn`.\n2. Switch to an orderless match: `(pub(\\([^)]*\\))?|unsafe|const|async)([[:space:]]+(pub(\\([^)]*\\))?|unsafe|const|async))*[[:space:]]+fn`.\n\nOption 2 is more robust but harder to read; option 1 is a minimal change. Pick one and apply consistently.\n\nRequired meta-test additions in tests/infra/test_sync_comments_grep.sh:\n- accept: `const unsafe fn sanitize_value(`\n- accept: `async unsafe fn sanitize_value(`\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1174-1043 (steward-triage from Task 1174 post-merge review)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "source": "steward-triage",
+          "modules": [
+            "tests",
+            "tests/infra"
+          ],
+          "parent_escalation": "esc-1174-1043",
+          "parent_task": 1174
+        }
+      },
+      {
+        "id": "1279",
+        "title": "Add pub+modifier accept tests and PATTERN extraction sanity check in test_sync_comments_grep.sh",
+        "description": "Follow-up from Task 1174 review (esc-1174-1043, S2 + S3). Two small meta-test improvements to tests/infra/test_sync_comments_grep.sh:\n\n**S2 — Additional pub+modifier accept cases (after line 93):**\nTask 1174 added `pub(crate) const fn` and `pub(crate) unsafe fn` accept assertions, but the equally important `pub(crate) async fn` and `pub(super) const fn` combinations are still untested. Add:\n- `accepts: pub(crate) async fn sanitize_value(`\n- `accepts: pub(super) const fn sanitize_value(`\nThese close the remaining symmetric holes in the visibility+modifier cross-product.\n\n**S3 — PATTERN extraction sanity check (after line 44):**\nThe PATTERN extraction sed pipeline is coupled to the exact literal form `'\"${ref_fn}\"'` in sync_comments_test.sh. If the source file is ever refactored (e.g. different variable name, or unquoted `${ref_fn}`), the substitution `s/'\"[^\"]*\"'/sanitize_value/` will silently fail to replace, leaving literal `${ref_fn}` in `$PATTERN` and producing a wall of confusing fixture-failure noise. The existing early-exit guard on line 40 only catches an empty PATTERN, not a malformed one.\n\nAdd after the existing `pattern extraction ... succeeded` assertion:\n```bash\nassert \"extracted pattern contains expected fn name\" \\\n    bash -c \"[[ \\\"$PATTERN\\\" == *sanitize_value* ]]\"\n```\n\nVerify with: `bash tests/infra/test_sync_comments_grep.sh`\n\nSource: esc-1174-1043 (steward-triage from Task 1174 post-merge review)",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "metadata": {
+          "source": "steward-triage",
+          "modules": [
+            "tests/infra"
+          ],
+          "parent_escalation": "esc-1174-1043",
+          "parent_task": 1174
+        }
+      },
+      {
+        "id": "1280",
+        "title": "Reconcile self.items vs bare items asymmetry in entity scope",
+        "description": "In crates/reify-compiler/src/lib.rs, the bare-identifier path (ExprKind::Ident, lines ~2229-2247) resolves a collection sub name like `items` to a List<T> value cell (`__list_{name}__{first_member}`), so `let x = items` is valid inside a structure. Task 1125 made the equivalent `self.items` (MemberAccess branch at lines ~2737-2750) an error telling users to switch to indexed access. Since `self.member` is otherwise equivalent to bare `member` in entity scope (see the step-11 self.param equivalence test), this inconsistency is surprising: a refactor from `items` to `self.items` will break with a message that tells users to change form entirely.\n\nDecide and implement one of:\n  (a) Make `self.items` resolve to the same List<T> value cell as bare `items` (mirror the bare-ident logic inside the `self.member` branch at ~line 2737: look up collection_sub_member_types[member], return a ValueRef to `__list_{member}__{first_member}` with type List<T>).\n  (b) Also error on bare `items` so the rule is uniform, and document the rationale.\n\nAdd a test pinning whichever direction is chosen, and keep parity with the existing step-11 self.param equivalence test.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; inspect lib.rs ExprKind::Ident collection_sub_names branch near 2229, and MemberAccess self.member branch near 2737.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:12:54.373Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1281",
+        "title": "Polish error branches in self-collection-sub resolution",
+        "description": "Follow-up cleanup for the Task 1125 guards in crates/reify-compiler/src/lib.rs:\n\n1. **Error-recovery type fallbacks (lines ~2749 and ~2829)** — both error branches return `CompiledExpr::literal(Value::Undef, Type::Real)`, which cascades type-mismatch diagnostics into downstream expressions expecting the collection element type or List<T>. Mirror the lookup already used at ~line 2860-2877:\n   - For the nested `self.items.diameter` case: `scope.collection_sub_member_types.get(sub_name).and_then(|m| m.get(member)).cloned().unwrap_or(Type::Real)`.\n   - For the direct `self.items` case: `Type::List(Box::new(Type::StructureRef(...)))` using the collection's declared element structure.\n\n2. **Misleading error text for aggregation members (lines ~2818-2823)** — For `self.items.count` / `.sum` / `.keys` / `.values`, the current message reads `use items[i].count for a specific instance`, but these are aggregations, not per-instance fields. Special-case `member` ∈ {\"count\",\"sum\",\"keys\",\"values\"}: recommend `{sub_name}.{member}` (drop the `self.`). Alternative: emit both options in the message.\n\n3. **Deduplicate pattern matching (lines ~2776-2830)** — the new error branch re-destructures the same `MemberAccess { MemberAccess { Ident(\"self\"), sub_name }, member }` pattern as the preceding success branch, and 2783 also has a redundant `!collection_sub_names.contains` guard alongside the separate collection-sub error branch. Collapse into a single if-let that branches internally: `if collection_sub_names.contains(sub_name) { emit error } else if sub_component_types.contains_key(sub_name) { resolve member }`. Apply the same simplification to the `self.member` branch at ~2723-2750.\n\n4. **Comment consolidation (lines ~2720-2724)** — the pre-existing comment about \"Check for self.sub.member chaining (handled at outer level)\" now sits awkwardly with the added collection-sub guard comment. Rewrite as a single comment: `// self.sub — for single-instance subs only, return a StructureRef so outer chaining works. Collection subs are handled by the error branch below (use indexed access instead).`\n\nAdd/extend unit tests so diagnostics for `self.items.count` and `self.items` assert the new (more precise) fallback types propagate without cascading noise.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:13:16.775Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1282",
+        "title": "Close test gaps around self-collection-sub guard",
+        "description": "Extend crates/reify-compiler/tests/self_keyword_tests.rs with the coverage gaps the reviewer flagged on Task 1125 (lines ~356-459):\n\n1. Negative test for `self.items.count` / `self.items.sum` — pins the current (or improved) error message so a future fix is deliberate. Pair this with whatever is decided in the aggregation-error-message cleanup task.\n2. Test for `self.items[0].diameter` (MemberAccess over IndexAccess over MemberAccess(self, items)) — currently likely falls through the new error branches; document whether it errors or works, and assert which.\n3. Exact-count assertion: verify the collection-sub error branches emit exactly ONE error diagnostic (a doubly-matched pattern could double-push).\n4. Replace fragile `msg.contains(\"items\") && contains(\"collection\"|\"indexed\"|\"index\")` substring checks with a DiagnosticLabel-span assertion or a more specific prefix like `cannot access ... collection sub`.\n5. Regression guard: add a mixed-scope test containing BOTH `sub bolt = Bolt()` and `sub items : List<Bolt>`, asserting that `self.bolt.d` still resolves correctly while `self.items` errors — i.e. a sibling single-instance sub with a colliding member name is not affected by the collection-sub guard.\n\nmemory_hints: search \"collection sub self keyword resolution\" in reify project; look at self_keyword_tests.rs:356-459 for existing test patterns.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:11:56.161Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler"
+          ]
+        }
+      },
+      {
+        "id": "1283",
+        "title": "Reconcile verify_uniqueness warn test block: stale comment, verdict-policy consistency, non-numeric coverage",
+        "description": "Three interrelated follow-up suggestions from reviewer_comprehensive on Task 1249 (which itself folded Task 1234's review). All three address the same test block in crates/reify-constraints/src/solver.rs (roughly lines 1141-1372) and should be done together to avoid merge conflicts and to pick a coherent verdict-coverage policy in one pass.\n\n(S1 — stale comment in happy-path test) In `verify_uniqueness_no_warn_when_param_has_valid_f64` (~line 1214), the NB comment block (~lines 1247-1252) still says `` `_unique` keeps captured-value symmetry with the sibling tests `` but Task 1249 already renamed the binding from `_unique` to `_`. The sibling warn tests were also renamed from `let unique = ...` to `let _ = ...` in that same diff, so the \"symmetry\" clause is stale in two ways: the name doesn't exist, and the \"symmetry\" it claims is now \"all bindings are `_`\". Rewrite the comment to drop the `_unique`/symmetry framing and keep only the substantive point: the test's contract is the *absence* of the fallback warn on the happy-path `as_f64() == Some` branch, not any uniqueness verdict. (Do NOT restore the `_unique` binding — `let _ = expr` is idiomatic per Task 1249's S3 rationale.)\n\n(S2 — verdict-policy consistency) `verify_uniqueness_aggregates_warn_for_multiple_missing_params` (~line 1261) still has `assert!(!unique, ...)` at ~line 1297, even though Task 1249 removed the equivalent assertion from the two single-param warn tests on the grounds that the verdict is implicitly coupled to `solve_core` converging on the perturbed point. The exact same fragility applies to the aggregation test (trivial no-constraint problem, perturbation anchor falls back to midpoint for both params). The current mix is inconsistent. Pick one policy and apply it uniformly:\n  (a) Preferred: also drop `assert!(!unique, ...)` from the aggregation test and change `let unique = ...` to `let _ = ...` there, so all three warn-focused tests share a single \"verdict is out-of-contract\" posture. Verdict coverage for the missing-param case is already provided deterministically by `verify_uniqueness_skips_solve_core_when_param_missing` (~line 1314), which uses a `CountingSubscriberBuilder` to prove the early-return via DEBUG==0 and asserts `!unique`.\n  (b) Alternative: restore the assertions in the two single-param tests. Only pick this if review concludes the fragility concern is hypothetical and convergence on the trivial problem is guaranteed. This is NOT the recommended path because it undoes Task 1249 S1.\n\n(S3 — non-numeric verdict coverage gap) The single-param **non-numeric** (`Value::Undef` → `as_f64() == None`) path has no verdict assertion anywhere in the test suite after Task 1249. The single-param **missing** path is still covered by `verify_uniqueness_skips_solve_core_when_param_missing`, and the multi-missing path is covered by the aggregation test (in option 2a above, only until we drop the verdict there — at which point it'd have to also move to a deterministic test). Add a dedicated `verify_uniqueness_skips_solve_core_when_param_non_numeric` test modeled on `verify_uniqueness_skips_solve_core_when_param_missing` (~line 1314): same CountingSubscriberBuilder setup counting WARN+DEBUG with target_prefix \"reify_constraints\", same WARN==1 / DEBUG==0 / !unique assertions, but with `solved_values` containing `Value::Undef` for the single param instead of being empty. This closes the non-numeric verdict-coverage gap and proves the early-return path fires deterministically for that branch too.\n\nAll three suggestions are test-only, single-file (`crates/reify-constraints/src/solver.rs`), and small. Expected net diff: rewrite a ~6-line comment block, delete one `assert!(!unique)` line + rename one `let` binding, add one ~60-line test function.\n\nVerification: `cargo test -p reify-constraints verify_uniqueness`\n\nParent: Task 1249 (which itself is the follow-up to Task 1234's review). Reviewer: reviewer_comprehensive (S1 + S2 + S3 on Task 1249's diff).\n\nmemory_hints: get_task \"1249\", get_task \"1234\", search \"verify_uniqueness solve_core early return skip test\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:13:37.834Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-constraints"
+          ]
+        }
+      },
+      {
+        "id": "1284",
+        "title": "Add NaN-canonicalization cross-ref comment and early-cutoff test in cache.rs",
+        "description": "Two improvements to `crates/reify-eval/src/cache.rs` strengthening the link between the cache's hash-only early-cutoff and the NaN-canonicalization invariant documented in `Value::content_hash`:\n\n1. **Inline cross-reference comment (lines 222-223):** The `record_evaluation` method performs hash-only comparison for early cutoff. `value.rs` already documents this call site as a \"Known intentional exception\" (lines 321-328), but someone reading `cache.rs` alone would not know about the NaN invariant exception. Add a brief comment near the hash comparison, e.g.: `// Hash-only cutoff is intentional; NaN payloads are canonicalized by content_hash. See Value::content_hash doc.`\n\n2. **End-to-end NaN early-cutoff test:** The existing tests in `value.rs` (`nan_payload_hash_equality_invariant_exception`) verify the NaN hash-equality exception at the Value layer only. Add a test in `cache.rs` that records two evaluations whose results differ only in NaN payload and asserts the second returns `EvalOutcome::Unchanged`, confirming the documented intentional behaviour end-to-end.\n\nMemory hints: search \"Value content_hash NaN canonicalization hash-equality invariant\", search \"cache record_evaluation early cutoff hash\", get_entity \"CacheStore\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:15:48.209Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval"
+          ]
+        }
+      },
+      {
+        "id": "1285",
+        "title": "Clean up assert_ord_consistent meta-tests: remove redundant symmetric test, add Real edge cases",
+        "description": "Three small cleanups in `crates/reify-types/src/value.rs` assert_ord_consistent meta-tests (from task 1158 review):\n\n1. **Remove `test_assert_ord_consistent_equal_symmetric`** (lines ~2604-2616): Redundant with `test_assert_ord_consistent_equal` — both call `assert_ord_consistent(&Value::Int(5), &Value::Int(5), true)`. The direct `a.cmp(&b)`/`b.cmp(&a)` assertions duplicate what the strengthened helper already checks. The stale \"after step-2\" comment is also resolved by deletion.\n\n2. **Add Real edge-case pairs to meta-tests** (near line ~2623): Add `assert_ord_consistent` calls for:\n   - `Value::Real(-0.0)` vs `Value::Real(0.0)` with `expect_equal: false` (bit-distinct but IEEE-equal)\n   - `Value::Real(f64::NAN)` vs `Value::Real(f64::NAN)` with `expect_equal: true` (bit-identical, to_bits equality)\n   \n   These exercise the `to_bits()`-based PartialEq path for bare Real variants — currently only covered for Scalar in `value_scalar_bit_identity_neg_zero_and_nan_consistent`.\n\nMemory hints: search \"Value bit-identity test helper assert_ord_consistent\", search \"Real Scalar to_bits neg_zero NaN edge case\"",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": [],
+        "updatedAt": "2026-04-09T04:23:40.727Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-types"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T02:52:25.251Z",
-      "taskCount": 1250,
-      "completedCount": 927,
+      "lastModified": "2026-04-09T04:23:40.727Z",
+      "taskCount": 1285,
+      "completedCount": 952,
       "tags": [
         "master"
       ]

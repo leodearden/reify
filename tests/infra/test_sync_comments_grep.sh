@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Meta-test: verify the fn-existence grep pattern in sync_comments_test.sh is
 # POSIX-portable (no \b word-boundary, no grep -P) and correctly anchors the
-# function name with [[:space:](] instead.
+# function name with [[:space:](<] instead.
 #
 # Section 1 — fixture assertions — exercise the expected regex literal against
 #   synthetic strings and pass on any version of sync_comments_test.sh.
@@ -25,7 +25,7 @@ echo "--- Section 1: fixture accept/reject assertions (regex correctness) ---"
 
 # Extract the fn-existence regex from sync_comments_test.sh at runtime so
 # the meta-test stays coupled to the real test.  Pipeline:
-#   1. find the grep -qE invocation line that contains [[:space:](]
+#   1. find the grep -qE invocation line that contains [[:space:](<]
 #   2. strip the leading 'grep -qE '' prefix
 #   3. strip the trailing '' "$filename"' suffix
 #   4. replace the shell variable reference (e.g. '"${ref_fn}"') with 'sanitize_value'
@@ -86,6 +86,12 @@ assert "accepts: const fn sanitize_value(" \
 assert "accepts: fn sanitize_value<T>(" \
     bash -c "printf '%s\n' 'fn sanitize_value<T>(v: T) -> T {' | grep -qE '$PATTERN'"
 
+assert "accepts: pub(crate) const fn sanitize_value( (pub+const combination)" \
+    bash -c "printf '%s\n' 'pub(crate) const fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "accepts: pub(crate) unsafe fn sanitize_value( (pub+unsafe combination)" \
+    bash -c "printf '%s\n' 'pub(crate) unsafe fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 # -- Reject cases: pattern must NOT match these strings ------------------------
 
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
@@ -105,6 +111,9 @@ assert "rejects: fnsanitize_value( (no space between fn keyword and name)" \
 
 assert "rejects: my_fn sanitize_value( (false-prefix before fn keyword)" \
     bash -c "! printf '%s\n' 'my_fn sanitize_value(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "rejects: fn sanitize_value_raw<T>( (suffixed name that is also generic)" \
+    bash -c "! printf '%s\n' 'fn sanitize_value_raw<T>(v: T) -> T {' | grep -qE '$PATTERN'"
 
 echo ""
 echo "--- Section 2: sync_comments_test.sh source-file consistency ---"
