@@ -169,6 +169,36 @@ pub struct CompiledModule {
     pub content_hash: ContentHash,
 }
 
+impl CompiledModule {
+    /// Returns all templates tagged with `@test`.
+    ///
+    /// This is the canonical filter for test entities — consumers should prefer
+    /// this over scanning `template.annotations` manually. Per Task 267, test
+    /// entities are excluded from the normal evaluation graph.
+    pub fn test_templates(&self) -> Vec<&TopologyTemplate> {
+        self.templates.iter().filter(|t| t.is_test).collect()
+    }
+
+    /// Returns all templates NOT tagged with `@test`.
+    ///
+    /// These are the templates that participate in the normal evaluation graph.
+    pub fn non_test_templates(&self) -> Vec<&TopologyTemplate> {
+        self.templates.iter().filter(|t| !t.is_test).collect()
+    }
+
+    /// Returns all constraint defs tagged with `@test`.
+    ///
+    /// Uses `ConstraintDef::is_test()` as the canonical predicate.
+    pub fn test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| d.is_test()).collect()
+    }
+
+    /// Returns all constraint defs NOT tagged with `@test`.
+    pub fn non_test_constraint_defs(&self) -> Vec<&reify_syntax::ConstraintDef> {
+        self.constraint_defs.iter().filter(|d| !d.is_test()).collect()
+    }
+}
+
 /// Whether a TopologyTemplate was compiled from a structure or an occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityKind {
