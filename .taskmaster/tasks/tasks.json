@@ -26200,11 +26200,16 @@
         "description": "In crates/reify-eval/src/lib.rs:\n1. Extract const DEGENERATE_GEOMETRY_EPSILON: f64 = 1e-12; with a doc-comment ('sub-picometer / sub-picoradian magnitudes treated as numerical noise') near the top of the module, and use it at the three inline 1e-12 sites (extrude distance ~line 3647, axis magnitude ~line 3663, revolve angle ~line 3667).\n2. Add brief '// See task 1198 for boundary + negative-near-zero test coverage' comments at the two degenerate-geometry tests (~lines 4481, 4551) so the gap is visible at the test site.\nNote: task 1199 tracks diagnostics/documentation and task 1198 tracks boundary tests — this covers the constant extraction (not in either task) and cross-reference comments.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T08:14:04.837Z"
+        "updatedAt": "2026-04-09T08:17:15.481Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-eval/src"
+          ]
+        }
       },
       {
         "id": "1302",
@@ -26277,7 +26282,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:16:55.377Z",
+      "lastModified": "2026-04-09T08:17:15.482Z",
       "taskCount": 1305,
       "completedCount": 969,
       "tags": [
