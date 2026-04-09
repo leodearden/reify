@@ -1095,12 +1095,23 @@ mod tests {
         let solved_values: HashMap<ValueCellId, reify_types::Value> = HashMap::new();
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
-        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
-        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+        // Assert only on the verify_uniqueness fallback warn; decoupled from any
+        // downstream solutions_agree warn behavior which may change independently.
+        let n_matching = capture
+            .messages()
+            .iter()
+            .filter(|m| m.contains("falling back to mid"))
+            .count();
+        assert_eq!(
+            n_matching,
+            1,
+            "expected exactly 1 'falling back to mid' warn from verify_uniqueness"
+        );
+        assert!(!unique, "missing solved value should cause uniqueness check to fail");
     }
 
     #[test]
@@ -1131,12 +1142,23 @@ mod tests {
         solved_values.insert(param_id.clone(), Value::Undef);
 
         let (subscriber, capture) = warn_capturing_subscriber();
-        tracing::subscriber::with_default(subscriber, || {
-            let _ = verify_uniqueness(&problem, &solved_values);
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved_values)
         });
 
-        // 1 warn from verify_uniqueness (new) + 1 warn from solutions_agree (existing)
-        capture.assert_count_and_any_message_contains(2, "falling back to mid");
+        // Assert only on the verify_uniqueness fallback warn; decoupled from any
+        // downstream solutions_agree warn behavior which may change independently.
+        let n_matching = capture
+            .messages()
+            .iter()
+            .filter(|m| m.contains("falling back to mid"))
+            .count();
+        assert_eq!(
+            n_matching,
+            1,
+            "expected exactly 1 'falling back to mid' warn from verify_uniqueness"
+        );
+        assert!(!unique, "non-numeric solved value should cause uniqueness check to fail");
     }
 
     #[test]
