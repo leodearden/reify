@@ -78,3 +78,45 @@ fn occurrence_marked_is_test_when_test_annotation_present() {
         "expected is_test == true for @test-annotated occurrence"
     );
 }
+
+// ── Step 5: ConstraintDef::is_test() helper ──────────────────────────────────
+
+#[test]
+fn constraint_def_is_test_returns_true_when_test_annotation() {
+    let source = "@test constraint def MinWall { param x : Length\n x > 0 }";
+    let parsed =
+        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let def = parsed
+        .declarations
+        .iter()
+        .find_map(|d| {
+            if let reify_syntax::Declaration::Constraint(c) = d {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintDef");
+    assert!(def.is_test(), "expected is_test() == true for @test constraint def");
+}
+
+#[test]
+fn constraint_def_is_test_returns_false_without_annotation() {
+    let source = "constraint def MinWall { param x : Length\n x > 0 }";
+    let parsed =
+        reify_syntax::parse(source, reify_types::ModulePath::single("test_marker_test"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let def = parsed
+        .declarations
+        .iter()
+        .find_map(|d| {
+            if let reify_syntax::Declaration::Constraint(c) = d {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .expect("expected a ConstraintDef");
+    assert!(!def.is_test(), "expected is_test() == false for unannotated constraint def");
+}
