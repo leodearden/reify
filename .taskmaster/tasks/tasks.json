@@ -26034,8 +26034,12 @@
           "modules": [
             "crates/reify-compiler",
             "crates/reify-syntax",
-            "crates/reify-test-support",
-            "crates/reify-types"
+            "crates/reify-test-support"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-syntax/src/lib.rs",
+            "crates/reify-test-support/src/builders/topology.rs"
           ]
         }
       },
@@ -26053,8 +26057,11 @@
         "metadata": {
           "modules": [
             "crates/reify-compiler",
-            "crates/reify-syntax",
-            "crates/reify-test-support"
+            "crates/reify-syntax"
+          ],
+          "files": [
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-syntax/src/lib.rs"
           ]
         }
       },
