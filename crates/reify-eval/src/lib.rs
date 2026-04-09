@@ -5053,6 +5053,61 @@ mod tests {
         );
     }
 
+    // ── missing-arg diagnostic tests for Transform/Pattern/Sweep ─────────────
+
+    #[test]
+    fn compile_geometry_op_transform_translate_missing_arg_emits_diagnostic() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // Translate with only dx — missing dy, dz
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("dx".into(), literal_f64(1.0))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // Still returns None (Transform short-circuits on missing f64 args)
+        assert!(
+            result.is_none(),
+            "missing dy/dz should still return None, got {:?}",
+            result
+        );
+
+        // But now exactly one diagnostic warning should be emitted for the first missing arg 'dy'
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one diagnostic for missing 'dy', got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_types::Severity::Warning,
+            "expected Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("dy"),
+            "diagnostic message should mention 'dy', got: {}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0].message.contains("Translate"),
+            "diagnostic message should mention 'Translate', got: {}",
+            diagnostics[0].message
+        );
+    }
+
     // ── guard_state_fingerprint unit tests ────────────────────────────────────
 
     fn make_guard_group(entity: &str, member: &str) -> GuardedGroupInfo {
