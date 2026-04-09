@@ -1,7 +1,7 @@
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_types::{ConstraintChecker, Diagnostic, Satisfaction};
 
-use crate::ConstraintCheckEntry;
+use crate::{ConstraintCheckEntry, Engine};
 
 /// Overall status of a single `@test` entity run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +75,34 @@ pub struct TestResult {
     pub diagnostics: Vec<Diagnostic>,
     /// Per-constraint satisfaction entries from the test template.
     pub constraint_results: Vec<ConstraintCheckEntry>,
+}
+
+/// Run all `@test`-annotated structure/occurrence templates in `module`,
+/// returning one `TestResult` per test.
+///
+/// Each test is evaluated in an isolated `Engine` instance (no state leaks
+/// between tests) against a `CompiledModule` that contains the target test
+/// template plus non-test templates (with their constraints stripped so only
+/// the test's own constraints fire). `make_checker` is called once per test
+/// to produce a fresh `Box<dyn ConstraintChecker>`; stateless checkers like
+/// `SimpleConstraintChecker` can return `Box::new(SimpleConstraintChecker)`.
+pub fn run_tests<F>(module: &CompiledModule, mut make_checker: F) -> Vec<TestResult>
+where
+    F: FnMut() -> Box<dyn ConstraintChecker>,
+{
+    let mut results = Vec::new();
+    for test_template in module.test_templates() {
+        let isolated = build_isolated_module(module, test_template);
+        let mut engine = Engine::new(make_checker(), None);
+        let check_result = engine.check(&isolated);
+        results.push(TestResult {
+            name: test_template.name.clone(),
+            status: compute_status(&check_result.constraint_results),
+            diagnostics: check_result.diagnostics,
+            constraint_results: check_result.constraint_results,
+        });
+    }
+    results
 }
 
 #[cfg(test)]

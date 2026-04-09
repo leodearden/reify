@@ -6,6 +6,7 @@ pub mod graph;
 pub mod journal;
 pub mod snapshot;
 pub mod tests_runner;
+pub use tests_runner::{TestResult, TestStatus, run_tests};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
