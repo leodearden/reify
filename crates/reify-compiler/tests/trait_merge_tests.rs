@@ -70,15 +70,15 @@ structure def S : HasArea + AlsoHasArea {
 #[test]
 fn let_defaults_same_name_different_type_error() {
     let source = r#"
-trait A {
+trait TraitAlpha {
     let x : Length = 5mm
 }
 
-trait B {
+trait TraitBeta {
     let x : Mass = 1kg
 }
 
-structure def U : A + B {
+structure def U : TraitAlpha + TraitBeta {
 }
 "#;
 
@@ -96,6 +96,11 @@ structure def U : A + B {
         "error should mention 'conflicting', got: {}",
         error_msg
     );
+    assert!(
+        error_msg.contains("TraitAlpha") && error_msg.contains("TraitBeta"),
+        "error should name both conflicting traits TraitAlpha and TraitBeta, got: {}",
+        error_msg
+    );
 }
 
 /// Step 4: Trait A has `let x : Real = width + 1`, trait B has `let x : Real = width * 2`.
@@ -104,15 +109,15 @@ structure def U : A + B {
 #[test]
 fn let_defaults_same_name_same_type_different_expr_error() {
     let source = r#"
-trait A {
+trait TraitGamma {
     let x : Real = width + 1.0
 }
 
-trait B {
+trait TraitDelta {
     let x : Real = width * 2.0
 }
 
-structure def V : A + B {
+structure def V : TraitGamma + TraitDelta {
     param width : Real = 5.0
 }
 "#;
@@ -132,6 +137,11 @@ structure def V : A + B {
     assert!(
         error_msg.contains("conflicting"),
         "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("TraitGamma") && error_msg.contains("TraitDelta"),
+        "error should name both conflicting traits TraitGamma and TraitDelta, got: {}",
         error_msg
     );
 }
@@ -155,7 +165,7 @@ structure def W : NeedsX + ProvidesX {
 }
 "#;
 
-    let (_, diagnostics) = compile_first_template(source);
+    let (template, diagnostics) = compile_first_template(source);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -165,6 +175,184 @@ structure def W : NeedsX + ProvidesX {
         errors.is_empty(),
         "expected 0 errors (default from ProvidesX satisfies NeedsX requirement), got: {:?}",
         errors
+    );
+
+    // The default from ProvidesX should be materialized as a Param value cell
+    // on W, not silently discarded.
+    let x_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|vc| vc.id.member == "x")
+        .collect();
+    assert_eq!(
+        x_cells.len(),
+        1,
+        "expected exactly 1 'x' value cell from cross-trait default, got {}",
+        x_cells.len()
+    );
+    assert_eq!(
+        x_cells[0].kind,
+        ValueCellKind::Param,
+        "cross-trait default was a param, should materialize as Param cell"
+    );
+}
+
+/// Trait A requires `param x : Length` (no default),
+/// trait B provides `param x : Mass = 1kg` (wrong-typed default).
+/// Structure implements both with empty body — the default from B has
+/// the wrong type, so the cross-trait satisfaction path should emit a
+/// type-mismatch error (the `available_defaults` wrong-type branch).
+#[test]
+fn requirement_type_mismatch_from_cross_trait_default() {
+    let source = r#"
+trait NeedsX {
+    param x : Length
+}
+
+trait ProvidesWrongX {
+    param x : Mass = 1kg
+}
+
+structure def X : NeedsX + ProvidesWrongX {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected type-mismatch error for wrong-typed cross-trait default"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("type mismatch") && error_msg.contains("'x'"),
+        "error should mention 'type mismatch' and member 'x', got: {}",
+        error_msg
+    );
+}
+
+/// Trait A requires `param x : Real` (a param-shaped slot, no default),
+/// trait B provides `let x : Real = 42.0` (a let default).
+/// A param requirement cannot be satisfied by a let default — a let is
+/// not externally settable. Expect a "missing required member" error.
+///
+/// Before the kind-mismatch fix, this silently type-checked because
+/// `available_defaults` matched by name+type only.
+#[test]
+fn param_requirement_not_satisfied_by_let_default() {
+    let source = r#"
+trait NeedsParamX {
+    param x : Real
+}
+
+trait ProvidesLetX {
+    let x : Real = 42.0
+}
+
+structure def Y : NeedsParamX + ProvidesLetX {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected error: let default should not satisfy param requirement"
+    );
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("missing required member") && error_msg.contains("'x'"),
+        "error should report missing required member 'x', got: {}",
+        error_msg
+    );
+}
+
+// NOTE: The symmetric test `let_requirement_not_satisfied_by_param_default` is omitted
+// because the reify trait DSL has no syntax for `let x : Type` without a value expression
+// (let bindings always require `= expr`). Thus RequirementKind::Let is not currently
+// reachable from the parser/compiler for this case. If that syntax is added in the future,
+// add the symmetric test here.
+
+/// Trait A requires `param x : Length`, trait B requires `param x : Mass`.
+/// The two requirements conflict. The diagnostic must name BOTH traits —
+/// not just say "conflicting traits" without identifying which.
+#[test]
+fn conflicting_param_requirements_names_traits() {
+    let source = r#"
+trait HasLengthX {
+    param x : Length
+}
+
+trait HasMassX {
+    param x : Mass
+}
+
+structure def C : HasLengthX + HasMassX {
+    param x : Length = 5mm
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("conflicting"),
+        "error should mention 'conflicting', got: {}",
+        error_msg
+    );
+    assert!(
+        error_msg.contains("HasLengthX") && error_msg.contains("HasMassX"),
+        "error should name both conflicting traits HasLengthX and HasMassX, got: {}",
+        error_msg
+    );
+}
+
+/// Trait A has `param x : Length = 1mm`, trait B has `param x : Mass = 1kg`.
+/// Conflicting defaults (different types). Diagnostic must name both traits.
+#[test]
+fn conflicting_param_defaults_names_traits() {
+    let source = r#"
+trait LengthDefault {
+    param x : Length = 1mm
+}
+
+trait MassDefault {
+    param x : Mass = 1kg
+}
+
+structure def D : LengthDefault + MassDefault {
+}
+"#;
+
+    let (_, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(!errors.is_empty(), "expected conflict diagnostic");
+
+    let error_msg = format!("{:?}", errors);
+    assert!(
+        error_msg.contains("LengthDefault") && error_msg.contains("MassDefault"),
+        "error should name both conflicting traits LengthDefault and MassDefault, got: {}",
+        error_msg
     );
 }
 
