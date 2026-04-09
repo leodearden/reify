@@ -1357,22 +1357,6 @@ mod tests {
         assert_missing_err(result, &cell_id, "add_auto_coord");
     }
 
-    /// add_auto_coord must return a BuilderError carrying the original
-    /// ValueCellId when a non-auto cell_id is absent from current_values,
-    /// preserving the id as typed data for downstream consumers.
-    #[test]
-    fn add_auto_coord_returns_builder_error_with_cell_id() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Test", "x");
-
-        let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
-
-        let err = result.expect_err("expected Err, got Ok");
-        assert_eq!(
-            err.cell_id, cell_id,
-            "error should carry the original cell_id"
-        );
-    }
-
     /// Error from add_auto_coord should propagate through add_point and
     /// add_pattern_to_builder back to the caller. This verifies the error
     /// propagation chain used by solve()'s Err(reason) arm, exercised via
