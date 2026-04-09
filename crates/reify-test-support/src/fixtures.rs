@@ -1217,4 +1217,12 @@ mod tests {
         assert_eq!(node_b.sub_components[0].name, "ref_back");
         assert_eq!(node_b.sub_components[0].structure_name, "NodeA");
     }
+
+    #[test]
+    fn warning_source_is_well_formed() {
+        let source = warning_source();
+        assert!(source.contains("structure def S"));
+        assert!(source.contains("port mount : NonExistentTrait"));
+        assert!(source.contains("param d : Length = 5mm"));
+    }
 }
