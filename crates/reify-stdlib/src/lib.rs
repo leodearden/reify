@@ -16,41 +16,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     if let Some(v) = numeric::dispatch(name, args) {
         return v;
     }
+    if let Some(v) = trig::dispatch(name, args) {
+        return v;
+    }
     match name {
-        // --- Trig functions: accept Angle Scalar or bare Real (radians) ---
-        "sin" => unary(args, |v| {
-            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.sin()))
-        }),
-        "cos" => unary(args, |v| {
-            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.cos()))
-        }),
-        "tan" => unary(args, |v| {
-            trig_input(v).map_or(Value::Undef, |r| Value::Real(r.tan()))
-        }),
-
-        // --- Inverse trig: accept Real, return Angle Scalar ---
-        "asin" => unary_f64(args, |x| Value::Scalar {
-            si_value: x.asin(),
-            dimension: DimensionVector::ANGLE,
-        }),
-        "acos" => unary_f64(args, |x| Value::Scalar {
-            si_value: x.acos(),
-            dimension: DimensionVector::ANGLE,
-        }),
-        "atan" => unary_f64(args, |x| Value::Scalar {
-            si_value: x.atan(),
-            dimension: DimensionVector::ANGLE,
-        }),
-        "atan2" => binary_f64(args, |y, x| Value::Scalar {
-            si_value: y.atan2(x),
-            dimension: DimensionVector::ANGLE,
-        }),
-
-        // --- Hyperbolic: accept Real, return Real ---
-        "sinh" => unary_f64(args, |x| Value::Real(x.sinh())),
-        "cosh" => unary_f64(args, |x| Value::Real(x.cosh())),
-        "tanh" => unary_f64(args, |x| Value::Real(x.tanh())),
-
         // --- Linear algebra: dot, cross, magnitude, normalize ---
         "normalize" => unary(args, |v| {
             // Determine the output wrapper based on input variant.
