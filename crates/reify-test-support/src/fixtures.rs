@@ -893,6 +893,7 @@ pub fn annotated_module() -> CompiledModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_types::Severity;
 
     #[test]
     fn bracket_parsed_module_structure() {
@@ -1249,7 +1250,7 @@ mod tests {
     /// "NonExistentTrait". Returns the `CompiledModule` for further assertions.
     fn assert_warning_source_compiles_with_unknown_port_warning(
         source: &str,
-    ) -> reify_compiler::CompiledModule {
+    ) -> CompiledModule {
         let parsed = reify_syntax::parse(source, reify_types::ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -1261,7 +1262,7 @@ mod tests {
         let errors: Vec<_> = compiled
             .diagnostics
             .iter()
-            .filter(|d| d.severity == reify_types::Severity::Error)
+            .filter(|d| d.severity == Severity::Error)
             .collect();
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
@@ -1269,7 +1270,7 @@ mod tests {
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == reify_types::Severity::Warning
+                d.severity == Severity::Warning
                     && d.message.contains("unknown port type")
                     && d.message.contains("NonExistentTrait")
             })
