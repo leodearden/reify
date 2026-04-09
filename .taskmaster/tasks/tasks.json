@@ -8774,11 +8774,14 @@
         "priority": "low",
         "metadata": {
           "modules": [
-            "crates/reify-compiler",
             "crates/reify-eval"
           ],
           "milestone": "M9",
-          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md"
+          "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
+          "files": [
+            "crates/reify-eval/src/lib.rs",
+            "crates/reify-eval/tests/recursive_unfold.rs"
+          ]
         },
         "subtasks": [],
         "updatedAt": "2026-04-03T13:39:25.485Z"
