@@ -1692,3 +1692,15 @@ fn module_key_matches_load_from_source_insertion() {
     let (stored_key, _) = session.resolve_source_for_test();
     assert_eq!(stored_key, module_key("bracket"));
 }
+
+/// module_key panics (via debug_assert) when called with an empty name.
+///
+/// An empty name would produce ".ri", which is never a valid module key —
+/// `load_file` falls back to "unnamed" so an empty name is a programming error.
+/// The debug_assert in module_key is the contract guard.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "empty")]
+fn module_key_empty_name_panics() {
+    let _ = module_key("");
+}
