@@ -5,6 +5,7 @@ use crate::common::*;
 
 mod numeric;
 mod trig;
+mod vector;
 
 #[cfg(test)]
 mod test_helpers;
@@ -1066,7 +1067,7 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// `dimension` is dimensionless, or `Value::Scalar { si_value: mag,
 /// dimension }` otherwise. Non-finite results are converted to `Undef`
 /// by [`sanitize_value`].
-fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
+pub(crate) fn complex_abs(re: f64, im: f64, dimension: DimensionVector) -> Value {
     let mag = re.hypot(im);
     sanitize_value(Value::from_component(mag, dimension))
 }
