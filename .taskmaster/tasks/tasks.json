@@ -10263,10 +10263,11 @@
         "metadata": {
           "prd": "/home/leo/src/reify/docs/prd-m6-gui.md",
           "files": [
-            "crates/reify-compiler/src/lib.rs"
+            "crates/reify-compiler/src/lib.rs",
+            "crates/reify-compiler/src/entity.rs"
           ],
           "modules": [
-            "crates/reify-compiler/src"
+            "crates/reify-compiler"
           ]
         }
       },
@@ -10470,9 +10471,9 @@
             "crates/reify-eval/Cargo.toml"
           ],
           "modules": [
-            "gui/src-tauri/src",
+            "gui/src-tauri",
             "gui/src",
-            "crates/reify-lsp/src",
+            "crates/reify-lsp",
             "crates/reify-eval"
           ]
         }
