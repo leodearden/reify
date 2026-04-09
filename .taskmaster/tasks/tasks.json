@@ -25490,6 +25490,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/calculus.rs"
           ]
         }
       },
@@ -25540,7 +25544,10 @@
         "updatedAt": "2026-04-09T01:43:49.469Z",
         "metadata": {
           "modules": [
-            "crates/reify-expr"
+            "crates/reify-expr/tests"
+          ],
+          "files": [
+            "crates/reify-expr/tests/gradient_tests.rs"
           ]
         }
       },
@@ -25632,6 +25639,10 @@
         "metadata": {
           "modules": [
             "crates/reify-expr"
+          ],
+          "files": [
+            "crates/reify-expr/src/lib.rs",
+            "crates/reify-expr/src/calculus.rs"
           ]
         }
       },
