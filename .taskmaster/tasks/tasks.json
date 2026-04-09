@@ -28765,10 +28765,11 @@
         "description": "The test user_unit_in_let_binding in crates/reify-compiler/tests/user_defined_unit_tests.rs:57-85 only asserts w_thou.default_expr.is_some(). A regression that silently mis-compiled '5thou' to the hardcoded 5mm fallback (si_value 0.005 instead of 0.000127) would still produce Some(...) and pass. The test docstring claims to verify 'QuantityLiteral resolution works in all expression contexts', but the assertion does not verify the actual factor is applied. Either (a) walk w_thou.default_expr (BinOp → right) to find the 5thou literal and assert si_value ≈ 5 * 0.0000254, or (b) simplify to a single let binding with a known scalar literal like user_unit_overrides_hardcoded_fallback does, so the test directly inspects si_value. Files: crates/reify-compiler/tests/user_defined_unit_tests.rs.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T22:21:28.172Z"
       },
       {
         "id": "1394",
@@ -28808,7 +28809,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T22:21:27.477Z",
+      "lastModified": "2026-04-09T22:21:28.172Z",
       "taskCount": 1396,
       "completedCount": 1071,
       "tags": [
