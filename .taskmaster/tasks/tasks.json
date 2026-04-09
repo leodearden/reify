@@ -24387,7 +24387,7 @@
         "description": "The gradient codomain-mismatch tests in crates/reify-expr/tests/gradient_tests.rs (lines ~3474-3918) have two DRY issues:\n\n1. **Documentation duplication (S3):** The \"DESIGN DECISION: trust-the-declaration\" doc block is repeated nearly verbatim in four test docstrings (~3478, ~3567, ~3641, ~3724). Extract to a module-level doc comment on a `mod trust_the_declaration_tests` wrapper, and reference it from individual tests with a one-liner.\n\n2. **Test setup duplication (S4):** `gradient_codomain_mismatch_dimensioned_domain_no_panic` and `gradient_codomain_mismatch_dimensioned_domain_trusts_declaration` share ~50 lines of boilerplate (lambda construction, field construction, gradient expression building). Extract a helper like `fn make_dimensioned_domain_mismatch_gradient() -> (Value, Type, ValueMap)`.\n\nMemory hints: search for \"trust-the-declaration design decision gradient\" and \"gradient codomain mismatch test\".",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
@@ -24398,7 +24398,8 @@
           "modules": [
             "crates/reify-expr/tests"
           ]
-        }
+        },
+        "updatedAt": "2026-04-09T20:08:56.155Z"
       },
       {
         "id": "1161",
@@ -28261,7 +28262,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T20:08:54.773Z",
+      "lastModified": "2026-04-09T20:08:56.155Z",
       "taskCount": 1363,
       "completedCount": 1037,
       "tags": [
