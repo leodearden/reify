@@ -1006,6 +1006,62 @@ mod tests {
         unique
     }
 
+    /// Runs `verify_uniqueness(problem, solved_values)` under a counting tracing subscriber
+    /// and asserts the early-return contract:
+    ///
+    /// 1. Returns `false` (`!unique`) — the solver did not confirm uniqueness.
+    /// 2. Exactly 1 WARN event is emitted (the aggregated missing-or-non-numeric early-return warn).
+    /// 3. Exactly 0 DEBUG events are emitted from the `reify_constraints` target — proving that
+    ///    both the `"verifying uniqueness via perturbation"` debug event and all `solve_core`
+    ///    debug events were skipped.
+    ///
+    /// `branch_label` is used only in assertion messages to identify the call site, e.g.
+    /// `"param-missing"`, `"param-non-numeric"`, `"multiple-params-missing"`.
+    fn assert_verify_uniqueness_early_returns(
+        problem: &ResolutionProblem,
+        solved_values: &std::collections::HashMap<reify_types::ValueCellId, reify_types::Value>,
+        branch_label: &str,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        use reify_test_support::CountingSubscriberBuilder;
+
+        use super::verify_uniqueness;
+
+        let (subscriber, counters) = CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .count_level(tracing::Level::DEBUG)
+            .target_prefix("reify_constraints")
+            .build();
+
+        let warn_count = std::sync::Arc::clone(&counters[&tracing::Level::WARN]);
+        let debug_count = std::sync::Arc::clone(&counters[&tracing::Level::DEBUG]);
+
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(problem, solved_values)
+        });
+
+        assert!(
+            !unique,
+            "verify_uniqueness must return false on {branch_label} early-return path"
+        );
+
+        let warn_n = warn_count.load(Ordering::Acquire);
+        assert_eq!(
+            warn_n, 1,
+            "expected exactly 1 WARN (the aggregated missing-or-non-numeric early-return warn); \
+             got {warn_n}"
+        );
+
+        let debug_n = debug_count.load(Ordering::Acquire);
+        assert_eq!(
+            debug_n, 0,
+            "expected 0 DEBUG events (early-return skips both the \
+             'verifying uniqueness via perturbation' debug and all solve_core debug events); \
+             got {debug_n}"
+        );
+    }
+
     // ---- end verify_uniqueness test helpers ----
 
     #[test]
