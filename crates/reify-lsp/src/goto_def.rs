@@ -2,7 +2,9 @@ use reify_syntax::ImportKind;
 use reify_types::ModulePath;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{enclosing_decl_at, find_named_member_span, module_name_from_uri};
+use reify_syntax::find_named_member_span;
+
+use crate::analysis::{enclosing_decl_at, module_name_from_uri};
 use crate::convert::{find_word_at_offset, offset_to_position, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.

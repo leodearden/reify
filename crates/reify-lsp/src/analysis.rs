@@ -1,8 +1,7 @@
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
-use reify_syntax::{Declaration, ParsedModule};
-pub use reify_syntax::{MemberSpanInfo, find_named_member_span};
+use reify_syntax::{Declaration, ParsedModule, find_named_member_span};
 use reify_types::{ModulePath, SourceSpan, Type, Value, ValueCellId};
 use tower_lsp::lsp_types::Url;
 
