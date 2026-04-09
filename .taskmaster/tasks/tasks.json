@@ -27425,7 +27425,7 @@
         "description": "Task 12 plan specifies DependencyMap for static dependency extraction from expressions (extract_value_deps function). But existing code in deps.rs uses runtime DependencyTrace collected during evaluation. The cache.rs already has CacheStore with early cutoff via result_hash. Need to clarify whether to implement static extraction per plan or extend existing runtime tracing approach. The prerequisite module stubs already exist but with different implementations.",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -27438,7 +27438,7 @@
             "crates/reify-eval"
           ]
         },
-        "updatedAt": "2026-04-09T20:05:24.911Z"
+        "updatedAt": "2026-04-09T21:11:24.131Z"
       },
       {
         "id": "1318",
@@ -28472,9 +28472,9 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T21:11:18.463Z",
+      "lastModified": "2026-04-09T21:11:24.133Z",
       "taskCount": 1376,
-      "completedCount": 1050,
+      "completedCount": 1051,
       "tags": [
         "master"
       ]
