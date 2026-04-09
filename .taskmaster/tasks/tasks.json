@@ -28089,10 +28089,11 @@
         "description": "Follow-up to Task 1260. Two portability-hygiene fixes in tests/infra meta-tests (S2 + S6). Both restore the POSIX-portable-regex spirit of the sync_comments grep subsystem that Task 1260's refactor slightly eroded.",
         "details": "Follow-up to Task 1260. Two review suggestions targeting POSIX-portable regex hygiene in the tests/infra subsystem.\n\n**S6 — `\\s+` used in tests/infra/test_test_helpers.sh:308,368**\nBoth lines use `grep -qE '(source|\\s+).*helper_file'` patterns. `\\s` is a GNU/PCRE extension; BSD grep (macOS default, some CI runners) does not support it in ERE. The project already uses this pattern elsewhere in the same file so not newly broken, but the whole point of test_sync_comments_grep.sh / sync_ref_helpers.sh is to enforce POSIX-portable regex hygiene, so shipping `\\s` in the sibling meta-test is inconsistent with the subsystem's own rules.\nFix: replace `\\s+` with `[[:space:]]+` at test_test_helpers.sh:308 and :368. Check the rest of test_test_helpers.sh for other `\\s` uses and convert them as well for consistency.\n\n**S2 — sync_comments_test.sh no longer covered by POSIX-portability assertions (test_sync_comments_grep.sh:146-161)**\nAfter Task 1260 moved assert_sync_ref_exists out, Section 2 of test_sync_comments_grep.sh rewrote its \"no \\b / no grep -P\" scoped assertions to target $SYNC_REF_HELPERS instead of $SYNC_TEST. But sync_comments_test.sh still hosts extract_fn, which contains `/^[^/]*fn '\"$fn_name\"'[(<]/` and an awk pattern — exactly the kind of thing those scoped assertions were designed to guard. A future regression adding `\\b` or `grep -P` in or near extract_fn would now slip past CI.\nFix: duplicate the no-\\b and no-grep-P scoped assertions at lines 157-161 so each runs twice — once against $SYNC_REF_HELPERS and once against $SYNC_TEST. Keep the existing `[[:space:](<]` positive assertion scoped only to $SYNC_REF_HELPERS (since that pattern literally lives there now). The invariant \"POSIX-portable regex only\" belongs on any shell file in this subsystem that contains grep/awk patterns, not just on the one that houses assert_sync_ref_exists.\n\nmemory_hints: search(\"Task 1260 test_sync_comments_grep.sh coverage\", project_id=\"reify\"); search(\"POSIX portable regex [[:space:]] grep shell tests reify\", project_id=\"reify\")",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T19:37:24.893Z"
       },
       {
         "id": "1358",
@@ -28108,7 +28109,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T19:37:24.112Z",
+      "lastModified": "2026-04-09T19:37:24.893Z",
       "taskCount": 1358,
       "completedCount": 1025,
       "tags": [
