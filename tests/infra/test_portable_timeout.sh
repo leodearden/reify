@@ -526,6 +526,10 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
         # Command ignores SIGTERM; timer must escalate to SIGKILL after 2s grace.
         rc=0
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || rc=$?
+        # Clean up any orphaned sleep 31339 so it does not pollute the next assertion.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "[[:space:]]sleep 31339$" \
+            | while read -r _spid _rest; do kill -9 "$_spid" 2>/dev/null || true; done
         [ "$rc" -eq 124 ]
     '
 
@@ -542,7 +546,9 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep 31339" \
         portable_timeout 1 "$_abs_bash" -c '"'"'trap "" TERM; sleep 31339'"'"' || true
 
         # Brief wait then verify no orphan sleep 31339.
-        "$_abs_sleep" 0.5
+        # The previous assertion cleans up its own orphans, so any sleep 31339
+        # found here belongs to this invocation.
+        "$_abs_sleep" 1
         _check_rc=0
         ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep 31339$" || _check_rc=$?
         # Clean up rescue_dir explicitly (no EXIT trap to avoid subshell inheritance).
