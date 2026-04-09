@@ -106,6 +106,12 @@ assert "accepts: pub(super) const fn sanitize_value( (pub+const combination)" \
 assert "rejects: fn sanitize_value_raw( (suffix false-positive)" \
     bash -c "! printf '%s\n' 'fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
 
+assert "rejects: pub(crate) async fn sanitize_value_raw( (pub+async suffix false-positive)" \
+    bash -c "! printf '%s\n' 'pub(crate) async fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
+assert "rejects: pub(super) const fn sanitize_value_raw( (pub(super)+const suffix false-positive)" \
+    bash -c "! printf '%s\n' 'pub(super) const fn sanitize_value_raw(v: Value) -> Value {' | grep -qE '$PATTERN'"
+
 assert "rejects: // fn sanitize_value (comment line)" \
     bash -c "! printf '%s\n' '// fn sanitize_value(v: Value)' | grep -qE '$PATTERN'"
 
