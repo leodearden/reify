@@ -26159,10 +26159,11 @@
         "description": "Two related items in crates/reify-constraints/src/solver.rs:\n\n1. Add two tests mirroring the existing solutions_agree_nan_value_returns_false and solutions_agree_infinity_value_returns_false but with NaN/Inf in solved_values (s1) instead of perturbed_values (s2). The tests should place scalar(f64::NAN) / scalar(f64::INFINITY) in solved and scalar(0.5) in perturbed, asserting solutions_agree returns false.\n\n2. In build_perturbation_anchors (line 788-793), add an is_finite() filter so NaN/Inf solved values fall through to the mid fallback instead of silently corrupting the perturbation direction: change .and_then(|v| v.as_f64()) to .and_then(|v| v.as_f64()).filter(|v| v.is_finite()). Add a tracing::warn! when the fallback fires for a present-but-non-finite value.",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "medium",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T08:13:49.222Z"
       },
       {
         "id": "1300",
@@ -26255,7 +26256,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T08:13:48.441Z",
+      "lastModified": "2026-04-09T08:13:49.222Z",
       "taskCount": 1305,
       "completedCount": 968,
       "tags": [
