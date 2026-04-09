@@ -26504,16 +26504,21 @@
         "description": "Two test coverage gaps in crates/reify-compiler/tests/purpose_compile_tests.rs:\n\n1. `purpose_constraint_with_user_declared_unit` (line 239) only asserts that 1 compiled purpose exists. It does not verify that 'thou' resolved to the correct SI value (≈0.0000254). A future regression could silently resolve to a wrong value without error.\n\n2. `purpose_constraint_with_affine_unit_applies_offset` (line 305) only asserts the left side of the BinOp (100degC → 373.15K). The right side (200degC → 473.15K) is not verified, leaving a gap where affine offset could be inconsistently applied.\n\nFix: Add si_value assertions to both tests — assert thou resolves to ≈0.0000254, and assert the right operand of the affine BinOp resolves to ≈473.15.\n\nSource: review suggestions from task 416 (esc-416-133, S2 + S4).",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T10:01:00.782Z"
+        "updatedAt": "2026-04-09T10:02:52.980Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-compiler/tests"
+          ]
+        }
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T10:01:01.719Z",
+      "lastModified": "2026-04-09T10:02:52.980Z",
       "taskCount": 1315,
       "completedCount": 984,
       "tags": [
