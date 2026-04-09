@@ -24530,11 +24530,17 @@
         "description": "Task 917 converted the Complex and Orientation arms of sanitize_value to use !is_finite() but left the Real and Scalar arms using the old is_nan() || is_infinite() pattern in both files:\n- crates/reify-expr/src/lib.rs line 1048-1051\n- crates/reify-stdlib/src/lib.rs line 1447-1449\n\nChange:\n  `Value::Real(x) if x.is_nan() || x.is_infinite()` → `Value::Real(x) if !x.is_finite()`\n  `Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite()` → `Value::Scalar { si_value, .. } if !si_value.is_finite()`\n\nin both crates. This completes the migration that Task 917 started.\n\nMemory hints: search \"sanitize_value is_finite\", get_entity \"sanitize_value\"",
         "details": "",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "low",
         "subtasks": [],
-        "updatedAt": "2026-04-09T00:10:57.242Z"
+        "updatedAt": "2026-04-09T00:12:38.417Z",
+        "metadata": {
+          "modules": [
+            "crates/reify-expr",
+            "crates/reify-stdlib"
+          ]
+        }
       },
       {
         "id": "1207",
@@ -24563,7 +24569,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T00:12:31.670Z",
+      "lastModified": "2026-04-09T00:12:38.417Z",
       "taskCount": 1208,
       "completedCount": 888,
       "tags": [
