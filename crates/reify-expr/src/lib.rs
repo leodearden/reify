@@ -149,6 +149,42 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 grad_codomain_type,
                                 ctx,
                             ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Divergence,
+                            ) => compute_numerical_divergence_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Curl,
+                            ) => compute_numerical_curl_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
+                            (
+                                Value::Field {
+                                    lambda: inner_lambda,
+                                    ..
+                                },
+                                FieldSourceKind::Laplacian,
+                            ) => compute_numerical_laplacian_at_point(
+                                inner_lambda,
+                                &evaluated_args[1],
+                                domain_type,
+                                ctx,
+                            ),
                             _ => {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -168,16 +204,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                 }
                 "gradient" if evaluated_args.len() == 1 => compute_gradient(&evaluated_args[0]),
-                "divergence" | "curl" if evaluated_args.len() == 1 => {
-                    if !matches!(&evaluated_args[0], Value::Field { .. }) {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[reify-expr] {}: argument is not a Field: {:?}",
-                            function.name, evaluated_args[0]
-                        );
-                    }
-                    // Stub: these field operations are not yet implemented.
-                    Value::Undef
+                "divergence" if evaluated_args.len() == 1 => {
+                    compute_divergence(&evaluated_args[0])
+                }
+                "curl" if evaluated_args.len() == 1 => {
+                    compute_curl(&evaluated_args[0])
+                }
+                "laplacian" if evaluated_args.len() == 1 => {
+                    compute_laplacian(&evaluated_args[0])
                 }
                 _ => reify_stdlib::eval_builtin(&function.name, &evaluated_args),
             }
@@ -678,6 +712,259 @@ fn compute_gradient(field_val: &Value) -> Value {
     }
 }
 
+/// Compute the divergence of a vector field.
+///
+/// Returns a new scalar Field with `FieldSourceKind::Divergence` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_divergence_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be `Point{n, scalar}` (n ≥ 1)
+/// - Codomain must be `Vector{n, scalar}` with matching dimension n
+fn compute_divergence(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain must be a Point with scalar quantity
+    let n = match domain_type {
+        Type::Point { n, quantity } => {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: domain must be Point{{n}}, got {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    };
+
+    // Codomain must be Vector{n, scalar}
+    let vec_n = match codomain_type {
+        Type::Vector { n, quantity } => {
+            if !matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) {
+                return Value::Undef;
+            }
+            *n
+        }
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] divergence: codomain must be Vector{{n}}, got {:?}",
+                codomain_type
+            );
+            return Value::Undef;
+        }
+    };
+
+    if vec_n != n {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}"
+        );
+        return Value::Undef;
+    }
+
+    // Result: scalar field with same domain
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: Type::Real,
+        source: FieldSourceKind::Divergence,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the curl of a 3D vector field.
+///
+/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be `Point{3, scalar}`
+/// - Codomain must be `Vector{3, scalar}`
+fn compute_curl(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain must be Point{3, scalar}
+    match domain_type {
+        Type::Point { n: 3, quantity }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: domain must be Point{{3}}, got {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Codomain must be Vector{3, scalar}
+    match codomain_type {
+        Type::Vector { n: 3, quantity }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: codomain must be Vector{{3}}, got {:?}",
+                codomain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Result: vector field (same type as input — curl of R^3→R^3 is R^3→R^3)
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Curl,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
+/// Compute the Laplacian of a scalar field.
+///
+/// Returns a new scalar Field with `FieldSourceKind::Laplacian` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_laplacian_at_point`.
+///
+/// Validation:
+/// - Argument must be an Analytical or Composed Field
+/// - Domain must be scalar or `Point{n, scalar}`
+/// - Codomain must be scalar (Real, Int, or Scalar)
+fn compute_laplacian(field_val: &Value) -> Value {
+    let (domain_type, codomain_type, source, lambda) = match field_val {
+        Value::Field {
+            domain_type,
+            codomain_type,
+            source,
+            lambda,
+        } => (domain_type, codomain_type, source, lambda),
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] laplacian: argument is not a Field: {:?}",
+                field_val
+            );
+            return Value::Undef;
+        }
+    };
+
+    if !matches!(
+        source,
+        FieldSourceKind::Analytical | FieldSourceKind::Composed
+    ) {
+        return Value::Undef;
+    }
+
+    if !matches!(lambda.as_ref(), Value::Lambda { .. }) {
+        return Value::Undef;
+    }
+
+    // Domain can be 1D scalar or nD Point
+    match domain_type {
+        Type::Real | Type::Int | Type::Scalar { .. } => {}
+        Type::Point { quantity, .. }
+            if matches!(
+                quantity.as_ref(),
+                Type::Real | Type::Int | Type::Scalar { .. }
+            ) => {}
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] laplacian: unsupported domain type {:?}",
+                domain_type
+            );
+            return Value::Undef;
+        }
+    }
+
+    // Codomain must be scalar
+    if !matches!(codomain_type, Type::Real | Type::Int | Type::Scalar { .. }) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] laplacian: codomain must be scalar, got {:?}",
+            codomain_type
+        );
+        return Value::Undef;
+    }
+
+    // Result: same scalar field type (domain preserved, codomain is scalar)
+    Value::Field {
+        domain_type: domain_type.clone(),
+        codomain_type: codomain_type.clone(),
+        source: FieldSourceKind::Laplacian,
+        lambda: Box::new(field_val.clone()),
+    }
+}
+
 /// Evaluate the lambda at a single perturbed point and recover `work_point`.
 ///
 /// This helper encapsulates the duplicated eval-and-recover sequence for the
@@ -1027,6 +1314,445 @@ fn compute_numerical_gradient_at_point(
     }
 }
 
+/// Compute the numerical divergence of a vector field at a given point via central differences.
+///
+/// For an n-dimensional vector field F: R^n → R^n, the divergence is:
+///   div F(p) = Σ_i ∂Fi/∂xi ≈ Σ_i (F(p+h*ei)[i] - F(p-h*ei)[i]) / (2h)
+///
+/// Returns:
+/// - Real scalar for dimensionless fields
+/// - Undef if any perturbation evaluation fails or the lambda returns non-vector
+fn compute_numerical_divergence_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    let coords: Vec<f64> = match point {
+        Value::Point(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    let mut work_coords = coords;
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut divergence = 0.0_f64;
+
+    for i in 0..n {
+        let coord_i = work_coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        work_coords[i] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] = coord_i;
+        if single_point_param {
+            work_point[i] = make_arg(coord_i);
+        }
+
+        // Extract the i-th component from the vector output
+        let fp_i = match &f_plus {
+            Value::Vector(comps) if comps.len() > i => match comps[i].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Value::Undef,
+            },
+            _ => return Value::Undef,
+        };
+        let fm_i = match &f_minus {
+            Value::Vector(comps) if comps.len() > i => match comps[i].as_f64() {
+                Some(v) if v.is_finite() => v,
+                _ => return Value::Undef,
+            },
+            _ => return Value::Undef,
+        };
+
+        let deriv = (fp_i - fm_i) / (2.0 * h);
+        if !deriv.is_finite() {
+            return Value::Undef;
+        }
+        divergence += deriv;
+    }
+
+    if !divergence.is_finite() {
+        return Value::Undef;
+    }
+    Value::Real(divergence)
+}
+
+/// Compute the numerical curl of a 3D vector field at a given point via central differences.
+///
+/// For a 3D vector field F: R^3 → R^3, the curl is:
+///   curl F = (∂F3/∂y − ∂F2/∂z,  ∂F1/∂z − ∂F3/∂x,  ∂F2/∂x − ∂F1/∂y)
+///
+/// This is computed by building columns of the Jacobian via perturbation along each axis.
+/// For each axis j, perturb to get F(p±h*ej), then for each component i compute:
+///   J[i][j] = (F(p+h*ej)[i] − F(p−h*ej)[i]) / (2h)
+///
+/// Returns:
+/// - Vector3 of Real components
+/// - Undef if any evaluation fails
+fn compute_numerical_curl_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // Only defined for 3D Point domains
+    let coords: Vec<f64> = match point {
+        Value::Point(items) if items.len() == 3 => {
+            let mut v = Vec::with_capacity(3);
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = 3;
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1,
+        _ => false,
+    };
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    let mut work_coords = coords;
+    let args_capacity = if single_point_param { 1 } else { n };
+    let mut work_args: Vec<Value> = Vec::with_capacity(args_capacity);
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    // Jacobian columns: jac[j][i] = ∂Fi/∂xj
+    let mut jac = [[0.0_f64; 3]; 3];
+
+    for j in 0..n {
+        let coord_j = work_coords[j];
+        let h = 1e-6_f64 * coord_j.abs().max(1e-3);
+
+        work_coords[j] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            j,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[j] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            j,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[j] = coord_j;
+        if single_point_param {
+            work_point[j] = make_arg(coord_j);
+        }
+
+        // Extract all 3 components from the vector results
+        let fp = match &f_plus {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let mut arr = [0.0_f64; 3];
+                for (k, c) in comps.iter().enumerate() {
+                    match c.as_f64() {
+                        Some(v) if v.is_finite() => arr[k] = v,
+                        _ => return Value::Undef,
+                    }
+                }
+                arr
+            }
+            _ => return Value::Undef,
+        };
+        let fm = match &f_minus {
+            Value::Vector(comps) if comps.len() == 3 => {
+                let mut arr = [0.0_f64; 3];
+                for (k, c) in comps.iter().enumerate() {
+                    match c.as_f64() {
+                        Some(v) if v.is_finite() => arr[k] = v,
+                        _ => return Value::Undef,
+                    }
+                }
+                arr
+            }
+            _ => return Value::Undef,
+        };
+
+        // jac[j] = column j of Jacobian: ∂Fi/∂xj for i in 0..3
+        for i in 0..3 {
+            let d = (fp[i] - fm[i]) / (2.0 * h);
+            if !d.is_finite() {
+                return Value::Undef;
+            }
+            jac[j][i] = d;
+        }
+    }
+
+    // curl = (J[1][2] - J[2][1], J[2][0] - J[0][2], J[0][1] - J[1][0])
+    // where J[j][i] = ∂Fi/∂xj, so:
+    //   curl_x = ∂F2/∂y - ∂F1/∂z → jac[1][2] - jac[2][1]  (∂F3/∂y - ∂F2/∂z in 1-indexed)
+    //   curl_y = ∂F0/∂z - ∂F2/∂x → jac[2][0] - jac[0][2]
+    //   curl_z = ∂F1/∂x - ∂F0/∂y → jac[0][1] - jac[1][0]
+    let curl_x = jac[1][2] - jac[2][1];
+    let curl_y = jac[2][0] - jac[0][2];
+    let curl_z = jac[0][1] - jac[1][0];
+
+    if !curl_x.is_finite() || !curl_y.is_finite() || !curl_z.is_finite() {
+        return Value::Undef;
+    }
+
+    Value::Vector(vec![
+        Value::Real(curl_x),
+        Value::Real(curl_y),
+        Value::Real(curl_z),
+    ])
+}
+
+/// Compute the numerical Laplacian of a scalar field at a given point via central differences.
+///
+/// For a scalar field f: R^n → R, the Laplacian is:
+///   Δf(p) = Σ_i ∂²f/∂xi² ≈ Σ_i (f(p+h*ei) − 2*f(p) + f(p−h*ei)) / h²
+///
+/// Returns:
+/// - Real scalar
+/// - Undef if any evaluation fails
+fn compute_numerical_laplacian_at_point(
+    lambda: &Value,
+    point: &Value,
+    domain_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    let coords: Vec<f64> = match point {
+        Value::Real(r) if r.is_finite() => vec![*r],
+        Value::Real(_) => return Value::Undef,
+        Value::Int(i) => vec![*i as f64],
+        Value::Scalar { si_value, .. } if si_value.is_finite() => vec![*si_value],
+        Value::Scalar { .. } => return Value::Undef,
+        Value::Point(items) => {
+            let mut v = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64() {
+                    Some(f) if f.is_finite() => v.push(f),
+                    _ => return Value::Undef,
+                }
+            }
+            v
+        }
+        _ => return Value::Undef,
+    };
+
+    let n = coords.len();
+    if n == 0 {
+        return Value::Undef;
+    }
+
+    let domain_dim = match domain_type {
+        Type::Scalar { dimension } => Some(*dimension),
+        Type::Point { quantity, .. } => match quantity.as_ref() {
+            Type::Scalar { dimension } => Some(*dimension),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let single_point_param = match lambda {
+        Value::Lambda { params, .. } => params.len() == 1 && n > 1,
+        _ => false,
+    };
+
+    let make_arg = |val: f64| -> Value {
+        match domain_dim {
+            Some(dim) => Value::Scalar {
+                si_value: val,
+                dimension: dim,
+            },
+            None => Value::Real(val),
+        }
+    };
+
+    // Evaluate f at the center point once
+    let mut center_args: Vec<Value> = if single_point_param {
+        let inner: Vec<Value> = coords.iter().map(|&v| make_arg(v)).collect();
+        vec![Value::Point(inner)]
+    } else {
+        coords.iter().map(|&v| make_arg(v)).collect()
+    };
+    let f_center_val = apply_lambda(lambda, &center_args, ctx);
+    let f_center = match f_center_val.as_f64() {
+        Some(v) if v.is_finite() => v,
+        _ => return Value::Undef,
+    };
+    // Reuse center_args as work_args; clear it after center eval
+    center_args.clear();
+    let mut work_args = center_args;
+
+    let mut work_coords = coords;
+    let mut work_point: Vec<Value> = if single_point_param {
+        work_coords.iter().map(|&v| make_arg(v)).collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut laplacian = 0.0_f64;
+
+    for i in 0..n {
+        let coord_i = work_coords[i];
+        let h = 1e-6_f64 * coord_i.abs().max(1e-3);
+
+        work_coords[i] += h;
+        let f_plus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] -= 2.0 * h;
+        let f_minus = eval_perturbed_point(
+            lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            single_point_param,
+            i,
+            n,
+            &make_arg,
+            ctx,
+        );
+
+        work_coords[i] = coord_i;
+        if single_point_param {
+            work_point[i] = make_arg(coord_i);
+        }
+
+        let fp = match f_plus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+        let fm = match f_minus.as_f64() {
+            Some(v) if v.is_finite() => v,
+            _ => return Value::Undef,
+        };
+
+        let second_deriv = (fp - 2.0 * f_center + fm) / (h * h);
+        if !second_deriv.is_finite() {
+            return Value::Undef;
+        }
+        laplacian += second_deriv;
+    }
+
+    if !laplacian.is_finite() {
+        return Value::Undef;
+    }
+    Value::Real(laplacian)
+}
+
 /// Convert a Value that carries NaN or Inf to Undef.
 ///
 /// All callers pass either a `Value::from_component(...)` result — which
@@ -1049,20 +1775,9 @@ fn sanitize_value(v: Value) -> Value {
         Value::Scalar { si_value, .. } if si_value.is_nan() || si_value.is_infinite() => {
             Value::Undef
         }
-        Value::Complex { re, im, .. }
-            if re.is_nan() || re.is_infinite() || im.is_nan() || im.is_infinite() =>
-        {
-            Value::Undef
-        }
+        Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z }
-            if w.is_nan()
-                || w.is_infinite()
-                || x.is_nan()
-                || x.is_infinite()
-                || y.is_nan()
-                || y.is_infinite()
-                || z.is_nan()
-                || z.is_infinite() =>
+            if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() =>
         {
             Value::Undef
         }
@@ -1446,11 +2161,20 @@ fn eval_method_call(
                 return Value::Undef;
             }
             match obj {
-                Value::Complex { re, im, dimension } => Value::Complex {
-                    re: *re,
-                    im: -im,
-                    dimension: *dimension,
-                },
+                Value::Complex { re, im, dimension } => {
+                    // Defense-in-depth: reject poisoned inputs before constructing
+                    // the output Complex, mirroring the phase-method pattern (line ~1423).
+                    // sanitize_value's Complex arm provides a secondary layer but a
+                    // direct pre-guard is independent and more robust.
+                    if !re.is_finite() || !im.is_finite() {
+                        return Value::Undef;
+                    }
+                    Value::Complex {
+                        re: *re,
+                        im: -im,
+                        dimension: *dimension,
+                    }
+                }
                 _ => Value::Undef,
             }
         }
@@ -4448,6 +5172,156 @@ mod tests {
         }
     }
 
+    // ── method: conjugate (NaN/Inf sanitization) ─────────────────────────────
+
+    #[test]
+    fn conjugate_nan_re_returns_undef() {
+        // Complex{re:NaN, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // -1.0 (or -NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_nan_im_returns_undef() {
+        // Complex{re:1.0, im:NaN, DIMENSIONLESS}.conjugate → Undef
+        // -(NaN) is still NaN; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NAN,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with NaN imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_inf_re_returns_undef() {
+        // Complex{re:+Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry +Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with +Inf real part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_im_returns_undef() {
+        // Complex{re:1.0, im:-Inf, DIMENSIONLESS}.conjugate → Undef
+        // The conjugate would flip -Inf → +Inf, still non-finite; should return Undef
+        let complex_val = Value::Complex {
+            re: 1.0,
+            im: f64::NEG_INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf imaginary part should return Undef"
+        );
+    }
+
+    #[test]
+    fn conjugate_neg_inf_re_returns_undef() {
+        // Complex{re:-Inf, im:1.0, DIMENSIONLESS}.conjugate → Undef
+        // The output would carry -Inf in the re field; conjugate should return Undef
+        let complex_val = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::Real)),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::Real),
+        );
+        let values = ValueMap::new();
+        assert!(
+            eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
+            "z.conjugate with -Inf real part should return Undef"
+        );
+    }
+
+    // ── method regression: finite conjugate still works ──────────────────────
+
+    #[test]
+    fn conjugate_finite_dimensioned_correct() {
+        // Complex{re:3.0, im:4.0, LENGTH}.conjugate == Complex{re:3.0, im:-4.0, LENGTH}
+        // Guards against the pre-guard accidentally rejecting finite values.
+        // Uses a dimensioned (LENGTH) Complex to add coverage beyond the dimensionless
+        // path already tested in tests/complex_eval_tests.rs::method_conjugate.
+        let complex_val = Value::Complex {
+            re: 3.0,
+            im: 4.0,
+            dimension: DimensionVector::LENGTH,
+        };
+        let expr = CompiledExpr::method_call(
+            lit(complex_val, Type::complex(Type::length())),
+            "conjugate".to_string(),
+            vec![],
+            Type::complex(Type::length()),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Complex { re, im, dimension } => {
+                assert!(
+                    (re - 3.0).abs() < 1e-12,
+                    "expected re=3.0, got {}",
+                    re
+                );
+                assert!(
+                    (im - (-4.0)).abs() < 1e-12,
+                    "expected im=-4.0, got {}",
+                    im
+                );
+                assert_eq!(dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0, LENGTH}}, got {:?}", other),
+        }
+    }
+
     // ── sanitize_value direct unit tests ─────────────────────────────────────
 
     #[test]
@@ -4537,6 +5411,63 @@ mod tests {
         }
     }
 
+    // ── sanitize_value Complex arm tests ─────────────────────────────────────
+
+    #[test]
+    fn sanitize_complex_nan_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NAN,
+            im: 1.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with NaN re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_inf_im_returns_undef() {
+        let v = Value::Complex {
+            re: 0.0,
+            im: f64::INFINITY,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with +Inf im should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_neg_inf_re_returns_undef() {
+        let v = Value::Complex {
+            re: f64::NEG_INFINITY,
+            im: 0.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Complex with -Inf re should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_complex_finite_passthrough() {
+        let v = Value::Complex {
+            re: 3.0,
+            im: -4.0,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        match sanitize_value(v) {
+            Value::Complex { re, im, .. } => {
+                assert!((re - 3.0).abs() < f64::EPSILON);
+                assert!((im - (-4.0)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Complex{{re:3.0, im:-4.0}}, got {:?}", other),
+        }
+    }
+
     // ── sanitize_value Orientation arm tests (task-914) ──────────────────────
 
     #[test]
@@ -4592,6 +5523,48 @@ mod tests {
         assert!(
             sanitize_value(v).is_undef(),
             "Orientation with NaN y should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_x_nan_returns_undef() {
+        let v = Value::Orientation {
+            w: 0.0,
+            x: f64::NAN,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with NaN x should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_w_inf_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::INFINITY,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with +Inf w should become Undef"
+        );
+    }
+
+    #[test]
+    fn sanitize_orientation_all_components_nonfinite_returns_undef() {
+        let v = Value::Orientation {
+            w: f64::NAN,
+            x: f64::INFINITY,
+            y: f64::NEG_INFINITY,
+            z: f64::NAN,
+        };
+        assert!(
+            sanitize_value(v).is_undef(),
+            "Orientation with all non-finite components should become Undef"
         );
     }
 

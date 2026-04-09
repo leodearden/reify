@@ -637,7 +637,7 @@ impl SystemBuilder {
     /// - **Auto** points dedup when all three `ValueCellId` components are equal.
     ///
     /// If two or more of the four corner points are identical, the actual number
-    /// of new entities is between 3 (one shared endpoint: 3 points + 2 lines)
+    /// of new entities is between 5 (one shared endpoint: 3 points + 2 lines)
     /// and 6 (all distinct: 4 points + 2 lines).
     ///
     /// # Partial mutation
@@ -1106,13 +1106,14 @@ fn dimension_of(ty: &Type) -> DimensionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_test_support::vcid;
 
     // ── Shared test helpers ────────────────────────────────────────────────
 
     /// Returns a standard "missing non-auto coord" setup tuple:
     /// `(builder, cell_id, auto_params, current_values)` where:
     /// - `builder` is a fresh `SystemBuilder` with no params
-    /// - `cell_id` is `ValueCellId::new(entity, field)`
+    /// - `cell_id` is `vcid(entity, field)`
     /// - `auto_params` is an empty `Vec<AutoParam>` (cell_id is non-auto)
     /// - `current_values` is an empty `ValueMap` (cell_id is absent → triggers Err)
     fn missing_coord_setup(
@@ -1120,7 +1121,7 @@ mod tests {
         field: &str,
     ) -> (SystemBuilder, ValueCellId, Vec<AutoParam>, ValueMap) {
         let builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new(entity, field);
+        let cell_id = vcid(entity, field);
         let auto_params: Vec<AutoParam> = vec![];
         let current_values = ValueMap::new();
         (builder, cell_id, auto_params, current_values)
@@ -1130,32 +1131,58 @@ mod tests {
     /// matches and whose `message` contains `"missing"`.  Generic over
     /// the `Ok` type so it works for `Result<Slvs_hParam, BuilderError>`,
     /// `Result<Slvs_hEntity, BuilderError>`, and `Result<(), BuilderError>` alike.
+    /// `context` is prepended to every assertion failure message so the
+    /// call site is visible without inspecting the stack trace.
     #[track_caller]
     fn assert_missing_err<T: std::fmt::Debug>(
         result: Result<T, BuilderError>,
         cell_id: &ValueCellId,
+        context: &str,
     ) {
         assert!(
             result.is_err(),
-            "expected Err for missing non-auto coord, got Ok({:?})",
+            "{context}: expected Err for missing non-auto coord, got Ok({:?})",
             result.ok()
         );
         let err = result.unwrap_err();
         assert_eq!(
             err.cell_id, *cell_id,
-            "BuilderError cell_id should match the expected ValueCellId"
+            "{context}: BuilderError cell_id should match the expected ValueCellId"
         );
         assert!(
             err.message.contains("missing"),
-            "BuilderError message should contain 'missing', got: {}",
+            "{context}: BuilderError message should contain 'missing', got: {}",
             err.message
         );
         assert!(
             err.to_string().contains(&cell_id.to_string()),
-            "Display should contain cell_id '{}', got: {}",
+            "{context}: Display should contain cell_id '{}', got: {}",
             cell_id,
             err
         );
+    }
+
+    /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Drives step-1 TDD cycle.
+    #[test]
+    fn fixed_line_helper_produces_expected_line_ref() {
+        let line = fixed_line(0.0, 1.0, 2.0, 3.0, 4.0, 5.0);
+        match line.start {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 0.0);
+                assert_eq!(y, 1.0);
+                assert_eq!(z, 2.0);
+            }
+            other => panic!("expected Fixed start, got {other:?}"),
+        }
+        match line.end {
+            PointRef::Fixed { x, y, z } => {
+                assert_eq!(x, 3.0);
+                assert_eq!(y, 4.0);
+                assert_eq!(z, 5.0);
+            }
+            other => panic!("expected Fixed end, got {other:?}"),
+        }
     }
 
     /// Shorthand for `PointRef::Fixed { x, y, z }`.
@@ -1166,6 +1193,12 @@ mod tests {
     /// Shorthand for `LineRef { start, end }`.
     fn line(start: PointRef, end: PointRef) -> LineRef {
         LineRef { start, end }
+    }
+
+    /// Constructs a fully-Fixed `LineRef` from six coordinates.
+    /// Reduces boilerplate in tests that use all-fixed line segments.
+    fn fixed_line(x0: f64, y0: f64, z0: f64, x1: f64, y1: f64, z1: f64) -> LineRef {
+        line(fixed_point(x0, y0, z0), fixed_point(x1, y1, z1))
     }
 
     /// Build a one-element auto_params vec for the given cell_id with Type::length() and no bounds.
@@ -1184,7 +1217,7 @@ mod tests {
     #[test]
     fn add_auto_coord_succeeds_for_non_auto_with_value() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         // cell_id is NOT in auto_params — it's a non-auto param
         let auto_params: Vec<AutoParam> = vec![];
         // But it IS in current_values
@@ -1217,7 +1250,7 @@ mod tests {
     #[test]
     fn add_auto_coord_auto_param_default_preserved() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         // cell_id IS in auto_params
         let auto_params = auto_params_for(&cell_id);
         // But NOT in current_values — should use 0.01 default
@@ -1291,7 +1324,7 @@ mod tests {
     /// in ? chains with anyhow / thiserror in the future.
     #[test]
     fn builder_error_display_contains_cell_id() {
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let err = BuilderError {
             cell_id: cell_id.clone(),
             message: format!("non-auto parameter {cell_id} missing from current_values"),
@@ -1321,7 +1354,7 @@ mod tests {
 
         let result = builder.add_auto_coord(&Some(cell_id.clone()), &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_auto_coord");
     }
 
     /// add_auto_coord must return a BuilderError carrying the original
@@ -1367,7 +1400,7 @@ mod tests {
 
         let result = add_pattern_to_builder(&mut builder, &pattern, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_pattern_to_builder");
     }
 
     /// Calling add_auto_coord twice with the same auto-param cell_id must
@@ -1375,7 +1408,7 @@ mod tests {
     #[test]
     fn add_auto_coord_cache_hit_idempotency() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let auto_params = auto_params_for(&cell_id);
         let current_values = ValueMap::new();
         let initial_len = builder.params.len();
@@ -1409,7 +1442,7 @@ mod tests {
     #[test]
     fn add_auto_coord_auto_param_warm_start() {
         let mut builder = SystemBuilder::new();
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let auto_params = auto_params_for(&cell_id);
         let mut current_values = ValueMap::new();
         current_values.insert(
@@ -1439,7 +1472,7 @@ mod tests {
     /// output only the message (cell_id is logged as a separate structured field).
     #[test]
     fn builder_error_has_cell_id_and_display() {
-        let cell_id = ValueCellId::new("Test", "x");
+        let cell_id = vcid("Test", "x");
         let message = "non-auto parameter Test.x missing from current_values".to_string();
         let err = BuilderError {
             cell_id: cell_id.clone(),
@@ -1461,35 +1494,20 @@ mod tests {
         );
     }
 
-    /// missing_coord_setup returns a tuple of a fresh SystemBuilder with no params,
-    /// a ValueCellId matching the given entity/field, empty auto_params, and empty current_values.
+    /// assert_missing_err must panic when the error's cell_id does not match the
+    /// expected cell_id.  This is a negative test for the helper: it verifies the
+    /// mismatch-detection path rather than only the happy-path.
     #[test]
-    fn missing_coord_setup_returns_expected_tuple() {
-        let (builder, cell_id, auto_params, current_values) = missing_coord_setup("Foo", "bar");
-
-        assert!(
-            builder.params.is_empty(),
-            "fresh builder should have no params"
-        );
-        assert_eq!(
-            cell_id,
-            ValueCellId::new("Foo", "bar"),
-            "cell_id should match the given entity/field"
-        );
-        assert!(auto_params.is_empty(), "auto_params should be empty");
-        assert!(current_values.is_empty(), "current_values should be empty");
-    }
-
-    /// assert_missing_err must not panic when given a Result::Err(BuilderError)
-    /// whose message contains both "missing" and the cell_id string.
-    #[test]
-    fn assert_missing_err_passes_on_matching_error() {
-        let cell_id = ValueCellId::new("Ent", "field");
+    #[should_panic(expected = "panics_on_wrong_cell_id: BuilderError cell_id")]
+    fn assert_missing_err_panics_on_wrong_cell_id() {
+        let actual_id = vcid("A", "x");
+        let expected_id = vcid("B", "y");
         let result: Result<(), BuilderError> = Err(BuilderError {
-            cell_id: cell_id.clone(),
-            message: format!("non-auto parameter {} missing from current_values", cell_id),
+            cell_id: actual_id.clone(),
+            message: format!("non-auto parameter {} missing from current_values", actual_id),
         });
-        assert_missing_err(result, &cell_id);
+        // Passes `expected_id` ("B","y") but the error carries `actual_id` ("A","x") — must panic.
+        assert_missing_err(result, &expected_id, "panics_on_wrong_cell_id");
     }
 
     /// add_point must propagate the Err returned by add_auto_coord when the
@@ -1499,7 +1517,7 @@ mod tests {
     /// other two error-path tests.
     #[test]
     fn add_point_propagates_missing_value_error() {
-        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Fixed", "y");
+        let (mut builder, cell_id, auto_params, current_values) = missing_coord_setup("Fixed", "x");
 
         let pt = PointRef::Auto {
             x: Some(cell_id.clone()),
@@ -1508,7 +1526,7 @@ mod tests {
         };
         let result = builder.add_point(&pt, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_point");
     }
 
     // ── add_line_pair: additional error-propagation tests (S6) ────────────────
@@ -1531,7 +1549,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_a.end)");
     }
 
     /// `add_line_pair` must propagate Err when `line_b.start` contains a non-auto
@@ -1552,7 +1570,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_b.start)");
     }
 
     /// `add_line_pair` must propagate Err when `line_b.end` contains a non-auto
@@ -1573,7 +1591,7 @@ mod tests {
 
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
-        assert_missing_err(result, &cell_id);
+        assert_missing_err(result, &cell_id, "add_line_pair (line_b.end)");
     }
 
     // ── add_line_pair: partial-mutation contract test (S3) ────────────────────
@@ -1588,8 +1606,6 @@ mod tests {
         let (mut builder, cell_id, auto_params, current_values) =
             missing_coord_setup("LineBStart", "x");
 
-        let initial_point_count = builder.point_entities.len();
-
         // line_a is fully Fixed — both points will be created before the error
         let bad_start = PointRef::Auto {
             x: Some(cell_id.clone()),
@@ -1603,13 +1619,14 @@ mod tests {
         let result = builder.add_line_pair(&line_a, &line_b, &auto_params, &current_values);
 
         assert!(result.is_err(), "expected Err when lb_start is missing");
-        // At most 2 line_a points were inserted before the error — no more than that.
-        assert!(
-            builder.point_entities.len() <= initial_point_count + 2,
-            "builder.point_entities should contain at most the already-created line_a points \
-             (len={}, initial={}) — add_line_pair partial mutation is bounded",
+        // The two line_a points were inserted before the error — no rollback.
+        // Exactly 2: both Fixed, distinct coords (no dedup), line_b never reached.
+        assert_eq!(
             builder.point_entities.len(),
-            initial_point_count
+            2,
+            "builder.point_entities should contain exactly the 2 line_a points \
+             (len={}) — add_line_pair has no rollback on Err",
+            builder.point_entities.len()
         );
     }
 
@@ -1725,10 +1742,7 @@ mod tests {
             let mut builder = SystemBuilder::new();
             let result =
                 builder.add_line_pair(line_a, line_b, &auto_params, &current_values);
-            assert!(
-                result.is_err(),
-                "expected Err when erroring Auto point is at position '{position_name}'"
-            );
+            assert_missing_err(result, &cell_id, position_name);
         }
     }
 

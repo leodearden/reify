@@ -307,4 +307,46 @@ describe('createSerializationErrorCoalescer', () => {
     expect(showToast).toHaveBeenCalledTimes(2);
     expect(showToast).toHaveBeenNthCalledWith(2, '2 items failed to serialize', 'error');
   });
+
+  it('flushes synchronously when Date.now() advances past maxWaitMs without the timer firing', () => {
+    // This test covers the `if (remaining <= 0) { flush(); }` synchronous branch in add().
+    //
+    // In production this branch is reached when a browser tab is backgrounded and the
+    // JS engine throttles setTimeout delivery (the clock keeps ticking but the callback
+    // is delayed far beyond its scheduled time).  We reproduce it here by using
+    // vi.setSystemTime(), which advances Date.now() WITHOUT dispatching pending timers.
+    //
+    // We deliberately do NOT use vi.advanceTimersByTime() for the clock jump: that API
+    // fires the pending 100ms setTimeout, which calls flush(), resets firstArrival, and
+    // starts a fresh cycle — making elapsed=0 on the next add() and making the sync
+    // branch permanently unreachable.
+    const showToast = vi.fn();
+    const coalescer = createSerializationErrorCoalescer(showToast, 100, 300);
+
+    // ── Warmup cycle ── flush+reset to reach a clean state (firstArrival=undefined)
+    coalescer.add({ item_type: 'mesh', item_id: 'warm', error: 'e' });
+    vi.advanceTimersByTime(100); // fires the 100ms timer → flush() → firstArrival=undefined
+    expect(showToast).toHaveBeenCalledOnce();
+    showToast.mockClear();
+
+    // ── Sync-flush cycle ──
+    // (a) anchor firstArrival and schedule a 100ms timer
+    const t0 = Date.now();
+    coalescer.add({ item_type: 'mesh', item_id: 'bg1', error: 'err' });
+
+    // (b) move Date.now() forward by 400ms WITHOUT firing the pending 100ms timer
+    vi.setSystemTime(t0 + 400);
+
+    // The timer has not fired yet — no toast
+    expect(showToast).not.toHaveBeenCalled();
+
+    // (c) add a second error: elapsed = (t0+400) - t0 = 400 > maxWaitMs(300)
+    //     remaining = 300 - 400 = -100 ≤ 0 → sync flush fires inline, no timer needed
+    expect(vi.getTimerCount()).toBe(1);
+    coalescer.add({ item_type: 'mesh', item_id: 'bg2', error: 'err' });
+
+    // Assert the flush happened synchronously — no vi.advanceTimersByTime() call required
+    expect(showToast).toHaveBeenCalledOnce();
+    expect(showToast).toHaveBeenCalledWith('2 items failed to serialize', 'error');
+  });
 });

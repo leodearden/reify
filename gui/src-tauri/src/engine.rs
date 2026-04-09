@@ -19,6 +19,27 @@ use crate::types::{
 /// Session wrapping an Engine with its compiled module and source text.
 ///
 /// Provides higher-level operations for the GUI: load, update, set parameter, export.
+///
+/// # Invariant: compiled / module_name / source_map must stay in sync
+///
+/// Whenever `compiled` is `Some`, **all three** of the following must hold:
+///
+/// 1. `module_name` is `Some(name)`.
+/// 2. `source_map` contains the key `module_key(name)` (i.e. `"{name}.ri"`).
+/// 3. The value stored at that key is the source text that produced the current
+///    `CompiledModule`.
+///
+/// Any code path that sets one of these fields without setting the others puts
+/// the session in an inconsistent state and will cause a panic in
+/// `get_diagnostics` or `get_source_location` (via `resolve_source`).
+///
+/// **Current safe mutation sites:** `load_from_source` (lines ~56–101) and
+/// `update_source` (lines ~189–198) — both defer all field writes until after
+/// parse and compile succeed, so they maintain the invariant atomically.
+///
+/// **Future callers** that acquire partial state through serialization,
+/// snapshotting, or test injection **must** restore all three fields together
+/// before any subsequent `get_*` call.
 pub struct EngineSession {
     engine: Engine,
     compiled: Option<CompiledModule>,
@@ -34,6 +55,7 @@ pub struct EngineSession {
 /// formerly-identical `format!("{}.ri", ...)` call sites in
 /// `load_from_source`, `update_source`, and `resolve_source`.
 pub(crate) fn module_key(name: &str) -> String {
+    debug_assert!(!name.is_empty(), "module_key called with empty name");
     format!("{}.ri", name)
 }
 
@@ -271,10 +293,16 @@ impl EngineSession {
                 .map(|vc| vc.span)
         })?;
 
-        // Resolve the source file key and text via the shared helper.
-        // NOTE: Assumes all diagnostic spans refer to the single loaded source
-        // file — file_path from multi-file diagnostics would need threading here.
-        let (file, source) = self.resolve_source();
+        // Fallible source_map lookup — returns None when the invariant is broken
+        // (e.g., in tests via break_source_map_for_test) rather than panicking.
+        // resolve_source() is not used here because get_source_location returns
+        // Option and can propagate None gracefully; callers that require the
+        // invariant guarantee (get_diagnostics with non-empty diagnostics) still
+        // use resolve_source() to get a loud panic on violation.
+        let name = self.module_name.as_deref()?;
+        let key = module_key(name);
+        let (file, source) = self.source_map.get_key_value(key.as_str())?;
+        let (file, source) = (file.as_str(), source.as_str());
 
         let (line, col) = byte_offset_to_line_col(source, span.start as usize);
         let (end_line, end_col) = byte_offset_to_line_col(source, span.end as usize);
@@ -302,6 +330,12 @@ impl EngineSession {
             Some(c) => c,
             None => return Vec::new(),
         };
+
+        // Early-exit when there is nothing to map — avoids calling resolve_source
+        // (which panics on a broken invariant) when no work is needed.
+        if compiled.diagnostics.is_empty() {
+            return Vec::new();
+        }
 
         // Resolve file_path and source text via the shared helper.
         // NOTE: Assumes all diagnostic spans refer to the single loaded source
@@ -488,6 +522,28 @@ impl EngineSession {
     /// when no module is loaded.
     pub(crate) fn resolve_source_for_test(&self) -> (&str, &str) {
         self.resolve_source()
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `module_name` while leaving `compiled` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on module_name fires correctly.
+    pub(crate) fn break_module_name_for_test(&mut self) {
+        self.module_name.take();
+    }
+
+    /// Deliberately break the compiled/module_name/source_map invariant by
+    /// clearing `source_map` while leaving `compiled` and `module_name` intact.
+    ///
+    /// **Only for testing the panic guard in `resolve_source`.** After this
+    /// call the session is in an inconsistent state; any `get_*` call will
+    /// panic. Do not use this helper for any purpose other than verifying the
+    /// expect() on source_map.get_key_value() fires correctly.
+    pub(crate) fn break_source_map_for_test(&mut self) {
+        self.source_map.clear();
     }
 }
 
