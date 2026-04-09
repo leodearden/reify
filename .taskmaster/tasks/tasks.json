@@ -17592,7 +17592,7 @@
         "description": "Convention violation: reify-compiler/src/lib.rs has 13 instances of .unwrap_or(Type::Real) or .unwrap_or(Type::String) when scope.resolve() or resolve_type_name() fails during the second compilation pass. The two-pass compilation guarantees names are registered in pass 1 — a miss in pass 2 is a compiler logic bug that should surface as a diagnostic, not silently assign Type::Real.\n\nEach site should either emit a Diagnostic::error and use a sentinel type, or panic with an ICE message (internal compiler error) since the condition should be unreachable.\n\nLocations: lines 2337, 2504, 2705, 2727, 2759, 2763, 2856, 4559, 4666, 4959, 6352, 6581, 6589\n\nmemory_hints: search(\"silent defaults Type::Real compiler convention\", project_id=\"reify\")",
         "details": "<info added on 2026-04-03T22:18:48.974Z>\nThis task subsumes task #819, which focuses only on the port type resolution at line 4542. Task #823 provides a comprehensive fix for all 13 locations. Additionally, task #368, which is completed, previously addressed some of these issues but left these 13 instances unresolved.\n</info added on 2026-04-03T22:18:48.974Z>",
         "testStrategy": "",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "high",
         "subtasks": [],
@@ -17604,7 +17604,7 @@
             "crates/reify-compiler"
           ]
         },
-        "updatedAt": "2026-04-09T10:00:59.813Z"
+        "updatedAt": "2026-04-09T16:13:33.594Z"
       },
       {
         "id": "824",
@@ -22035,7 +22035,7 @@
         "id": "1039",
         "title": "Fix incomplete CARGO_MANIFEST_DIR coverage in build_logic_tests and strengthen meta-test",
         "description": "The task 1021 diff fixed bare relative paths in two source-self-inspection tests but left `test_is_root_uses_libc_not_raw_ffi` (line ~884) still using `std::fs::read_to_string(\"tests/build_logic_tests.rs\")`. The meta-test `test_self_read_paths_use_manifest_dir` only checks the two fixed tests, not this third one.\n\n**Required changes in `tree-sitter-reify/tests/build_logic_tests.rs`:**\n\n1. Strengthen assertions from `contains(\"CARGO_MANIFEST_DIR\")` to `contains(\"env!(\\\"CARGO_MANIFEST_DIR\\\")\")` so a stray comment mentioning the env var doesn't false-pass.\n\n2. Add a blanket negative assertion: `assert!(!source.contains(\"\\\"tests/build_logic_tests.rs\\\"\"), \"found bare relative path...\")` to make the guard self-maintaining for future additions.\n\nVerification: `cargo test -p tree-sitter-reify test_self_read_paths_use_manifest_dir`\n\nmemory_hints: search \"task 1022 CARGO_MANIFEST_DIR deduplicate\" in reify project; search \"meta-test blanket scan convention\" in reify project",
-        "status": "in-progress",
+        "status": "pending",
         "dependencies": [],
         "priority": "medium",
         "details": "",
@@ -22060,7 +22060,7 @@
             "tree-sitter-reify/tests/build_logic_tests.rs"
           ]
         },
-        "updatedAt": "2026-04-09T09:19:03.886Z"
+        "updatedAt": "2026-04-09T16:13:33.664Z"
       },
       {
         "id": "1040",
@@ -27358,7 +27358,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T16:13:33.489Z",
+      "lastModified": "2026-04-09T16:13:33.664Z",
       "taskCount": 1317,
       "completedCount": 989,
       "tags": [
