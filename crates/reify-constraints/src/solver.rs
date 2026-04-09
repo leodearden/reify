@@ -1334,6 +1334,119 @@ mod tests {
     }
 
     #[test]
+    fn build_perturbation_anchors_missing_param() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (_id, params) = test_param();
+        // Empty map: param is absent → None branch fires, mid is used as fallback
+        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing, vec!["Part.x"], "expected Part.x in missing list");
+        assert_eq!(perturbed.len(), 1);
+        // fallback is mid = 0.5, which is NOT < mid → upper-half branch: lo + 0.1*(hi-lo) = 0.1
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 (midpoint fallback goes to lower side), got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_non_numeric_undef() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> =
+            HashMap::new();
+        // Value::Undef: as_f64() returns None → same None-branch as missing
+        solved_values.insert(id, reify_types::Value::Undef);
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing, vec!["Part.x"], "Value::Undef should appear in missing list");
+        assert_eq!(perturbed.len(), 1);
+        // fallback mid = 0.5 (not < 0.5) → lo + 0.1*(hi-lo) = 0.1
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 for Undef fallback, got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_multiple_missing() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+        use reify_types::{AutoParam, Type, ValueCellId};
+
+        let param_x = ValueCellId::new("Part", "x");
+        let param_y = ValueCellId::new("Part", "y");
+        let params = vec![
+            AutoParam {
+                id: param_x,
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+            AutoParam {
+                id: param_y,
+                param_type: Type::length(),
+                bounds: Some((0.0, 1.0)),
+                free: false,
+            },
+        ];
+        // Both params absent → both hit the None branch
+        let solved_values: HashMap<reify_types::ValueCellId, reify_types::Value> = HashMap::new();
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert_eq!(missing.len(), 2, "both params should be missing; got {:?}", missing);
+        assert!(missing.contains(&"Part.x".to_string()), "Part.x should be missing");
+        assert!(missing.contains(&"Part.y".to_string()), "Part.y should be missing");
+        assert_eq!(perturbed.len(), 2);
+        // Both fall back to mid = 0.5 → lo + 0.1*(hi-lo) = 0.1 each
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1, got {}",
+            perturbed[0]
+        );
+        assert!(
+            (perturbed[1] - 0.1).abs() < 1e-10,
+            "expected perturbed[1] == 0.1, got {}",
+            perturbed[1]
+        );
+    }
+
+    #[test]
+    fn build_perturbation_anchors_upper_half_solution() {
+        use std::collections::HashMap;
+
+        use super::build_perturbation_anchors;
+
+        let (id, params) = test_param();
+        let mut solved_values = HashMap::new();
+        // 0.75 >= mid 0.5 → upper half → lo + 0.1*(hi-lo) = 0.1 (perturbation to lower side)
+        solved_values.insert(id, scalar(0.75));
+
+        let (perturbed, missing) = build_perturbation_anchors(&params, &solved_values);
+
+        assert!(missing.is_empty(), "expected no missing params; got {:?}", missing);
+        assert_eq!(perturbed.len(), 1);
+        assert!(
+            (perturbed[0] - 0.1).abs() < 1e-10,
+            "expected perturbed[0] == 0.1 (upper-half solution → lower-end perturbation), got {}",
+            perturbed[0]
+        );
+    }
+
+    #[test]
     fn build_trial_values_empty_params() {
         use super::build_trial_values;
         use reify_types::{DimensionVector, Value, ValueCellId};
