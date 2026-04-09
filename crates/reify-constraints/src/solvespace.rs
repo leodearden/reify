@@ -1139,21 +1139,22 @@ mod tests {
         cell_id: &ValueCellId,
         context: &str,
     ) {
-        assert!(
-            result.is_err(),
-            "{context}: expected Err for missing non-auto coord, got Ok({:?})",
-            result.ok()
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.cell_id, *cell_id,
-            "{context}: BuilderError cell_id should match the expected ValueCellId"
-        );
-        assert!(
-            err.message.contains("missing"),
-            "{context}: BuilderError message should contain 'missing', got: {}",
-            err.message
-        );
+        match result {
+            Err(BuilderError { cell_id: id, message }) => {
+                assert_eq!(
+                    id, *cell_id,
+                    "{context}: BuilderError cell_id should match the expected ValueCellId"
+                );
+                assert!(
+                    message.contains("missing"),
+                    "{context}: BuilderError message should contain 'missing', got: {}",
+                    message
+                );
+            }
+            Ok(v) => panic!(
+                "{context}: expected Err for missing non-auto coord, got Ok({v:?})"
+            ),
+        }
     }
 
     /// `fixed_line` helper: constructs a fully-Fixed `LineRef` from six coordinates.
