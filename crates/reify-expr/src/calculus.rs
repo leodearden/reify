@@ -475,11 +475,14 @@ fn eval_perturbed_point<F: Fn(f64) -> Value>(
     }
     let result = apply_lambda(lambda, work_args, ctx);
     // Recover work_point from work_args (single_point_param only).
-    // Infallible: apply_lambda borrows &[Value] and cannot mutate work_args;
-    // we pushed exactly one Value::Point, so pop() always succeeds.
+    // apply_lambda borrows &[Value] and cannot mutate work_args, so pop() returns
+    // exactly the Value::Point we pushed; any other outcome is a programming error.
     if single_point_param {
-        if let Some(Value::Point(inner)) = work_args.pop() {
-            *work_point = inner;
+        match work_args.pop() {
+            Some(Value::Point(inner)) => *work_point = inner,
+            other => unreachable!(
+                "expected Value::Point after apply_lambda, got {other:?}"
+            ),
         }
         debug_assert_eq!(
             work_point.len(),
