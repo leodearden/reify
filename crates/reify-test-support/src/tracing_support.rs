@@ -1435,4 +1435,60 @@ mod tests {
             "assert_any_event_has_fields must panic when no event has lock=snapshot_values"
         );
     }
+
+    // ── WarnCapture::assert_any_message_equals tests ──────────────────────────
+
+    /// `WarnCapture::assert_any_message_equals` passes when at least one captured
+    /// message equals the expected string exactly.
+    #[test]
+    fn warn_capture_assert_any_message_equals_passes_on_exact_match() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("lock poisoned, recovering");
+        });
+
+        // Should not panic — message matches exactly.
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    /// `WarnCapture::assert_any_message_equals` panics with the canonical
+    /// "no WARN message equaled" prefix when no captured message matches.
+    #[test]
+    #[should_panic(expected = "no WARN message equaled")]
+    fn warn_capture_assert_any_message_equals_panics_on_missing() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("some other warning");
+        });
+
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
+
+    /// `WarnCapture::assert_any_message_equals` uses strict equality, not
+    /// substring containment: a superstring does NOT satisfy the assertion.
+    ///
+    /// Emits `"lock poisoned, recovering: err"` and asserts against the shorter
+    /// string `"lock poisoned, recovering"` — this must panic because the emitted
+    /// message is a strict superset of the expected string.
+    #[test]
+    #[should_panic]
+    fn warn_capture_assert_any_message_equals_panics_on_partial_substring() {
+        use crate::warn_capturing_subscriber;
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!("lock poisoned, recovering: err");
+        });
+
+        // The emitted message contains the expected string but is not equal to
+        // it; assert_any_message_equals must reject it.
+        capture.assert_any_message_equals("lock poisoned, recovering");
+    }
 }
