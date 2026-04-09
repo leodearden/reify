@@ -27687,6 +27687,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1336,
+        "title": "test(infra): harden extract_fn in sync_comments_test.sh against silent empty output",
+        "description": "The updated `extract_fn` awk script at tests/sync_comments_test.sh:51-63 uses a range pattern `/^[^/]*fn NAME[(<]/,/^}/`. If either copy of sanitize_value is ever moved somewhere the start pattern doesn't match, awk silently outputs nothing and `diff` compares two empty outputs — passing vacuously.",
+        "details": "Add a guard after extraction, e.g.:\n```bash\n[ -s \"$tmp_a\" ] || { echo \"FAIL: extract_fn produced empty output for $src_file\"; exit 1; }\n[ -s \"$tmp_b\" ] || { echo \"FAIL: extract_fn produced empty output for $tgt_file\"; exit 1; }\n```\nso the test fails loudly if the function body could not be extracted. Verify by temporarily breaking the extract_fn pattern and confirming the test fails rather than passing silently.\n\nSource: review triage of task 159 (auto(free) grammar + compiler threading).",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "low",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -27699,7 +27710,7 @@
       ],
       "created": "2026-04-09T17:24:04.313Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T17:24:21.548Z"
+      "updated": "2026-04-09T17:24:27.838Z"
     }
   }
 }
