@@ -290,5 +290,27 @@ assert "mkdir poll loop uses _lock_elapsed_secs (naming consistency with MAX_LOC
 assert "mkdir poll loop does NOT use _lock_attempts (old name fully renamed)" \
     bash -c '! grep -q "_lock_attempts" '"$GENERATE_SCRIPT"
 
+# ── Test 19: MAX_WAIT_SECS / MAX_LOCK_WAIT_SECS safety-buffer invariant ────
+echo ""
+echo "--- Test 19: MAX_WAIT_SECS/MAX_LOCK_WAIT_SECS safety-buffer invariant ---"
+
+# Guard against the task-994 zero-buffer regression: if both constants are set
+# to the same value, the mkdir poll loop can wait as long as the stale-age
+# threshold, eliminating the recovery window where a crashed holder's lock
+# would be evicted before a new acquire succeeds.  Current values
+# MAX_WAIT_SECS=120 and MAX_LOCK_WAIT_SECS=75 give a 45s safety buffer.
+# Requiring buffer >= 30s gives future tuning latitude while preventing collapse.
+_mws="$(grep '^MAX_WAIT_SECS=' "$GENERATE_SCRIPT" | head -1 | sed 's/.*=//')"
+_mlws="$(grep '^MAX_LOCK_WAIT_SECS=' "$GENERATE_SCRIPT" | head -1 | sed 's/.*=//')"
+
+assert "MAX_WAIT_SECS and MAX_LOCK_WAIT_SECS both parse as positive integers" \
+    bash -c '[ "$1" -gt 0 ] && [ "$2" -gt 0 ]' _ "$_mws" "$_mlws"
+
+assert "MAX_WAIT_SECS > MAX_LOCK_WAIT_SECS (safety buffer is non-zero)" \
+    bash -c '[ "$1" -gt "$2" ]' _ "$_mws" "$_mlws"
+
+assert "MAX_WAIT_SECS - MAX_LOCK_WAIT_SECS >= 30s (meaningful safety buffer, task-994 regression guard)" \
+    bash -c '[ $(( $1 - $2 )) -ge 30 ]' _ "$_mws" "$_mlws"
+
 # ── Summary ────────────────────────────────────────────────────────
 test_summary
