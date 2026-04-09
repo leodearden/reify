@@ -8996,7 +8996,7 @@
             "crates/reify-eval/tests/purpose_eval.rs"
           ],
           "modules": [
-            "crates/reify-test-support/src",
+            "crates/reify-test-support",
             "crates/reify-eval/tests"
           ]
         }
