@@ -211,6 +211,57 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
     );
 }
 
+// ── task-823 step-3: entity.rs ICE paths — green path (no ICE on valid code) ──
+
+#[test]
+fn structure_param_resolves_without_ice() {
+    // Verifies that entity.rs:525 (scope.resolve in pass 2 for structure param)
+    // does NOT emit an ICE diagnostic for valid code. The two-pass compilation
+    // registers all names in pass 1, so pass-2 resolve should always succeed
+    // for well-formed structures.
+    let source = r#"
+        structure S {
+            param x : Real = 1.0
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid structure param, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
+#[test]
+fn port_member_resolves_without_ice() {
+    // Verifies that entity.rs:856 (scope.resolve in pass 2 for port member param)
+    // does NOT emit an ICE diagnostic for valid code.
+    let source = r#"
+        trait MechPort {
+            param diameter : Length
+        }
+        structure S {
+            port mount : MechPort {
+                param diameter : Length = 5mm
+            }
+        }
+    "#;
+    let module = compile_module(source);
+    let errors = error_diagnostics(&module);
+
+    let has_ice = errors.iter().any(|d| d.message.contains("internal compiler error"));
+    assert!(
+        !has_ice,
+        "expected no ICE diagnostic on valid port member, got: {:?}",
+        errors
+    );
+    assert!(errors.is_empty(), "expected no errors at all, got: {:?}", errors);
+}
+
 // ── task-823 step-1: port param unknown type name emits diagnostic ──────
 
 #[test]
