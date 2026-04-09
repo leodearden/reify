@@ -801,7 +801,7 @@ fn update_source_produces_meshes() {
 
 // --- Task 827: get_diagnostics tests ---
 
-/// Step-1 (TDD failing test): get_diagnostics() returns empty vec when no module is loaded.
+/// get_diagnostics() returns empty vec when no module is loaded.
 /// This test fails with a compile error until EngineSession::get_diagnostics() is implemented.
 #[test]
 fn engine_get_diagnostics_no_module_returns_empty() {
@@ -815,7 +815,7 @@ fn engine_get_diagnostics_no_module_returns_empty() {
     );
 }
 
-/// Step-8 (REVIEW FIX — missing positive coverage): get_diagnostics() returns a non-empty vec
+/// get_diagnostics() returns a non-empty vec
 /// when the compiled module contains a warning.
 ///
 /// Source with `port mount : NonExistentTrait` produces an "unknown port type" warning
@@ -900,7 +900,7 @@ fn engine_get_diagnostics_returns_populated_warning() {
     );
 }
 
-/// Step-3: get_diagnostics() returns empty vec for bracket_source() (warning-free source).
+/// get_diagnostics() returns empty vec for bracket_source() (warning-free source).
 /// Validates the method works end-to-end on a real compiled module.
 #[test]
 fn engine_get_diagnostics_clean_source_returns_empty() {
@@ -1017,7 +1017,7 @@ fn diagnostics_file_key_consistent_after_update_source() {
     );
 }
 
-/// Step-3: A diagnostic with no labels gets (1,1,1,1) coordinates.
+/// A diagnostic with no labels gets (1,1,1,1) coordinates.
 ///
 /// This exercises the `else` branch of `diag.labels.first()` at engine.rs:295-296.
 /// The compiler always attaches labels; inject_diagnostic_for_test() lets us plant
@@ -1173,7 +1173,7 @@ fn build_line_offsets_only_newlines() {
     assert_eq!(offsets, vec![0, 1, 2]);
 }
 
-/// Step-4: After update_source with clean source, get_diagnostics() returns empty.
+/// After update_source with clean source, get_diagnostics() returns empty.
 ///
 /// Verifies the update_source→get_diagnostics lifecycle contract: the compiled
 /// module (and its diagnostics) are replaced on each update, so stale diagnostics
