@@ -6,6 +6,7 @@ use crate::common::*;
 mod complex;
 mod frames;
 mod geometry;
+mod linalg;
 mod numeric;
 mod orientation;
 mod trig;
