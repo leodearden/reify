@@ -28761,6 +28761,17 @@
         "dependencies": [],
         "priority": "low",
         "subtasks": []
+      },
+      {
+        "id": 1394,
+        "title": "Fix misleading 'stdlib prelude' wording in duplicate-unit diagnostic",
+        "description": "In crates/reify-compiler/src/lib.rs:272-286, the duplicate-unit diagnostic hardcodes 'already defined in stdlib prelude' whenever the original entry has span SourceSpan::empty(0). Post-task-209, prelude units flow in from user imports via compile_project / compile_module as well, so a collision with an imported pub unit (e.g. the local_unit_duplicating_imported_pub_unit_produces_error test) emits a message that misattributes the conflict to stdlib. Fix options: (a) track the source of seeded prelude units (UnitEntry::source: Stdlib | Imported(module_path)) and select wording accordingly — 'already defined in stdlib prelude' vs 'already imported from module X'; (b) minimally, soften wording to 'already defined in imported prelude' so it reads correctly in both cases. The existing test only asserts 'duplicate' and 'mil' appear, so tighten the assertion to cover the new wording. Files: crates/reify-compiler/src/lib.rs, crates/reify-compiler/src/units.rs (UnitRegistry/UnitEntry if tracking source), crates/reify-compiler/tests/user_defined_unit_tests.rs.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
@@ -28773,7 +28784,7 @@
       ],
       "created": "2026-04-09T22:20:35.940Z",
       "description": "Tasks for master context",
-      "updated": "2026-04-09T22:20:40.594Z"
+      "updated": "2026-04-09T22:20:49.563Z"
     }
   }
 }
