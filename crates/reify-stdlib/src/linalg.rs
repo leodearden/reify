@@ -1,5 +1,5 @@
+use crate::common::{binary, sanitize_value, tensor_components_f64, unary};
 use reify_types::{DimensionVector, Value};
-use crate::common::{unary, binary, sanitize_value, tensor_components_f64};
 
 pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
     let v = match name {
@@ -255,7 +255,9 @@ pub(crate) fn dispatch(name: &str, args: &[Value]) -> Option<Value> {
 ///
 /// Handles both `Value::Matrix(rows)` and nested `Value::Tensor` (rank-2 Tensor).
 /// All elements must share the same dimension and be numeric.
-pub(crate) fn matrix_components_f64(v: &Value) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
+pub(crate) fn matrix_components_f64(
+    v: &Value,
+) -> Option<(usize, usize, Vec<f64>, DimensionVector)> {
     enum Rows<'a> {
         Matrix(&'a [Vec<Value>]),
         Tensor(&'a [Value]),
@@ -341,7 +343,12 @@ pub(crate) fn matrix_components_f64(v: &Value) -> Option<(usize, usize, Vec<f64>
 }
 
 /// Build a nested `Value::Tensor` (rank-2) from flat f64 data.
-pub(crate) fn build_matrix_value(nrows: usize, ncols: usize, data: &[f64], dim: DimensionVector) -> Value {
+pub(crate) fn build_matrix_value(
+    nrows: usize,
+    ncols: usize,
+    data: &[f64],
+    dim: DimensionVector,
+) -> Value {
     let rows: Vec<Value> = (0..nrows)
         .map(|i| {
             let row: Vec<Value> = (0..ncols)
@@ -379,7 +386,10 @@ mod dispatch_tests {
     fn linalg_dispatch_determinant_identity() {
         let mat = make_identity_matrix_2x2();
         let result = dispatch("determinant", &[mat]);
-        assert!(result.is_some(), "determinant should be handled by linalg dispatch");
+        assert!(
+            result.is_some(),
+            "determinant should be handled by linalg dispatch"
+        );
         assert!(
             matches!(result, Some(Value::Real(v)) if (v - 1.0).abs() < 1e-12),
             "determinant of identity matrix should be 1.0"
@@ -394,10 +404,10 @@ mod dispatch_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::eval_builtin;
-    use reify_types::{DimensionVector, Value};
-    use crate::test_helpers::*;
     use super::matrix_components_f64;
+    use crate::eval_builtin;
+    use crate::test_helpers::*;
+    use reify_types::{DimensionVector, Value};
 
     // ── Advanced linalg tests (task 337) ─────────────────────────────────────
 

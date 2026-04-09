@@ -16,10 +16,10 @@ pub(crate) fn dispatch(name: &str, _args: &[Value]) -> Option<Value> {
         // These are handled by reify-expr's eval_expr FunctionCall interceptor
         // for actual lambda application; the stdlib entries serve as documentation
         // and fallback for direct stdlib calls.
-        "sample" => Some(Value::Undef),     // Requires EvalContext for lambda application
-        "gradient" => Some(Value::Undef),   // Numeric differentiation not yet implemented
+        "sample" => Some(Value::Undef), // Requires EvalContext for lambda application
+        "gradient" => Some(Value::Undef), // Numeric differentiation not yet implemented
         "divergence" => Some(Value::Undef), // Numeric differentiation not yet implemented
-        "curl" => Some(Value::Undef),       // Numeric differentiation not yet implemented
+        "curl" => Some(Value::Undef),   // Numeric differentiation not yet implemented
 
         _ => None,
     }
@@ -32,7 +32,11 @@ mod dispatch_tests {
     #[test]
     fn stubs_dispatch_determined() {
         let result = dispatch("determined", &[]);
-        assert_eq!(result, Some(Value::Undef), "determined should return Some(Undef)");
+        assert_eq!(
+            result,
+            Some(Value::Undef),
+            "determined should return Some(Undef)"
+        );
     }
 
     #[test]
