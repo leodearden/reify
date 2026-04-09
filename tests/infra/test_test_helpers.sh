@@ -340,6 +340,32 @@ else
     check "extract_fn returns empty output for non-existent function name (got: $_fn_beh_out)" "false"
 fi
 
+# short-circuit behavioral test: when extract_fn returns empty for both bodies,
+# execution should not reach the diff assertion (which would produce a spurious PASS).
+echo ""
+echo "--- extract_fn non-empty guard short-circuit behavioral test ---"
+
+_sc_beh_out=$(bash -c "
+    tmpdir=\$(mktemp -d)
+    trap 'rm -rf \"\$tmpdir\"' EXIT
+    mkdir -p \"\$tmpdir/crates/reify-expr/src\"
+    mkdir -p \"\$tmpdir/crates/reify-stdlib/src\"
+    mkdir -p \"\$tmpdir/tests/infra\"
+    printf '// SYNC: reify-stdlib::sanitize_value\nfn renamed_function(v: i32) -> i32 {\n    v\n}\n' \
+        > \"\$tmpdir/crates/reify-expr/src/sanitize.rs\"
+    printf '// SYNC: reify-expr::sanitize_value\nfn renamed_function(v: i32) -> i32 {\n    v\n}\n' \
+        > \"\$tmpdir/crates/reify-stdlib/src/helpers.rs\"
+    cp '${HELPER_FILE}' \"\$tmpdir/tests/infra/test_helpers.sh\"
+    cp '${SYNC_FILE}' \"\$tmpdir/tests/sync_comments_test.sh\"
+    bash \"\$tmpdir/tests/sync_comments_test.sh\" 2>&1 || true
+" 2>&1)
+
+if ! echo "$_sc_beh_out" | grep -q 'PASS:.*body is identical'; then
+    check "extract_fn non-empty guard short-circuits before spurious PASS on diff" "true"
+else
+    check "extract_fn non-empty guard short-circuits before spurious PASS on diff (spurious PASS found)" "false"
+fi
+
 # ==============================================================================
 # sync_ref_helpers.sh structural checks
 # Verify: helper file exists, defines assert_sync_ref_exists, sources

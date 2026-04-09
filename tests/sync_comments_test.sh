@@ -60,8 +60,8 @@ extract_fn() {
 # and `diff <() <()` would silently succeed (false negative).
 expr_body=$(extract_fn sanitize_value "$EXPR_FILE")
 stdlib_body=$(extract_fn sanitize_value "$STDLIB_FILE")
-[ -z "$expr_body" ] && assert "extract_fn sanitize_value found in reify-expr" false
-[ -z "$stdlib_body" ] && assert "extract_fn sanitize_value found in reify-stdlib" false
+[ -z "$expr_body" ] && { assert "extract_fn sanitize_value found in reify-expr" false; test_summary; }
+[ -z "$stdlib_body" ] && { assert "extract_fn sanitize_value found in reify-stdlib" false; test_summary; }
 assert \
     "sanitize_value body is identical in reify-expr and reify-stdlib" \
     diff \
