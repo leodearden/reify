@@ -1596,4 +1596,56 @@ mod tests {
             &ctx,
         );
     }
+
+    // --- eval_perturbed_point unit tests ---
+
+    /// Verify the happy path for `eval_perturbed_point` with `single_point_param=true`.
+    ///
+    /// Constructs an identity lambda `|pt| pt`, calls `eval_perturbed_point` with a
+    /// 1-element point, and verifies:
+    /// (a) the result equals the expected `Value::Point` with the perturbed coordinate, and
+    /// (b) `work_point` is correctly recovered with length `n=1` after the call.
+    ///
+    /// This characterises the happy path and must pass both before and after the
+    /// `if let` → `match/unreachable!` refactor in step-3.
+    #[test]
+    fn eval_perturbed_point_single_recovers_work_point() {
+        use reify_types::{CompiledExpr, ValueCellId, ValueMap};
+
+        // Identity lambda: |pt| pt
+        let pt_id = ValueCellId::new("$lambda0.S", "pt");
+        let body = CompiledExpr::value_ref(pt_id.clone(), Type::Real);
+        let lambda = Value::Lambda {
+            params: vec![("pt".to_string(), pt_id)],
+            body: Box::new(body),
+            captures: ValueMap::new(),
+        };
+
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        let work_coords = vec![1.0_f64];
+        let mut work_args: Vec<Value> = Vec::new();
+        // Pre-populated: work_point[j] == make_arg(work_coords[j]) initially.
+        let mut work_point: Vec<Value> = vec![Value::Real(1.0)];
+        let make_arg = |v: f64| Value::Real(v);
+
+        let result = eval_perturbed_point(
+            &lambda,
+            &work_coords,
+            &mut work_args,
+            &mut work_point,
+            true, // single_point_param
+            0,    // i — perturb axis 0
+            1,    // n
+            &make_arg,
+            &ctx,
+        );
+
+        // The identity lambda returns the Point it received unchanged.
+        assert_eq!(result, Value::Point(vec![Value::Real(1.0)]));
+        // work_point must be recovered to its original length (n=1).
+        assert_eq!(work_point.len(), 1);
+        assert_eq!(work_point[0], Value::Real(1.0));
+    }
 }
