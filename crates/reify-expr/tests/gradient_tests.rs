@@ -3258,7 +3258,8 @@ fn gradient_tensor_single_point_param_returns_undef() {
 /// Used by tests that share this decomposed-lambda setup:
 /// `gradient_decomposed_n3_dimensionless`,
 /// `gradient_decomposed_nan_returns_undef`,
-/// `gradient_decomposed_inf_returns_undef`.
+/// `gradient_decomposed_inf_returns_undef`,
+/// `gradient_decomposed_neg_inf_returns_undef`.
 fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
@@ -4175,5 +4176,52 @@ fn gradient_decomposed_inf_returns_undef() {
         sample_result,
         Value::Undef,
         "gradient sampled at Point3 with Inf coordinate must return Undef (decomposed path)"
+    );
+}
+
+/// Negative infinity in a Point coordinate causes gradient sampling to return Undef
+/// via the decomposed (multi-param) path.
+///
+/// Complements gradient_decomposed_inf_returns_undef (+Inf) and
+/// gradient_decomposed_nan_returns_undef (NaN).
+///
+/// Build a 3D field with decomposed lambda |x,y,z| x + 2*y + 3*z via
+/// make_decomposed_n3_gradient_field(). Sample the gradient at
+/// Point3(5.0, NEG_INFINITY, 11.0). The is_finite guard in compute_numerical_gradient
+/// must catch NEG_INFINITY before perturbing, returning Undef.
+///
+/// Complements gradient_sample_with_inf_point_returns_undef (single-point-param path).
+#[test]
+fn gradient_decomposed_neg_inf_returns_undef() {
+    let (grad_result, domain_type, grad_codomain_type) = make_decomposed_n3_gradient_field();
+    let values = ValueMap::new();
+
+    // Sample at Point3(5.0, NEG_INFINITY, 11.0)
+    let neg_inf_point = Value::Point(vec![
+        Value::Real(5.0),
+        Value::Real(f64::NEG_INFINITY),
+        Value::Real(11.0),
+    ]);
+
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(grad_codomain_type),
+    };
+
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(neg_inf_point, Type::point3(Type::Real)),
+        ],
+        Type::vec3(Type::Real),
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        sample_result,
+        Value::Undef,
+        "gradient sampled at Point3 with NEG_INFINITY coordinate must return Undef (decomposed path)"
     );
 }
