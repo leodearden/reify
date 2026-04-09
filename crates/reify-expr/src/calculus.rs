@@ -577,7 +577,14 @@ pub(crate) fn compute_numerical_gradient_at_point(
             _ => DimensionVector::DIMENSIONLESS,
         },
         Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
+        _ => {
+            debug_assert!(
+                matches!(codomain_type, Type::Real),
+                "[reify-expr] gradient: unexpected codomain_type variant in result_dim catch-all: {:?}",
+                codomain_type
+            );
+            DimensionVector::DIMENSIONLESS
+        }
     };
 
     // Hoist make_arg before the loop — it only captures domain_dim (Copy),
