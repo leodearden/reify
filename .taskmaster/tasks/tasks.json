@@ -26940,6 +26940,9 @@
         "metadata": {
           "modules": [
             "crates/reify-lsp/tests"
+          ],
+          "files": [
+            "crates/reify-lsp/tests/in_process_bridge.rs"
           ]
         }
       },
@@ -26956,14 +26959,17 @@
         "updatedAt": "2026-04-09T10:18:03.893Z",
         "metadata": {
           "modules": [
-            "crates/reify-types/src"
+            "crates/reify-types"
           ],
           "memory_hints": {
             "entities": [],
             "queries": [
               "resolution for: Complete nan_partialeq_bit_identity test family and fix dimension inconsistency"
             ]
-          }
+          },
+          "files": [
+            "crates/reify-types/src/value.rs"
+          ]
         }
       },
       {
@@ -26996,8 +27002,12 @@
         "updatedAt": "2026-04-09T08:17:58.836Z",
         "metadata": {
           "modules": [
-            "crates/reify-constraints/src",
-            "gui/src-tauri/src"
+            "crates/reify-constraints",
+            "gui/src-tauri"
+          ],
+          "files": [
+            "crates/reify-constraints/src/solvespace.rs",
+            "gui/src-tauri/src/engine.rs"
           ]
         }
       },
