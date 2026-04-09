@@ -27709,15 +27709,16 @@
         "description": "Two low-severity review suggestions on the parse-error early-return added in Task 497 (crates/reify-lsp/src/diagnostics.rs):\n\n1. Line 72 comment: Replace the hard-coded line reference \"Match the behaviour of engine.rs:87-90\" with a function-name reference (\"Match the behaviour of Engine::load_from_source's early-return on parse errors\"). Hard-coded line numbers silently go stale as engine.rs is edited.\n\n2. Line 371 test `parse_error_skips_compile_and_eval`: Strengthen by adding `assert!(result.geometry_output.is_none(), \"geometry_output should be None when parse errors exist\")` to confirm eval was actually skipped (not just that the count matches). Optionally spot-check diagnostic severity/message to confirm they are parse-error diagnostics.\n\nBoth are in crates/reify-lsp/src/diagnostics.rs. Trivial single-file change, no cross-module impact.\n\nMemory hints: entity names: compute_diagnostics_with_state, parse_error_skips_compile_and_eval",
         "details": "",
         "testStrategy": "",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [],
         "priority": "low",
-        "subtasks": []
+        "subtasks": [],
+        "updatedAt": "2026-04-09T17:24:41.108Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-09T17:24:40.568Z",
+      "lastModified": "2026-04-09T17:24:41.108Z",
       "taskCount": 1337,
       "completedCount": 1007,
       "tags": [
