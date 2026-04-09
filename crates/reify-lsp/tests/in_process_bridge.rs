@@ -5,6 +5,7 @@ use reify_lsp::bridge::InProcessLsp;
 use reify_test_support::assert_warn_count;
 use reify_test_support::warn_counting_guard;
 use serde_json::json;
+use std::time::Duration;
 
 /// Assert that calling `handle_request` with `method` and `json!(42)` (a canonical
 /// malformed payload) returns an `Err` whose message contains `fragment`.
@@ -912,77 +913,81 @@ async fn error_prefix_constants_match_actual_errors() {
 /// assertion with downstream `didOpen` + `completion` calls.
 #[tokio::test]
 async fn downstream_ops_after_malformed_initialize_without_initialized() {
-    let lsp = InProcessLsp::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let lsp = InProcessLsp::new();
 
-    // Step 1: send initialize with a completely wrong payload type.
-    // Uses json!(42) — the canonical malformed payload in this file — to guarantee
-    // serde rejects it before server.initialize() is ever called, so workspace_root
-    // and stdlib_path remain at their defaults.
-    assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
+        // Step 1: send initialize with a completely wrong payload type.
+        // Uses json!(42) — the canonical malformed payload in this file — to guarantee
+        // serde rejects it before server.initialize() is ever called, so workspace_root
+        // and stdlib_path remain at their defaults.
+        assert_malformed_params_returns_error(&lsp, "initialize", error_prefix::INITIALIZE_PARAMS).await;
 
-    // Step 2: intentionally skip the `initialized` notification.
-    // The `initialized()` handler is a no-op, so skipping it produces no server-side
-    // state change — but this test documents that the server also does not require it
-    // before accepting downstream calls.
+        // Step 2: intentionally skip the `initialized` notification.
+        // The `initialized()` handler is a no-op, so skipping it produces no server-side
+        // state change — but this test documents that the server also does not require it
+        // before accepting downstream calls.
 
-    // Step 3: send textDocument/didOpen on the same (never-handshook) instance.
-    // bracket_source() does not require stdlib resolution to parse, so compilation
-    // proceeds even without the workspace_root that initialize() would have set.
-    let did_open_result = lsp
-        .handle_request(
-            "textDocument/didOpen",
-            did_open_params("file:///test.ri", reify_test_support::bracket_source()),
-        )
-        .await;
-    // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
-    // currently exists in bridge.rs (did_open is dispatched without an init-state check),
-    // so this branch is unreachable today.  A future change that adds an init-state guard
-    // returning a well-defined error will make it reachable; the !e.is_empty() assertion
-    // is the first line of defense against an empty-string regression at that point.
-    match &did_open_result {
-        Ok(val) => assert_eq!(
-            *val,
-            serde_json::Value::Null,
-            "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
-        ),
-        Err(e) => assert!(
-            !e.is_empty(),
-            "didOpen error should be non-empty, got empty string"
-        ),
-    }
-
-    // Step 4: send textDocument/completion at the same position used by the happy-path
-    // reference test did_open_and_completion_returns_items (line 1, character 0).
-    // The bridge dispatches textDocument/completion regardless of initialization state:
-    // the match arm in bridge.rs has no init-state guard.  If didOpen failed earlier
-    // and the DocumentStore entry was never created, the completion response will be
-    // Ok(Value::Null) (no completions) rather than an item list.
-    let completion_result = lsp
-        .handle_request(
-            "textDocument/completion",
-            json!({
-                "textDocument": { "uri": "file:///test.ri" },
-                "position": { "line": 1, "character": 0 }
-            }),
-        )
-        .await;
-    // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
-    // currently exists in bridge.rs (completion is dispatched without an init-state check),
-    // so this branch is unreachable today.  A future change that adds an init-state guard
-    // returning a well-defined error will make it reachable; the !e.is_empty() assertion
-    // is the first line of defense against an empty-string regression at that point.
-    match &completion_result {
-        Ok(val) if val.is_null() => {
-            // Ok(Value::Null) — no completions is a valid Option<CompletionResponse>::None.
+        // Step 3: send textDocument/didOpen on the same (never-handshook) instance.
+        // bracket_source() does not require stdlib resolution to parse, so compilation
+        // proceeds even without the workspace_root that initialize() would have set.
+        let did_open_result = lsp
+            .handle_request(
+                "textDocument/didOpen",
+                did_open_params("file:///test.ri", reify_test_support::bracket_source()),
+            )
+            .await;
+        // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
+        // currently exists in bridge.rs (did_open is dispatched without an init-state check),
+        // so this branch is unreachable today.  A future change that adds an init-state guard
+        // returning a well-defined error will make it reachable; the !e.is_empty() assertion
+        // is the first line of defense against an empty-string regression at that point.
+        match &did_open_result {
+            Ok(val) => assert_eq!(
+                *val,
+                serde_json::Value::Null,
+                "didOpen should return exactly Ok(Value::Null) when it succeeds, got: {val}"
+            ),
+            Err(e) => assert!(
+                !e.is_empty(),
+                "didOpen error should be non-empty, got empty string"
+            ),
         }
-        Ok(val) => {
-            // Non-null Ok — must be a well-formed CompletionResponse variant.
-            // completion_items() panics with an actionable message if the shape is wrong.
-            let _items = completion_items(val);
+
+        // Step 4: send textDocument/completion at the same position used by the happy-path
+        // reference test did_open_and_completion_returns_items (line 1, character 0).
+        // The bridge dispatches textDocument/completion regardless of initialization state:
+        // the match arm in bridge.rs has no init-state guard.  If didOpen failed earlier
+        // and the DocumentStore entry was never created, the completion response will be
+        // Ok(Value::Null) (no completions) rather than an item list.
+        let completion_result = lsp
+            .handle_request(
+                "textDocument/completion",
+                json!({
+                    "textDocument": { "uri": "file:///test.ri" },
+                    "position": { "line": 1, "character": 0 }
+                }),
+            )
+            .await;
+        // The Err arm below is forward-compatible scaffolding: no pre-handshake guard
+        // currently exists in bridge.rs (completion is dispatched without an init-state check),
+        // so this branch is unreachable today.  A future change that adds an init-state guard
+        // returning a well-defined error will make it reachable; the !e.is_empty() assertion
+        // is the first line of defense against an empty-string regression at that point.
+        match &completion_result {
+            Ok(val) if val.is_null() => {
+                // Ok(Value::Null) — no completions is a valid Option<CompletionResponse>::None.
+            }
+            Ok(val) => {
+                // Non-null Ok — must be a well-formed CompletionResponse variant.
+                // completion_items() panics with an actionable message if the shape is wrong.
+                let _items = completion_items(val);
+            }
+            Err(e) => assert!(
+                !e.is_empty(),
+                "completion error should be non-empty, got empty string"
+            ),
         }
-        Err(e) => assert!(
-            !e.is_empty(),
-            "completion error should be non-empty, got empty string"
-        ),
-    }
+    })
+    .await
+    .expect("downstream_ops test body must not hang");
 }

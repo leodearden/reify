@@ -22,3 +22,4 @@ test-support = []
 
 [dev-dependencies]
 reify-test-support.workspace = true
+tokio = { workspace = true, features = ["time"] }
