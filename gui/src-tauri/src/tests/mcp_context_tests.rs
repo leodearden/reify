@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::{ReifyToolContext, SelectionInfo};
-use reify_test_support::{MockGeometryKernel, bracket_source};
+use reify_test_support::{MockGeometryKernel, bracket_source, warning_source};
 
 use crate::engine::EngineSession;
 use crate::mcp_context::TauriToolContext;
@@ -540,25 +540,31 @@ fn get_diagnostics_clean_source_returns_empty() {
 /// `mcp_context.rs:127-133` is a 4-line passthrough — it locks the engine and
 /// returns `Ok(session.get_diagnostics())`. The `DiagnosticData → DiagnosticInfo`
 /// mapping closure (including the `offset_to_line_col_fast` span conversion and the
-/// hardcoded `code: None`) lives entirely in `engine.rs` and is already covered by
-/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs`.
+/// hardcoded `code: None`) lives entirely in `engine.rs`.
+/// `engine_get_diagnostics_returns_populated_warning` in `engine_tests.rs` only
+/// range-checks span fields (`line >= 1`, `column >= 1`, `end_line >= line`,
+/// `end_column >= 1`); it does NOT pin exact coordinates.
 ///
 /// This test therefore focuses on two things the engine test cannot cover: (a) that
 /// the wrapping path returns `Result::Ok`, and (b) that every field passes through
-/// without a field-swap bug. For span fields the pinned exact-coordinate assertions
-/// (line/column/end_line/end_column) are unique to this test — they catch any
-/// accidental transposition in the wrapping path that a bare `>= 1` range check would
-/// miss. The `code: None` assertion confirms the `Option<String>` field passes through
+/// without a field-swap bug. The pinned exact-coordinate span assertions
+/// (line/column/end_line/end_column) are the only ones in the suite that pin literal
+/// exact-coordinate values for a real compiler-emitted span.
+/// `get_diagnostics_multi_diagnostic_stress_matches_reference` in `engine_tests.rs`
+/// pins coordinates against a `byte_offset_to_line_col` reference oracle for synthetic
+/// injected spans; this test provides complementary coverage on a real `port_decl` span
+/// shape. Together they catch any accidental transposition that a bare `>= 1` range
+/// check would miss. If a future change improves diagnostic locality (e.g. narrowing
+/// the span to point at just `NonExistentTrait` instead of the whole `port_decl`),
+/// update the pinned values to match the new coordinates — do NOT revert to range
+/// checks, as that would silently remove the span regression coverage.
+/// The `code: None` assertion confirms the `Option<String>` field passes through
 /// unchanged (the mapping closure hardcodes `None`; a future code-extraction change
 /// that starts populating it will break this assertion and prompt the implementing
 /// agent to update both the assertion and this doc comment).
 #[test]
 fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
-    let source = r#"structure def S {
-    port mount : NonExistentTrait {
-        param d : Length = 5mm
-    }
-}"#;
+    let source = warning_source();
 
     let ctx = make_tauri_context_with_source(source, "test_warn");
     let diags = ctx
@@ -599,13 +605,29 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
     );
 
     // Pinned exact coordinates for the `port mount : NonExistentTrait` fixture.
-    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) through
-    // the closing `}` of the port body (L4:C6) — a multi-line span, so the
-    // former `if end_line == line` same-line guard was always false for this fixture.
-    assert_eq!(first.line, 2, "`port` keyword starts at line 2 of the fixture");
-    assert_eq!(first.column, 5, "`port` keyword starts at column 5 (1-indexed)");
-    assert_eq!(first.end_line, 4, "closing `}}` of port body ends at line 4 of the fixture");
-    assert_eq!(first.end_column, 6, "closing `}}` of port body ends at column 6 (1-indexed)");
+    // The port_decl tree-sitter node spans from the `port` keyword (L2:C5) to the
+    // exclusive end byte one past the closing `}` of the port body (line 4: 4 spaces
+    // + `}`). `offset_to_line_col_fast` computes chars().count() of
+    // `source[line_start..end_byte]` and adds 1: that prefix is "    }" = 5 chars,
+    // so end_column = 5 + 1 = 6. (The `}` glyph itself sits at column 5; end_column
+    // 6 is the exclusive one-past position.) This is a multi-line span, so the former
+    // `if end_line == line` same-line guard was always false for this fixture.
+    assert_eq!(
+        first.line, 2,
+        "`port` keyword starts at line 2 of the fixture"
+    );
+    assert_eq!(
+        first.column, 5,
+        "`port` keyword starts at column 5 (1-indexed)"
+    );
+    assert_eq!(
+        first.end_line, 4,
+        "closing `}}` of port body ends at line 4 of the fixture"
+    );
+    assert_eq!(
+        first.end_column, 6,
+        "exclusive end byte past `}}` maps to column 6 (chars().count() + 1)"
+    );
 
     // code field passthrough: hardcoded None in the mapping closure (see doc comment)
     assert!(first.code.is_none(), "expected code to be None");

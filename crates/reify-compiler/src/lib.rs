@@ -2719,7 +2719,10 @@ fn compile_expr_guarded(
                 {
                     // Check for self.sub.member chaining (handled at outer level): skip here
                     // if member is a sub-component name — return a StructureRef for the sub.
-                    if scope.sub_component_types.contains_key(member.as_str()) {
+                    // Guard: exclude collection subs (List<T>), which must be accessed via index.
+                    if scope.sub_component_types.contains_key(member.as_str())
+                        && !scope.collection_sub_names.contains(member.as_str())
+                    {
                         // self.sub_name — return StructureRef so that chaining works
                         // (but note: this case is handled by the outer MemberAccess pattern below)
                         let structure_name = scope.sub_component_types[member.as_str()].clone();
@@ -2729,6 +2732,21 @@ fn compile_expr_guarded(
                             sub_id,
                             Type::StructureRef(structure_name),
                         );
+                    }
+                    // Error: collection sub accessed directly through self.
+                    if scope.collection_sub_names.contains(member.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "cannot access collection sub '{}' directly through self; \
+                                 use indexed access like `{}[i].<field>` or aggregation like `{}.count`",
+                                member, member, member
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "collection sub requires indexing",
+                            )),
+                        );
+                        return CompiledExpr::literal(Value::Undef, Type::Real);
                     }
                     // Resolve member from the entity scope (same as bare identifier).
                     match scope.resolve(member) {
@@ -2754,6 +2772,7 @@ fn compile_expr_guarded(
                 }
 
                 // Pattern: self.sub.member (object is MemberAccess { Ident("self"), sub_name })
+                // Guard: exclude collection subs (List<T>), which must be accessed via index.
                 if let reify_syntax::ExprKind::MemberAccess {
                     object: inner_obj,
                     member: sub_name,
@@ -2761,6 +2780,7 @@ fn compile_expr_guarded(
                     && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
                     && self_name == "self"
                     && scope.sub_component_types.contains_key(sub_name.as_str())
+                    && !scope.collection_sub_names.contains(sub_name.as_str())
                 {
                     // Resolve member type from sub_member_types
                     let member_type = match scope
@@ -2785,6 +2805,28 @@ fn compile_expr_guarded(
                         format!("{}.{}", scope.entity_name, sub_name);
                     let scoped_id = ValueCellId::new(&scoped_entity, member);
                     return CompiledExpr::value_ref(scoped_id, member_type);
+                }
+                // Error: collection sub member accessed directly through self.
+                if let reify_syntax::ExprKind::MemberAccess {
+                    object: inner_obj,
+                    member: sub_name,
+                } = &object.kind
+                    && let reify_syntax::ExprKind::Ident(self_name) = &inner_obj.kind
+                    && self_name == "self"
+                    && scope.collection_sub_names.contains(sub_name.as_str())
+                {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "cannot access member '{}' of collection sub '{}' directly through self; \
+                             use `{}[i].{}` for a specific instance",
+                            member, sub_name, sub_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            expr.span,
+                            "collection sub member requires indexing",
+                        )),
+                    );
+                    return CompiledExpr::literal(Value::Undef, Type::Real);
                 }
             }
 
